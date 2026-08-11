@@ -1711,8 +1711,14 @@ describe('ModuleFormComponent', () => {
       call.flush(envelope(detail({ moduleId: 12, tabModuleId: 34 })));
       fixture.detectChanges();
 
-      // The store re-reads the listing after a create, so the newly placed module is in it.
-      expectRequest('GET', MODULES_URL, 'the listing re-read').flush(pagedBody([listRow()]));
+      // ⚠ NO LISTING RE-READ FOLLOWS A CREATE, WHERE THIS CASE USED TO ANSWER ONE. This screen redirects to
+      // the listing on success and the listing reads itself from its address on entry, so the store's read
+      // was a second read of the same page - and because the store serialises its listing reads, the two
+      // raced and the loser was cancelled, measured in a browser as `net::ERR_ABORTED` followed by an
+      // identical `GET` one millisecond later. Counted with `match`, so the size IS the assertion.
+      expect(httpMock.match((candidate) => candidate.url === MODULES_URL))
+        .withContext('a create asks for no listing read; the listing reads itself on entry')
+        .toHaveSize(0);
       fixture.detectChanges();
 
       expect(notifySpy).toHaveBeenCalledWith('success', CREATED_MESSAGE, null, true);
@@ -1754,7 +1760,14 @@ describe('ModuleFormComponent', () => {
       });
       fixture.detectChanges();
 
-      expectRequest('GET', MODULES_URL, 'the listing re-read').flush(pagedBody([listRow()]));
+      // ⚠ NO LISTING RE-READ FOLLOWS A CREATE, WHERE THIS CASE USED TO ANSWER ONE. This screen redirects to
+      // the listing on success and the listing reads itself from its address on entry, so the store's read
+      // was a second read of the same page - and because the store serialises its listing reads, the two
+      // raced and the loser was cancelled, measured in a browser as `net::ERR_ABORTED` followed by an
+      // identical `GET` one millisecond later. Counted with `match`, so the size IS the assertion.
+      expect(httpMock.match((candidate) => candidate.url === MODULES_URL))
+        .withContext('a create asks for no listing read; the listing reads itself on entry')
+        .toHaveSize(0);
       fixture.detectChanges();
 
       // The measured legacy severity vocabulary had exactly three levels - `RedError` 27 times,
@@ -1796,7 +1809,11 @@ describe('ModuleFormComponent', () => {
       call.flush(envelope(detail()), { status: 201, statusText: 'Created' });
       fixture.detectChanges();
 
-      expectRequest('GET', MODULES_URL).flush(pagedBody([listRow()]));
+      // No listing read follows a create; see the block on the case above for the measured duplicate that
+      // removed it. Asserted rather than merely omitted, so this case cannot silently start tolerating one.
+      expect(httpMock.match((candidate) => candidate.url === MODULES_URL))
+        .withContext('a create asks for no listing read; the listing reads itself on entry')
+        .toHaveSize(0);
       fixture.detectChanges();
     });
 
@@ -1836,7 +1853,11 @@ describe('ModuleFormComponent', () => {
       });
       fixture.detectChanges();
 
-      expectRequest('GET', MODULES_URL).flush(pagedBody([listRow()]));
+      // No listing read follows a create; see the block on the case above for the measured duplicate that
+      // removed it. Asserted rather than merely omitted, so this case cannot silently start tolerating one.
+      expect(httpMock.match((candidate) => candidate.url === MODULES_URL))
+        .withContext('a create asks for no listing read; the listing reads itself on entry')
+        .toHaveSize(0);
       fixture.detectChanges();
     });
   });
@@ -2277,13 +2298,20 @@ describe('ModuleFormComponent', () => {
       // The measured authority for the severity is `Website/admin/Security/AccessDenied.ascx.vb`: a
       // fifty-line page that performs NO permission check of its own and renders BOTH of its
       // `Page_Load` branches, at L43 and L45, with `ModuleMessage.ModuleMessageType.YellowWarning`.
+      // ⚠ THE SUPPORT REFERENCE IS PART OF THE CALL NOW. A refusal presented as a notification carries the
+      // identifier from its problem document, exactly as one presented through the shared banner always
+      // has - it is the only join key between what an operator saw and what the server recorded, and a
+      // browser audit measured the asymmetry of quoting it in one surface and not the other. The severity
+      // rule this case exists for is untouched.
       expect(notifySpy).toHaveBeenCalledWith(
         'warning',
         'The authenticated caller is not permitted to perform this operation.',
+        CORRELATION_ID,
       );
       expect(notifySpy).not.toHaveBeenCalledWith(
         'error',
         'The authenticated caller is not permitted to perform this operation.',
+        CORRELATION_ID,
       );
       expect(navigateSpy).not.toHaveBeenCalled();
       expect(query('.error-banner')).not.toBeNull();
@@ -2308,9 +2336,15 @@ describe('ModuleFormComponent', () => {
       );
       fixture.detectChanges();
 
+      // ⚠ THE SUPPORT REFERENCE IS PART OF THE CALL NOW. A refusal presented as a notification carries the
+      // identifier from its problem document, exactly as one presented through the shared banner always
+      // has - it is the only join key between what an operator saw and what the server recorded, and a
+      // browser audit measured the asymmetry of quoting it in one surface and not the other. The severity
+      // rule this case exists for is untouched.
       expect(notifySpy).toHaveBeenCalledWith(
         'error',
         'An unexpected error occurred while processing the request.',
+        CORRELATION_ID,
       );
       expect(navigateSpy).not.toHaveBeenCalled();
     });

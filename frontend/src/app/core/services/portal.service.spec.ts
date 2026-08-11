@@ -372,6 +372,10 @@ function portalDetail(portalId: number): PortalDetail {
     timeZoneOffset: -480,
     homeDirectory: 'Portals/0',
     aliases: [portalAlias(portalId, PORTAL_ALIAS_ID, 'localhost')],
+
+    // The opaque revision marker every portal read publishes. A fixture carries one because a real
+    // read does, and because a screen that round-trips it must have something to round-trip.
+    concurrencyToken: 'revision-1',
   };
 }
 
@@ -417,6 +421,10 @@ function portalSettings(portalId: number): PortalSettings {
     timeZoneOffset: -480,
     homeDirectory: 'Portals/0',
     guid: '2f1c3d4e-5a6b-4c8d-9e0f-1a2b3c4d5e6f',
+
+    // Deliberately the SAME token the detail fixture publishes: one server-side derivation serves both
+    // reads, so the two projections of an unchanged record agree and either token satisfies either write.
+    concurrencyToken: 'revision-1',
   };
 }
 
@@ -529,6 +537,9 @@ function updatePortalRequest(overrides: Partial<UpdatePortalRequest> = {}): Upda
     defaultLanguage: 'en-US',
     timeZoneOffset: -480,
     homeDirectory: 'Portals/1',
+
+    // Round-tripped from the read, which is what makes a stale save refusable.
+    concurrencyToken: 'revision-1',
     ...overrides,
   };
 }
@@ -1102,9 +1113,12 @@ describe('PortalService', () => {
         .withContext('a zero-valued enumeration member is transmitted as 0')
         .toBe(0);
       expect(body.userRegistration).toBe(0);
+      // TWENTY-EIGHT: the twenty-seven legacy members plus the revision marker, which describes no
+      // portal attribute and lands on no column. The point of this count is unchanged - NOTHING is
+      // pruned for looking empty - and the marker is the one deliberate addition to the set.
       expect(Object.keys(body).length)
-        .withContext('all twenty-seven members travel, none pruned for looking empty')
-        .toBe(27);
+        .withContext('all twenty-seven members travel plus the revision marker, none pruned for looking empty')
+        .toBe(28);
 
       pending.flush(envelope(portalDetail(PORTAL_ID)), { status: 200, statusText: 'OK' });
 
@@ -1382,9 +1396,12 @@ describe('PortalService', () => {
 
       const body = pending.request.body as UpdatePortalSettingsRequest;
       const members = Object.keys(body);
+      // TWENTY-SEVEN: the twenty-six editable members plus the revision marker. The marker is on BOTH
+      // portal write contracts deliberately - the two routes replace the same columns through the same
+      // mapper, so protecting only one would move the lost-update surface rather than remove it.
       expect(members.length)
-        .withContext('the update contract without its identifier: twenty-six members')
-        .toBe(26);
+        .withContext('the update contract without its identifier, plus the revision marker: twenty-seven members')
+        .toBe(27);
       expect(members)
         .withContext('the identifier travels in the path, so a second copy is not sent')
         .not.toContain('portalId');

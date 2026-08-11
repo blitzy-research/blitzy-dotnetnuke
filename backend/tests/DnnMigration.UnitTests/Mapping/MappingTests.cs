@@ -2854,9 +2854,17 @@ public class MappingTests
             "a transposition inside one of the seven same-typed runs is invisible to the compiler, so "
             + "the seeds are what make it visible to the suite");
 
+        // TWENTY-EIGHT: the twenty-seven legacy parameters seeded above, plus the optimistic-concurrency
+        // token. The token is admitted deliberately and is the ONLY admission: it describes no portal
+        // attribute and lands on no column, which is why it takes no seed and appears in neither of the
+        // sequences asserted above - it states which revision of the record the caller read so a stale
+        // whole-record replace is refused rather than applied. PortalServiceTests pins its identity and its
+        // position in the declared order; this count is what stops a SECOND non-column member appearing here
+        // unnoticed and quietly widening the write surface.
         typeof(UpdatePortalRequest).GetProperties().Should().HaveCount(
-            27,
-            "the settings contract mirrors the legacy parameter list exactly - no member added, none dropped");
+            28,
+            "the settings contract mirrors the legacy parameter list exactly - none dropped, and the only "
+            + "addition is the concurrency token, which describes a revision rather than a portal attribute");
     }
 
     /// <summary>

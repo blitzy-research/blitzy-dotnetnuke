@@ -725,7 +725,28 @@ describe('permissionGuard', () => {
     expect(runGuard(route)).withContext(context).toBeFalse();
 
     expect(notify).toHaveBeenCalledTimes(1);
-    expect(notify).toHaveBeenCalledWith('warning', ACCESS_REFUSED_MESSAGE);
+
+    // ⚠ ASSERTED MEMBER BY MEMBER RATHER THAN ON THE WHOLE ARGUMENT LIST, because the list grew and the
+    // rules being enforced did not. A refusal is still a warning carrying the measured legacy sentence and
+    // still quotes no support reference; what is new is the LIFETIME it states for itself. The queue exempts
+    // `'warning'` from its countdown on the grounds that such an outcome reports a fault, carries a
+    // reference to quote and would lose the only record of a failure if it expired - and a refusal meets
+    // none of those, which a browser audit measured as one standing on screen for four minutes and
+    // forty-two seconds until the operator navigated away. Naming each argument keeps every rule visible
+    // and lets a further argument be added without silently retiring one of them.
+    const args: readonly unknown[] = notify.calls.mostRecent().args;
+
+    expect(args[0]).withContext('a refusal is a warning, never a fault').toBe('warning');
+    expect(args[1]).withContext('the measured legacy sentence, unaltered').toBe(ACCESS_REFUSED_MESSAGE);
+    expect(args[2])
+      .withContext('no support reference: nothing failed, so there is nothing to look up')
+      .toBeNull();
+    expect(args[3])
+      .withContext('it does not outlive a navigation of its own accord')
+      .toBeFalse();
+    expect(args[4])
+      .withContext('it retires itself, because it asks nothing of the reader and quotes nothing')
+      .toBeTrue();
   }
 
   /**
@@ -1359,9 +1380,13 @@ describe('permissionGuard', () => {
 
       expect(runGuard(makeRoute({ permission: 'HostAdministrator' }))).toBeFalse();
 
-      expect(notify.calls.mostRecent().args.length)
-        .withContext('a refusal carries a severity and a message and nothing else')
-        .toBe(2);
+      // ⚠ ASSERTED ON THE REFERENCE ITSELF, NOT ON HOW MANY ARGUMENTS WERE PASSED. The rule is that a
+      // refusal quotes no support reference, and the argument count was only ever a proxy for it - one that
+      // broke the moment the call stated its own lifetime, while the rule it stood for was untouched. The
+      // reference member is the subject, so it is what the assertion names.
+      expect(notify.calls.mostRecent().args[2])
+        .withContext('a refusal quotes no support reference')
+        .toBeNull();
     });
   });
 

@@ -2409,7 +2409,7 @@ describe('ModuleStore', () => {
       expect('setNull' in store).toBeFalse();
     });
 
-    it('transmits a creation request whose every falsy member survives, and re-reads the listing', () => {
+    it('transmits a creation request whose every falsy member survives, and re-reads NO listing', () => {
       const request: CreateModuleRequest = createRequest({ tabId: 0, moduleOrder: 0, cacheTime: 0 });
 
       loadListWith([]);
@@ -2423,14 +2423,26 @@ describe('ModuleStore', () => {
         statusText: 'Created',
       });
 
-      // The created placement becomes the loaded module AND the listing is re-read, so a screen showing a
-      // form beside a grid does not have to ask for the refresh itself.
+      // The created placement becomes the loaded module. Both identifiers are asserted on identity rather
+      // than truthiness, which is this case's whole subject: the module identifier really is ZERO here.
       expect(store.module()?.moduleId).toBe(0);
       expect(store.selectedModuleId()).toBe(0);
-      expectRequest('GET', '/api/v1/modules').flush(pagedBody([listRow({ moduleId: 0, tabModuleId: 9 })]));
+
+      // ⚠ AND NO LISTING READ FOLLOWS, WHERE THIS CASE USED TO REQUIRE ONE. The create's re-read was
+      // removed: its only caller navigates TO the listing, which reads itself from its address on entry, so
+      // the store's read was a second read of the same page - and because this store serialises its listing
+      // reads, the two raced and the loser was cancelled. A browser audit measured it as
+      // `net::ERR_ABORTED` on `GET /api/v1/modules` followed by an identical `GET` answering 200 one
+      // millisecond later. Counted with `match` rather than `expectNone`, so the size IS the assertion.
+      expect(
+        httpMock.match(
+          (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+        ),
+      )
+        .withContext('a create asks for no listing read; the listing reads itself on entry')
+        .toHaveSize(0);
 
       expect(store.saving()).toBeFalse();
-      expect(store.modules().length).toBe(1);
     });
   });
 
@@ -2604,6 +2616,84 @@ describe('ModuleStore', () => {
         { status: 404, statusText: 'Not Found' },
       );
       expect(store.failure()?.operation).toBe('loadDesktopDefinitions');
+    });
+
+    /**
+     * ⚠ THE SETTINGS READ ALSO REPORTS ITSELF INTO A SLOT OF ITS OWN, AND THIS SUITE EXISTS BECAUSE THE
+     * SHARED SLOT PROVABLY CANNOT CARRY THAT FACT. The settings screen issues three reads and every command
+     * clears the shared slot as it starts, so the last read to finish owns it. Measured against a running
+     * server: an administrative module answers `200` for the module, `403 module.settings_protected` for the
+     * settings and `404` for the definition, so the definition displaced the refusal and that screen
+     * rendered a full editable form beneath no banner, offering a save the server had already refused.
+     *
+     * The three expectations below are the ones that make the slot trustworthy: it must survive a LATER
+     * failure recorded by a different command, it must clear when the settings read is retried, and it must
+     * clear when a bag actually arrives.
+     */
+    it('records how the settings read ended in a slot a later failure cannot displace', () => {
+      store.loadSettings(0);
+      expectRequest('GET', '/api/v1/modules/0/settings').flush(
+        problem('module.settings_protected', 403, 'Administrative module settings are protected.'),
+        { status: 403, statusText: 'Forbidden' },
+      );
+
+      expect(store.settingsFailure()?.operation).toBe('loadSettings');
+      expect(store.settingsFailure()?.problem?.status).toBe(403);
+
+      // A DIFFERENT command now fails, taking the shared slot. This is the displacement that used to lose
+      // the refusal entirely.
+      store.loadDefinition(4);
+      expectRequest('GET', '/api/v1/module-definitions/4').flush(
+        problem('resource.not_found', 404, 'Gone.'),
+        { status: 404, statusText: 'Not Found' },
+      );
+
+      expect(store.failure()?.operation)
+        .withContext('the shared slot behaves exactly as before - it belongs to the last failure')
+        .toBe('loadDefinition');
+      expect(store.settingsFailure()?.problem?.status)
+        .withContext('while the settings refusal is still answerable')
+        .toBe(403);
+      expect(store.settingsFailure()?.code).toBe('module.settings_protected');
+    });
+
+    it('clears the settings slot when that read is retried, and when a bag arrives', () => {
+      store.loadSettings(0);
+      expectRequest('GET', '/api/v1/modules/0/settings').flush(problem('module.settings_protected', 403, 'No.'), {
+        status: 403,
+        statusText: 'Forbidden',
+      });
+      expect(store.settingsFailure()).not.toBeNull();
+
+      // Retrying clears it as the request starts, so a screen never shows a refusal for a read in flight.
+      store.loadSettings(0);
+      expect(store.settingsFailure())
+        .withContext('the slot describes the read now outstanding, not the one before it')
+        .toBeNull();
+
+      expectRequest('GET', '/api/v1/modules/0/settings').flush({
+        data: { moduleId: 0, tabModuleId: 1, moduleSettings: {}, tabModuleSettings: {} },
+      });
+
+      expect(store.settingsFailure())
+        .withContext('a bag in hand is the end of the matter')
+        .toBeNull();
+      expect(store.settings()).not.toBeNull();
+    });
+
+    it('discards the settings slot alongside the bag it describes', () => {
+      store.loadSettings(0);
+      expectRequest('GET', '/api/v1/modules/0/settings').flush(problem('module.settings_protected', 403, 'No.'), {
+        status: 403,
+        statusText: 'Forbidden',
+      });
+      expect(store.settingsFailure()).not.toBeNull();
+
+      store.clearSettings();
+
+      expect(store.settingsFailure())
+        .withContext('a refusal describes a read of one tenant\'s settings and must not outlive them')
+        .toBeNull();
     });
 
     it('clears a recorded failure explicitly, and again when the next command starts', () => {
@@ -3265,9 +3355,13 @@ describe('ModuleStore', () => {
 
       pending.flush(envelope(detail({ moduleId: 9 })), { status: 201, statusText: 'Created' });
 
-      // The create re-reads the listing, which proves the callback ran rather than being discarded.
-      expectRequest('GET', '/api/v1/modules').flush(pagedBody([listRow({ moduleId: 9 })], 0, 10));
-
+      // ⚠ THE CALLBACK IS PROVEN BY WHAT IT PUBLISHED, NOT BY A SECOND REQUEST, and it used to be proven
+      // by the listing read the create performed. That read was removed: the only caller navigates TO the
+      // listing, which reads itself from its address on entry, so the store's read was a second read of
+      // the same page - and because this store serialises its listing reads, the two raced and the loser
+      // was cancelled, measured in a browser as `net::ERR_ABORTED` followed by an identical `GET` one
+      // millisecond later. The selection below is set by the same callback, so it proves exactly what the
+      // request proved, without depending on work that should not happen.
       expect(store.selectedModuleId()).toBe(9);
       expect(store.saving()).toBeFalse();
     });
@@ -3482,15 +3576,18 @@ describe('ModuleStore', () => {
         request.flush(envelope(detail()), { status: 201, statusText: 'Created' });
       }
 
-      // Each create re-reads the listing, and both re-reads are answered so the backend verification
-      // at teardown is satisfied. The second read supersedes the first, so one is cancelled.
-      for (const request of httpMock.match(
-        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
-      )) {
-        if (!request.cancelled) {
-          request.flush(pagedBody([], 0, 10));
-        }
-      }
+      // ⚠ NEITHER CREATE RE-READS THE LISTING NOW, so there is nothing to drain and the absence is
+      // asserted instead. This loop used to answer one read per create and tolerate one of them being
+      // cancelled - which was the duplicate itself, visible in the fixture: two identical reads for two
+      // creates, one of them abandoned. Counted with `match` rather than `expectNone` so the size IS the
+      // assertion and the case cannot pass vacuously.
+      expect(
+        httpMock.match(
+          (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+        ),
+      )
+        .withContext('a create asks for no listing read; the listing reads itself on entry')
+        .toHaveSize(0);
     });
   });
 

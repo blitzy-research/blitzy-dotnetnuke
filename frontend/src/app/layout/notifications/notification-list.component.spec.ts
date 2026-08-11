@@ -420,6 +420,42 @@ describe('NotificationListComponent', () => {
       expect(items().length).withContext('a failure is not removed on a timer').toBe(2);
     });
 
+    it('retires a warning that ASKS to be retired, because severity is the fallback and not the answer', () => {
+      // ⚠ THE ONE EXCEPTION, AND IT IS THE CALLER'S TO STATE. The exemption above rests on three grounds -
+      // the outcome reports a fault, it carries a reference to quote, and removing it would lose the only
+      // record of a failure - and the route guards' access refusal meets none of them: nothing failed, so
+      // there is no reference, and nothing is being asked of the operator, because the remedy is a
+      // permission they cannot grant themselves. A browser audit measured the blanket exemption applying
+      // anyway: the refusal stood for four minutes and forty-two seconds and was cleared only by
+      // navigating away. The severity is deliberately NOT lowered to reach the timer - it is derived from
+      // the response status in one shared place - so the lifetime is stated as its own fact.
+      notifications.notify('warning', 'You do not have access to this content.', null, false, true);
+      fixture.detectChanges();
+
+      expect(items().length).withContext('shown first, then retired') .toBe(1);
+
+      jasmine.clock().tick(INTERVAL_MS);
+      fixture.detectChanges();
+
+      expect(items().length).toBe(0);
+      expect(notifications.notifications().length)
+        .withContext('removed from the queue too, not merely hidden')
+        .toBe(0);
+    });
+
+    it('keeps a SUCCESS that asks to be kept, so the opinion overrides in both directions', () => {
+      // Stated as a pair with the case above on purpose. If the caller's opinion only ever shortened a
+      // lifetime it would be a special case for one call site; it is a general rule, so it must also be
+      // able to hold something the severity set would have retired.
+      notifications.notify('success', 'The import finished with warnings.', null, false, false);
+      fixture.detectChanges();
+
+      jasmine.clock().tick(INTERVAL_MS * 10);
+      fixture.detectChanges();
+
+      expect(items().length).withContext('the caller asked for it to stand').toBe(1);
+    });
+
     it('does not remove anything before the interval elapses', () => {
       notifications.success('The role was created.');
       fixture.detectChanges();

@@ -907,8 +907,14 @@ public sealed class RoleApiTests
         // The code travels as the problem document's type, which is what makes the branch possible.
         await ShouldCarryFailureCodeAsync(response, HttpStatusCode.Conflict, "role.name_duplicate");
 
+        // The wording is the legacy resource string verbatim - DuplicateRole.Text in
+        // Website/admin/Security/App_LocalResources/EditRoles.ascx.resx - and it names neither the tenant nor
+        // any row identifier. Both absences are asserted, because an earlier revision published both.
         string body = await response.Content.ReadAsStringAsync();
-        body.Should().Contain("already has a role named");
+        body.Should().Contain("A role with the same name already exists. The role was not added.");
+        body.Should().NotContain(
+            "identifier",
+            "a refusal may not publish the row identifier of the record it refers to");
     }
 
     /// <summary>
@@ -1130,7 +1136,10 @@ public sealed class RoleApiTests
             ServiceFeeNegativeMessage);
     }
 
-    /// <summary>A billing period of zero is rejected, because a period must be a positive count.</summary>
+    /// <summary>
+    /// A billing period of zero is rejected when a recurring cycle is declared beside it, because a cycle
+    /// must have a positive number of units.
+    /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task CreateRole_WithZeroBillingPeriod_ReturnsBadRequest()
@@ -1139,20 +1148,180 @@ public sealed class RoleApiTests
 
         CreateRoleRequest request = NewRoleRequest();
         request.BillingPeriod = 0;
+        request.BillingFrequency = BillingFrequency.Month;
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             RolesRoute(_fixture.Seed.PortalId),
             request,
             ApiTestFixture.Json);
 
-        // valBillingPeriod2 (editroles.ascx L113-L114) declares Operator="GreaterThan" against 0 while
-        // its ErrorMessage says "or Equal to". The operator is the behaviour and a zero is refused; the
-        // wording is carried across unchanged because a legacy defect is annotated, not repaired. Do
-        // not "fix" this string to agree with the rule.
+        // valBillingPeriod2 (editroles.ascx L111-L114) declares Operator="GreaterThan" against 0, and the
+        // wording an operator actually read - the resource value behind resourcekey="valBillingPeriod2" -
+        // agrees with it. A cycle of zero units could never advance an expiry date. The pair is what is
+        // judged: zero beside NO cycle is the value the portal template's own roles carry and is accepted,
+        // which CreateRole_WithZeroPeriodsAndNoCycle_IsCreated asserts.
         await ShouldReportFieldAsync(
             response,
             nameof(CreateRoleRequest.BillingPeriod),
             BillingPeriodNotPositiveMessage);
+    }
+
+    /// <summary>
+    /// The created representation reports the fee the installation actually stored, not the fee that was
+    /// submitted, when the two differ by the stored column's scale.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// MEASURED. A role created with a service fee of <c>1.23456789</c> answered <c>201</c> echoing
+    /// <c>1.23456789</c> while the stored value was <c>1.2346</c>: the columns are <c>money</c>
+    /// (<c>03.01.01</c> L1173 and <c>01.00.08</c> L6830), which keeps four fractional digits. A client that
+    /// trusted the created resource - which is the entire purpose of returning it - cached a number the
+    /// installation did not hold, and the difference appeared only on some later read. The response and the
+    /// read-back are asserted against EACH OTHER as well as against the expected value, because agreement
+    /// between the two is the property that was broken.
+    /// </remarks>
+    [Fact]
+    public async Task CreateRole_WithAFeeFinerThanTheStoredScale_ReportsTheStoredValue()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        CreateRoleRequest request = NewRoleRequest();
+        request.ServiceFee = 1.23456789m;
+        request.BillingPeriod = 2;
+        request.BillingFrequency = BillingFrequency.Month;
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            RolesRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created, await Diagnose(response));
+
+        RoleDetailDto created = await ReadDetailAsync(response);
+        created.ServiceFee.Should().Be(
+            1.2346m,
+            "the created resource must report what the money column holds, not what was submitted");
+
+        using HttpResponseMessage reread = await client.GetAsync(
+            RoleRoute(_fixture.Seed.PortalId, created.RoleId));
+
+        reread.StatusCode.Should().Be(HttpStatusCode.OK);
+        RoleDetailDto stored = await ReadDetailAsync(reread);
+        stored.ServiceFee.Should().Be(
+            created.ServiceFee,
+            "a later read must not disagree with the response that reported the creation");
+    }
+
+    /// <summary>
+    /// A submitted role name is stored without its surrounding whitespace, so the stored value agrees with
+    /// the value that governs uniqueness.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// MEASURED. A name submitted with two leading and two trailing spaces was stored verbatim at 17
+    /// characters, and the 13-character name it appears to be was then refused <c>409</c> - because the
+    /// uniqueness index is evaluated under a collation that gives trailing whitespace no sort weight. The
+    /// listing therefore showed a name that could not be re-created and could not be told apart from a
+    /// visibly identical one. Legacy stored the padding too, so this is a deliberate divergence on the same
+    /// footing as the invisible-character rule the write validators already apply, and it is recorded in
+    /// MIGRATION_NOTES.md. Interior whitespace is untouched, which the asserted value proves.
+    /// </remarks>
+    [Fact]
+    public async Task CreateRole_WithSurroundingWhitespaceInTheName_StoresItTrimmed()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        string bare = "ITest Trim " + Suffix();
+        CreateRoleRequest request = NewRoleRequest();
+        request.RoleName = "  " + bare + "  ";
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            RolesRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created, await Diagnose(response));
+
+        RoleDetailDto created = await ReadDetailAsync(response);
+        created.RoleName.Should().Be(bare, "interior spacing is preserved; only the surrounds are removed");
+
+        using HttpResponseMessage reread = await client.GetAsync(
+            RoleRoute(_fixture.Seed.PortalId, created.RoleId));
+
+        (await ReadDetailAsync(reread)).RoleName.Should().Be(bare);
+
+        // The name the listing shows can now be re-submitted and is recognised as the duplicate it is,
+        // which is exactly what the padded row made impossible.
+        CreateRoleRequest again = NewRoleRequest();
+        again.RoleName = bare;
+
+        using HttpResponseMessage duplicate = await client.PostAsJsonAsync(
+            RolesRoute(_fixture.Seed.PortalId),
+            again,
+            ApiTestFixture.Json);
+
+        duplicate.StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
+    /// <summary>
+    /// A role submitted with both periods at zero and no recurring cycle on either is created, so a role the
+    /// portal template produced can be read and written back unchanged.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// THE ASYMMETRY THIS CLOSES WAS MEASURED THROUGH THE API ITSELF. The template's roles carry
+    /// <c>BillingPeriod</c> and <c>TrialPeriod</c> at zero beside a frequency of <c>N</c>, and the read
+    /// projection reports those columns faithfully as Rule T7 requires - so echoing a role's own response
+    /// back to the API was refused <c>400</c> naming both period members, and no consumer could carry out a
+    /// read-modify-write of any role the template had created.
+    /// </remarks>
+    [Fact]
+    public async Task CreateRole_WithZeroPeriodsAndNoCycle_IsCreated()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        CreateRoleRequest request = NewRoleRequest();
+        request.BillingPeriod = 0;
+        request.BillingFrequency = BillingFrequency.None;
+        request.TrialPeriod = 0;
+        request.TrialFrequency = BillingFrequency.None;
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            RolesRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created, await Diagnose(response));
+
+        RoleDetailDto created = await ReadDetailAsync(response);
+        created.BillingPeriod.Should().Be(0);
+        created.TrialPeriod.Should().Be(0);
+
+        // The round trip the refusal used to break: the created representation is submitted back verbatim.
+        using HttpResponseMessage echoed = await client.PutAsJsonAsync(
+            RoleRoute(_fixture.Seed.PortalId, created.RoleId),
+            new UpdateRoleRequest
+            {
+                RoleName = created.RoleName,
+                Description = created.Description,
+                IsPublic = created.IsPublic,
+                AutoAssignment = created.AutoAssignment,
+                ServiceFee = created.ServiceFee,
+                BillingPeriod = created.BillingPeriod,
+                BillingFrequency = created.BillingFrequency,
+                TrialFee = created.TrialFee,
+                TrialPeriod = created.TrialPeriod,
+                TrialFrequency = created.TrialFrequency,
+                RsvpCode = created.RsvpCode,
+                IconFile = created.IconFile,
+                RoleGroupId = created.RoleGroupId,
+                ConcurrencyToken = created.ConcurrencyToken,
+            },
+            ApiTestFixture.Json);
+
+        echoed.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "a value this API emits must be a value this API accepts");
     }
 
     /// <summary>An update answers <c>200 OK</c> and the new state survives a read.</summary>
@@ -3097,9 +3266,8 @@ public sealed class RoleApiTests
     /// The zero cases are the load-bearing ones. Zero is precisely where a "greater than or equal to"
     /// rule and a "greater than" rule disagree, so a validator that had copied the fee rule onto the
     /// periods would accept these two submissions and every other assertion in this suite would still
-    /// pass. The billing half additionally carries the defective wording described on
-    /// <see cref="BillingPeriodNotPositiveMessage"/>: the message promises to admit zero and the
-    /// operator refuses it, and the operator is the rule.
+    /// pass. Each case declares a recurring cycle beside the period, because that is the condition under
+    /// which zero is refusable at all.
     /// </remarks>
     [Theory]
     [InlineData(true, 0)]
@@ -3110,14 +3278,20 @@ public sealed class RoleApiTests
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
+        // A CYCLE IS DECLARED ALONGSIDE THE PERIOD, which is what makes zero the refusable value. Zero
+        // beside no cycle is the store's own "no recurring term" and is accepted - see
+        // CreateRole_WithZeroPeriodsAndNoCycle_IsCreated - so submitting it here with no frequency would
+        // assert the opposite of the rule.
         CreateRoleRequest request = NewRoleRequest();
         if (onBillingPeriod)
         {
             request.BillingPeriod = period;
+            request.BillingFrequency = BillingFrequency.Month;
         }
         else
         {
             request.TrialPeriod = period;
+            request.TrialFrequency = BillingFrequency.Month;
         }
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
@@ -4338,6 +4512,22 @@ public sealed class RoleApiTests
             "the document attributes the failure to the member the caller sent");
 
         return problem;
+    }
+
+    /// <summary>Renders a response's status and body for an assertion message.</summary>
+    /// <param name="response">The response to describe.</param>
+    /// <returns>The status and the body, bounded.</returns>
+    /// <remarks>
+    /// A refusal on these resources can arrive on the same status from several different gates, so an
+    /// assertion reporting only "expected 201, found 400" would leave the reader unable to tell which rule
+    /// answered. The body is bounded because a validation problem document lists every offending member.
+    /// </remarks>
+    private static async Task<string> Diagnose(HttpResponseMessage response)
+    {
+        string body = await response.Content.ReadAsStringAsync();
+
+        return FormattableString.Invariant(
+            $"the response was {(int)response.StatusCode} with body {body[..Math.Min(body.Length, 600)]}");
     }
 
     /// <summary>

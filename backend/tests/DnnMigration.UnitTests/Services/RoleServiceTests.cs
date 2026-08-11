@@ -1040,13 +1040,59 @@ public class RoleServiceTests
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(RoleNameDuplicateCode);
-        // THE MESSAGE NAMES THE ROLE THAT ALREADY HOLDS THE NAME, identifier included. Reporting only the
-        // SUBMITTED name was measurably misleading: the uniqueness index is evaluated under the database's
-        // collation, which gives no sort weight to supplementary-plane or zero-width characters, so a
-        // submitted name can collide with a stored name that differs from it - and runtime testing recorded
-        // an operator being told a portal already had a role whose name appeared in none of its rows.
-        outcome.Reason!.Message.Should()
-            .Be($"Portal {PortalId} already has a role named '{RoleName}' (identifier {ClashingRoleId}).");
+        // THE LEGACY WORDING, VERBATIM AND WITH NOTHING ADDED. DuplicateRole.Text in
+        // Website/admin/Security/App_LocalResources/EditRoles.ascx.resx is the sentence the legacy screen
+        // showed, and it names neither the tenant nor any row identifier. An earlier revision appended both -
+        // "Portal -1 already has a role named 'X' (identifier 35)." - which broke wording parity and
+        // published a primary-key value on the one response an unauthorised caller can provoke on demand.
+        // The collation-collision case still explains itself, and still names the STORED name so the operator
+        // can find the row in the listing; it is asserted by
+        // CreateRole_RefusesANameTheStoreTreatsAsEqualWithoutNamingItsIdentifier.
+        outcome.Reason!.Message.Should().Be("A role with the same name already exists. The role was not added.");
+        outcome.Reason!.Message.Should().NotContain(
+            ClashingRoleId.ToString(CultureInfo.InvariantCulture),
+            "a refusal may not publish the row identifier of the record it refers to");
+    }
+
+    /// <summary>
+    /// A name the store treats as equal to a visibly different stored name is refused with a sentence that
+    /// explains the collision and names the stored name, and with no row identifier anywhere in it.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// BOTH HALVES MATTER AND THEY PULL AGAINST EACH OTHER, WHICH IS WHY THEY ARE ASSERTED TOGETHER. The
+    /// uniqueness index is evaluated under the database's collation, which gives no sort weight to
+    /// supplementary-plane characters, zero-width characters or trailing whitespace - so a submitted name can
+    /// collide with a stored name that is visibly different from it, and runtime testing recorded an operator
+    /// being told a portal already had a role whose name appeared in none of its rows. The explanation is
+    /// therefore kept. What is withdrawn is the row identifier: the STORED NAME is not an internal detail at
+    /// all, because it is the text the roles listing already renders, whereas a primary-key value is one and
+    /// adds nothing to the remedy the sentence states.
+    /// </remarks>
+    [Fact]
+    public async Task CreateRole_RefusesANameTheStoreTreatsAsEqualWithoutNamingItsIdentifier()
+    {
+        Harness harness = Harness.Ready();
+        harness.NameTaken = true;
+        harness.ClashingStoredName = "Subscriber\u200bs";
+
+        Result<RoleDetailDto> outcome = await harness.Service
+            .CreateRoleAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(RoleNameDuplicateCode);
+        outcome.Reason!.Message.Should().Contain(
+            "Subscriber\u200bs",
+            "the operator has to be able to find the row that already holds the name");
+        outcome.Reason!.Message.Should().Contain(
+            RoleName,
+            "the sentence has to say which submitted name the store treated as identical");
+        outcome.Reason!.Message.Should().NotContain(
+            ClashingRoleId.ToString(CultureInfo.InvariantCulture),
+            "a refusal may not publish the row identifier of the record it refers to");
+        outcome.Reason!.Message.Should().NotContain(
+            PortalId.ToString(CultureInfo.InvariantCulture),
+            "nor the tenant identifier, which the legacy wording never carried either");
     }
 
     /// <summary>
@@ -1088,7 +1134,7 @@ public class RoleServiceTests
             RoleNameDuplicateCode,
             "the racer faces exactly the state the sequential check describes, so it is told the same thing");
         outcome.Reason!.Message.Should().Be(
-            $"Portal {PortalId} already has a role named '{RoleName}'.",
+            "A role with the same name already exists. The role was not added.",
             "identical wording is what keeps the two paths from drifting into two vocabularies");
 
         harness.Cache.Verify(
@@ -1591,13 +1637,18 @@ public class RoleServiceTests
                 request.TrialFee = -0.01m;
                 break;
             case "zero-billing-period":
+                // A CYCLE IS DECLARED BESIDE THE ZERO, which is the condition that makes zero refusable at
+                // all: zero beside no cycle is the value the portal template's own roles carry and is
+                // admitted, so submitting it with no frequency would assert the opposite of the rule.
                 request.BillingPeriod = 0;
+                request.BillingFrequency = Frequency.Month;
                 break;
             case "negative-billing-period":
                 request.BillingPeriod = -3;
                 break;
             case "zero-trial-period":
                 request.TrialPeriod = 0;
+                request.TrialFrequency = Frequency.Month;
                 break;
             case "negative-trial-period":
                 request.TrialPeriod = -3;
@@ -4651,6 +4702,16 @@ public class RoleServiceTests
 
         public bool NameTaken { get; set; }
 
+        /// <summary>
+        /// Gets or sets the name the CLASHING row is to carry, when it must differ from the submitted one.
+        /// </summary>
+        /// <remarks>
+        /// Null means "the same string the caller submitted", which is the ordinary duplicate. A value makes
+        /// the clash a COLLATION collision - the store treating two visibly different strings as one name -
+        /// which is the case the refusal has to explain rather than merely report.
+        /// </remarks>
+        public string? ClashingStoredName { get; set; }
+
         public bool GroupNameTaken { get; set; }
 
         public bool EchoCreatedRole { get; set; } = true;
@@ -4919,7 +4980,12 @@ public class RoleServiceTests
                     It.IsAny<string>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync((int portalId, string roleName, CancellationToken _) => harness.NameTaken
-                    ? new Role { RoleId = 4242, PortalId = portalId, RoleName = roleName }
+                    ? new Role
+                    {
+                        RoleId = 4242,
+                        PortalId = portalId,
+                        RoleName = harness.ClashingStoredName ?? roleName,
+                    }
                     : null);
 
             harness.Roles

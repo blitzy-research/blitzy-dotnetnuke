@@ -4886,6 +4886,65 @@ describe('UserStore', () => {
       expect(store.currentPageIndex()).toBe(1);
     });
 
+    /**
+     * ⚠ AN ABANDONED READ LOWERS ITS OWN FLAG, AND THIS SUITE EXISTS BECAUSE ONE DID NOT. Unsubscribing
+     * kills a request without delivering next, error or complete, so nothing downstream ever runs the
+     * handler that would lower the flag - the flag is therefore raised forever. Measured on the account
+     * listing: the query reset that every arrival performs abandoned the listing read, and the grid then
+     * held `aria-busy="true"`, a loading indicator and five sort controls marked disabled, with zero
+     * further requests over 5.2 seconds and no self-heal. It reached the same screen by a second route,
+     * the redirect that follows a create, which is why this is asserted on the store rather than on
+     * either screen.
+     */
+    it('lowers the listing flag when the query reset abandons the read', () => {
+      store.showAllAccounts();
+      const listing = expectRequest('GET', USERS_URL);
+
+      expect(store.usersLoading()).toBeTrue();
+
+      store.resetSearchCriteria();
+
+      expect(listing.cancelled)
+        .withContext('the read belonging to the abandoned query is abandoned with it')
+        .toBeTrue();
+      expect(store.usersLoading())
+        .withContext('and the flag it raised comes down with it - nothing else will ever lower it')
+        .toBeFalse();
+    });
+
+    /**
+     * ⚠ THE QUERY RESET ABANDONS THE QUERY'S READ AND NOTHING ELSE. The tenant's account policy and
+     * profile declarations are not part of a query, and the reset's own documentation says they must
+     * survive it - discarding them "would turn one stale query into several redundant requests". The
+     * blanket cancellation contradicted that: saving the policy composes a settings re-read followed by a
+     * listing read at the size that policy declares, and arriving at the listing aborted the settings read
+     * mid-flight, throwing away the composition the write deliberately performed.
+     */
+    it('leaves the tenant-scoped reads alone when only the query is being replaced', () => {
+      store.loadMembershipSettings();
+      const settings = expectRequest('GET', SETTINGS_URL);
+
+      store.loadProfileDefinitions();
+      const definitions = expectRequest('GET', DEFINITIONS_URL);
+
+      store.resetSearchCriteria();
+
+      expect(settings.cancelled)
+        .withContext('the account policy is not part of the query and must survive it')
+        .toBeFalse();
+      expect(definitions.cancelled)
+        .withContext('nor are the profile declarations')
+        .toBeFalse();
+
+      // And they still settle normally afterwards, which is the point of not cancelling them.
+      settings.flush(envelope(settingsFixture()));
+      definitions.flush(envelope([definitionFixture()]));
+
+      expect(store.membershipSettings()).not.toBeNull();
+      expect(store.membershipSettingsLoading()).toBeFalse();
+      expect(store.profileDefinitionsLoading()).toBeFalse();
+    });
+
     it('reports reading and writing separately, so a form can disable only itself', () => {
       store.showAllAccounts();
       const listing = expectRequest('GET', USERS_URL);

@@ -359,10 +359,14 @@ public class CreateRoleRequestValidator : AbstractValidator<CreateRoleRequest>
             .WithMessage(AmountUnrepresentableMessage)
             .When(request => request.ServiceFee.HasValue);
 
-        // valBillingPeriod2 (L114): GreaterThan against 0 - strictly positive - despite the message
-        // wording preserved above. A cycle of zero units could never advance an expiry date.
+        // valBillingPeriod2 (L114): GreaterThan against 0 - strictly positive WHERE A CYCLE IS DECLARED.
+        // A cycle of zero units could never advance an expiry date, so a declared frequency still demands
+        // a positive number of units; a period of 0 beside no cycle is the value the portal template's own
+        // roles carry and the value this API's read projection reports, so refusing it made a value the API
+        // emits a value it would not accept. See RoleTermsRules.IsPeriodAdmissibleForFrequency.
         RuleFor(request => request.BillingPeriod)
-            .GreaterThan(0)
+            .Must((request, period) =>
+                RoleTermsRules.IsPeriodAdmissibleForFrequency(period, request.BillingFrequency))
             .WithMessage(RoleTermsRules.BillingPeriodNotPositiveMessage)
             .When(request => request.BillingPeriod.HasValue);
 
@@ -375,9 +379,11 @@ public class CreateRoleRequestValidator : AbstractValidator<CreateRoleRequest>
             .WithMessage(AmountUnrepresentableMessage)
             .When(request => request.TrialFee.HasValue);
 
-        // valTrialPeriod2 (L146): GreaterThan against 0. Message and operator agree here.
+        // valTrialPeriod2 (L146): GreaterThan against 0. Message and operator agree here, and the pair is
+        // evaluated for the same reason as the billing period above.
         RuleFor(request => request.TrialPeriod)
-            .GreaterThan(0)
+            .Must((request, period) =>
+                RoleTermsRules.IsPeriodAdmissibleForFrequency(period, request.TrialFrequency))
             .WithMessage(RoleTermsRules.TrialPeriodNotPositiveMessage)
             .When(request => request.TrialPeriod.HasValue);
 

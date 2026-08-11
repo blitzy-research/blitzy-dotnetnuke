@@ -667,7 +667,7 @@
   absent host names, absent role periods and absent module titles.
 -->
 <ng-template #dataTypeCell let-row>
-  <span aria-hidden="true" [attr.title]="dataTypeDescription(row)">{{ unnamedDataTypeMark }}</span>
+  <span aria-hidden="true" [attr.title]="dataTypeDescription(row)">{{ dataTypeMark(row) }}</span>
   <span data-visually-hidden>{{ dataTypeDescription(row) }}</span>
 </ng-template>
 

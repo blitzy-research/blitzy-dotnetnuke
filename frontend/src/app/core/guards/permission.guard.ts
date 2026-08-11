@@ -702,7 +702,24 @@ export const permissionGuard: CanActivateFn = (route, state) => {
    * both of its branches as `YellowWarning`, so a refusal is a warning and not a fault.
    */
   if (typeof declared !== 'string' || isPermissionPolicy(declared) === false) {
-    notification.notify('warning', ACCESS_REFUSED_MESSAGE);
+    notification.notify(
+      'warning',
+      ACCESS_REFUSED_MESSAGE,
+      null,
+      false,
+      // ⚠ THIS REFUSAL RETIRES ITSELF, AND IT IS THE ONE NOTIFICATION IN THE APPLICATION THAT SAYS SO.
+      // The surface exempts `'warning'` from its countdown on three grounds - the outcome reports
+      // something that did not happen, it frequently carries a support reference to quote, and removing
+      // it would destroy the only record of a failure - and this refusal meets none of them. Nothing
+      // failed, so there is no reference and none is passed above; and nothing is being asked of the
+      // operator, because the remedy is a permission they do not hold and cannot grant themselves. A
+      // browser audit measured the exemption applying anyway: the refusal stood for four minutes and
+      // forty-two seconds and was cleared only by navigating away. The severity is deliberately left as
+      // a warning - `AccessDenied.ascx.vb` presents both of its branches as `YellowWarning`, which is the
+      // same authority the paragraph above cites - so the lifetime is stated as its own fact rather than
+      // bought by understating the outcome.
+      true,
+    );
 
     // ⚠ EXEMPTED FROM THE NAVIGATION SWEEP, and without this the refusal would be invisible.
     // The shell discards stale notifications on a completed navigation, and this refusal is
@@ -736,7 +753,24 @@ export const permissionGuard: CanActivateFn = (route, state) => {
   const scopeId = scopeName === null ? null : resolveScopeId(route, scopeName);
 
   if (scopeName !== null && scopeId === null) {
-    notification.notify('warning', ACCESS_REFUSED_MESSAGE);
+    notification.notify(
+      'warning',
+      ACCESS_REFUSED_MESSAGE,
+      null,
+      false,
+      // ⚠ THIS REFUSAL RETIRES ITSELF, AND IT IS THE ONE NOTIFICATION IN THE APPLICATION THAT SAYS SO.
+      // The surface exempts `'warning'` from its countdown on three grounds - the outcome reports
+      // something that did not happen, it frequently carries a support reference to quote, and removing
+      // it would destroy the only record of a failure - and this refusal meets none of them. Nothing
+      // failed, so there is no reference and none is passed above; and nothing is being asked of the
+      // operator, because the remedy is a permission they do not hold and cannot grant themselves. A
+      // browser audit measured the exemption applying anyway: the refusal stood for four minutes and
+      // forty-two seconds and was cleared only by navigating away. The severity is deliberately left as
+      // a warning - `AccessDenied.ascx.vb` presents both of its branches as `YellowWarning`, which is the
+      // same authority the paragraph above cites - so the lifetime is stated as its own fact rather than
+      // bought by understating the outcome.
+      true,
+    );
 
     // ⚠ EXEMPTED FROM THE NAVIGATION SWEEP, and without this the refusal would be invisible.
     // The shell discards stale notifications on a completed navigation, and this refusal is
@@ -793,7 +827,24 @@ export const permissionGuard: CanActivateFn = (route, state) => {
      * of asking for something one cannot have, not a fault, and escalating it to error
      * severity would misreport it.
      */
-    notification.notify('warning', ACCESS_REFUSED_MESSAGE);
+    notification.notify(
+      'warning',
+      ACCESS_REFUSED_MESSAGE,
+      null,
+      false,
+      // ⚠ THIS REFUSAL RETIRES ITSELF, AND IT IS THE ONE NOTIFICATION IN THE APPLICATION THAT SAYS SO.
+      // The surface exempts `'warning'` from its countdown on three grounds - the outcome reports
+      // something that did not happen, it frequently carries a support reference to quote, and removing
+      // it would destroy the only record of a failure - and this refusal meets none of them. Nothing
+      // failed, so there is no reference and none is passed above; and nothing is being asked of the
+      // operator, because the remedy is a permission they do not hold and cannot grant themselves. A
+      // browser audit measured the exemption applying anyway: the refusal stood for four minutes and
+      // forty-two seconds and was cleared only by navigating away. The severity is deliberately left as
+      // a warning - `AccessDenied.ascx.vb` presents both of its branches as `YellowWarning`, which is the
+      // same authority the paragraph above cites - so the lifetime is stated as its own fact rather than
+      // bought by understating the outcome.
+      true,
+    );
 
     // ⚠ EXEMPTED FROM THE NAVIGATION SWEEP, and without this the refusal would be invisible.
     // The shell discards stale notifications on a completed navigation, and this refusal is

@@ -170,6 +170,7 @@
   sentence names the module by the same name the server's own refusal names, so an operator reading
   either arrives at the same remedy.
 -->
+<!--
   THE PROVENANCE DISCLOSURE — #6.
   Says whether the values below are a policy this site STORED or the platform defaults it falls
   back to. Every control renders a value either way and a rendered value looks identical either
@@ -184,6 +185,19 @@
   The state is also carried as a data attribute so the paired stylesheet can distinguish the two
   without matching on wording, and so a specification can assert which of the two is showing
   without reading English.
+
+  ⚠ THIS ANNOTATION IS COMMENTED, AND THE OPENING DELIMITER ABOVE EXISTS BECAUSE IT ONCE DID NOT.
+  The preceding block's closing delimiter sat above this paragraph rather than below it, so all 1101
+  characters of the note rendered as an unwrapped text node directly beneath this component - 14px,
+  present in the accessibility tree, read out to a screen reader, and sitting immediately above the
+  one sentence on this screen that is genuinely addressed to an operator. Every annotation in this
+  file is enclosed by its own pair of delimiters for exactly this reason: a note sharing a comment
+  with the note before it inherits that note's closing delimiter, and a template comment fails
+  SILENTLY - it renders rather than erroring, so no build and no type-check reports it.
+  For the same reason NO annotation in this file writes a closing delimiter inside its prose, not
+  even quoted: a comment ends at the FIRST such sequence whatever surrounds it, so describing one
+  literally would sever the comment at that word and render everything after it.
+-->
 @if (provenanceNotice(); as notice) {
   <p class="membership-settings__provenance" [attr.data-provenance]="valueProvenance()">
     {{ notice }}

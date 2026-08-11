@@ -1712,7 +1712,22 @@ export class PortalStore implements OnDestroy {
           this._selectedAliasId.set(undefined);
           this._aliasDetail.set(null);
           this._detailLoading.set(false);
-          this.reloadPortals();
+
+          // ⚠ THE LISTING IS DELIBERATELY NOT RE-READ HERE. This command's caller navigates to the listing
+          // on success, and the listing issues its own read from its address on entry and on every address
+          // change - the one place it is issued, as that subscription's own block records - so asking for
+          // the rows here produced two identical reads for one create. This store serialises its listing
+          // reads, so they raced and the loser was cancelled: runtime testing saw the aborted-then-repeated
+          // pair on the portal list after a save, matching the pattern measured on the sibling role and
+          // module stores, which record the identical division on their own create commands.
+          //
+          // ⚠ THE DELETE COMMAND KEEPS ITS RE-READ and must: it is reachable FROM the listing, where no
+          // navigation follows and no address changes, so without it a removed row would stay on screen.
+          //
+          // Nothing here depends on a refreshed listing. Every slot the created portal is published on is
+          // set above, so a screen still mounted sees it at once, and `applyListQuery` re-reads
+          // unconditionally on the next entry rather than short-circuiting on an unchanged query - which is
+          // what makes the removal safe rather than merely cheaper.
 
           // Published LAST, so a continuation cannot observe half-settled state.
           outcome.next(created);
@@ -1776,7 +1791,15 @@ export class PortalStore implements OnDestroy {
         next: (stored: PortalDetail) => {
           this._selectedPortal.set(stored);
           this._detailLoading.set(false);
-          this.reloadPortals();
+
+          // ⚠ THE LISTING IS NOT RE-READ HERE EITHER, for the reason recorded on the create command above,
+          // and this command needed it on BOTH of its call sites rather than one. The record form redirects
+          // to the listing on success, so its read raced the destination's. The settings screen does not
+          // navigate at all, so its read refreshed a listing that is not even mounted - work whose result
+          // nothing could observe, and which the next entry to the listing repeats regardless.
+          //
+          // The stored record is published on the slot above, taken from the SERVER'S echo rather than from
+          // the request, so a mounted screen shows what was actually accepted.
 
           outcome.next(stored);
           outcome.complete();
@@ -2230,10 +2253,14 @@ export class PortalStore implements OnDestroy {
   /**
    * Unbinds one alias from one portal.
    *
-   * Answered with no body. The row is removed from the collection in hand immutably, and
-   * that removal is EXACT rather than optimistic bookkeeping: the collection is unpaged,
-   * so its size is its length and there is no server-reported total to fall out of step
-   * with. No re-read is therefore issued.
+   * Answered with no body. The row is removed from the collection in hand immutably so it
+   * disappears at once, and the collection is then RE-READ, matching
+   * {@link PortalStore.createAlias} and {@link PortalStore.updateAlias} - every write on this
+   * resource leaves the collection holding the server's answer. The local removal is exact
+   * bookkeeping rather than an optimistic guess (the collection is unpaged, so its size is its
+   * length and there is no reported total to fall out of step with), but exactness about the row
+   * REMOVED says nothing about the rows nobody here wrote; see the note at the re-read for the
+   * two things that went stale while this path was the one write that did not ask again.
    *
    * The selection is cleared when the removed row was the selected one, returning it to
    * `undefined` rather than to nought.
@@ -2267,18 +2294,27 @@ export class PortalStore implements OnDestroy {
             this._aliasDetail.set(null);
           }
 
-          // ⚠ REMOVAL IS APPLIED LOCALLY AND IS NOT RE-READ, WHICH IS A DELIBERATE ASYMMETRY WITH
-          // {@link PortalStore.createAlias}. The two are not the same problem. An INSERTION has to
-          // decide WHERE the new record belongs and WHICH of its members are known, and the client
-          // can be wrong about both - it appends to the end regardless of the order the collection
-          // endpoint applies, and it holds only the members the create response carried. Neither
-          // question arises when removing: the row to drop is named by the identifier the caller
-          // just deleted, its position is whatever it was, and no member of it is needed. Filtering
-          // it out therefore reaches exactly the state a re-read would, without the request.
+          // ⚠ THE LISTING IS RE-READ, AS IT IS AFTER A CREATE AND AFTER AN UPDATE, so that all
+          // three write paths on this resource leave the collection in the same state: the
+          // server's answer. The filter above still runs, because it makes the removed row
+          // disappear at once rather than after a round trip - it is a head start on the re-read,
+          // not a substitute for it.
           //
-          // Recorded here so the asymmetry reads as a decision rather than as the inconsistency
-          // that creation genuinely was.
-          this._aliasLoading.set(false);
+          // This used to be the one write on the resource that did NOT re-read, and the argument
+          // for the asymmetry was that removal asks neither of the questions an insertion asks:
+          // the row to drop is named by the identifier just deleted, its position is whatever it
+          // was, and no member of it is needed. That much is true, and it is still why the local
+          // filter is exact. What it MISSES is that a re-read is not only about the row written.
+          //
+          // It is about the rows that were NOT written. Two things go stale here and a filter
+          // cannot see either. Another operator's insertions and removals, which every other write
+          // on this resource surfaces and this one hid until the next navigation. And `isCurrent` -
+          // the server sets it on the row THIS REQUEST resolved the tenant through, so an operator
+          // who removes the alias they are browsing through leaves a collection in which no row
+          // bears the mark and the withheld-affordance rule it drives is computed from a fact that
+          // is no longer true. Neither is expressible as a local edit, because both are answers
+          // only the server holds.
+          this.loadAliases(portalId);
 
           outcome.next();
           outcome.complete();

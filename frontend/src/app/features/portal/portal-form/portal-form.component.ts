@@ -24,6 +24,7 @@ import {
   conflictMessage,
   fieldErrorMessage,
   isDuplicateAliasCode,
+  problemSupportReference,
   summarizeProblem,
 } from '../../../core/utils/form-errors.util';
 import { readRouteId } from '../../../core/utils/route-id.util';
@@ -1983,7 +1984,13 @@ export class PortalFormComponent {
       if (message !== null && message.length > 0) {
         const severity: NotificationSeverity = failure.severity;
 
-        this.notifications.notify(severity, message);
+        // ⚠ THE SUPPORT REFERENCE TRAVELS WITH IT, and it was being dropped. The failure record carries the
+        // problem document, so the correlation identifier the server validated for the request is right here -
+        // the only join key between what an operator saw in the browser and the request as the server logged
+        // it. A browser audit measured the asymmetry it left: the same refusal read `Reference: <id>` when the
+        // shared banner presented it and nothing quotable when a notification did. A document carrying none
+        // resolves to null and is simply not quoted.
+        this.notifications.notify(severity, message, problemSupportReference(failure.problem));
       }
 
       this.saveRequested.set(false);
@@ -2693,6 +2700,21 @@ export class PortalFormComponent {
       defaultLanguage: detail.defaultLanguage,
       timeZoneOffset: detail.timeZoneOffset,
       homeDirectory: detail.homeDirectory,
+
+      // ⚠ THE REVISION THIS SUBMISSION WAS COMPOSED AGAINST, ROUND-TRIPPED VERBATIM, AND THE ONE
+      // MEMBER HERE THAT IS NOT A PORTAL ATTRIBUTE. Every member above is either edited by this
+      // screen or carried forward from `detail`, so the payload REPLACES the whole record - and
+      // roughly twenty of those carried-forward values are ones this screen never displays. Without
+      // this token, a second administrator saving an older `detail` silently destroyed the first
+      // administrator's committed edits to fields NEITHER of them had opened, and the server answered
+      // 200 to both. Sending it makes the server refuse the stale save with
+      // `409 portal.concurrency_conflict` instead.
+      //
+      // It comes from `detail` - the same record every carried-forward value above comes from - which
+      // is what makes it describe THIS snapshot rather than some later one. It is never fabricated: a
+      // read that served no token yields `null` here, and the server treats a null as an opt-out and
+      // applies the write, which is the legacy last-writer-wins behaviour rather than a refusal.
+      concurrencyToken: detail.concurrencyToken,
     };
   }
 

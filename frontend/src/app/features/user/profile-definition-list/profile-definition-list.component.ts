@@ -610,6 +610,28 @@ const NULL_INTEGER = -1;
 const UNNAMED_DATA_TYPE_MARK = '\u2014';
 
 /**
+ * What precedes the stored reference when one IS stored.
+ *
+ * ⚠ THE STORED REFERENCE IS NOW PAINTED, AND THE ANNOTATION ABOVE ARGUED AGAINST PAINTING IT. That
+ *   argument was right about one thing and wrong about another, and the prefix is what separates them.
+ *   It was right that a BARE `349` in a column headed `DataType` reads as though it were the type's name,
+ *   which is a divergence from a legacy screen that rendered a name or nothing at all. It was wrong to
+ *   conclude that the reference must therefore stay out of sight: runtime testing measured the mark alone
+ *   on 100% of rows, and a sighted operator reading it learns "this property has no data type", which is
+ *   FALSE - every row stores one. The wording that corrects them lived only in a `title` and in a
+ *   screen-reader-only span, so a sighted reader had to hover a cell to discover that the cell was
+ *   understating its own row.
+ *
+ *   Prefixing defeats the original objection directly: `#349` cannot be read as a type name, only as a
+ *   reference to one, which is exactly what it is. Nothing is invented - no name is guessed at, no list
+ *   vocabulary is faked, and the three grounds above for why the name is unresolvable are all untouched.
+ *   The mark is now reserved for the one row shape that genuinely has nothing stored, the
+ *   `Null.NullInteger` sentinel, so the two facts the accessible wording has always distinguished are
+ *   finally distinguished on screen as well.
+ */
+const DATA_TYPE_REFERENCE_PREFIX = '#';
+
+/**
  * The wording behind {@link UNNAMED_DATA_TYPE_MARK} when a type IS stored but cannot be named.
  *
  * Split around the reference so the number is interpolated between two fixed strings rather than
@@ -1728,6 +1750,24 @@ export class ProfileDefinitionListComponent implements OnInit {
    * typed, so there is nothing to coerce.
    */
   protected readonly unnamedDataTypeMark = UNNAMED_DATA_TYPE_MARK;
+
+  /**
+   * The text painted in the data-type cell for one row.
+   *
+   * Two shapes, because the column carries two different facts: a stored type whose NAME cannot be read
+   * paints its reference behind {@link DATA_TYPE_REFERENCE_PREFIX}, and the `Null.NullInteger` sentinel -
+   * "no type chosen yet" - paints {@link UNNAMED_DATA_TYPE_MARK}. Both are accompanied by the sentence
+   * {@link ProfileDefinitionListComponent.dataTypeDescription} generates, so the visible text and the
+   * announced text describe the same row by construction rather than by two authors agreeing.
+   *
+   * @param definition The row being rendered.
+   * @returns The reference to paint, or the absent-value mark when nothing is stored.
+   */
+  protected dataTypeMark(definition: ProfilePropertyDefinition): string {
+    return definition.dataType === NULL_INTEGER
+      ? UNNAMED_DATA_TYPE_MARK
+      : `${DATA_TYPE_REFERENCE_PREFIX}${definition.dataType}`;
+  }
 
   /**
    * The words behind {@link UNNAMED_DATA_TYPE_MARK} for one row.

@@ -1153,6 +1153,15 @@ public sealed class ModuleApiTests
     /// distinguish "deny wins" from "nothing was ever granted".
     /// </summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// THE GRANT THIS EXERCISES IS EDIT, BECAUSE THAT IS WHAT THE DETAIL READ NOW REQUIRES. It used to
+    /// grant VIEW, which is how it came to certify the disclosure recorded on the action itself: a caller
+    /// holding nothing but a view grant received the module's whole administrative record. Granting EDIT
+    /// keeps the mechanism under test - a grant admits, a deny recorded beside it wins - and asserts it
+    /// against the policy the action actually carries. <see
+    /// cref="GetModule_WithViewGrantButWithoutEdit_ReturnsForbidden"/> pins the other half: the view grant
+    /// alone no longer opens this address.
+    /// </remarks>
     [Fact]
     public async Task GetModule_WithRoleGrant_IsAdmittedAndThenRefusedByADeny()
     {
@@ -1169,7 +1178,7 @@ public sealed class ModuleApiTests
 
         await GrantModulePermissionAsync(
             created.ModuleId,
-            _fixture.Seed.ModuleViewPermissionId,
+            _fixture.Seed.ModuleEditPermissionId,
             _fixture.Seed.RegisteredRoleId,
             allowAccess: true);
 
@@ -1180,7 +1189,7 @@ public sealed class ModuleApiTests
 
         await GrantModulePermissionAsync(
             created.ModuleId,
-            _fixture.Seed.ModuleViewPermissionId,
+            _fixture.Seed.ModuleEditPermissionId,
             _fixture.Seed.RegisteredRoleId,
             allowAccess: false);
 
@@ -1188,6 +1197,124 @@ public sealed class ModuleApiTests
             ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
 
         refused.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>
+    /// A signed-in caller holding a module VIEW grant and no EDIT grant is refused the module's
+    /// administrative record.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// THE DISCLOSURE THIS PINS WAS MEASURED, NOT SUPPOSED. Runtime testing signed in as a plain registered
+    /// account holding nothing but the public home page's All-Users VIEW grant and read three modules'
+    /// detail successfully, receiving payloads byte-identical to the administrator's - cacheTime,
+    /// visibility, moduleOrder, header, footer, inheritViewPermissions and isDeleted - including two rows
+    /// whose isDeleted was true. The legacy application never handed a module's configuration to that
+    /// caller: <c>ModuleSettings.ascx.vb</c> L191 admitted the portal administrator or the page's
+    /// administrator and redirected everybody else. A view grant buys the module's rendered CONTENT, which
+    /// this API does not serve.
+    ///
+    /// The grant is asserted to be present and effective rather than assumed: the same account and the same
+    /// grant admit the LISTING's tenant-scoped sibling nowhere, so the refusal below could otherwise be
+    /// read as "no grant was ever written". The write to the module's own row switching inheritance off is
+    /// what makes the module-scope grant the deciding one.
+    /// </remarks>
+    [Fact]
+    public async Task GetModule_WithViewGrantButWithoutEdit_ReturnsForbidden()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.RootTabId);
+
+        await _fixture.Database.ExecuteAsync(
+            "UPDATE [dbo].[Modules] SET [InheritViewPermissions] = 0 WHERE [ModuleID] = @moduleId;",
+            new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
+
+        await GrantModulePermissionAsync(
+            created.ModuleId,
+            _fixture.Seed.ModuleViewPermissionId,
+            _fixture.Seed.RegisteredRoleId,
+            allowAccess: true);
+
+        int viewGrants = await _fixture.Database.ScalarAsync<int>(
+            """
+            SELECT COUNT(*) FROM [dbo].[ModulePermission]
+            WHERE [ModuleID] = @moduleId AND [PermissionID] = @permissionId AND [AllowAccess] = 1;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["moduleId"] = created.ModuleId,
+                ["permissionId"] = _fixture.Seed.ModuleViewPermissionId,
+            });
+
+        viewGrants.Should().Be(1, "the refusal below must be the gate's answer, not a missing grant");
+
+        using HttpClient member = await _fixture.CreateUnprivilegedClientAsync();
+
+        using HttpResponseMessage refused = await member.GetAsync(
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
+
+        refused.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>
+    /// Every address that consumes a module's administrative record admits the same callers, so a read is
+    /// never refused where a write succeeds.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// THE INVERSION THIS FORBIDS WAS MEASURED ON A LIVE INSTALLATION. On one module the administrator was
+    /// refused the detail read with 403 while the settings read answered 200, the update answered and the
+    /// delete answered 204 - reading refused while mutating and destroying were permitted, which is the
+    /// inverse of least privilege. It was reachable because a module may carry an EDIT grant with no VIEW
+    /// grant beside it, and the read was gated on VIEW while every one of its consumers was gated on EDIT.
+    ///
+    /// Asserted as a RELATIONSHIP between two addresses rather than as two independent statuses: what makes
+    /// the arrangement correct is not that either answers 200, but that they answer the same way for the
+    /// same caller. The pairing is checked with no module-scope grant in existence, which is the state a
+    /// module created through this API is actually in.
+    /// </remarks>
+    [Fact]
+    public async Task GetModule_AdmitsExactlyTheCallersItsSettingsReadAdmits()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.RootTabId);
+
+        // The state the create form's own untouched default produces, and the state that made a module
+        // unopenable by the administrator who had just created it: inheritance off, so no page grant
+        // answers for the module, and no module-scope grant of any kind.
+        await _fixture.Database.ExecuteAsync(
+            "UPDATE [dbo].[Modules] SET [InheritViewPermissions] = 0 WHERE [ModuleID] = @moduleId;",
+            new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
+
+        int grants = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[ModulePermission] WHERE [ModuleID] = @moduleId;",
+            new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
+
+        grants.Should().Be(0, "the exposed contract writes no module-scope grant");
+
+        Uri detailRoute = ModuleRoute(_fixture.Seed.PortalId, created.ModuleId);
+        Uri settingsRoute = ModuleSettingsRoute(_fixture.Seed.PortalId, created.ModuleId);
+
+        foreach (HttpClient caller in new[] { host })
+        {
+            using HttpResponseMessage detail = await caller.GetAsync(detailRoute);
+            using HttpResponseMessage settings = await caller.GetAsync(settingsRoute);
+
+            detail.StatusCode.Should().Be(
+                settings.StatusCode,
+                "a module's detail read and its settings read consume the same record and must admit the "
+                    + "same callers");
+
+            detail.StatusCode.Should().Be(HttpStatusCode.OK, await Diagnose(detail));
+        }
+
+        using HttpClient member = await _fixture.CreateUnprivilegedClientAsync();
+
+        using HttpResponseMessage memberDetail = await member.GetAsync(detailRoute);
+        using HttpResponseMessage memberSettings = await member.GetAsync(settingsRoute);
+
+        memberDetail.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        memberSettings.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
     /// <summary>An update answers <c>200 OK</c> and the new state survives a read.</summary>
@@ -1918,10 +2045,17 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// Even an explicit anonymous VIEW grant cannot disclose the open-key settings contract, because that
-    /// contract now requires an authenticated editor.
+    /// An explicit anonymous VIEW grant discloses neither the settings contract nor the module's
+    /// administrative record, because both require an authenticated editor.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The intermediate assertion is <c>401</c> rather than <c>200</c> BECAUSE THE DETAIL READ MOVED TO THE
+    /// EDIT POLICY, and the change is what this test now certifies for the anonymous caller: an unauthorised
+    /// grant, whatever it permits, reaches no address that returns the module's configuration. The anonymous
+    /// VIEW grant is still written and is still the point of the test - it proves the refusal comes from the
+    /// gate rather than from an absent permission row.
+    /// </remarks>
     [Fact]
     public async Task GetModuleSettings_WithAnonymousViewGrant_ReturnsUnauthorized()
     {
@@ -1941,7 +2075,7 @@ public sealed class ModuleApiTests
 
         using HttpResponseMessage visibleModule = await anonymous.GetAsync(
             ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
-        visibleModule.StatusCode.Should().Be(HttpStatusCode.OK);
+        visibleModule.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
 
         using HttpResponseMessage settings = await anonymous.GetAsync(
             ModuleSettingsRoute(_fixture.Seed.PortalId, created.ModuleId));
@@ -1949,9 +2083,15 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// A signed-in caller who may view a module but has no edit grant cannot read its raw settings.
+    /// A signed-in caller who holds a module VIEW grant and no EDIT grant reaches neither the module's raw
+    /// settings nor its administrative record.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Both assertions read <c>403</c>, and the first used to read <c>200</c>: that was the disclosure. The
+    /// two addresses return the same record and now admit the same callers, which is the property <see
+    /// cref="GetModule_AdmitsExactlyTheCallersItsSettingsReadAdmits"/> states as a relationship.
+    /// </remarks>
     [Fact]
     public async Task GetModuleSettings_WithViewButWithoutEdit_ReturnsForbidden()
     {
@@ -1971,7 +2111,7 @@ public sealed class ModuleApiTests
 
         using HttpResponseMessage visibleModule = await member.GetAsync(
             ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
-        visibleModule.StatusCode.Should().Be(HttpStatusCode.OK);
+        visibleModule.StatusCode.Should().Be(HttpStatusCode.Forbidden);
 
         using HttpResponseMessage settings = await member.GetAsync(
             ModuleSettingsRoute(_fixture.Seed.PortalId, created.ModuleId));
@@ -2825,36 +2965,48 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// A module whose page grants view to the all-users pseudo-role is readable by a caller with no account at
-    /// all, and one whose page grants view to the unauthenticated pseudo-role likewise.
+    /// A page grant to the all-users pseudo-role, or to the unauthenticated pseudo-role, does not open a
+    /// module's administrative record to a caller with no account.
     /// </summary>
     /// <param name="pseudoRoleId">The negative role identifier the grant is recorded against.</param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
-    /// This is the grant that an unconditional authentication requirement on the view policy silently deleted.
-    /// Requirements inside one policy are ANDed, so demanding an authenticated caller made an anonymous request
-    /// fail before the permission handler was ever consulted — and a grant that can never be evaluated is not a
-    /// grant, it is a row that looks like one. Both identifiers are real principals in the migrated data:
-    /// <c>-1</c> reaches everybody and <c>-3</c> reaches exactly the callers with no account.
+    /// ⚠ THIS ASSERTION WAS INVERTED, AND THE INVERSION IS THE FIX. It used to require <c>200 OK</c> here,
+    /// which made it the sharpest statement of the disclosure now closed: a visitor with no account at all,
+    /// reaching a public page whose stock configuration grants All-Users VIEW, received the module's
+    /// configuration - cache duration, visibility, pane order, header and footer markup, inheritance flag and
+    /// soft-delete state. The legacy application gave that visitor the module's RENDERED CONTENT and nothing
+    /// else; its configuration lived behind <c>ModuleSettings.ascx.vb</c> L191, which admitted the portal
+    /// administrator or the page's administrator only. This API serves no module content, so a VIEW grant has
+    /// no address here to open.
     /// </para>
     /// <para>
-    /// The grant is recorded against the module's PAGE rather than the module, because the module is created
-    /// inheriting its view permission, which is the stock configuration.
+    /// WHAT THE OLD ASSERTION PROTECTED IS STILL PROTECTED, ELSEWHERE. Its real subject was that the two VIEW
+    /// policies do not demand an authenticated caller, so a grant recorded against a pseudo-role can actually
+    /// be evaluated rather than being a row that only looks like a grant. That property now lives where the
+    /// VIEW policy is still carried by an address - the page read - and is asserted there twice over, for the
+    /// unauthenticated pseudo-role and for the all-users pseudo-role, in <c>TabApiTests</c>. Both identifiers
+    /// remain real principals in the migrated data: <c>-1</c> reaches everybody and <c>-3</c> reaches exactly
+    /// the callers with no account.
+    /// </para>
+    /// <para>
+    /// The refusal is asserted BEFORE and AFTER the grant is written, and the grant is verified present in
+    /// between, so the second refusal cannot be read as a grant that failed to land. The grant is recorded
+    /// against the module's PAGE rather than the module, because the module is created inheriting its view
+    /// permission, which is the stock configuration.
     /// </para>
     /// </remarks>
     [Theory]
     [InlineData(-1)]
     [InlineData(-3)]
-    public async Task GetModule_WhosePageGrantsViewToAPseudoRole_IsReachableAnonymously(int pseudoRoleId)
+    public async Task GetModule_WhosePageGrantsViewToAPseudoRole_IsStillRefusedAnonymously(int pseudoRoleId)
     {
         using HttpClient host = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.ChildTabId);
 
         using HttpClient anonymous = _fixture.CreateAnonymousClient();
 
-        // Before the grant exists the same anonymous request is refused, which is what makes the affirmative
-        // half below evidence of the grant rather than of an absent check.
         using HttpResponseMessage beforeGrant = await anonymous.GetAsync(
             ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
 
@@ -2868,12 +3020,27 @@ public sealed class ModuleApiTests
 
         try
         {
+            int grants = await _fixture.Database.ScalarAsync<int>(
+                """
+                SELECT COUNT(*) FROM [dbo].[TabPermission]
+                WHERE [TabID] = @tabId AND [PermissionID] = @permissionId
+                  AND [RoleID] = @roleId AND [AllowAccess] = 1;
+                """,
+                new Dictionary<string, object?>
+                {
+                    ["tabId"] = _fixture.Seed.ChildTabId,
+                    ["permissionId"] = _fixture.Seed.TabViewPermissionId,
+                    ["roleId"] = pseudoRoleId,
+                });
+
+            grants.Should().Be(1, "the refusal below must be the gate's answer, not a grant that never landed");
+
             using HttpResponseMessage response = await anonymous.GetAsync(
                 ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
 
             response.StatusCode.Should().Be(
-                HttpStatusCode.OK,
-                "the page grants view to a pseudo-role that reaches a caller with no account");
+                HttpStatusCode.Unauthorized,
+                "a page view grant confers the module's content, never its administrative record");
         }
         finally
         {

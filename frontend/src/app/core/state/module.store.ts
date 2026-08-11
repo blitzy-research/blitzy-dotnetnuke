@@ -1113,6 +1113,33 @@ export class ModuleStore implements OnDestroy {
   /** The most recent failure, or `null` when the last command in each area succeeded. */
   private readonly _failure = signal<ModuleStoreFailure | null>(null);
 
+  /**
+   * How the SETTINGS read ended, retained independently of {@link ModuleStore._failure}.
+   *
+   * ⚠ THIS SLOT EXISTS BECAUSE THE SHARED ONE CANNOT ANSWER "WAS I ALLOWED TO READ THE SETTINGS", AND A
+   *   SCREEN THAT GUESSED FROM THE SHARED SLOT GUESSED WRONG. The settings screen issues three reads —
+   *   the module, its settings and its definition — and every command clears the shared slot as it
+   *   starts, so whichever read finishes LAST owns it. Measured against a running server: an
+   *   administrative module answers `200` for the module, `403 module.settings_protected` for the
+   *   settings and `404` for the definition, so the definition's absence displaced the refusal, and the
+   *   not-found branch of that screen's announcer then discarded the document in favour of a transient
+   *   advisory. A full editable form rendered beneath no banner, offering a save the server had already
+   *   refused.
+   *
+   *   A screen could not fix that for itself by capturing the shared value as it passed, and an earlier
+   *   revision tried: the capture ran in a reactive effect, and whether the effect observed the refusal
+   *   at all depended on whether the definition read was issued in the same flush — so the same code
+   *   passed against a slow network and failed against a fast one, which is exactly the class of defect
+   *   that reaches production intermittently. Writing this slot from the settings handler ITSELF removes
+   *   the timing question: the fact is recorded where it is discovered and stays recorded until the next
+   *   settings read replaces it.
+   *
+   * `null` means "the settings read has not failed" — either it succeeded, or it has not been issued.
+   * Cleared when a settings read starts, when one succeeds, and by {@link ModuleStore.reset}, so it can
+   * only ever describe the settings read a screen is currently looking at.
+   */
+  private readonly _settingsFailure = signal<ModuleStoreFailure | null>(null);
+
   // ---------------------------------------------------------------------------------------------------
   // PUBLIC PROJECTIONS
   // ---------------------------------------------------------------------------------------------------
@@ -1181,6 +1208,9 @@ export class ModuleStore implements OnDestroy {
 
   /** Whether a settings read is in flight. */
   readonly settingsLoading = this._settingsLoading.asReadonly();
+
+  /** How the settings READ ended, independently of the shared slot. See {@link ModuleStore._settingsFailure}. */
+  readonly settingsFailure = this._settingsFailure.asReadonly();
 
   /** Whether a settings replacement is in flight. */
   readonly settingsSaving = this._settingsSaving.asReadonly();
@@ -1844,8 +1874,8 @@ export class ModuleStore implements OnDestroy {
    * first names the first page of the installation, the second appends the module at the bottom of its
    * pane - and neither is rewritten.
    *
-   * On success the created placement becomes the loaded module and the listing is re-read, so a screen
-   * that shows both a form and a grid does not have to ask for the refresh itself.
+   * On success the created placement becomes the loaded module. The listing is deliberately NOT
+   * re-read; see the block on that line for the measurement that removed it.
    *
    * @param request The placement to create.
    */
@@ -1859,7 +1889,29 @@ export class ModuleStore implements OnDestroy {
           this._module.set(detail);
           this._selectedModuleId.set(detail.moduleId);
           this._saving.set(false);
-          this.loadModules();
+
+          // ⚠ THE LISTING IS DELIBERATELY NOT RE-READ HERE, AND REMOVING THAT READ IS A FIX RATHER THAN AN
+          // OMISSION. This command's only caller navigates TO the listing on success, and the listing reads
+          // itself from its own address on entry, so two identical reads were issued for one create. They
+          // did not merely duplicate work - they RACED, and this store serialises its listing reads by
+          // abandoning the one in flight before starting the next, so the loser was cancelled mid-request.
+          // Measured in a real browser on this exact path: `POST /api/v1/modules` answered 201, then
+          // `GET /api/v1/modules?pageIndex=0&pageSize=10` was reported `net::ERR_ABORTED` with an XHR status
+          // of 0 after 18 ms, and an IDENTICAL `GET` answered 200 exactly one millisecond later. An aborted
+          // request still crossed the network, still cost a round trip, and still shows up in a browser's
+          // network panel as a failure an operator or a reviewer has to rule out.
+          //
+          // The listing is the sole owner of listing reads: its page, its narrowing and its ordering all
+          // live in its address, and it reads on entry and on every address change, so a caller arriving
+          // there always sees authoritative rows and totals without this command asking for them too. The
+          // created placement is published on the slots above, which covers the other direction - a screen
+          // that is already mounted sees the new record immediately.
+          //
+          // ⚠ THE DELETE COMMAND KEEPS ITS RE-READ and must. It is reachable FROM the listing, where no
+          // navigation follows and no address changes, so without it a removed row would stay on screen -
+          // and the same runtime capture confirms the distinction, showing no aborted request anywhere on
+          // the delete path. This is the identical division the sibling role store records on its own
+          // create command; the two stores must not disagree about it.
         },
         error: (cause: unknown) => {
           this._saving.set(false);
@@ -2012,6 +2064,9 @@ export class ModuleStore implements OnDestroy {
     this._settingsLoading.set(true);
     this.clearFailure();
 
+    // The dedicated slot describes THIS read from here on; whatever the previous one was told is gone.
+    this._settingsFailure.set(null);
+
     const ticket = this.settingsReads.begin();
 
     this.settingsRequest = this.moduleService.getModuleSettings(moduleId, this.resolvePlacement(tabModuleId)).subscribe({
@@ -2031,6 +2086,7 @@ export class ModuleStore implements OnDestroy {
 
         this._settings.set(bag);
         this._settingsLoading.set(false);
+        this._settingsFailure.set(null);
       },
       error: (cause: unknown) => {
         if (!this.settingsReads.isCurrent(ticket)) {
@@ -2039,6 +2095,10 @@ export class ModuleStore implements OnDestroy {
 
         this._settingsLoading.set(false);
         this.recordFailure('loadSettings', cause);
+
+        // Read back rather than rebuilt: the dedicated slot then carries byte-identical content to the
+        // shared one, so a screen reading either sees the same refusal, and only the LIFETIME differs.
+        this._settingsFailure.set(this._failure());
       },
     });
   }
@@ -2262,6 +2322,7 @@ export class ModuleStore implements OnDestroy {
 
     this._settings.set(null);
     this._settingsLoading.set(false);
+    this._settingsFailure.set(null);
   }
 
   /** Discards the single definition read by {@link ModuleStore.loadDefinition}, leaving the catalogue. */
@@ -2327,9 +2388,11 @@ export class ModuleStore implements OnDestroy {
     this._moduleLoading.set(false);
     this._saving.set(false);
 
-    // The settings bag: operator-authored configuration, tenant-scoped.
+    // The settings bag: operator-authored configuration, tenant-scoped. Its dedicated failure slot goes
+    // with it, because a refusal describes a read of THIS tenant's settings and nothing else.
     this._settings.set(null);
     this._settingsLoading.set(false);
+    this._settingsFailure.set(null);
     this._settingsSaving.set(false);
 
     // The definition catalogue and the single definition read from it.

@@ -1,3 +1,5 @@
+using DnnMigration.Domain.Enums;
+
 namespace DnnMigration.Application.Validation;
 
 /// <summary>
@@ -60,6 +62,71 @@ internal static class RoleTermsRules
     /// restating it.
     /// </remarks>
     internal const string RoleNameRequiredMessage = "You Must Enter a Valid Name";
+
+    /// <summary>
+    /// Wording of <c>DuplicateRole.Text</c> (<c>Website/admin/Security/App_LocalResources/EditRoles.ascx.resx</c>),
+    /// reported when a submitted role name is already held within the tenant.
+    /// </summary>
+    /// <remarks>
+    /// The legacy screen showed this sentence and nothing else - no identifier, no tenant, no repetition of
+    /// the submitted name - and it is carried verbatim, trailing full stops included, because the
+    /// behaviour-preservation obligation covers error wording as squarely as it covers outcomes. It lives
+    /// beside the validator constants rather than inside the service that raises it so that the one place
+    /// legacy role wording is transcribed stays one place.
+    /// </remarks>
+    internal const string DuplicateRoleMessage =
+        "A role with the same name already exists. The role was not added.";
+
+    /// <summary>
+    /// Tests whether a submitted period is admissible beside the frequency submitted with it.
+    /// </summary>
+    /// <param name="period">The submitted period, or <see langword="null"/> when none was supplied.</param>
+    /// <param name="frequency">
+    /// The frequency submitted alongside it, or <see langword="null"/> when none was supplied.
+    /// </param>
+    /// <returns><see langword="true"/> when the pair is admissible.</returns>
+    /// <remarks>
+    /// <para>
+    /// A period governs a RECURRING CYCLE, so what counts as a legal value depends on whether a cycle was
+    /// declared at all. <c>valBillingPeriod2</c> (<c>editroles.ascx</c> L111-L114) and
+    /// <c>valTrialPeriod2</c> (L143-L146) are both <c>Operator="GreaterThan" ValueToCompare="0"</c>, and the
+    /// authoritative resource declares both messages as "Must Be Greater Than Zero", so a role that declares
+    /// a cycle must state a positive number of units - a cycle of zero units could never advance an expiry
+    /// date, and the derivation would answer a membership that lapsed the instant it was created. That rule
+    /// is preserved exactly, and it is the rule the Angular form reproduces for every value an operator can
+    /// type.
+    /// </para>
+    /// <para>
+    /// MIGRATION: ZERO IS ADMITTED WHERE NO CYCLE IS DECLARED, WHICH THE LEGACY SCREEN NEVER HAD TO DECIDE.
+    /// The legacy screen showed the period box empty for a role whose service fee formatted to "0.00"
+    /// (<c>EditRoles.ascx.vb</c> L146-L148 fills it only otherwise) and wrote 1 rather than 0 on save
+    /// (L213, L216-L218), so an operator could neither see nor submit the zero. The STORE holds it anyway:
+    /// the portal template's own roles are created with <c>BillingPeriod</c> and <c>TrialPeriod</c> at 0
+    /// beside a frequency of <c>N</c>, and this API's read projection reports those columns faithfully as
+    /// Rule T7 requires. Refusing 0 unconditionally therefore made a value the API EMITS a value the API
+    /// would not ACCEPT: runtime testing read a role, echoed its own response back verbatim, and was
+    /// refused 400 on both period members - so no consumer could carry out a read-modify-write of any role
+    /// the portal template had created. Admitting 0 only alongside <c>None</c> (or alongside no frequency at
+    /// all, which the contract also reads as no cycle) closes that asymmetry without admitting the
+    /// degenerate cycle the legacy validator existed to refuse.
+    /// </para>
+    /// </remarks>
+    internal static bool IsPeriodAdmissibleForFrequency(int? period, BillingFrequency? frequency)
+    {
+        if (period is not int units)
+        {
+            return true;
+        }
+
+        if (units > 0)
+        {
+            return true;
+        }
+
+        // A negative period is refused whatever the frequency: it is neither a cycle length nor the store's
+        // no-cycle value, and the legacy operator refused it too.
+        return units == 0 && frequency is null or BillingFrequency.None;
+    }
 
     /// <summary>
     /// Wording of <c>valServiceFee2</c> (<c>editroles.ascx</c> L95). Message and operator agree.

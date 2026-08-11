@@ -390,4 +390,33 @@ public sealed class PortalDetailDto
     /// </para>
     /// </remarks>
     public IReadOnlyList<PortalAliasDto>? Aliases { get; set; }
+
+    /// <summary>
+    /// Gets or sets the optimistic-concurrency token a caller round-trips on an update to prove it is
+    /// replacing the record it read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// OPAQUE, AND DELIBERATELY SO. It is derived from the tenant's own mutable columns rather than from a
+    /// version counter the schema does not have - Rule T4 forbids adding one - so it changes whenever any of
+    /// them changes and reveals nothing about which. A caller stores it and sends it back; it must not be
+    /// parsed, compared for ordering, or built by a client. The derivation lives in
+    /// <c>PortalMappings.ConcurrencyTokenFor</c> and is used by both the read that publishes the token and
+    /// the write that verifies it, so the two cannot disagree.
+    /// </para>
+    /// <para>
+    /// WHY THIS CONTRACT NEEDS ONE AT ALL, and why the omission mattered more here than anywhere else. The
+    /// update request replaces EVERY column of the tenant, roughly twenty-eight of them, and about twenty
+    /// are values the editing screen never displays: a second operator saving a stale snapshot therefore
+    /// destroyed the first operator's committed edits to fields neither of them had looked at, silently and
+    /// with a 200 response. Runtime testing measured exactly that - two sessions, both saves accepted, the
+    /// earlier one gone. The role contract already carried a token and refused the stale write with a
+    /// conflict; the larger and more dangerous payload did not, and this member closes that gap by the same
+    /// mechanism rather than a second one.
+    /// </para>
+    /// <para>
+    /// A request that omits it is still applied, so no caller written before the token existed is refused.
+    /// </para>
+    /// </remarks>
+    public string ConcurrencyToken { get; set; } = string.Empty;
 }

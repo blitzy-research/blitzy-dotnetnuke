@@ -16,7 +16,7 @@ import { Router } from '@angular/router';
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
 
 import { MODULE_VISIBILITY, ModuleVisibility } from '../../../core/models/module.model';
-import type { ModuleSettingsBag, UpdateModuleRequest } from '../../../core/models/module.model';
+import type { ModuleDetail, ModuleSettingsBag, UpdateModuleRequest } from '../../../core/models/module.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { SelectOption } from '../../../core/models/select-option.model';
 import type { TabListItem } from '../../../core/models/tab.model';
@@ -28,6 +28,8 @@ import {
   CONFLICT,
   NOT_FOUND,
   conflictMessage,
+  problemSeverity,
+  problemSupportReference,
   fieldErrorMessages,
 } from '../../../core/utils/form-errors.util';
 import {
@@ -1450,7 +1452,9 @@ export class ModuleSettingsComponent {
    * assigned, so the reference can never drift from the response it came from.
    */
   private readonly recordSettingsAsRead = effect(() => {
-    this.settingsAsRead = this.store.settings();
+    const bag = this.store.settings();
+
+    this.settingsAsRead = bag;
   });
 
   /**
@@ -1483,6 +1487,44 @@ export class ModuleSettingsComponent {
   });
 
   /**
+   * The loaded module, but ONLY once it is the module this screen's address names.
+   *
+   * ⚠ WITHOUT THIS GUARD, EVERY MOVE BETWEEN TWO MODULES READ THE PREVIOUS ONE'S DEFINITION, AND RUNTIME
+   *   TESTING MEASURED IT. The store's module slot still holds the module left behind until the new
+   *   address's detail read answers, so an effect keyed on that slot fires once with the OLD
+   *   `moduleDefId`. Opening module 7's settings straight after module 2's issued
+   *   `GET /module-definitions/4` - module 2's definition - which answers `404` because the tenant
+   *   catalogue publishes no administrative definition, and the screen then raised "The requested item
+   *   could not be found." over a module whose own three reads had all succeeded. The reverse direction
+   *   issued module 7's definition and cancelled it a moment later. The per-identifier memo those effects
+   *   already keep could not prevent it: it suppresses a REPEAT of the same identifier, and a stale
+   *   identifier is a different one.
+   *
+   *   The guard is applied to the definition and declared-permission reads, which is where the defect was
+   *   measured, and deliberately NOT to the seeding effect: seeding is idempotent and re-runs when the
+   *   correct detail lands, and it is reached by callers that supply state directly with no address at all.
+   *
+   * `undefined` for the address is not a failure - it is how a caller-seeded screen presents itself, and in
+   * that case the loaded module IS the one this screen means, so it passes through.
+   */
+  private readonly addressedDetail = computed<ModuleDetail | null>(() => {
+    const detail = this.store.module();
+
+    if (detail === null) {
+      return null;
+    }
+
+    const addressed = this.addressedModuleId();
+
+    // `=== undefined` and never a truth test: module 0 is a real module.
+    if (addressed === undefined) {
+      return detail;
+    }
+
+    return detail.moduleId === addressed ? detail : null;
+  });
+
+  /**
    * Fetches the definition that owns the loaded module, which is the only source of the cache default.
    *
    * MIGRATION: THE DEFINITION IS FETCHED BECAUSE THE CACHE FIELD'S VISIBILITY DEPENDS ON IT AND ON NOTHING
@@ -1491,7 +1533,7 @@ export class ModuleSettingsComponent {
    * skipping this read would make the three-state rule unimplementable.
    */
   private readonly loadOwningDefinition = effect(() => {
-    const detail = this.store.module();
+    const detail = this.addressedDetail();
 
     if (detail === null) {
       return;
@@ -1558,7 +1600,7 @@ export class ModuleSettingsComponent {
    * each keystroke-driven form update.
    */
   private readonly loadDeclaredPermissionKeys = effect(() => {
-    const detail = this.store.module();
+    const detail = this.addressedDetail();
 
     if (detail === null || !this.authStore.holdsPortalAdministration()) {
       return;
@@ -1905,8 +1947,66 @@ export class ModuleSettingsComponent {
     return this.removalOpen();
   }
 
-  /** The problem document the banner renders, or `null` when there is nothing to report. */
-  protected readonly problem = computed<ProblemDetails | null>(() => this.currentProblem());
+  /**
+   * The problem document the banner renders, or `null` when there is nothing to report.
+   *
+   * An outstanding SETTINGS refusal takes precedence, because it is the refusal that decides whether this
+   * screen has anything to offer: while one is outstanding the form is withheld, so no write can be in
+   * flight and there is no rejected-write document competing for the banner. Without the precedence the
+   * banner showed whichever read failed LAST — measurably the definition `404`, whose own branch in
+   * {@link announce} clears the banner outright, leaving the operator with no statement of the refusal at
+   * all.
+   */
+  protected readonly problem = computed<ProblemDetails | null>(
+    () => this.settingsRefusal() ?? this.currentProblem(),
+  );
+
+  /**
+   * The refusal this screen's own SETTINGS read carried, or `null` when that read did not fail.
+   *
+   * Read from the store's dedicated settings slot rather than from its shared one, and DERIVED rather than
+   * captured. Both choices are load-bearing, and each answers a defect the other does not:
+   *
+   *   - The shared slot is owned by whichever of this screen's three reads finished LAST, measurably the
+   *     definition `404` on an administrative module, so it cannot answer "was I allowed to read the
+   *     settings". The dedicated slot is written by the settings handler itself and answers exactly that.
+   *   - Deriving means there is no moment at which this value has to be observed. An earlier revision
+   *     captured the shared value inside {@link surfaceFailure}, and whether the capture saw the refusal at
+   *     all depended on whether the definition read was issued in the same reactive flush — the same code
+   *     therefore held against a slow network and lost against a fast one, and a specification driving the
+   *     reads synchronously proved it lost.
+   *
+   * A NOT-FOUND is deliberately excluded and left to {@link notFound}: `404` answers the question of
+   * EXISTENCE rather than of permission, and the shared not-found affordance is the surface that describes
+   * it. Folding it in here would replace that affordance with a refusal banner for a module that simply is
+   * not there.
+   */
+  private readonly settingsRefusal = computed<ProblemDetails | null>(() => {
+    const failure = this.store.settingsFailure();
+
+    if (failure === null || failure.summary.status === NOT_FOUND_STATUS) {
+      return null;
+    }
+
+    return failure.problem;
+  });
+
+  /**
+   * Whether this screen's own settings read was refused and has not been superseded.
+   *
+   * A separate predicate from {@link readRefused} because the two answer different questions from different
+   * evidence: that one reads the store's current failure, this one reads how the read this screen DEPENDS on
+   * ended. Either is sufficient to withhold the form.
+   *
+   * Note that it is not derived from {@link settingsRefusal} being non-null: a refusal carrying no document
+   * at all is still a refusal, and treating it as none would reopen the form on the one response shape least
+   * likely to be exercised — a bodiless `403`.
+   */
+  protected readonly settingsRefused = computed<boolean>(() => {
+    const failure = this.store.settingsFailure();
+
+    return failure !== null && failure.summary.status !== NOT_FOUND_STATUS;
+  });
 
   /**
    * Whether the cache period field renders at all.
@@ -2723,9 +2823,32 @@ export class ModuleSettingsComponent {
       return;
     }
 
+    // ⚠ THE SEVERITY IS DERIVED AND THE REFERENCE IS CARRIED, AND NEITHER WAS TRUE OF THE TWO BRANCHES
+    // BELOW. Both announced at a hardcoded `'error'` and both dropped the document on the floor, which broke
+    // two rules this application states elsewhere and had one measurable consequence each.
+    //
+    // On severity, `core/utils/form-errors.util.ts` is explicit that it is the ONE place a response status
+    // becomes a severity and that no consumer may re-derive or override its answer - a surface that
+    // disagrees must change that function so the disagreement is settled for every surface at once. These
+    // two branches quietly disagreed. It was visible: on an administrative module this screen issues three
+    // reads, and a browser audit found the settings refusal painted in the banner's WARNING band beside a
+    // toast for the concurrent definition lookup shouting ERROR - one screen, two refusals, two different
+    // severities for statuses the shared rule words alike. Deriving it changes the 404 to a warning and
+    // leaves the 409 exactly as it was, because that is what the shared rule already returns for a conflict.
+    //
+    // On the reference, the document is right here in hand and was being discarded. The identifier it
+    // carries is the only join key between what an operator saw in the browser and the request as the
+    // server recorded it, and the same audit measured the asymmetry it produced: a conflict presented in
+    // the banner carried `Reference: <correlationId>`, while these toasts carried nothing an operator could
+    // quote. The notification surface has held a first-class `reference` member all along, appended after
+    // its own message bound precisely so a long server sentence cannot truncate the identifier away.
     if (status === NOT_FOUND_STATUS) {
       this.currentProblem.set(null);
-      this.notifications.notify('error', NOT_FOUND);
+      this.notifications.notify(
+        problemSeverity(status),
+        NOT_FOUND,
+        problemSupportReference(problem),
+      );
       return;
     }
 
@@ -2733,7 +2856,11 @@ export class ModuleSettingsComponent {
       this.currentProblem.set(null);
       // The published code is surfaced verbatim when the shared vocabulary has no wording for it, so a
       // refusal this screen has never seen is still reported exactly as the server named it.
-      this.notifications.notify('error', conflictMessage(code) ?? code ?? CONFLICT);
+      this.notifications.notify(
+        problemSeverity(status),
+        conflictMessage(code) ?? code ?? CONFLICT,
+        problemSupportReference(problem),
+      );
       return;
     }
 

@@ -3,6 +3,7 @@ import {
   Component,
   computed,
   effect,
+  ElementRef,
   inject,
   type OnInit,
   type Signal,
@@ -982,6 +983,14 @@ export class MembershipSettingsComponent implements OnInit {
   /** Used to leave the screen, which both buttons do. */
   private readonly router = inject(Router);
 
+  /**
+   * This screen's own element, used for exactly one thing: finding the outcome surface to reveal.
+   *
+   * Scoped to the host rather than reaching for the document, so the element found can only ever be this
+   * screen's banner - a query against the document would find whichever banner happened to render first.
+   */
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+
   /** Chrome wording, for the template. */
   protected readonly text = MEMBERSHIP_SETTINGS_TEXT;
 
@@ -1400,12 +1409,61 @@ export class MembershipSettingsComponent implements OnInit {
         this.store.clearSettingsWriteReport();
         // Replaced, not pushed: the settings are saved, so BACK must not return to the form.
         void this.router.navigate([ACCOUNT_LISTING_PATH], { replaceUrl: true });
+
+        // Nothing below applies to a success: the screen is leaving, and there is no banner to reveal.
+        // Returning says so, rather than relying on the reveal finding no element to act on.
+        return;
       }
 
-      // A failure needs nothing done to it. The store has recorded it, the banner is
-      // already showing it, and the form still holds what was typed so it can be
-      // corrected and sent again.
+      // ⚠ A FAILURE NEEDS THE OUTCOME BROUGHT TO THE READER, WHICH IS NOT THE SAME AS RENDERING IT.
+      // This comment used to say a failure "needs nothing done to it" because the store had recorded it
+      // and the banner was already showing it. Both halves were true and the conclusion was still wrong:
+      // this form is longer than the viewport, its actions sit at the foot and its banner renders at the
+      // head, so an operator who pressed Update from a scroll offset of 712px was shown a refusal they
+      // could not see - measured as no visible change of any kind. The announcement reaches a
+      // screen-reader user, since the banner is a live region, and a sighted operator got nothing.
+      //
+      // Revealing is deliberately confined to THIS branch. A banner that was already on screen when the
+      // reader arrived - a refused read, say - must not pull focus, because nobody asked it to; only an
+      // outcome that answers something a person just did earns the interruption.
+      this.revealOutcome();
     });
+  }
+
+  /**
+   * Brings this screen's outcome surface into view and puts focus on it.
+   *
+   * SCROLLED AND FOCUSED, not one or the other, because the two serve different readers and neither
+   * substitutes for the other. Scrolling answers the sighted operator who pressed a control at the foot of
+   * a form taller than the viewport; focusing answers the keyboard reader, whose next Tab would otherwise
+   * continue from a control that is now off screen, and it is also what makes a second identical refusal
+   * perceptible - a live region announces a CHANGE, so an unchanged message announces nothing the second
+   * time, while the focus move happens on every press.
+   *
+   * `block: 'nearest'` rather than `'start'`: the banner sits above the form, so asking for the top of the
+   * viewport would scroll the page further than needed and push the heading off screen. `nearest` moves the
+   * minimum distance that makes it visible, and does nothing at all when it already is.
+   *
+   * `preventScroll` on the focus call, because the scroll above has already placed it: without this the
+   * platform performs its own scroll for the focus, which fights the one just issued and lands somewhere
+   * neither asked for.
+   *
+   * Reads the DOM rather than a view child on purpose. The banner is rendered by a shared component whose
+   * own live region is the element that must receive focus, and a view child would hand back the component
+   * instance rather than that element - so the query is the honest expression of what is wanted. It is
+   * scoped to this screen's host, so it cannot find another screen's banner, and every step is guarded:
+   * when the branch runs before the banner has rendered there is simply nothing to reveal, which is a
+   * no-op rather than a fault.
+   */
+  private revealOutcome(): void {
+    const banner = this.host.nativeElement.querySelector<HTMLElement>('.error-banner-live');
+
+    if (banner === null) {
+      return;
+    }
+
+    banner.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+    banner.focus({ preventScroll: true });
   }
 
   /**

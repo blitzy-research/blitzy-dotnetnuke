@@ -919,26 +919,24 @@ describe('RoleAssignmentComponent', () => {
   }
 
   /**
-   * Settles the keyed probe that a SUCCESSFUL write re-asks.
+   * Proves a settled write re-asks the pairing endpoint NOTHING.
    *
-   * A write is exactly what can change whether the chosen account holds the role, so the fact is
-   * re-asked once the write settles — the legacy rebind refreshed the same fact as a side effect of
-   * rebuilding the grid it scanned (`SecurityRoles.ascx.vb:L546`), and with a paged grid the fact has
-   * its own request. It carries NO prefill, which is why every case that uses this also proves the two
-   * date boxes were left exactly as the operator left them.
+   * ⚠ THIS HELPER USED TO ANSWER A REQUEST; IT NOW ASSERTS THAT NO REQUEST IS MADE. A write is exactly
+   * what can change whether the chosen account holds the role, and the fact used to be re-asked with a
+   * keyed probe once the write settled. That probe answered `404` for every account that held nothing —
+   * a refusal used as a question, which reached the browser console as an error on an ordinary,
+   * successful path. The listing is re-read on the same settle (the legacy rebind at
+   * `SecurityRoles.ascx.vb:L546`), and those rows carry the very membership the probe was asking
+   * about, so the second request bought nothing and cost a logged failure.
    *
-   * A refused write re-asks nothing, so this is never reached from a failure case.
-   *
-   * @param held The membership the probe finds for the chosen pairing: one row when the account holds
-   * the role, or empty when it holds nothing — which the endpoint reports as a `404`.
+   * Every case that uses this therefore proves two things at once: that the pairing endpoint is left
+   * alone, and — through the assertions beside it — that the label and the boxes still settle to the
+   * right values from the re-read rows.
    */
-  function answerReprobe(held: readonly UserRole[] = []): void {
-    const probes: readonly TestRequest[] = httpMock.match(isMembershipProbe);
-
-    expect(probes).withContext('a settled write re-asks the keyed probe exactly once').toHaveSize(1);
-
-    answerProbe(probes[0], held);
-    fixture.detectChanges();
+  function expectNoReprobe(): void {
+    expect(httpMock.match(isMembershipProbe))
+      .withContext('a settled write asks the pairing endpoint nothing at all')
+      .toHaveSize(0);
   }
 
   /**
@@ -1230,15 +1228,34 @@ describe('RoleAssignmentComponent', () => {
   (control as HTMLButtonElement).click();
   fixture.detectChanges();
 
-  // ⚠ CHOOSING AN ACCOUNT ASKS EXACTLY ONE QUESTION, AND IT IS A NARROW ONE. The grid holds ONE
-  // page, so "does this person already hold the role?" cannot be answered from the rows on screen -
-  // the account's row may sit on another page, and answering from the page in hand would relabel the
-  // action according to which page happens to be visible. One keyed probe settles it, addressed at
-  // the PAIRING so that no login name reaches a request target. Releasing an account asks nothing.
+  // ⚠ CHOOSING AN ACCOUNT ASKS AT MOST ONE QUESTION, AND USUALLY NONE. "Does this person already hold
+  // the role?" is answered from the rendered rows when they carry the pairing, and from the listing's
+  // own published total when every row it counts is on screen. Only when neither settles it - a
+  // membership that could sit on a page nobody has read - is one keyed probe issued, addressed at the
+  // PAIRING so that no login name reaches a request target. Releasing an account asks nothing.
   const probes: readonly TestRequest[] = httpMock.match(isMembershipProbe);
 
   if (probes.length === 0) {
-    expect(held).withContext('releasing an account asks nothing, so it holds nothing here').toHaveSize(0);
+    // ⚠ NO REQUEST AT ALL IS NOW THE ORDINARY PATH. The rendered rows answer "does this person already
+    // hold the role?" whenever they carry the pairing, and a listing whose own published total is
+    // fully rendered proves the negative — so the probe is reserved for the one case neither can
+    // settle, a membership that could be on a page nobody has read. Releasing an account likewise asks
+    // nothing. What the caller declared is asserted against what the screen RESOLVED, so a case cannot
+    // pass a membership that never reached the component.
+    const resolved: UserRole | null = component().selectedMembership();
+
+    if (held.length === 0) {
+      expect(resolved)
+        .withContext('nothing chosen, or nothing held, resolves to no membership')
+        .toBeNull();
+
+      return;
+    }
+
+    expect(resolved?.userRoleId)
+      .withContext('the rows on screen answered, so nothing had to be asked')
+      .toBe(held[0]?.userRoleId);
+
     return;
   }
 
@@ -1353,6 +1370,13 @@ describe('RoleAssignmentComponent', () => {
    */
   function fieldErrors(): readonly string[] {
     return queryAll<Element>('.form-field__error').map((node) => textIn(node));
+  }
+
+  /** The support reference each announcement quoted, newest last, `null` where none was quoted. */
+  function announcementReferences(): readonly (string | null)[] {
+    return notifySpy.calls
+      .allArgs()
+      .map((args) => (typeof args[2] === 'string' && args[2].length > 0 ? args[2] : null));
   }
 
   /** The announcements requested, newest last. */
@@ -1691,11 +1715,20 @@ describe('RoleAssignmentComponent', () => {
 
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
-      answerMemberships(0, [membership()]);
-      answerReprobe([membership()]);
+      // ⚠ THE RE-READ ANSWERS WITH WHAT WAS STORED, which for a completed write is what was typed. It
+      // is answered that way deliberately: the boxes are re-baselined from these rows, so a fixture that
+      // replied with a membership holding no bounds at all would be asserting against an answer the
+      // server could not have given for the write that just succeeded.
+      answerMemberships(0, [
+        membership({
+          effectiveDate: `${EFFECTIVE_DATE}T00:00:00Z`,
+          expiryDate: `${EXPIRY_DATE}T00:00:00Z`,
+        }),
+      ]);
+      expectNoReprobe();
 
-      // The bounds the operator typed are still the bounds on screen: the re-probe moves the label and
-      // never the boxes.
+      // So the bounds on screen are the bounds that were written - now standing as the STORED values
+      // the amend command would carry, rather than as unsaved entry.
       expect(query<HTMLInputElement>(`#${EFFECTIVE_DATE_CONTROL_ID}`)?.value).toBe(EFFECTIVE_DATE);
       expect(query<HTMLInputElement>(`#${EXPIRY_DATE_CONTROL_ID}`)?.value).toBe(EXPIRY_DATE);
     });
@@ -1774,7 +1807,7 @@ describe('RoleAssignmentComponent', () => {
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
       answerMemberships(0, [membership()]);
-      answerReprobe([membership()]);
+      expectNoReprobe();
     });
 
     /**
@@ -2000,8 +2033,8 @@ describe('RoleAssignmentComponent', () => {
     it('prefills the window from an existing membership when one is chosen', () => {
       // MIGRATION: this is the first branch of `GetDates` at `SecurityRoles.ascx.vb:L273-L303`, which
       // showed an existing membership's two bounds and skipped either one the null test reported as
-      // unset (`:L281-L286`). The membership is asked of the SERVER rather than found among the
-      // rendered rows, because one page is rendered and the account's row may sit on another.
+      // unset (`:L281-L286`). The membership is taken from the ROWS ON SCREEN when they carry it, and
+      // asked of the server only when they cannot - the rows are the same fact, already fetched.
       const held = membership({
         userId: 42,
         effectiveDate: `${EFFECTIVE_DATE}T00:00:00Z`,
@@ -2021,6 +2054,60 @@ describe('RoleAssignmentComponent', () => {
       expect(fieldErrors()).toEqual([]);
     });
 
+    it('ASKS NOTHING when the rendered listing can answer, so no refusal is used as a signal', () => {
+      // ⚠ THE `404`-AS-A-QUESTION, WHICH IS WHAT THIS CASE EXISTS TO KEEP CLOSED. Choosing an account
+      // used to issue `GET /roles/{roleId}/users/{userId}` on every selection, and the endpoint answers
+      // `404` for an account that holds nothing - so the ordinary, entirely successful path of enrolling
+      // somebody new emitted a failed request and a red console error before the write was even sent.
+      // Runtime testing measured the whole sequence: accounts read `200`, pairing probe `404`,
+      // assignment `204`. A refusal is an answer to a request that should not have been made.
+      //
+      // The rows already hold the fact. When the listing's published total is fully rendered - which is
+      // the ordinary case for a role with one page of members - absence from those rows PROVES the
+      // account holds nothing, and the question is settled without asking anybody.
+      arrive(0, [membership({ userId: 43, username: 'grace', displayName: 'Grace Hopper' })]);
+      lookUp('ada');
+      answerLookup([account()]);
+
+      chooseAccount('Ada Lovelace');
+
+      // Not "no probe" but NO REQUEST OF ANY KIND, asserted at the transport rather than at one address,
+      // so a differently-shaped question would fail here too.
+      expect(httpMock.match(() => true))
+        .withContext('choosing an account the rendered listing can answer for asks nothing')
+        .toHaveSize(0);
+      expect(component().selectedMembership())
+        .withContext('and the answer is settled, not merely unknown')
+        .toBeNull();
+      expect(component().actionLabel()).toBe(ADD_USER_LABEL);
+    });
+
+    it('still ASKS when the listing on screen cannot settle it, because a page is unread', () => {
+      // The complement of the case above, and the reason the probe is kept rather than deleted. A
+      // listing that publishes more members than it rendered leaves a page nobody has read, so absence
+      // from the rows proves nothing - and answering from the visible page would relabel the command
+      // according to which page happened to be showing.
+      arrive(
+        0,
+        [membership({ userId: 43, username: 'grace', displayName: 'Grace Hopper' })],
+        {},
+        // Forty members published, one rendered: thirty-nine rows nobody on this screen has seen.
+        40,
+      );
+      lookUp('ada');
+      answerLookup([account()]);
+
+      const held = membership({ userId: 42, effectiveDate: `${EFFECTIVE_DATE}T00:00:00Z` });
+
+      chooseAccount('Ada Lovelace', [held]);
+
+      expect(component().selectedMembership()?.userRoleId)
+        .withContext('the pairing endpoint answered what the rows could not')
+        .toBe(11);
+      expect(component().actionLabel()).toBe(UPDATE_USER_ROLE_LABEL);
+      expect(query<HTMLInputElement>(`#${EFFECTIVE_DATE_CONTROL_ID}`)?.value).toBe(EFFECTIVE_DATE);
+    });
+
     it('offers an empty window for somebody who does not hold the role yet', () => {
       arrive(0, []);
       lookUp('ada');
@@ -2029,8 +2116,9 @@ describe('RoleAssignmentComponent', () => {
 
       expect(query<HTMLInputElement>(`#${EFFECTIVE_DATE_CONTROL_ID}`)?.value).toBe('');
       expect(query<HTMLInputElement>(`#${EXPIRY_DATE_CONTROL_ID}`)?.value).toBe('');
-      // "Nothing to prefill" is the PROBE finding no row for the chosen account - a settled answer of
-      // its own, not the absence of a row from the page on screen.
+      // "Nothing to prefill" is a SETTLED answer rather than an unanswered question: this listing
+      // published a total of nothing and rendered all of it, so there is no page the account's row
+      // could be hiding on.
       expect(component().selectedMembership()).toBeNull();
     });
 
@@ -2360,20 +2448,27 @@ describe('RoleAssignmentComponent', () => {
       (control as HTMLSelectElement).dispatchEvent(new Event('change'));
       fixture.detectChanges();
 
-      // ⚠ CHOOSING FROM THE DROPDOWN ASKS THE SAME ONE QUESTION THE NAME-BOX PATH ASKS, and it must,
-      // because the answer does not come from the rows on screen. The membership grid holds ONE PAGE
-      // — reading a role's whole membership was withdrawn, so a chosen account's row may sit on a
-      // page nobody is looking at — and answering "does this person already hold the role?" from the
-      // visible page would relabel the action according to which page happened to be showing. One
-      // keyed probe settles it, addressed at the PAIRING rather than by narrowing the listing with a
-      // login name. Releasing a choice asks nothing, so the empty-prompt path finds no probe
-      // outstanding and says so.
+      // ⚠ CHOOSING FROM THE DROPDOWN RESOLVES EXACTLY AS THE NAME-BOX PATH DOES: from the rendered
+      // rows, or from a listing whose published total is fully rendered, and only otherwise with one
+      // keyed probe addressed at the PAIRING rather than by narrowing the listing with a login name.
+      // Releasing a choice asks nothing either way.
       const probes: readonly TestRequest[] = httpMock.match(isMembershipProbe);
 
       if (probes.length === 0) {
-        expect(held)
-          .withContext('releasing a choice asks nothing, so it holds nothing here')
-          .toHaveSize(0);
+        // The same rows-first resolution the name-box path uses; see `chooseAccount`.
+        const resolved: UserRole | null = component().selectedMembership();
+
+        if (held.length === 0) {
+          expect(resolved)
+            .withContext('releasing a choice resolves to no membership')
+            .toBeNull();
+
+          return;
+        }
+
+        expect(resolved?.userRoleId)
+          .withContext('the rows on screen answered, so nothing had to be asked')
+          .toBe(held[0]?.userRoleId);
 
         return;
       }
@@ -2398,9 +2493,16 @@ describe('RoleAssignmentComponent', () => {
       // ⚠ AND THE NAME BOX IS GONE. The legacy screen hid one control when it showed the other
       // (`:L206` and `:L214`), so offering both would be a screen the legacy never rendered.
       expect(nameBox()).withContext('the name box').toBeNull();
+      // ⚠ AN ACCOUNT THAT ALREADY HOLDS THE ROLE IS ANNOTATED RATHER THAN WITHHELD, and both halves of
+      // that are deliberate. `SecurityRoles.ascx.vb:L204` filled this list from
+      // `UserController.GetUsers(PortalId, False)` with NO membership exclusion, and choosing an
+      // existing member is a supported workflow rather than a mistake - it is how the legacy screen
+      // amended a membership's bounds (`:L273-L303` prefills them from the existing row). Withholding
+      // those accounts would delete that workflow. What was genuinely wrong was that the list said
+      // nothing: `ada` holds this role and was offered indistinguishably from `grace`, who does not.
       expect(choiceLabels()).toEqual([
         USER_CHOICE_PROMPT,
-        'Ada Lovelace (ada)',
+        'Ada Lovelace (ada) — already in this role',
         'Grace Hopper (grace)',
       ]);
     });
@@ -2811,17 +2913,87 @@ describe('RoleAssignmentComponent', () => {
       fixture.detectChanges();
 
       // MIGRATION: the listing is RE-READ, reproducing the unconditional rebind at
-      // `SecurityRoles.ascx.vb:L546`. ONE page read, issued by the store, plus the keyed probe that
-      // re-asks whether the chosen account now holds the role - which is what lets the action's wording
-      // follow a write that turned an addition into a replacement, without the whole membership having
-      // to be fetched to decide it.
+      // `SecurityRoles.ascx.vb:L546`. ONE page read, issued by the store, and NOTHING ELSE: those rows
+      // carry the membership the pairing probe used to be asked for, so they are what moves the action's
+      // wording from an addition to a replacement.
       answerMemberships(0, [membership()]);
-      answerReprobe([membership()]);
+      expectNoReprobe();
 
       expect(component().actionLabel()).toBe(UPDATE_USER_ROLE_LABEL);
       expect(rows()).toHaveSize(1);
-      // Nothing is announced on success, and in particular nothing is announced as a failure.
-      expect(notifications()).toHaveSize(0);
+      // ⚠ THE ADDITION IS ANNOUNCED, AND IT NAMES BOTH PARTIES. This case previously asserted that
+      // NOTHING was said - which was faithful to a legacy screen that answered every write with a full
+      // page reload, and indefensible in a document that does not reload: the row appeared in a grid
+      // that may be scrolled out of view, and a role's own create, update and delete all announced
+      // themselves. The wording is chosen from the state captured AT DISPATCH, so an addition reads as
+      // an addition even though the same write leaves the screen in the amend state afterwards.
+      expect(notifications()).toEqual([
+        { severity: 'success', message: 'Ada Lovelace was added to the Administrators role.' },
+      ]);
+    });
+
+    it('RE-BASELINES the two bounds from the stored membership once the write has settled', () => {
+      // ⚠ THE STATE THE AMEND COMMAND WOULD HAVE WRITTEN. A successful addition leaves this screen in
+      // the amend state - the command reads "Update User Role", because the chosen account now holds the
+      // role - while the boxes still held whatever was typed before the write. With the expiry left
+      // empty that is not merely stale, it is DESTRUCTIVE: the server derives a bound of its own
+      // (`RoleController.vb:L493-L501` back-dates a used trial, and the paid-term rules set one
+      // otherwise), so pressing the amend command from an empty box would have written the derived bound
+      // away without the operator ever seeing it existed.
+      //
+      // The re-read that follows every write carries the stored row, so the bounds are taken from it.
+      arriveAndChoose(0, []);
+
+      // Nothing typed: the operator is enrolling somebody and letting the server decide the window.
+      press(ADD_USER_LABEL);
+
+      expectRequest('POST', membersUrl(0), 'the assignment').flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+      fixture.detectChanges();
+
+      // The stored membership the server derived, which the operator never typed.
+      answerMemberships(0, [
+        membership({
+          effectiveDate: `${EFFECTIVE_DATE}T00:00:00Z`,
+          expiryDate: `${EXPIRY_DATE}T00:00:00Z`,
+        }),
+      ]);
+      expectNoReprobe();
+
+      expect(component().actionLabel())
+        .withContext('the command now offers to amend')
+        .toBe(UPDATE_USER_ROLE_LABEL);
+      expect(query<HTMLInputElement>(`#${EFFECTIVE_DATE_CONTROL_ID}`)?.value)
+        .withContext('and the values behind it are the stored ones')
+        .toBe(EFFECTIVE_DATE);
+      expect(query<HTMLInputElement>(`#${EXPIRY_DATE_CONTROL_ID}`)?.value)
+        .withContext('including the bound the server derived from an empty box')
+        .toBe(EXPIRY_DATE);
+      // Re-baselined, not typed: neither box is marked visited, so no dynamic validator speaks about a
+      // value nobody entered.
+      expect(component().form.controls.expiryDate.touched).toBeFalse();
+      expect(fieldErrors()).toEqual([]);
+    });
+
+    it('leaves the boxes alone when a listing read the OPERATOR asked for settles', () => {
+      // The re-baseline is keyed to a write. A page turn or a sort re-reads the same listing, and
+      // rewriting the boxes then would take a half-typed window away from whoever was typing it.
+      arriveAndChoose(0, []);
+      typeDate(EXPIRY_DATE_CONTROL_ID, EXPIRY_DATE);
+
+      // No write: the reader re-orders the grid, which re-reads the same listing. The answer carries a
+      // membership for somebody else entirely, so a re-baseline here would blank both boxes.
+      component().onSortChange({ key: 'userName', direction: 'Ascending' });
+      fixture.detectChanges();
+      answerMemberships(0, [
+        membership({ userId: 43, username: 'grace', displayName: 'Grace Hopper' }),
+      ]);
+
+      expect(query<HTMLInputElement>(`#${EXPIRY_DATE_CONTROL_ID}`)?.value)
+        .withContext('what was typed is still what is on screen')
+        .toBe(EXPIRY_DATE);
     });
 
     /**
@@ -2849,10 +3021,14 @@ describe('RoleAssignmentComponent', () => {
       fixture.detectChanges();
 
       answerMemberships(0, [membership()]);
-      answerReprobe([membership()]);
+      expectNoReprobe();
 
       expect(rows()).withContext('the success path was taken').toHaveSize(1);
-      expect(notifications()).withContext('and nothing was reported as a failure').toHaveSize(0);
+      // The same one success sentence either way, because the screen inspects no status: a `201` and a
+      // `204` are one outcome to an upsert, and they must read as one to the operator too.
+      expect(notifications()).toEqual([
+        { severity: 'success', message: 'Ada Lovelace was added to the Administrators role.' },
+      ]);
     });
 
     it('states the mail reduction rather than offering a choice it cannot honour', () => {
@@ -2880,7 +3056,7 @@ describe('RoleAssignmentComponent', () => {
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
       answerMemberships(0, [membership()]);
-      answerReprobe([membership()]);
+      expectNoReprobe();
     });
 
     it('reports a refused assignment and does not re-read the list', () => {
@@ -2989,7 +3165,13 @@ describe('RoleAssignmentComponent', () => {
       answerMemberships(0, []);
 
       expect(rows()).withContext('the membership is gone').toHaveSize(0);
-      expect(notifications()).withContext('and success is not announced').toHaveSize(0);
+      // ⚠ THE REMOVAL IS ANNOUNCED. The row vanishing is the only other evidence, and a row vanishing
+      // from a grid is exactly what a mis-click looks like; the sentence names WHO left WHICH role, and
+      // it is composed from the row that was removed rather than from the rows that remain, because by
+      // this point the removed row is gone from both the screen and the store.
+      expect(notifications()).toEqual([
+        { severity: 'success', message: 'Ada Lovelace was removed from the Administrators role.' },
+      ]);
     });
 
     /**
@@ -3116,6 +3298,61 @@ describe('RoleAssignmentComponent', () => {
       expect(notifications()).toEqual([{ severity: 'warning', message: FORBIDDEN_MESSAGE }]);
       // An access refusal teaches nothing about the pairing itself, so the affordance stays.
       expect(button(DELETE_LABEL)).withContext('still offered').not.toBeUndefined();
+    });
+
+    it('QUOTES the support reference the refusal document carried', () => {
+      // ⚠ THIS SCREEN DEFERS ITS ANNOUNCEMENTS, AND THE DEFERRAL IS WHERE THE IDENTIFIER WAS LOST. A
+      // message here is not raised when the failure is observed - it is described into a notice, held until
+      // the re-read settles, and raised afterwards, so the notice is the only thing that travels. It carried
+      // a severity and a sentence and nothing else, so the identifier the server recorded the refusal under
+      // was discarded at the moment of description, before any call was made. The notice now carries it as a
+      // required member, which is what makes a new producer state its answer rather than inherit silence.
+      arrive(7, [membership({ userId: 42, roleId: 7 })]);
+
+      press(DELETE_LABEL);
+      pressDialogue(DELETE_LABEL);
+
+      expectRequest('DELETE', memberUrl(7, 42)).flush(
+        problem(
+          'authorization.forbidden',
+          403,
+          'The authenticated caller is not permitted to perform this operation.',
+        ),
+        { status: 403, statusText: 'Forbidden' },
+      );
+      fixture.detectChanges();
+
+      answerMemberships(7, [membership({ userId: 42, roleId: 7 })]);
+
+      expect(announcementReferences())
+        .withContext('the deferred notice carried the identifier through to the announcement')
+        .toEqual([CORRELATION_ID]);
+    });
+
+    it('quotes NO reference when the refusal document carried none', () => {
+      // The other half of the rule. A reference is quoted because the answer HAD one, never as decoration -
+      // so a document without a correlation identifier must announce its outcome and quote nothing.
+      // Without this case the one above could be satisfied by inventing an identifier, which would hand
+      // support a reference it cannot find.
+      arrive(7, [membership({ userId: 42, roleId: 7 })]);
+
+      press(DELETE_LABEL);
+      pressDialogue(DELETE_LABEL);
+
+      expectRequest('DELETE', memberUrl(7, 42)).flush(bareProblem('authorization.forbidden', 403), {
+        status: 403,
+        statusText: 'Forbidden',
+      });
+      fixture.detectChanges();
+
+      answerMemberships(7, [membership({ userId: 42, roleId: 7 })]);
+
+      expect(notifications())
+        .withContext('the refusal is still reported')
+        .toEqual([{ severity: 'warning', message: FORBIDDEN_MESSAGE }]);
+      expect(announcementReferences())
+        .withContext('with nothing quoted, because there was nothing to quote')
+        .toEqual([null]);
     });
 
     it('reports an unrelated fault at ERROR severity, and re-reads all the same', () => {
@@ -3314,6 +3551,32 @@ describe('RoleAssignmentComponent', () => {
 
       expect(notice).withContext('the reason is stated, not left to be inferred').not.toBeNull();
       expect(textIn(notice)).toContain('cannot be removed from this role');
+    });
+
+    /**
+     * ⚠ AND THE EXPLANATION IS THE ONLY THING FROM THAT BLOCK THAT REACHES THE PAGE.
+     *
+     * The authoring note that justifies the withheld command sat OUTSIDE any comment delimiter in this
+     * template — the note above it closed its own delimiter before the paragraph began — so seven lines
+     * of commentary rendered as end-user copy on every visit: the ⚠ glyph, a back-ticked legacy source
+     * path with a line number, and the name of a private member of this component. Runtime testing read
+     * it off the screen, and it is exactly the class of internal detail this project's own rules forbid
+     * putting in front of a user.
+     *
+     * The case is written against the SIGNATURES rather than against the paragraph, so it fails for any
+     * future note that escapes its delimiter in the same way rather than only for this one.
+     */
+    it('renders no authoring commentary from that block as page copy', () => {
+      arrive(1, [membership({ userId: 42, roleId: 1 })], { registeredRoleId: 1 });
+
+      const painted: string = textIn(host());
+
+      expect(painted).withContext('no warning glyph reaches the page').not.toContain('⚠');
+      expect(painted).withContext('no legacy source path reaches the page').not.toContain('.vb:L');
+      expect(painted).withContext('no code citation punctuation reaches the page').not.toContain('`');
+      expect(painted)
+        .withContext('no private member name reaches the page')
+        .not.toContain('removalAvailable');
     });
 
     /**
@@ -3889,7 +4152,7 @@ describe('RoleAssignmentComponent', () => {
       // and then the keyed probe for the chosen account, which is what moves the action's label.
       // Reading the role's whole membership was withdrawn, so both are needed and neither is a walk.
       answerMemberships(0, [membership()]);
-      answerReprobe([membership()]);
+      expectNoReprobe();
     });
 
     it('does not attribute an unrelated write\u2019s refusal to its own enrolment', () => {
@@ -3921,15 +4184,20 @@ describe('RoleAssignmentComponent', () => {
       enrolment.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      // Both follow-ups the success dispatches are settled: the page in hand, and the keyed probe
-      // for the chosen account. Leaving either outstanding would fail verification rather than
-      // anything this case is about.
+      // The one follow-up the success dispatches is settled: the page in hand. Leaving it outstanding
+      // would fail verification rather than anything this case is about.
       answerMemberships(0, [membership()]);
-      answerReprobe([membership()]);
+      expectNoReprobe();
 
+      // ⚠ WHAT THIS CASE IS ABOUT IS WHOSE OUTCOME IS REPORTED, not whether one is. The enrolment
+      // announces its OWN success and says nothing whatever about the sibling role-group refusal that
+      // is sitting in the shared failure slot - which is the misattribution this case exists to refuse.
       expect(notifySpy.calls.allArgs().map((args) => String(args[1])))
-        .withContext('a successful enrolment announces nothing at all')
-        .toEqual([]);
+        .withContext('its own outcome, and nobody else\u2019s')
+        .toEqual(['Ada Lovelace was added to the Administrators role.']);
+      expect(notifySpy.calls.allArgs().map((args) => String(args[0])))
+        .withContext('and reported as the success it was')
+        .toEqual(['success']);
       expect(component().saving()).toBeFalse();
     });
   });

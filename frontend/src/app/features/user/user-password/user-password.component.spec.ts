@@ -2024,9 +2024,19 @@ describe('UserPasswordComponent', () => {
       // and collapse affordance in `sectionheadcontrol.ascx` L3 with `tabIndex="-1"`,
       // so the only control that could reveal a collapsed section was unreachable by
       // keyboard. Nothing on this screen may repeat that.
+      //
+      // ⚠ THE SWEEP NAMES INTERACTIVE ELEMENTS, AND IT USED TO INCLUDE `[tabindex]` OUTRIGHT. That
+      // caught a case the rule was never about: a negative index on a non-interactive element withdraws
+      // nothing, since such an element was never keyboard-reachable, and grants only deliberate focus by
+      // script. The shared outcome banner carries one for exactly that purpose - a screen brings a server
+      // refusal to a reader who pressed a control below the fold - so including it made this suite reject
+      // an accessibility GAIN in the name of an accessibility rule. Every genuinely operable element is
+      // still swept, which is the whole of what the legacy defect was.
       arriveAsAdministrator(account(7));
 
-      for (const element of queryAll('button, input, a, summary, [tabindex]')) {
+      for (const element of queryAll(
+        'button, input, a, summary, select, textarea, [role="button"][tabindex], [contenteditable="true"]',
+      )) {
         expect(element.getAttribute('tabindex'))
           .withContext(`<${element.tagName.toLowerCase()}> stays in the keyboard order`)
           .not.toBe('-1');

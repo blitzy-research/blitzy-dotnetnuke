@@ -174,10 +174,16 @@
           one is a legitimate value as well - no truthiness test and no positional fallback is used to
           key them, either of which would silently mishandle both.
 
-          NO PLACEHOLDER OPTION IS INVENTED. The paired class publishes no wording for one, and
-          authoring wording here would put a string a person reads outside the single place that holds
-          them. The control opens with nothing selected instead, which is what "nothing chosen yet"
-          honestly is, and the requirement below is what reports it.
+          ⚠ THE OPENING OPTION IS THE LEGACY PLACEHOLDER, AND IT REPLACES A CONTROL THAT OPENED WITH
+          NOTHING SELECTED AT ALL. An earlier revision of this template deliberately emitted no
+          placeholder, reasoning that no wording was published for one and that "nothing selected" was
+          the honest opening state. The measured result was a select reporting `selectedIndex` -1: the
+          collapsed control showed blank, arrowing off it jumped to the first module rather than
+          stepping from a known position, and no readable option named the state. `Import.ascx.vb:L72`
+          seeded exactly this wording at index 0 of this same screen's own picker, so the string is
+          carried across rather than invented, and it is held by the paired class like every other
+          string here. Its value is `null` - the value the control already held - so the requirement
+          below still reports an unmade choice, and re-selecting it is how a choice is retracted.
 
           The change handler exists only so that a refusal recorded against the previous choice stops
           being shown beside the new one; the value itself is written by the form directive.
@@ -212,6 +218,7 @@
             form.controls.moduleId.invalid
           "
         >
+          <option [ngValue]="null">{{ modulePlaceholderLabel }}</option>
           @for (choice of moduleChoices(); track choice.value) {
             <option [ngValue]="choice.value">{{ choice.label }}</option>
           }

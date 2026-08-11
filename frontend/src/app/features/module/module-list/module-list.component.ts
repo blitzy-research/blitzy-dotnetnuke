@@ -1107,7 +1107,20 @@ export class ModuleListComponent implements OnInit {
         // passed through exactly as received: the classification belongs to the shared resolution
         // utility, which owns the measured legacy evidence for it, and re-deriving it here would give
         // one decision two homes that could disagree.
-        this.notifications.notify(failed.summary.severity, failed.summary.message);
+        // ⚠ THE SUPPORT REFERENCE TRAVELS WITH IT. The summary has carried a `supportReference` member all
+        // along, and dropping it here threw away the only join key between what an operator saw in the
+        // browser and the request as the server recorded it - the correlation identifier the server
+        // validated, which is what appears on the response header, on the request envelope in its log and on
+        // every audit event the request produced. A browser audit measured the asymmetry: a refusal presented
+        // through the shared banner read `Reference: <id>`, while the same class of refusal presented as a
+        // notification read nothing an operator could quote. The notification surface appends it AFTER its own
+        // message bound, so a long server sentence cannot truncate the identifier away, and a document that
+        // carried none resolves to null and is simply not quoted.
+        this.notifications.notify(
+          failed.summary.severity,
+          failed.summary.message,
+          failed.summary.supportReference,
+        );
       });
     });
   }

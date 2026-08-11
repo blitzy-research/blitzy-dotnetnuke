@@ -650,6 +650,9 @@ function portalDetail(portalId: number, overrides: Partial<PortalDetail> = {}): 
     timeZoneOffset: 0,
     homeDirectory: 'Portals/0',
     aliases: null,
+
+    // The opaque revision marker every portal read publishes, carried because a real read carries one.
+    concurrencyToken: 'revision-1',
     ...overrides,
   };
 }
@@ -697,6 +700,10 @@ function portalSettings(
     timeZoneOffset: 0,
     homeDirectory: 'Portals/0',
     guid: '2f1c3d4e-5a6b-4c8d-9e0f-1a2b3c4d5e6f',
+
+    // Deliberately the SAME token the detail fixture publishes: one server-side derivation serves both
+    // reads, so the two projections of an unchanged record agree.
+    concurrencyToken: 'revision-1',
     ...overrides,
   };
 }
@@ -814,6 +821,9 @@ function updatePortalRequest(overrides: Partial<UpdatePortalRequest> = {}): Upda
     defaultLanguage: 'en-US',
     timeZoneOffset: 0,
     homeDirectory: 'Portals/1',
+
+    // Round-tripped from the read, which is what makes a stale save refusable.
+    concurrencyToken: 'revision-1',
     ...overrides,
   };
 }
@@ -1240,6 +1250,37 @@ describe('PortalStore', () => {
    */
   function settleListingReread(description: string): void {
     expectListing(description).flush(singleRowPage(PORTAL_ID));
+  }
+
+  /**
+   * Asserts that a write issued NO listing read.
+   *
+   * ⚠ THE INVERSE OF THE HELPER ABOVE, AND THE CREATE AND UPDATE COMMANDS MOVED FROM ONE TO THE OTHER.
+   * Both used to re-read the listing on success, and both had exactly one caller that navigates TO the
+   * listing - which reads itself from its own address on entry, unconditionally, so the store's read was
+   * a second read of the same page. They did not merely duplicate work: this store serialises its listing
+   * reads, so the two raced and the loser was cancelled, which is what a browser audit found on the
+   * portal list after a save. The sibling role and module stores record the identical division on their
+   * own create commands, and the settings command in this very store had the same expectation inverted
+   * before this one for an even sharper reason - the portal administrator who reaches that screen is not
+   * permitted to read the listing at all, so re-reading answered 403 and raised a warning about a listing
+   * nobody had asked for.
+   *
+   * The DELETE command keeps its re-read and its calls to the helper above: it is reachable FROM the
+   * listing, where no navigation follows and no address changes, so without it a removed row would stay
+   * on screen.
+   *
+   * Counted with `match` rather than asserted with `expectNone`, for the reason the settings case beside
+   * it records: `expectNone` raises on a match but registers no expectation, so a case using it passes
+   * vacuously the moment its subject stops being reachable. `match` returns what it found, so the size IS
+   * the assertion.
+   *
+   * @param description What the absence proves, quoted on failure.
+   */
+  function expectNoListingReread(description: string): void {
+    expect(httpMock.match((candidate) => candidate.url === PORTALS_URL))
+      .withContext(description)
+      .toHaveSize(0);
   }
 
   /**
@@ -1993,7 +2034,7 @@ describe('PortalStore', () => {
       written.flush(
         envelope(portalDetail(PORTAL_ID, { userQuota: QUOTA_NOT_SET, pageQuota: QUOTA_UNLIMITED })),
       );
-      settleListingReread('the listing re-read that follows a portal write');
+      expectNoListingReread('a replacement asks for no listing read; the listing reads itself on entry');
     });
 
     it('publishes no derived member that merges the two quota meanings', () => {
@@ -2070,7 +2111,7 @@ describe('PortalStore', () => {
       expect(created.length).withContext('the caller is notified once').toBe(1);
       expect(created[0].portalId).toBe(0);
 
-      settleListingReread('the listing re-read that follows a creation');
+      expectNoListingReread('a creation asks for no listing read; the listing reads itself on entry');
     });
 
     it('puts the update request unaltered, keeps what the server stored, and refreshes the listing', () => {
@@ -2091,7 +2132,14 @@ describe('PortalStore', () => {
       // MIGRATION 6: twenty-seven positional parameters became twenty-seven named members.
       // The arity did not shrink, which is the point — what changed is that a member is
       // addressed by name, so a transposed pair is no longer expressible.
-      expect(names.length).withContext('every member the contract declares').toBe(27);
+      //
+      // TWENTY-EIGHT rather than twenty-seven because ONE member has been added since, and it is not
+      // a portal attribute: the revision marker, which states which snapshot the replacement was
+      // composed against so a stale whole-record save is refused rather than applied.
+      expect(names.length).withContext('every member the contract declares').toBe(28);
+      expect(names)
+        .withContext('the one addition to the legacy set, and the only non-attribute member')
+        .toContain('concurrencyToken');
       expect(names).toContain('portalId');
 
       written.flush(envelope(portalDetail(PORTAL_ID, { portalName: 'Renamed' })));
@@ -2102,7 +2150,7 @@ describe('PortalStore', () => {
       expect(store.detailLoading()).toBeFalse();
       expect(stored.length).toBe(1);
 
-      settleListingReread('the listing re-read that follows an update');
+      expectNoListingReread('an update asks for no listing read; the listing reads itself on entry');
     });
 
     it('removes the row identified by nought and leaves the row identified by minus one', () => {
@@ -2317,9 +2365,14 @@ describe('PortalStore', () => {
 
       const names: readonly string[] = Object.keys(written.request.body);
 
+      // TWENTY-SEVEN: the twenty-six editable members plus the revision marker. Both portal write
+      // paths carry it, because both replace the same columns through the same mapper.
       expect(names.length)
-        .withContext('the update contract without its identifier — the path already names the portal')
-        .toBe(26);
+        .withContext('the update contract without its identifier, plus the revision marker')
+        .toBe(27);
+      expect(names)
+        .withContext('the settings route refuses a stale save too, so it carries the marker as well')
+        .toContain('concurrencyToken');
       expect(names)
         .withContext('so a second, contradictable copy of the identifier is not sent')
         .not.toContain('portalId');
@@ -2674,13 +2727,30 @@ describe('PortalStore', () => {
       removed.flush(null, { status: 204, statusText: 'No Content' });
 
       expect(heldAliases(store.aliases()).map((alias: PortalAlias) => alias.portalAliasId))
-        .withContext('removed from the collection in hand, with no second read')
+        .withContext('removed from the collection in hand before the re-read lands')
         .toEqual([PORTAL_ALIAS_ID]);
       expect(store.selectedAliasId())
         .withContext('an unbound alias cannot remain selected')
         .toBeUndefined();
       expect(store.selectedAlias()).toBeNull();
       expect(removals).toBe(1);
+
+      // ⚠ AND THE COLLECTION IS THEN RE-READ, matching create and update. The local filter above is
+      // exact for the row REMOVED and is why it disappears at once; it cannot see the rows nobody
+      // here wrote. Two things went stale while this was the one write that asked nothing: another
+      // operator's insertions and removals, and `isCurrent`, which the server sets on the row THIS
+      // request resolved the tenant through - so removing the alias one is browsing through left the
+      // mark on a row that no longer exists. The re-read answers with the server's collection, and
+      // the assertion below proves that answer is adopted rather than merged.
+      const reread = httpMock.expectOne(PORTAL_ALIASES_URL);
+
+      expect(reread.request.method).toBe('GET');
+      reread.flush(envelope([kept]));
+
+      expect(heldAliases(store.aliases()).map((alias: PortalAlias) => alias.portalAliasId))
+        .withContext("the server's answer, adopted")
+        .toEqual([PORTAL_ALIAS_ID]);
+      expect(store.aliasLoading()).toBeFalse();
     });
 
     it('reads one alias by its own path, with the identifier named as a segment', () => {
@@ -2808,7 +2878,7 @@ describe('PortalStore', () => {
         .toEqual([0]);
       expect(store.detailLoading()).toBeFalse();
 
-      settleListingReread('the listing re-read that follows a creation');
+      expectNoListingReread('a creation asks for no listing read; the listing reads itself on entry');
     });
 
     it('COMPLETES WITHOUT EMITTING when the write fails, and does not error', () => {
@@ -2890,7 +2960,7 @@ describe('PortalStore', () => {
       expect(received.length).withContext('the late subscriber still gets its outcome').toBe(1);
       expect(received[0].portalId).toBe(0);
 
-      settleListingReread('the listing re-read that follows a creation');
+      expectNoListingReread('a creation asks for no listing read; the listing reads itself on entry');
     });
 
     it('gives each write its OWN ticket, so two writes cannot cross-report', () => {
@@ -2956,7 +3026,7 @@ describe('PortalStore', () => {
       expect(store.selectedPortalId()).toBe(0);
       expect(store.detailLoading()).toBeFalse();
 
-      settleListingReread('the listing re-read that follows a creation');
+      expectNoListingReread('a creation asks for no listing read; the listing reads itself on entry');
     });
   });
 
@@ -3386,6 +3456,11 @@ describe('PortalStore', () => {
       expect(readEarlier.length)
         .withContext('and the array read earlier still reports what it reported')
         .toBe(2);
+
+      // The removal re-reads the collection, as every write on this resource does. Answered here so
+      // the identity property above is measured on the LOCAL edit - which is the subject of this
+      // case - and so the unconditional verification in `afterEach` has nothing outstanding.
+      httpMock.expectOne(PORTAL_ALIASES_URL).flush(envelope([kept]));
       // Deep equality rather than identity, and the distinction is worth stating. The
       // transport now DECODES every response against the contract its model publishes, so
       // what the store holds is a value this client constructed after checking every

@@ -396,6 +396,9 @@ function portalDetail(portalId: number, overrides: Partial<PortalDetail> = {}): 
     timeZoneOffset: -480,
     homeDirectory: 'Portals/0',
     aliases: [{ portalAliasId: 7, portalId, httpAlias: 'localhost', isCurrent: false }],
+    // The opaque revision marker every portal read publishes. The screen round-trips it on the
+    // replacement so a save composed against a superseded revision is refused rather than applied.
+    concurrencyToken: 'revision-1',
     ...overrides,
   };
 }
@@ -537,13 +540,24 @@ describe('PortalFormComponent', () => {
   }
 
   /**
-   * Answer the listing re-read a COMPLETED write triggers.
+   * Asserts that a COMPLETED write triggered NO listing re-read.
    *
-   * Only a completed one: the store refreshes the listing from the success path, so a refused write issues
-   * no second request and calling this after one would fail.
+   * ⚠ THE INVERSION OF WHAT THIS HELPER USED TO DO, AND THE NAME IS KEPT SO EVERY CALL SITE STILL READS
+   * AS "settle the listing question here". It used to answer a re-read the store performed on every
+   * successful create and replacement. That read was removed: this screen redirects to the listing on
+   * success, and the listing reads itself from its own address on entry, so the store's read was a second
+   * read of the same page - and because the store serialises its listing reads, the two raced and the
+   * loser was cancelled. A browser audit found the aborted-then-repeated pair on the portal list after a
+   * save. The store's own specification carries the full reasoning and the sibling precedent.
+   *
+   * Counted with `match` rather than asserted with `expectNone`: the latter raises on a match but
+   * registers no expectation, so a case using it would pass vacuously the moment its subject stopped
+   * being reachable. The size IS the assertion.
    */
   function answerListingReread(): void {
-    expectRequest('GET', PORTALS_URL, 'the listing re-read after a write').flush(emptyPage());
+    expect(httpMock.match((candidate) => candidate.url === PORTALS_URL))
+      .withContext('a write asks for no listing read; the listing reads itself on entry')
+      .toHaveSize(0);
     fixture.detectChanges();
   }
 
@@ -1713,6 +1727,104 @@ describe('PortalFormComponent', () => {
         .withContext("the server's own sentence, beside the field that caused it")
         .toContain('Site Title is required.');
     });
+
+    /**
+     * ⚠ THE REVISION MARKER, WHICH IS THE ONLY THING STANDING BETWEEN THIS PAYLOAD AND A LOST UPDATE.
+     *
+     * The replacement carries the portal's WHOLE editable state - the three boxes this screen shows plus
+     * roughly twenty values carried forward from the read that it never displays - so before the token
+     * existed a second administrator saving an older read silently destroyed the first administrator's
+     * committed edits to fields neither of them had opened, and the API answered `200` to both. Runtime
+     * testing measured exactly that.
+     */
+    describe('the revision marker', () => {
+      it('carries the token from the read into the replacement', () => {
+        const detail: PortalDetail = arriveEditing(5, {
+          concurrencyToken: 'revision-from-the-read',
+        });
+
+        type('portal-form-title', 'After');
+        press(EDIT_SUBMIT_LABEL);
+
+        const call = expectRequest('PUT', portalUrl(5), 'the replacement');
+        const body = call.request.body as { readonly concurrencyToken: string | null };
+
+        // It must come from the record that was READ. Re-reading it immediately before the save would
+        // obtain the CURRENT revision, and the check would then always pass while looking watertight.
+        expect(body.concurrencyToken).toBe('revision-from-the-read');
+
+        call.flush(envelope({ ...detail, portalName: 'After' }));
+        fixture.detectChanges();
+        answerListingReread();
+      });
+
+      it('sends null when the read served no token', () => {
+        const detail: PortalDetail = arriveEditing(5, { concurrencyToken: null });
+
+        type('portal-form-title', 'After');
+        press(EDIT_SUBMIT_LABEL);
+
+        const call = expectRequest('PUT', portalUrl(5), 'the replacement');
+        const body = call.request.body as { readonly concurrencyToken: string | null };
+
+        // A last-writer-wins update, exactly as this screen behaved before the member existed. Nothing
+        // is invented to fill the gap: a fabricated token that happened to match would defeat the very
+        // check it appears to satisfy.
+        expect(body.concurrencyToken).toBeNull();
+
+        call.flush(envelope({ ...detail, portalName: 'After' }));
+        fixture.detectChanges();
+        answerListingReread();
+      });
+
+      it('sends no token on a creation, because there is no prior revision', () => {
+        createMode();
+        type('portal-form-title', 'Fresh Portal');
+        fillMinimalCreation('fresh.example.test');
+        press(CREATE_SUBMIT_LABEL);
+
+        const call = expectRequest('POST', PORTALS_URL, 'the creation');
+
+        expect(call.request.body).not.toEqual(
+          jasmine.objectContaining({ concurrencyToken: jasmine.anything() }),
+        );
+
+        call.flush(envelope(portalDetail(9)), { status: 201, statusText: 'Created' });
+        fixture.detectChanges();
+        answerListingReread();
+      });
+
+      /**
+       * The refusal is reported and the operator's entry is still on screen, so re-reading and
+       * re-applying is possible without leaving the application. A guard that cannot be satisfied is a
+       * defect rather than a protection.
+       */
+      it('reports a refused stale replacement and keeps the entry on screen', () => {
+        arriveEditing(5, { concurrencyToken: 'stale' });
+
+        type('portal-form-title', 'Mine');
+        press(EDIT_SUBMIT_LABEL);
+
+        expectRequest('PUT', portalUrl(5), 'the replacement').flush(
+          {
+            type: 'urn:dnnmigration:error:portal.concurrency_conflict',
+            title: 'Conflict',
+            status: 409,
+            detail:
+              'Portal 5 was changed by someone else after you read it, so nothing was written. '
+              + 'Reload the portal to see the current values, then apply your change again.',
+          },
+          { status: 409, statusText: 'Conflict' },
+        );
+        fixture.detectChanges();
+
+        // No listing re-read: the store refreshes the listing only from the success path, and
+        // httpMock.verify() in afterEach is what proves no second request went out.
+        expect(field<HTMLInputElement>('portal-form-title').value)
+          .withContext('the operator does not have to retype their change')
+          .toBe('Mine');
+      });
+    });
   });
 
   // The request and what comes back
@@ -1888,6 +2000,12 @@ describe('PortalFormComponent', () => {
         defaultLanguage: detail.defaultLanguage,
         timeZoneOffset: detail.timeZoneOffset,
         homeDirectory: detail.homeDirectory,
+        // The one member of this body that is not a portal attribute: the revision the replacement was
+        // composed against, carried from the record that was READ. It is what makes the whole-record
+        // property asserted above safe rather than merely necessary - every value above comes from a
+        // snapshot, and this is what lets the server tell "returning what I read" from "restoring what
+        // somebody has since changed".
+        concurrencyToken: detail.concurrencyToken,
       });
 
       call.flush(envelope({ ...detail, portalName: 'Renamed' }));

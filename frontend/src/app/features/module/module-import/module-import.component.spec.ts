@@ -157,6 +157,22 @@ const FILE_FIELD_HELP = 'Select the import file';
 /** The module field's label. Net-new alongside the net-new field. */
 const MODULE_FIELD_LABEL = 'Module';
 
+/**
+ * The opening sentence of the module field's guidance.
+ *
+ * The measured prefix rather than the whole string: the screen appends the transfer constraint the server
+ * enforces, and asserting equality would oblige this file to restate a sentence the contract owns. The
+ * constraint itself is asserted by substring in the case that covers it.
+ */
+const MODULE_FIELD_HELP = 'Select the module to import content into';
+
+/**
+ * The wording of the picker's opening option, `"<" + None_Specified + ">"`, seeded at index 0 of this
+ * screen's own picker by `Import.ascx.vb:L72` and rendered identically by two sibling screens. The angle
+ * brackets are part of the legacy display string, not markup.
+ */
+const MODULE_PLACEHOLDER_LABEL = '<None Specified>';
+
 const IMPORT_ACTION_LABEL = 'Import';
 const CANCEL_ACTION_LABEL = 'Cancel';
 const FILE_REQUIRED_MESSAGE = 'Please specify the file to import';
@@ -1064,6 +1080,7 @@ describe('ModuleImportComponent', () => {
       const options = Array.from(requiredControl<HTMLSelectElement>('module-import-module').options);
 
       expect(options.map((option) => visibleText(option))).toEqual([
+        MODULE_PLACEHOLDER_LABEL,
         'Announcements',
         'Far Module',
       ]);
@@ -1137,18 +1154,86 @@ describe('ModuleImportComponent', () => {
       expect(visibleText(requireElement(root(), 'app-empty-state'))).toContain(NO_MODULES_MESSAGE);
     });
 
-    it('offers a choice for every listed module', () => {
+    it('offers a choice for every listed module, behind the legacy opening prompt', () => {
       arrive([listRow(), listRow({ moduleId: 1, moduleTitle: 'Links' })]);
 
-      const options = Array.from(requiredControl<HTMLSelectElement>('module-import-module').options);
+      const select = requiredControl<HTMLSelectElement>('module-import-module');
+      const options = Array.from(select.options);
 
-      // ⚠ NO PLACEHOLDER OPTION. The picker offers exactly the modules there are, so a submission with
-      // nothing chosen is prevented by the control's own requirement rather than by a sentinel value
-      // that could collide with module zero.
+      // ⚠ THE OPENING OPTION IS THE LEGACY PROMPT, AND IT REPLACES A CONTROL THAT OPENED WITH NOTHING
+      // SELECTED. This case previously asserted that NO placeholder was offered, on two grounds: that the
+      // control's own requirement already prevents an empty submission, and that a placeholder would need
+      // a sentinel value liable to collide with module ZERO - which is a real identifier here, since
+      // `dbo.Modules.ModuleID` is `IDENTITY (0, 1)`. The first ground is intact and unchanged, and the
+      // second is answered rather than ignored: the option is bound with `[ngValue]` to a genuine `null`,
+      // not to a numeric or string sentinel, so it cannot collide with 0, with -1 or with any identifier
+      // the schema can produce. What the old arrangement cost was measured in the running application: the
+      // select reported `selectedIndex` -1, rendering blank, with no option a keyboard or screen-reader
+      // user could read back as the current state. `Import.ascx.vb:L72` seeded exactly this wording at
+      // index 0 of this same screen's own picker, so the prompt is carried across rather than invented.
       expect(options.map((option) => visibleText(option))).toEqual([
+        MODULE_PLACEHOLDER_LABEL,
         'Announcements',
         'Links',
       ]);
+
+      // The state that used to be -1. An option is genuinely selected, and it is the prompt.
+      expect(select.selectedIndex)
+        .withContext('a select whose value matches no option reports -1 and renders unreadably blank')
+        .toBe(0);
+      expect(visibleText(options[0])).toBe(MODULE_PLACEHOLDER_LABEL);
+      expect(options[0].disabled)
+        .withContext('selectable, because choosing it again is how an operator retracts a choice')
+        .toBeFalse();
+    });
+
+    it('keeps the field unsatisfied while the opening prompt is the choice', async () => {
+      arrive([listRow(), listRow({ moduleId: 1, moduleTitle: 'Links' })]);
+
+      // The whole point of binding the prompt to null rather than to a module: the requirement still
+      // reports an unmade choice, and it reports it where an operator reads it.
+      await submit();
+
+      expect(fieldMessages())
+        .withContext('the prompt is not an answer')
+        .toContain(MODULE_REQUIRED_MESSAGE);
+      httpMock.expectNone(() => true);
+
+      chooseModule('Links');
+      await submit();
+
+      expect(fieldMessages())
+        .withContext('choosing a real module satisfies the field')
+        .not.toContain(MODULE_REQUIRED_MESSAGE);
+    });
+
+    it('states the transfer constraint the server enforces, so a refusal is predictable', () => {
+      // ⚠ THE PICKER DELIBERATELY OFFERS MODULES THE SERVER WILL REFUSE, AND SAYS SO INSTEAD OF HIDING
+      // THEM. `Import.ascx.vb:L177` guarded the transfer on
+      // `objModule.BusinessControllerClass <> "" And objModule.IsPortable` and `L214` answered a target
+      // failing that guard with the `ImportNotSupported` wording - a refusal at submission, because the
+      // legacy screen had no module field to withhold anything from. The migrated endpoint reproduces it
+      // as `module.not_portable`. Withholding such modules here was refused: the definition catalogue
+      // publishes `isPortable` but NOT `businessControllerClass`, so a client-side test evaluates half
+      // the predicate and would either hide a usable destination silently - which this screen's own
+      // completeness contract forbids - or mislabel one. The constraint is stated instead.
+      arrive([listRow()]);
+
+      // The guidance is a disclosure on the shared field, so it has to be revealed to be read - the same
+      // affordance the legacy `dnn:label` help icon carried on this screen's own pickers.
+      revealHelpFor('module-import-module');
+
+      const help = queryAll('.form-field__help').map((node) => visibleText(node));
+
+      expect(help.some((text) => text.startsWith(MODULE_FIELD_HELP)))
+        .withContext(`one help sentence begins "${MODULE_FIELD_HELP}" - saw ${JSON.stringify(help)}`)
+        .toBeTrue();
+      expect(help.some((text) => text.includes('package supports content transfer')))
+        .withContext('the constraint the server enforces is stated before a choice is made')
+        .toBeTrue();
+      expect(help.some((text) => text.includes('refused when the import is submitted')))
+        .withContext('and the operator is told WHEN it will be enforced')
+        .toBeTrue();
     });
 
     it('reports having nothing to import into rather than offering an empty picker', () => {
@@ -1984,10 +2069,22 @@ describe('ModuleImportComponent', () => {
         .withContext('a refusal of authority is announced once, as a warning')
         .toEqual(['warning']);
       expect(severitiesAnnouncedFor(refusal)).not.toContain('error');
-      // The two trailing arguments are the aliases' explicit forwarding: no support reference, and no
-      // reprieve from the screen-lifetime rule. The second matters here - this screen stays put on a
-      // refusal, so the warning must NOT be marked to outlive a change of screen.
-      expect(notifySpy).toHaveBeenCalledWith('warning', refusal, null, false);
+      // ⚠ THIS ASSERTION USED TO REQUIRE THE REFERENCE TO BE ABSENT, AND IT WAS WRONG TO. It read
+      // `('warning', refusal, null, false)`, describing the `warning` convenience alias this screen used
+      // to call - an alias whose signature cannot carry a reference at all. That shape was mistaken for a
+      // rule, and the rule it stood for was the opposite one: a `403` IS a refusal the operator may need to
+      // escalate, its document carries a correlation identifier, and the shared classifier resolves it to
+      // WARNING precisely so it is not presented as a fault. The severity being warning is therefore no
+      // argument for withholding the identifier - which is the confusion that dropped it here.
+      //
+      // Sharpened rather than relaxed: the reference is now required to be the document's own identifier,
+      // and the trailing screen-lifetime opinion is still required to be absent, because this screen stays
+      // put on a refusal and the warning must NOT outlive a change of screen.
+      expect(notifySpy)
+        .withContext('the refusal quotes the identifier the server recorded it under')
+        .toHaveBeenCalledWith('warning', refusal, CORRELATION_ID);
+      expect(notifySpy).not.toHaveBeenCalledWith('warning', refusal, null);
+      expect(notifySpy).not.toHaveBeenCalledWith('warning', refusal, CORRELATION_ID, true);
       expect(notifySpy).not.toHaveBeenCalledWith('error', refusal, null, false);
       expect(notifySpy).not.toHaveBeenCalledWith('error', refusal, null);
 

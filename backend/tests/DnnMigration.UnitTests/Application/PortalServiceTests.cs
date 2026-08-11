@@ -627,8 +627,8 @@ public class PortalServiceApplicationTests
     };
 
     /// <summary>
-    /// The request contract presents the twenty-seven legacy arguments, in the legacy order, and nothing
-    /// else.
+    /// The request contract opens with the twenty-seven legacy arguments in the legacy order, and the only
+    /// member that follows them is the optimistic-concurrency token.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -639,12 +639,22 @@ public class PortalServiceApplicationTests
     /// than only the set - is what lets the next reader lay the two signatures side by side.
     /// </para>
     /// <para>
+    /// ONE MEMBER HAS BEEN ADDED SINCE, DELIBERATELY, AND THIS ASSERTION PINS BOTH ITS IDENTITY AND ITS
+    /// POSITION. <c>ConcurrencyToken</c> describes no portal attribute - it states WHICH revision of the
+    /// record the caller read, so a stale whole-record replace is refused with
+    /// <c>portal.concurrency_conflict</c> instead of silently destroying another operator's committed edit to
+    /// a field neither operator had opened. It is asserted as a TAIL member rather than folded into the
+    /// legacy list precisely so the legacy twenty-seven stay readable as a contiguous, ordered block: a
+    /// reviewer laying this contract beside the legacy signature still reads twenty-seven names in
+    /// twenty-seven positions. A second addition, or this one moving into the middle of the run, fails here.
+    /// </para>
+    /// <para>
     /// Declaration order is read through the metadata token, because the reflection API documents no
     /// ordering guarantee of its own.
     /// </para>
     /// </remarks>
     [Fact]
-    public void UpdateRequest_PresentsTheTwentySevenLegacyArgumentsInTheirLegacyOrder()
+    public void UpdateRequest_PresentsTheTwentySevenLegacyArgumentsInTheirLegacyOrderThenTheConcurrencyToken()
     {
         IReadOnlyList<string> declared = typeof(UpdatePortalRequest)
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
@@ -652,10 +662,16 @@ public class PortalServiceApplicationTests
             .Select(property => property.Name)
             .ToList();
 
-        declared.Should().Equal(
+        declared.Take(LegacyUpdateArguments.Length).Should().Equal(
             LegacyUpdateArguments,
             "the twenty-seven positional arguments of UpdatePortalInfo (PortalController.vb:L1568) must "
-            + "still be presented in their legacy order so a call site stays checkable against the original");
+            + "still be presented first and in their legacy order so a call site stays checkable against "
+            + "the original");
+
+        declared.Skip(LegacyUpdateArguments.Length).Should().Equal(
+            ["ConcurrencyToken"],
+            "the only member added to the legacy argument list states which revision the caller read, and "
+            + "it sits after the legacy run so the legacy run stays contiguous");
     }
 
     /// <summary>

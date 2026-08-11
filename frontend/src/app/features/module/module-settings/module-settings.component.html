@@ -6,9 +6,22 @@
     - Seven disclosure regions nested two levels deep, reproducing the legacy section-head hierarchy. The
       three top-level heads carry --ruled for the legacy includerule="True"; the four nested regions carry
       --nested on the SECTION, because the legacy indent sat outside the group.
-    - A closed region's body is REMOVED, not hidden: [hidden] loses to .module-settings__body's own
-      display:grid, so hiding would not hide. aria-expanded alone is the complete disclosure contract, so
-      aria-controls is omitted rather than pointed at an element that is not in the document.
+    - A closed region's CONTENTS are REMOVED, not hidden: [hidden] loses to .module-settings__body's own
+      display:grid, so hiding would not hide - and removal is also what keeps a closed region's controls
+      out of the tab order and out of the accessibility tree.
+    - ⚠ WHAT A CLOSED REGION STILL KEEPS IS ITS IDENTITY, which it previously did not. aria-controls was
+      published only while open, on the reasoning that a reference to an element outside the document is
+      worse than no reference - correct as far as it went, and it left the toggle stating a relationship in
+      one state and denying it in the other, which runtime testing measured and reported. Each region now
+      renders an EMPTY HIDDEN placeholder carrying its own identifier while closed, so the reference is
+      valid in both states and nothing about what is rendered, focusable or announced has changed.
+      aria-expanded remains the disclosure contract; aria-controls is the addition, not a replacement.
+      The placeholder deliberately carries the IDENTIFIER ALONE - no class, no role and no name. The body
+      class would reintroduce the display:grid that makes hiding fail; role="group" plus aria-labelledby
+      would declare a named region holding nothing, which is a worse answer to a reader following the
+      reference than a target the collapsed state legitimately excludes from the accessibility tree.
+      A closed region nested inside another closed region has neither head nor placeholder, which is
+      self-consistent: an absent toggle publishes no reference to dangle.
     - MIGRATION: the four nested heads are disambiguated by description. The resource file gives them only
       two distinct names, separable in the legacy source by resource keys that never reach a rendered page,
       so each nested head points aria-describedby at its parent region's head and the accessible description
@@ -34,7 +47,7 @@
 
 @if (loading) {
   <app-loading-spinner label="Loading module settings…"></app-loading-spinner>
-} @else if (readRefused()) {
+} @else if (readRefused() || settingsRefused()) {
   <!--
     THE READ WAS REFUSED, OR FAILED. The banner above IS the presentation, and this branch exists to
     render nothing beneath it - which is what makes the refusal one statement rather than two.
@@ -42,6 +55,14 @@
     Reaching this branch suppresses both empty states below and the form itself: a refusal is not an
     absence, so neither "could not be found" nor "no settings are available" describes it, and a form
     seeded from no module would offer a save the server has already said it will refuse.
+
+    ⚠ TWO PREDICATES, BECAUSE ONE REFUSAL WAS ABLE TO SLIP PAST THE OTHER. `readRefused()` asks what the
+    store's CURRENT failure is; `settingsRefused()` asks what THIS screen was told about the settings read
+    the form depends on. Measured on an administrative module: the module read answers 200, the settings
+    read answers 403, and the definition read answers 404 - and the 404 landed last, taking the store's
+    single failure slot and, through its own branch in `announce`, clearing the banner outright. What
+    rendered was a full editable form beneath no banner at all, because the absent-settings branch below
+    tests a value that falls back to the module record. Either predicate is now sufficient to withhold it.
 
     MIGRATION: this is the legacy access-denied page's entire content - a heading and one
     `YellowWarning` module message (`Website/admin/Security/AccessDenied.ascx.vb:L41-L45`) - and it is
@@ -62,7 +83,7 @@
           type="button"
           [id]="sectionHeadingId('moduleSettings')"
           [attr.aria-expanded]="isExpanded('moduleSettings')"
-          [attr.aria-controls]="isExpanded('moduleSettings') ? sectionBodyId('moduleSettings') : null"
+          [attr.aria-controls]="sectionBodyId('moduleSettings')"
           (click)="toggle('moduleSettings')"
         >
           {{ headings['moduleSettings'] }}
@@ -80,7 +101,7 @@
                 type="button"
                 [id]="sectionHeadingId('details')"
                 [attr.aria-expanded]="isExpanded('details')"
-                [attr.aria-controls]="isExpanded('details') ? sectionBodyId('details') : null"
+                [attr.aria-controls]="sectionBodyId('details')"
                 [attr.aria-describedby]="sectionHeadingId('moduleSettings')"
                 (click)="toggle('details')"
               >
@@ -210,6 +231,11 @@
                   </div>
                 </div>
               </div>
+            } @else {
+              <!-- The region's identity, kept while it is closed so the toggle above can name it in both
+                   states. Empty and hidden: the CONTENTS are still removed rather than hidden, which is what
+                   keeps a closed region out of the tab order and its controls out of the accessibility tree. -->
+              <div [id]="sectionBodyId('details')" hidden></div>
             }
           </section>
 
@@ -220,7 +246,7 @@
                 type="button"
                 [id]="sectionHeadingId('security')"
                 [attr.aria-expanded]="isExpanded('security')"
-                [attr.aria-controls]="isExpanded('security') ? sectionBodyId('security') : null"
+                [attr.aria-controls]="sectionBodyId('security')"
                 [attr.aria-describedby]="sectionHeadingId('moduleSettings')"
                 (click)="toggle('security')"
               >
@@ -385,9 +411,19 @@
                   </div>
                 </div>
               </div>
+            } @else {
+              <!-- The region's identity, kept while it is closed so the toggle above can name it in both
+                   states. Empty and hidden: the CONTENTS are still removed rather than hidden, which is what
+                   keeps a closed region out of the tab order and its controls out of the accessibility tree. -->
+              <div [id]="sectionBodyId('security')" hidden></div>
             }
           </section>
         </div>
+      } @else {
+        <!-- The region's identity, kept while it is closed so the toggle above can name it in both
+             states. Empty and hidden: the CONTENTS are still removed rather than hidden, which is what
+             keeps a closed region out of the tab order and its controls out of the accessibility tree. -->
+        <div [id]="sectionBodyId('moduleSettings')" hidden></div>
       }
     </section>
 
@@ -398,7 +434,7 @@
           type="button"
           [id]="sectionHeadingId('pageSettings')"
           [attr.aria-expanded]="isExpanded('pageSettings')"
-          [attr.aria-controls]="isExpanded('pageSettings') ? sectionBodyId('pageSettings') : null"
+          [attr.aria-controls]="sectionBodyId('pageSettings')"
           (click)="toggle('pageSettings')"
         >
           {{ headings['pageSettings'] }}
@@ -416,7 +452,7 @@
                 type="button"
                 [id]="sectionHeadingId('appearance')"
                 [attr.aria-expanded]="isExpanded('appearance')"
-                [attr.aria-controls]="isExpanded('appearance') ? sectionBodyId('appearance') : null"
+                [attr.aria-controls]="sectionBodyId('appearance')"
                 [attr.aria-describedby]="sectionHeadingId('pageSettings')"
                 (click)="toggle('appearance')"
               >
@@ -579,6 +615,11 @@
                   }
                 </div>
               </div>
+            } @else {
+              <!-- The region's identity, kept while it is closed so the toggle above can name it in both
+                   states. Empty and hidden: the CONTENTS are still removed rather than hidden, which is what
+                   keeps a closed region out of the tab order and its controls out of the accessibility tree. -->
+              <div [id]="sectionBodyId('appearance')" hidden></div>
             }
           </section>
 
@@ -589,7 +630,7 @@
                 type="button"
                 [id]="sectionHeadingId('other')"
                 [attr.aria-expanded]="isExpanded('other')"
-                [attr.aria-controls]="isExpanded('other') ? sectionBodyId('other') : null"
+                [attr.aria-controls]="sectionBodyId('other')"
                 [attr.aria-describedby]="sectionHeadingId('pageSettings')"
                 (click)="toggle('other')"
               >
@@ -651,9 +692,19 @@
                   </div>
                 </div>
               </div>
+            } @else {
+              <!-- The region's identity, kept while it is closed so the toggle above can name it in both
+                   states. Empty and hidden: the CONTENTS are still removed rather than hidden, which is what
+                   keeps a closed region out of the tab order and its controls out of the accessibility tree. -->
+              <div [id]="sectionBodyId('other')" hidden></div>
             }
           </section>
         </div>
+      } @else {
+        <!-- The region's identity, kept while it is closed so the toggle above can name it in both
+             states. Empty and hidden: the CONTENTS are still removed rather than hidden, which is what
+             keeps a closed region out of the tab order and its controls out of the accessibility tree. -->
+        <div [id]="sectionBodyId('pageSettings')" hidden></div>
       }
     </section>
 
@@ -664,7 +715,7 @@
           type="button"
           [id]="sectionHeadingId('specificSettings')"
           [attr.aria-expanded]="isExpanded('specificSettings')"
-          [attr.aria-controls]="isExpanded('specificSettings') ? sectionBodyId('specificSettings') : null"
+          [attr.aria-controls]="sectionBodyId('specificSettings')"
           (click)="toggle('specificSettings')"
         >
           {{ headings['specificSettings'] }}
@@ -708,6 +759,11 @@
             <p class="module-settings__stored-empty">{{ noSpecificSettingsMessage }}</p>
           }
         </div>
+      } @else {
+        <!-- The region's identity, kept while it is closed so the toggle above can name it in both
+             states. Empty and hidden: the CONTENTS are still removed rather than hidden, which is what
+             keeps a closed region out of the tab order and its controls out of the accessibility tree. -->
+        <div [id]="sectionBodyId('specificSettings')" hidden></div>
       }
     </section>
 

@@ -101,6 +101,29 @@ const SELF_DISMISSING_SEVERITIES: ReadonlySet<NotificationSeverity> = Object.fre
 );
 
 /**
+ * Whether one entry retires itself on the countdown.
+ *
+ * ⚠ THE SEVERITY IS THE FALLBACK, NOT THE ANSWER. The set above is a PROXY for the question that
+ * actually decides a lifetime - does this outcome require anything of the reader - and on one
+ * notification the proxy is wrong. The route guards' access refusal is a warning, so the set exempted
+ * it, yet it carries no support reference to quote and asks for nothing, because the remedy is a
+ * permission the operator cannot grant themselves. A browser audit measured it standing for four
+ * minutes and forty-two seconds, cleared only by navigating away.
+ *
+ * So a caller may now state the lifetime for its own entry, and the severity decides only when none
+ * has. The set is untouched and remains correct for every caller that expresses no opinion, which is
+ * all but one of them - the alternative, widening the set to include `'warning'`, is refused with a
+ * measurement both here and in the queue's own documentation, because a fault an operator has not
+ * acted on must not vanish from under them on a timer.
+ *
+ * @param entry The entry to decide.
+ * @returns True when a countdown should be armed for it.
+ */
+function retiresItself(entry: AppNotification): boolean {
+  return entry.selfDismisses ?? SELF_DISMISSING_SEVERITIES.has(entry.severity);
+}
+
+/**
  * The greatest number of entries rendered at once.
  *
  * ⚠ A DISPLAY CEILING, NOT A QUEUE CEILING - the service keeps up to twenty-five, and every one of
@@ -303,7 +326,7 @@ export class NotificationListComponent {
       }
 
       for (const entry of entries) {
-        if (SELF_DISMISSING_SEVERITIES.has(entry.severity)) {
+        if (retiresItself(entry)) {
           this.scheduleDismissal(entry.id);
         }
       }

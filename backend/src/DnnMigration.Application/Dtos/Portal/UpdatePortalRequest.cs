@@ -12,7 +12,11 @@ namespace DnnMigration.Application.Dtos.Portal;
 /// <c>PortalController.UpdatePortalInfo</c> overload declared at
 /// <c>Library/Components/Portal/PortalController.vb:L1568</c>. Every one of those twenty-seven
 /// arguments appears below as a named property, in the order the signature declared them, and
-/// nothing has been added to or removed from that set. The member set was verified twice from two
+/// nothing has been removed from that set. Exactly one member has been ADDED, and it describes no
+/// portal attribute: <see cref="ConcurrencyToken"/> states which revision of the record the caller
+/// read, so a stale whole-record replace can be refused instead of silently destroying another
+/// operator's committed edit. Its provenance and the legacy behaviour it departs from are set out on
+/// the member itself. The member set was verified twice from two
 /// structurally independent places in the legacy source: the signature itself, and the
 /// single-argument forwarding overload at <c>PortalController.vb:L1524</c>, which passes the same
 /// twenty-seven entity members to it in the same order.
@@ -22,8 +26,9 @@ namespace DnnMigration.Application.Dtos.Portal;
 /// <c>PortalService.UpdatePortalAsync</c>. That method answers with
 /// <c>Result&lt;PortalDetailDto&gt;</c>, which carries success, the updated portal and the reason for
 /// a failure as distinct data, and <c>PortalsController</c> translates it into an HTTP status code
-/// and body. No member below describes an outcome, a status, a concurrency token or an error: an
-/// update request describes only the desired state.
+/// and body. No member below describes an outcome, a status or an error: apart from
+/// <see cref="ConcurrencyToken"/>, which states WHICH revision of the portal the caller is amending,
+/// an update request describes only the desired state.
 /// </para>
 /// <para>
 /// The subject of the write is carried by the route. The <c>{id}</c> segment of
@@ -34,7 +39,7 @@ namespace DnnMigration.Application.Dtos.Portal;
 /// mismatch with a 400 naming the field, reading the route value from the validation context's root
 /// data, which <c>Api/Filters/FluentValidationActionFilter.cs</c> populates for every request it
 /// validates. A body identifier that cannot disagree with the route cannot retarget the write, so the
-/// contract keeps its exact member count without acquiring a second authority.
+/// contract keeps its exact attribute set without acquiring a second authority.
 /// </para>
 /// <para>
 /// Deliberately not updatable. The legacy entity
@@ -1096,4 +1101,33 @@ public sealed class UpdatePortalRequest : IPortalSettingsUpdateRequest
     /// </para>
     /// </remarks>
     public string? HomeDirectory { get; set; }
+
+    /// <summary>
+    /// Gets or sets the optimistic-concurrency token the caller read on the record it is replacing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// THE VALUE IS OPAQUE AND IS SIMPLY ROUND-TRIPPED. A caller reads it from
+    /// <c>PortalDetailDto.ConcurrencyToken</c> and sends the same string back; it is compared for equality
+    /// against the token derived from the record as it now stands, and a mismatch is refused with
+    /// <c>portal.concurrency_conflict</c> rather than being applied. No client may construct one.
+    /// </para>
+    /// <para>
+    /// NULLABLE, AND AN OMITTED TOKEN IS APPLIED. This member is net-new - the legacy screen posted the whole
+    /// record back with no version check of any kind - so refusing a request that carries none would break
+    /// every caller written before it existed. The trade is stated rather than hidden: a caller that omits
+    /// the token gets the legacy last-write-wins behaviour, and one that supplies it is protected. This is
+    /// the same arrangement the role update contract already uses, deliberately, so there is one concurrency
+    /// idiom in this API and not two.
+    /// </para>
+    /// <para>
+    /// WHY IT MATTERS MOST ON THIS CONTRACT. This request replaces every column of the tenant, and about
+    /// twenty of them are values the editing screen never displays - so a stale save did not merely overwrite
+    /// a field the operator could see they were changing, it silently destroyed committed edits to fields
+    /// neither operator had opened. Runtime testing measured two sessions both saving successfully with the
+    /// earlier operator's changes gone. Recorded in MIGRATION_NOTES.md as a deliberate divergence from the
+    /// legacy screen.
+    /// </para>
+    /// </remarks>
+    public string? ConcurrencyToken { get; set; }
 }

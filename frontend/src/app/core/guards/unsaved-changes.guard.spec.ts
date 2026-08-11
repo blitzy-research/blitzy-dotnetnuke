@@ -108,10 +108,28 @@ describe('unsavedChangesGuard', () => {
     return decision as boolean;
   }
 
-  /** Reports a navigation in progress with the given behaviour options. */
-  function navigationReplaces(replaceUrl: boolean | undefined): void {
+  /**
+   * Reports a navigation in progress with the given behaviour options and trigger.
+   *
+   * ⚠ THE TRIGGER IS PART OF THE FIXTURE NOW, AND ITS ABSENCE HID A DATA-LOSS DEFECT. The gate used to
+   * read `replaceUrl` alone, on the belief that replacing identified a departure the application itself
+   * had initiated. The router sets the very same flag on every navigation the BROWSER drives - a popstate
+   * has already moved the history entry by the time the router hears about it, so replacing is the only way
+   * to stay in step - which meant Back and Forward inherited an exemption written for a successful save. A
+   * browser audit reproduced it: a dirty form challenged a sidebar click correctly and let `history.back()`
+   * discard the edits with no prompt at all. Defaulted to `'imperative'` so every existing case keeps its
+   * meaning, and the two browser-driven triggers are exercised explicitly below.
+   *
+   * @param replaceUrl What the navigation's behaviour options state, or undefined to state nothing.
+   * @param trigger What initiated the navigation.
+   */
+  function navigationReplaces(
+    replaceUrl: boolean | undefined,
+    trigger: Navigation['trigger'] = 'imperative',
+  ): void {
     spyOn(router, 'getCurrentNavigation').and.returnValue({
       extras: replaceUrl === undefined ? {} : { replaceUrl },
+      trigger,
     } as Navigation);
   }
 
@@ -226,14 +244,17 @@ describe('unsavedChangesGuard', () => {
   });
 
   describe('telling an application-initiated departure from an operator-initiated one', () => {
-    it('does not challenge a departure that REPLACES its history entry', () => {
+    it('does not challenge a departure the APPLICATION initiated and replaced', () => {
       /*
        * Every post-success and post-failure departure in this application replaces. Challenging
        * one would offer to discard work that had just been saved successfully. On the
        * session-lost path it would be worse still: a prompt offering to stay on a screen whose
        * session has already ended is offering something that no longer exists.
+       *
+       * Both facts are now required, which is the correction: replacing on its own no longer earns
+       * the exemption, because the browser's own navigations replace too.
        */
-      navigationReplaces(true);
+      navigationReplaces(true, 'imperative');
 
       expect(runGuard({ form: form(true) })).toBeTrue();
       expect(confirmSpy)
@@ -241,9 +262,36 @@ describe('unsavedChangesGuard', () => {
         .not.toHaveBeenCalled();
     });
 
+    it('CHALLENGES a replacing departure the BROWSER initiated, so Back cannot discard work silently', () => {
+      // ⚠ THE DEFECT THIS GATE EXISTS TO PREVENT, REACHED THROUGH THE ONE DOOR IT LEFT OPEN. Angular sets
+      // `replaceUrl: true` on a popstate navigation because the history entry has already moved, so a
+      // guard reading that flag alone treated every press of Back as a departure the application had asked
+      // for. A browser audit measured the result on a dirty `/roles/new`: a sidebar click prompted, and
+      // `history.back()` changed the route with no prompt and discarded the edits. `beforeunload` does not
+      // cover it either - it is registered by three parties here and none of them sees a same-document
+      // navigation - so this gate was the only thing standing between the Back button and unsaved work.
+      navigationReplaces(true, 'popstate');
+
+      expect(runGuard({ form: form(true) })).toBeFalse();
+      expect(confirmSpy).toHaveBeenCalledOnceWith(DISCARD_CHANGES_PROMPT);
+    });
+
+    it('CHALLENGES a replacing departure driven by the address fragment', () => {
+      // The second browser-driven trigger, held to the same rule. The admissible trigger is named
+      // positively rather than the inadmissible ones being listed, so a trigger added by a future router
+      // arrives challenged rather than exempt - which is the direction this gate must fail in.
+      navigationReplaces(true, 'hashchange');
+
+      expect(runGuard({ form: form(true) })).toBeFalse();
+      expect(confirmSpy).toHaveBeenCalledOnceWith(DISCARD_CHANGES_PROMPT);
+    });
+
     it('challenges a departure that does not replace', () => {
-      // A link, a Cancel button, the Back button. Cancel sits one click from Update, and
-      // silently discarding a filled-in form is the measured defect.
+      // A link or a Cancel button. Cancel sits one click from Update, and silently discarding a
+      // filled-in form is the measured defect.
+      //
+      // The Back button used to be listed here and does NOT belong: it replaces. It is covered by the
+      // popstate case above, which is where the defect actually lived.
       navigationReplaces(false);
 
       expect(runGuard({ form: form(true) })).toBeFalse();

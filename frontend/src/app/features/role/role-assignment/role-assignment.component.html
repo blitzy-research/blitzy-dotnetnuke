@@ -131,11 +131,18 @@
             (change)="selectAccountChoice($event)"
           >
             <option value="">{{ text.userChoicePrompt }}</option>
-            @for (choice of accountChoices(); track choice.userId) {
+            <!--
+              The label is COMPOSED IN THE COMPONENT, including the note an entry carries when this role
+              already holds the account. Every entry stays selectable - see
+              `accountAlreadyInRoleSuffix` for why removing them would delete the amend-a-membership
+              workflow the legacy screen offered - and the note is what moves "this account is already a
+              member" from after the choice to before it.
+            -->
+            @for (choice of accountChoiceEntries(); track choice.userId) {
               <option
                 [value]="choice.userId"
                 [selected]="choice.userId === formState().userId"
-              >{{ choice.displayName }} ({{ choice.username }})</option>
+              >{{ choice.label }}</option>
             }
           </select>
 
@@ -459,6 +466,7 @@
       COLUMN KEY rather than the endpoint field the coordinate holds - the grid compares it against a column
       key - and the component projects one to the other.
     -->
+    <!--
       ⚠ R-M24: THE REASON THE REMOVAL COMMAND IS ABSENT, stated rather than left to be inferred.
       The command column is withheld entirely on the registered-users role, because
       `RoleController.vb:L745` forbids removal from it for every account without exception - see
@@ -466,6 +474,14 @@
       otherwise find the affordance simply gone, with nothing saying whether that is a rule or a
       fault. The sibling role editor already states the reason for its own protected-role state,
       for the same reason and on the same authored footing.
+
+      ⚠ AND IT IS A COMMENT, WHICH IT WAS NOT. The block above previously sat OUTSIDE any comment -
+      the preceding note closed its delimiter before this paragraph began - so all seven lines of
+      authoring commentary, back-tick file citations and the ⚠ glyph rendered on the page as
+      end-user copy on every visit to this screen. It is enclosed in its own delimiter rather than
+      folded into the note above because the two describe different things: that one is about the
+      ordering inputs, this one about the removal command.
+    -->
     @if (!removalAvailable()) {
       <p class="role-assignment__notice">{{ text.removalUnavailable }}</p>
     }

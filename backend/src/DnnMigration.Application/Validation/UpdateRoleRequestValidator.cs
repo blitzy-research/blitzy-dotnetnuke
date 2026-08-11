@@ -185,13 +185,20 @@ public class UpdateRoleRequestValidator : AbstractValidator<UpdateRoleRequest>
             .WithMessage(AmountUnrepresentableMessage)
             .When(request => request.ServiceFee.HasValue);
 
-        // valBillingPeriod2 (L114): GreaterThan against 0 - strictly positive, and the legacy message
-        // says exactly that. An earlier revision here claimed the legacy wording disagreed with this
-        // operator; it does not - EditRoles.ascx.resx declares "Billing Period Must Be Greater Than
-        // Zero" - the disagreement was a mistranscription in RoleTermsRules and is corrected there.
-        // A cycle of zero units could never advance an expiry date.
+        // valBillingPeriod2 (L114): GreaterThan against 0 - strictly positive WHERE A CYCLE IS DECLARED,
+        // and the legacy message says exactly that. An earlier revision here claimed the legacy wording
+        // disagreed with this operator; it does not - EditRoles.ascx.resx declares "Billing Period Must
+        // Be Greater Than Zero" - the disagreement was a mistranscription in RoleTermsRules and is
+        // corrected there. A cycle of zero units could never advance an expiry date.
+        //
+        // The rule is evaluated against the PAIR rather than the member alone, because the store holds a
+        // period of 0 beside a frequency of N for every role the portal template creates and this API's
+        // read projection reports it; refusing that pair on write made a value the API emits a value it
+        // would not accept. The reasoning, the legacy read and write paths it rests on, and the measured
+        // consequence are recorded on RoleTermsRules.IsPeriodAdmissibleForFrequency.
         RuleFor(request => request.BillingPeriod)
-            .GreaterThan(0)
+            .Must((request, period) =>
+                RoleTermsRules.IsPeriodAdmissibleForFrequency(period, request.BillingFrequency))
             .WithMessage(RoleTermsRules.BillingPeriodNotPositiveMessage)
             .When(request => request.BillingPeriod.HasValue);
 
@@ -204,9 +211,12 @@ public class UpdateRoleRequestValidator : AbstractValidator<UpdateRoleRequest>
             .WithMessage(AmountUnrepresentableMessage)
             .When(request => request.TrialFee.HasValue);
 
-        // valTrialPeriod2 (L146): GreaterThan against 0. Message and operator agree here.
+        // valTrialPeriod2 (L146): GreaterThan against 0. Message and operator agree here, and the pair is
+        // evaluated for the same reason as the billing period above - the template's roles carry a trial
+        // period of 0 beside a trial frequency of N.
         RuleFor(request => request.TrialPeriod)
-            .GreaterThan(0)
+            .Must((request, period) =>
+                RoleTermsRules.IsPeriodAdmissibleForFrequency(period, request.TrialFrequency))
             .WithMessage(RoleTermsRules.TrialPeriodNotPositiveMessage)
             .When(request => request.TrialPeriod.HasValue);
 

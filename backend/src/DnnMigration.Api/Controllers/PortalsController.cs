@@ -441,6 +441,12 @@ public sealed class PortalsController : ControllerBase
     /// administrator rather than a host account and the submitted values would alter a host-only field.
     /// </response>
     /// <response code="404">No portal bears that identifier.</response>
+    /// <response code="409">
+    /// The submitted <c>concurrencyToken</c> does not match the portal as it now stands, so the record was
+    /// changed by someone else after the caller read it and nothing was written. Re-sending the same body
+    /// cannot succeed; the caller must read the portal again and re-apply its change. A request that carries
+    /// no token is applied, so this refusal only reaches callers that opted into the protection.
+    /// </response>
     /// <remarks>
     /// <para>
     /// MIGRATION: replaces the twenty-seven-argument <c>UpdatePortalInfo</c> call at
@@ -503,6 +509,7 @@ public sealed class PortalsController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult<ApiResponse<PortalDetailDto?>>> UpdateAsync(
         int portalId,
         [FromBody] UpdatePortalRequest request,
@@ -643,6 +650,12 @@ public sealed class PortalsController : ControllerBase
     /// to alter one of the host-only terms.
     /// </response>
     /// <response code="404">No portal bears that identifier.</response>
+    /// <response code="409">
+    /// The submitted <c>concurrencyToken</c> does not match the portal as it now stands, so the settings were
+    /// changed by someone else after the caller read them and nothing was written. Re-sending the same body
+    /// cannot succeed; the caller must read the settings again and re-apply its change. A request that
+    /// carries no token is applied, so this refusal only reaches callers that opted into the protection.
+    /// </response>
     /// <remarks>
     /// <para>
     /// Reproduces the save at <c>Website/admin/Portal/SiteSettings.ascx.vb:L687-L821</c>. The request
@@ -651,7 +664,9 @@ public sealed class PortalsController : ControllerBase
     /// </para>
     /// <para>
     /// The service applies the same host-only comparison, administrator invariant, mapper, commit and
-    /// cache invalidation as the general portal update. The controller performs no rule itself.
+    /// cache invalidation as the general portal update, and - since both routes replace the same
+    /// twenty-five columns through the same mapper - the same optimistic-concurrency check. The controller
+    /// performs no rule itself.
     /// </para>
     /// </remarks>
     [HttpPut("{portalId:int}/settings")]
@@ -661,6 +676,7 @@ public sealed class PortalsController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult<ApiResponse<PortalSettingsDto?>>> UpdateSettingsAsync(
         int portalId,
         [FromBody] UpdatePortalSettingsRequest request,

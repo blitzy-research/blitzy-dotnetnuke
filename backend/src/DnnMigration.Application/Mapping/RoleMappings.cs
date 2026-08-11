@@ -1,5 +1,6 @@
 using DnnMigration.Application.Common;
 using DnnMigration.Application.Dtos.Role;
+using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
 
 namespace DnnMigration.Application.Mapping;
@@ -774,15 +775,44 @@ public static class RoleMappings
         string? rsvpCode,
         string? iconFile)
     {
-        role.RoleName = roleName;
+        // MIGRATION: THE NAME IS TRIMMED BEFORE IT IS STORED, BECAUSE THE UNIQUENESS RULE ALREADY TRIMS IT.
+        // The uniqueness index is UNIQUE (PortalID, RoleName) (03.00.09.SqlDataProvider L304) and is
+        // evaluated under the database's collation, which gives trailing whitespace no sort weight - so
+        // GetByNameAsync, the duplicate check every write runs first, treats "Editors  " and "Editors" as
+        // one name. Storing the padding verbatim while matching on the trimmed form left the grid showing a
+        // name that could not be re-created: runtime testing stored a 17-character padded name and was then
+        // refused 409 for the 12-character name it appears to be, with no way to reconcile the two by
+        // inspection. Trimming here makes the stored value and the value that governs uniqueness the same
+        // string.
+        //
+        // Legacy also stored the padding - an ASP.NET TextBox does not trim - so this is a deliberate
+        // divergence rather than a reproduction, recorded in MIGRATION_NOTES.md and taken on the same
+        // footing as the invisible-character rule the write validators already apply: a role name is an
+        // identifier an operator has to be able to read, retype and tell apart from a visibly identical
+        // one. It cannot make a previously accepted name invalid, and it changes no name that carries no
+        // surrounding whitespace. Interior whitespace is untouched, so "Content Editors" is unaffected.
+        role.RoleName = roleName.Trim();
         role.Description = description;
         role.RoleGroupId = roleGroupId;
         role.IsPublic = isPublic;
         role.AutoAssignment = autoAssignment;
-        role.ServiceFee = serviceFee is null ? null : PortalMappings.ClampFee(serviceFee.Value);
+
+        // MIGRATION: BOTH FEES ARE STAGED AT THE STORED COLUMN'S OWN SCALE, so the aggregate holds what the
+        // row will hold. The columns are money [03.01.01:L1173 and 01.00.08:L6830], which keeps four
+        // fractional digits, and a submitted fee carrying more used to survive in memory and be rounded by
+        // the store - after which the created response, taken from the aggregate, reported a number the
+        // installation did not have. The rounding is the column's, stated once on
+        // SqlServerRange.ToStoredMoney together with the measurement that prompted it; the floor below it is
+        // the legacy role-fee clamp, and the two are applied in that order so a negative submission becomes
+        // zero before the scale is applied rather than after.
+        role.ServiceFee = serviceFee is null
+            ? null
+            : SqlServerRange.ToStoredMoney(PortalMappings.ClampFee(serviceFee.Value));
         role.BillingPeriod = billingPeriod;
         role.BillingFrequency = billingFrequency;
-        role.TrialFee = trialFee is null ? null : PortalMappings.ClampFee(trialFee.Value);
+        role.TrialFee = trialFee is null
+            ? null
+            : SqlServerRange.ToStoredMoney(PortalMappings.ClampFee(trialFee.Value));
         role.TrialPeriod = trialPeriod;
         role.TrialFrequency = trialFrequency;
         role.RsvpCode = rsvpCode;

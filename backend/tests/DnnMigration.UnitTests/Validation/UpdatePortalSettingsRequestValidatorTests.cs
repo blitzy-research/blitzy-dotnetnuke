@@ -42,7 +42,16 @@ public sealed class UpdatePortalSettingsRequestValidatorTests
 
         settingsMembers.Should().Equal(sharedMembers);
         settingsMembers.Should().Equal(generalMembers);
-        settingsMembers.Should().HaveCount(26);
+
+        // TWENTY-SEVEN: the twenty-six shared editable members, plus the optimistic-concurrency token. The
+        // token is the only member of the shared interface that describes no portal attribute and the only one
+        // PortalMappings.ApplyUpdate never reads - it states which revision the caller read so a stale
+        // whole-record replace is refused rather than applied. It is asserted HERE, alongside the two
+        // set-equality checks above, because the value of this test is that the two portal write paths carry
+        // IDENTICAL member sets: a token on only one of them would move the lost-update surface to the sibling
+        // route rather than remove it, and that asymmetry would fail on one of those two lines.
+        settingsMembers.Should().HaveCount(27);
+        settingsMembers.Should().Contain(nameof(UpdatePortalSettingsRequest.ConcurrencyToken));
         settingsMembers.Should().NotContain(nameof(UpdatePortalRequest.PortalId));
         settingsMembers.Should().NotContain(nameof(PortalSettingsDto.Guid));
     }

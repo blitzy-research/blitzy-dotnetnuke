@@ -730,21 +730,41 @@ describe('ProfileDefinitionListComponent', () => {
       expect(announced?.textContent?.trim()).toBe('no data type chosen');
     });
 
-    it('never paints the stored data-type foreign key, and carries the reference in the title and the accessibility tree instead', () => {
-      // The QA finding this covers: a bare `349` reached the user in a column headed `DataType`, where
-      // it reads as a type name. `DisplayDataType` never returned a number — it returned the resolved
-      // list-entry value or the empty string — and the `Lists` vocabulary that names 349 is excluded from
-      // the migration, absent from the API and absent from the schema, so no name can be produced.
+    it('paints the stored data-type key as a REFERENCE, never bare and never withheld', () => {
+      // ⚠ THIS CASE RECONCILES TWO QA FINDINGS THAT PULL IN OPPOSITE DIRECTIONS, AND BOTH ARE CITED SO
+      // THAT NEITHER IS RE-OPENED BY UNDOING THE OTHER.
+      //
+      // The first finding was that a bare `349` reached the user in a column headed `DataType`, where a
+      // number reads as though it were the type's name. `DisplayDataType` never returned a number - it
+      // returned the resolved list-entry value or the empty string - and the `Lists` vocabulary that
+      // names 349 is excluded from the migration, absent from the API and absent from the schema, so no
+      // name can be produced. That finding was answered by painting the absent-value mark instead.
+      //
+      // The second finding was that the mark then reached the user on 100% of rows, so a sighted reader
+      // learned "this property has no data type" when every row stores one. The correcting wording
+      // existed only in a `title` and a screen-reader-only span, which a sighted reader had to hover to
+      // discover.
+      //
+      // A PREFIXED reference answers both at once: `#349` cannot be read as a type name, only as a
+      // reference to one, and it does not hide a value the row really holds. The three expectations
+      // below pin each half - the reference is painted, the bare number is not, and the mark is reserved
+      // for the sentinel row the preceding case covers.
       arrive([definition({ propertyDefinitionId: 42, propertyName: 'Typed', dataType: 349 })]);
 
       const cell = query<HTMLTableCellElement>('tbody tr td,tbody tr th').at(6);
       const painted = cell?.querySelector('[aria-hidden="true"]');
       const announced = cell?.querySelector('[data-visually-hidden]');
 
-      expect(painted?.textContent?.trim()).toBe('\u2014');
-      // The raw key is not painted anywhere in the cell's visible text.
-      expect(painted?.textContent ?? '').not.toContain('349');
-      // But it is not destroyed either: it is named as a reference, in words.
+      expect(painted?.textContent?.trim())
+        .withContext('the reference is visible, prefixed so it cannot be read as a name')
+        .toBe('#349');
+      expect(painted?.textContent?.trim())
+        .withContext('and it is never the bare number the first finding rejected')
+        .not.toBe('349');
+      expect(painted?.textContent?.trim())
+        .withContext('nor the mark, which now means only "nothing stored"')
+        .not.toBe('\u2014');
+      // The words are unchanged: the reference was always named in the accessibility tree, and still is.
       expect(announced?.textContent?.trim()).toBe('data type reference 349, name unavailable');
       // The hover affordance and the announced sentence are generated from one accessor, so they agree
       // by construction rather than by coincidence.

@@ -146,8 +146,47 @@ const IMPORT_SUBTITLE = 'Administrators can import content for the specified mod
  */
 const MODULE_FIELD_LABEL = 'Module';
 
-/** Guidance for the module field. Net-new alongside the field itself. */
-const MODULE_FIELD_HELP = 'Select the module to import content into';
+/**
+ * Guidance for the module field. Net-new alongside the field itself.
+ *
+ * ⚠ THE SECOND SENTENCE STATES A CONSTRAINT THE PICKER CANNOT ENFORCE, AND STATING IT IS THE FIX.
+ *   `Import.ascx.vb:L177` guarded the whole transfer on
+ *   `objModule.BusinessControllerClass <> "" And objModule.IsPortable` and `L214` answered a target
+ *   failing that guard with the `ImportNotSupported` wording - a refusal at the moment of submission,
+ *   because the legacy screen had no module field to withhold anything from. The migrated endpoint
+ *   reproduces exactly that refusal (`module.not_portable`, measured live as "Module 2 does not support
+ *   content import."), so the behaviour is preserved; what an operator lacked was any warning BEFORE
+ *   choosing. Withholding such modules from the picker instead was considered and REFUSED: the
+ *   definition catalogue this screen could consult publishes `isPortable` but NOT
+ *   `businessControllerClass`, so a client-side test would evaluate half the server's predicate, and a
+ *   half-evaluated predicate either withholds a legitimate destination silently - which this screen's
+ *   own contract forbids, see `moduleChoiceSummary` - or labels a usable one as unusable. The server
+ *   stays the single authority on the predicate and this sentence is what makes it predictable.
+ */
+const MODULE_FIELD_HELP =
+  'Select the module to import content into. Content can only be imported into a module whose ' +
+  'package supports content transfer; any other module is refused when the import is submitted.';
+
+/**
+ * The wording of the picker's opening option: `"<" + None_Specified + ">"` where the shared resource
+ * value of `None_Specified.Text` is `None Specified`. The angle brackets are part of the legacy display
+ * string, not markup.
+ *
+ * ⚠ THIS OPTION EXISTS BECAUSE ITS ABSENCE LEFT THE CONTROL WITH NO SELECTED OPTION AT ALL, AND THE
+ *   LEGACY SCREEN SEEDED THE SAME WORDING INTO THE SAME CONTROL. An earlier revision of this file
+ *   argued that a placeholder should not be invented because no wording was published for one and
+ *   opening with nothing selected was the honest representation of "nothing chosen yet". Both halves
+ *   were wrong. The wording IS published - `Import.ascx.vb:L72` inserts
+ *   `"<" + Localization.GetString("None_Specified") + ">"` at index 0 of THIS screen's own picker, and
+ *   two sibling screens render the identical string - and a select whose value matches no option
+ *   renders with `selectedIndex` -1, which is not "nothing chosen" but a control in a state no
+ *   keyboard or assistive-technology user can read back: the collapsed control shows blank, arrowing
+ *   from it jumps to the first module rather than stepping from a known position, and nothing names
+ *   the state. Binding this option to `null` makes the initial state a REAL, selectable, named option
+ *   whose value is exactly what the control already held, so the requirement below still reports an
+ *   unmade choice and choosing it again is how an operator retracts one.
+ */
+const MODULE_PLACEHOLDER_LABEL = '<None Specified>';
 
 /** The document field's label. Taken from `plFile.Text`. */
 const FILE_FIELD_LABEL = 'File';
@@ -528,6 +567,9 @@ export class ModuleImportComponent {
 
   /** @see MODULE_FIELD_HELP */
   protected readonly moduleFieldHelp = MODULE_FIELD_HELP;
+
+  /** @see MODULE_PLACEHOLDER_LABEL */
+  protected readonly modulePlaceholderLabel = MODULE_PLACEHOLDER_LABEL;
 
   /** @see FILE_FIELD_LABEL */
   protected readonly fileFieldLabel = FILE_FIELD_LABEL;
@@ -973,7 +1015,17 @@ export class ModuleImportComponent {
         return;
       }
 
-      this.notifications.warning(failure.summary.message);
+      // ⚠ `notify` RATHER THAN THE `warning` CONVENIENCE, BECAUSE THAT HELPER CANNOT CARRY A
+      // REFERENCE. Its signature takes only a message and a survives-navigation flag - the queue's own
+      // note claims a failure "is the only outcome that has one to quote", which the shared classifier
+      // contradicts: it resolves 403 to WARNING, and a 403 carries a correlation identifier like any
+      // other refusal. This is such a 403, so the helper's shape would have silently discarded the one
+      // thing an operator needs in order to escalate a refusal they cannot resolve themselves.
+      this.notifications.notify(
+        'warning',
+        failure.summary.message,
+        failure.summary.supportReference,
+      );
     });
   }
 

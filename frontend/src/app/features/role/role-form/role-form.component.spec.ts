@@ -1048,11 +1048,49 @@ describe('RoleFormComponent', () => {
     }));
   }
 
+  /**
+   * The support reference each announcement quoted, oldest first, `null` where none was quoted.
+   *
+   * ⚠ DELIBERATELY A SEPARATE PROJECTION FROM {@link Announcement}. The eighteen cases that
+   * deep-compare an announcement are about its WORDING, and widening the shape they compare would have
+   * made every one of them restate a reference it does not care about - which is how an assertion stops
+   * describing its own subject. The reference has its own rule and its own cases below.
+   *
+   * @returns The third argument of every `notify` call, oldest first.
+   */
+  function announcementReferences(): readonly (string | null)[] {
+    return notifySpy.calls
+      .allArgs()
+      .map((args: readonly unknown[]) =>
+        typeof args[2] === 'string' && args[2].length > 0 ? args[2] : null,
+      );
+  }
+
+  /** The support reference the most recent announcement quoted, or `null`. */
+  function lastReference(): string | null {
+    const quoted: readonly (string | null)[] = announcementReferences();
+
+    return quoted.length === 0 ? null : quoted[quoted.length - 1];
+  }
+
   /** The most recent announcement, or nothing when none was requested. */
   function lastAnnouncement(): Announcement | undefined {
     const queue: readonly Announcement[] = announcements();
 
     return queue.length === 0 ? undefined : queue[queue.length - 1];
+  }
+
+  /**
+   * The sentence the failure banner is rendering, or `null` when the banner is empty.
+   *
+   * The counterpart of {@link lastAnnouncement}, and it exists because the two surfaces now carry
+   * DIFFERENT text by design: the notification says what did not happen, the banner says why. A case
+   * that asserts only one of them cannot see the duplication that used to exist between them.
+   */
+  function bannerMessage(): string | null {
+    const node: Element | null = host().querySelector('.error-banner__message');
+
+    return node === null ? null : textOf(node);
   }
 
   /**
@@ -1670,13 +1708,17 @@ describe('RoleFormComponent', () => {
       const call: TestRequest = expectRequest('POST', ROLES_URL, 'the creation');
 
       // The document says nothing a person can use, so the client's own fallback governs — and the
-      // fallback IS the legacy sentence.
+      // fallback IS the legacy sentence. It is rendered by the BANNER: the notification carries the
+      // outcome, so one refusal is never spelled out twice on one screen.
       call.flush(silentProblem(409, 'duplicate-role'), { status: 409, statusText: 'Conflict' });
       fixture.detectChanges();
 
+      expect(bannerMessage())
+        .withContext('the banner carries the legacy refusal sentence')
+        .toBe(DUPLICATE_ROLE_MESSAGE);
       expect(lastAnnouncement()).toEqual({
         severity: 'error',
-        message: DUPLICATE_ROLE_MESSAGE,
+        message: SAVE_FAILED_MESSAGE,
       });
       expect(navigateSpy).withContext('the operator stays on the screen').not.toHaveBeenCalled();
     });
@@ -1696,10 +1738,17 @@ describe('RoleFormComponent', () => {
       );
       fixture.detectChanges();
 
+      // VERBATIM ON THE BANNER, which is the surface that resolves document-before-fallback. The
+      // notification states the outcome in this screen's own words, so the two surfaces complement
+      // each other instead of repeating one sentence twice.
+      expect(bannerMessage()).toBe('Role name Administrators is already in use.');
       expect(lastAnnouncement()).toEqual({
         severity: 'error',
-        message: 'Role name Administrators is already in use.',
+        message: SAVE_FAILED_MESSAGE,
       });
+      expect(bannerMessage())
+        .withContext('the two surfaces never carry the same sentence')
+        .not.toBe(lastAnnouncement()?.message ?? null);
     });
 
     it('handles a 409 on the UPDATE path too, which the legacy never checked for', () => {
@@ -1718,9 +1767,10 @@ describe('RoleFormComponent', () => {
       });
       fixture.detectChanges();
 
+      expect(bannerMessage()).toBe(DUPLICATE_ROLE_MESSAGE);
       expect(lastAnnouncement()).toEqual({
         severity: 'error',
-        message: DUPLICATE_ROLE_MESSAGE,
+        message: SAVE_FAILED_MESSAGE,
       });
       expect(navigateSpy).not.toHaveBeenCalled();
     });
@@ -1741,10 +1791,13 @@ describe('RoleFormComponent', () => {
       );
       fixture.detectChanges();
 
+      // The SEVERITY is what this case is about, and it travels with the outcome sentence; the
+      // server's own explanation is beside it on the banner.
       expect(lastAnnouncement()).toEqual({
         severity: 'warning',
-        message: 'You do not administer this portal.',
+        message: SAVE_FAILED_MESSAGE,
       });
+      expect(bannerMessage()).toBe('You do not administer this portal.');
     });
 
     it('falls back to its own wording when a refusal explains nothing', () => {
@@ -1760,6 +1813,36 @@ describe('RoleFormComponent', () => {
       fixture.detectChanges();
 
       expect(lastAnnouncement()).toEqual({ severity: 'error', message: SAVE_FAILED_MESSAGE });
+    });
+
+    it('RETIRES the refusal when the next press is blocked by a rule of its own', () => {
+      // ⚠ A BANNER THAT OUTLIVED THE SNAPSHOT IT DESCRIBED. Runtime testing refused a duplicate name
+      // with a `409`, cleared the name, and pressed Update: the press was blocked by the presence rule,
+      // and the page went on saying that a role with the same name already exists - about a name that
+      // was no longer in the box, beside a field message saying the name was missing. The document
+      // described the request that WAS sent; once a further attempt is made it describes nothing on
+      // screen, whether that attempt reaches the server or not.
+      createMode();
+      fillRoleName('Administrators');
+      press(SUBMIT_LABEL);
+
+      expectRequest('POST', ROLES_URL, 'the creation').flush(silentProblem(409, 'duplicate-role'), {
+        status: 409,
+        statusText: 'Conflict',
+      });
+      fixture.detectChanges();
+
+      expect(bannerMessage()).withContext('the refusal is on screen').toBe(DUPLICATE_ROLE_MESSAGE);
+
+      // The name is cleared, so the next press cannot leave this screen.
+      type(CONTROL_ID.roleName, '');
+      press(SUBMIT_LABEL);
+
+      expect(bannerMessage()).withContext('and the stale refusal is gone').toBeNull();
+      expect(messagesFor(CONTROL_ID.roleName))
+        .withContext('replaced by the rule that actually blocked the press')
+        .toContain('You Must Enter a Valid Name');
+      httpMock.expectNone(ROLES_URL, 'nothing was sent');
     });
 
     it('preserves the trace identifier from the refusal document as the support reference', () => {
@@ -1804,6 +1887,91 @@ describe('RoleFormComponent', () => {
         .toContain(CORRELATION_ID);
     });
 
+    it('QUOTES the support reference when a refusal is announced', () => {
+      // ⚠ THE MEASURED DEFECT. A browser audit submitted a duplicate role name and captured `409`
+      // carrying `correlationId` in both the response header and the problem body. The banner rendered
+      // `Reference: <id>`. This announcement rendered `The role could not be saved.` and had THREE child
+      // nodes - severity, message, dismiss - with no reference node at all: the identifier was in hand and
+      // was discarded.
+      //
+      // It matters because the two surfaces do not cover for one another. The banner sits at the top of a
+      // form long enough to scroll, so an operator who submits from the bottom sees this announcement and
+      // nothing else - and the same audit found the sibling screen's `403` and `404` produced no console
+      // entry either. Without the identifier a refused save cannot be escalated at all.
+      createMode();
+      fillRoleName('Administrators');
+
+      press(SUBMIT_LABEL);
+
+      expectRequest('POST', ROLES_URL, 'the creation').flush(
+        problem(409, 'duplicate-role', {
+          detail: DUPLICATE_ROLE_MESSAGE,
+          correlationId: CORRELATION_ID,
+        }),
+        { status: 409, statusText: 'Conflict' },
+      );
+      fixture.detectChanges();
+
+      expect(lastAnnouncement())
+        .withContext('the announcement still says what happened in this screen own words')
+        .toEqual({ severity: 'error', message: SAVE_FAILED_MESSAGE });
+      expect(lastReference())
+        .withContext('and now carries the identifier the server recorded the refusal under')
+        .toBe(CORRELATION_ID);
+    });
+
+    it('quotes the SAME reference the banner beside it quotes', () => {
+      // Stated separately from the case above because a reference that is merely present is not enough:
+      // two surfaces describing one refusal must name one identifier. Reading them from the shared summary
+      // rather than re-deriving each is what makes that true, and this is the case that would fail if a
+      // later edit re-read the document in one of the two places.
+      createMode();
+      fillRoleName('Administrators');
+
+      press(SUBMIT_LABEL);
+
+      expectRequest('POST', ROLES_URL, 'the creation').flush(
+        problem(409, 'duplicate-role', {
+          detail: DUPLICATE_ROLE_MESSAGE,
+          traceId: TRACE_ID,
+          correlationId: CORRELATION_ID,
+        }),
+        { status: 409, statusText: 'Conflict' },
+      );
+      fixture.detectChanges();
+
+      const shown: string = textOf(queryOrFail<Element>(host(), '.error-banner__trace'));
+
+      expect(shown)
+        .withContext('the banner quotes the correlation identifier')
+        .toContain(CORRELATION_ID);
+      expect(lastReference())
+        .withContext('and the announcement quotes that identifier, not the trace one')
+        .toBe(CORRELATION_ID);
+    });
+
+    it('quotes NO reference when the refusal carried none to quote', () => {
+      // ⚠ THE OTHER HALF OF THE RULE, AND IT IS WHY THE RULE IS A RULE. A reference is quoted because
+      // the answer HAD one, never as decoration - so a transport failure, which arrives with no document
+      // and therefore no identifier, must announce its outcome and quote nothing. Without this case the
+      // one above could be satisfied by inventing an identifier, and an operator would be handed a
+      // reference support cannot find.
+      createMode();
+      fillRoleName();
+
+      press(SUBMIT_LABEL);
+
+      expectRequest('POST', ROLES_URL, 'the creation').error(new ProgressEvent('network error'));
+      fixture.detectChanges();
+
+      expect(lastAnnouncement())
+        .withContext('the failed save is still reported')
+        .toEqual({ severity: 'error', message: SAVE_FAILED_MESSAGE });
+      expect(lastReference())
+        .withContext('with nothing quoted, because there was nothing to quote')
+        .toBeNull();
+    });
+
     it('places a per-field refusal on the control the server named', () => {
       // The keys are the server's own model-state keys and are Pascal-cased, so they are read with
       // bracket access and their first character is lowered to reach a control of the same name.
@@ -1832,6 +2000,71 @@ describe('RoleFormComponent', () => {
 
       expect(announcements()).toContain({ severity: 'success', message: ROLE_CREATED_MESSAGE });
       expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], { replaceUrl: true });
+    });
+
+    it('still announces a creation that settles AFTER the operator has left the screen', () => {
+      // ⚠ THE MEASURED DEFECT, AND ITS CAUSE IS A LIFETIME RATHER THAN A MESSAGE. The write bridge is an
+      // effect in this component's injection context, so it dies WITH the component - and an operator who
+      // submits and then immediately clicks somewhere else destroys the only party that was going to tell
+      // them what happened. A browser audit measured it on this screen: the request answered `201`, was
+      // never aborted, the role was genuinely created, the destination screen was healthy - and no
+      // confirmation was raised anywhere. The outcome was published to a signal slot nobody was left
+      // watching.
+      //
+      // The screen now hands the last step over as it goes, to a root-provided watcher that outlives every
+      // screen. It announces and deliberately does NOT navigate: the operator chose to be somewhere else.
+      createMode();
+      fillRoleName();
+
+      press(SUBMIT_LABEL);
+
+      const call: TestRequest = expectRequest('POST', ROLES_URL, 'the creation');
+
+      // The operator leaves while the write is still in flight. Destroying the fixture is exactly what a
+      // route change does, and it is what tore the bridge down.
+      fixture.destroy();
+      navigateSpy.calls.reset();
+
+      call.flush(envelope(role()), { status: 201, statusText: 'Created' });
+      TestBed.flushEffects();
+
+      expect(notifySpy)
+        .withContext('the operator is told the write committed, by the party that outlived the screen')
+        // Four arguments, not five: the relay goes through the queue's `success` convenience, which states
+        // the reference and the navigation exemption and leaves the lifetime opinion to its default - so a
+        // confirmation keeps the severity-derived lifetime every other confirmation has.
+        .toHaveBeenCalledWith('success', ROLE_CREATED_MESSAGE, null, false);
+      expect(navigateSpy)
+        .withContext('and is NOT dragged back to the listing they deliberately left')
+        .not.toHaveBeenCalled();
+    });
+
+    it('says NOTHING when a write that outlived the screen was refused', () => {
+      // ⚠ DELIBERATE ASYMMETRY. A refusal in this application is a document - a title, a detail, per-field
+      // messages and the support reference an operator quotes - and its home is the banner ON this screen.
+      // This screen is gone: there is no field for a field message to sit beside and no form to correct, so
+      // a decontextualised sentence thrown at wherever the operator has moved to would report a problem
+      // without showing it or letting them fix it. The store still holds the failure, so returning here
+      // presents it in full.
+      createMode();
+      fillRoleName();
+
+      press(SUBMIT_LABEL);
+
+      const call: TestRequest = expectRequest('POST', ROLES_URL, 'the creation');
+
+      fixture.destroy();
+      notifySpy.calls.reset();
+
+      call.flush(
+        { type: 'urn:test', title: 'Conflict', status: 409, detail: 'A role of that name exists.' },
+        { status: 409, statusText: 'Conflict' },
+      );
+      TestBed.flushEffects();
+
+      expect(notifySpy)
+        .withContext('a refusal without its screen is worse than silence')
+        .not.toHaveBeenCalled();
     });
 
     it('announces an update and leaves for the listing when the server accepts it', () => {
@@ -2769,8 +3002,11 @@ describe('RoleFormComponent', () => {
 
       expect(lastAnnouncement()).toEqual({
         severity: 'warning',
-        message: 'That role is maintained by the portal.',
+        message: SAVE_FAILED_MESSAGE,
       });
+      expect(bannerMessage())
+        .withContext("the API's own explanation is what the banner shows")
+        .toBe('That role is maintained by the portal.');
     });
 
     it('ARMS the guard as the tenant record arrives, without the screen being remounted', () => {
@@ -3138,8 +3374,9 @@ describe('RoleFormComponent', () => {
 
       expect(lastAnnouncement()).toEqual({
         severity: 'warning',
-        message: 'That role cannot be removed.',
+        message: DELETE_FAILED_MESSAGE,
       });
+      expect(bannerMessage()).toBe('That role cannot be removed.');
       expect(navigateSpy).not.toHaveBeenCalled();
     });
 
@@ -3263,7 +3500,17 @@ describe('RoleFormComponent', () => {
     it('withdraws NOTHING from the tab order', () => {
       createMode();
 
-      expect(queryAll('[tabindex="-1"]'))
+      // ⚠ THE CLAIM IS ABOUT INTERACTIVE ELEMENTS, AND THIS USED TO BE ASSERTED ABOUT ALL OF THEM.
+      // The rule being protected is the legacy defect's inverse: the legacy help affordance and its
+      // image were both given a negative index, so the only control that could reveal a collapsed
+      // section was unreachable by keyboard. A negative index on a NON-interactive element is the
+      // opposite kind of thing - it withdraws nothing, because such an element was never in the tab
+      // order, and it grants only the ability to be focused deliberately by script. The shared outcome
+      // banner carries exactly that, so a screen can bring a server refusal to a reader who pressed a
+      // control at the foot of a form taller than the viewport. Asserting over every element made the
+      // suite reject that affordance while the rule it exists for was never in question, so the query
+      // now names the interactive vocabulary the rule is about.
+      expect(queryAll('a[tabindex="-1"], button[tabindex="-1"], input[tabindex="-1"], select[tabindex="-1"], textarea[tabindex="-1"], summary[tabindex="-1"], [role="button"][tabindex="-1"]'))
         .withContext('the legacy help affordance and its image were both unreachable')
         .toHaveSize(0);
     });
@@ -3548,8 +3795,9 @@ describe('RoleFormComponent', () => {
 
       expect(lastAnnouncement()).toEqual({
         severity: 'info',
-        message: 'Too many attempts. Try again shortly.',
+        message: SAVE_FAILED_MESSAGE,
       });
+      expect(bannerMessage()).toBe('Too many attempts. Try again shortly.');
     });
 
     it('presents a missing role at the shared classification, which agrees with the legacy', () => {
@@ -3567,8 +3815,9 @@ describe('RoleFormComponent', () => {
 
       expect(lastAnnouncement()).toEqual({
         severity: 'warning',
-        message: 'That role no longer exists.',
+        message: SAVE_FAILED_MESSAGE,
       });
+      expect(bannerMessage()).toBe('That role no longer exists.');
     });
   });
 
@@ -3680,6 +3929,126 @@ describe('RoleFormComponent', () => {
 
       return section;
     }
+
+    describe('the values the legacy bind withholds are STATED rather than hidden', () => {
+      /** The sentence the advanced section prints above the paid-membership boxes, or ''. */
+      function withheldNotice(): string {
+        const notices: readonly string[] = textsOf('p.role-form__notice');
+
+        return notices.find((sentence) => sentence.startsWith('This role has no')) ?? '';
+      }
+
+      // ⚠ THE INCONSISTENCY BETWEEN TWO SCREENS, AND WHY THE BOXES ARE NOT SIMPLY FILLED.
+      //
+      // `/roles/0` holds `serviceFee 0.0000`, `billingPeriod 0`, `trialFee 0.0000`, `trialPeriod 0`, and
+      // the role LISTING renders those zeros as "0.00" and "0" - `Roles.ascx.vb:L152-L185` prints every
+      // non-sentinel value verbatim. This form leaves the same four boxes EMPTY, because
+      // `EditRoles.ascx.vb:L146-L156` fills them only for a priced role. Both are faithful; together
+      // they showed one record two ways with nothing saying which reading was the record.
+      //
+      // Rendering the zeros into these boxes was the reported repair and is refused, because it breaks
+      // two rules this screen must match: `valBillingPeriod2` (`editroles.ascx:L111-L114`) is
+      // `GreaterThan 0`, so an untouched role would open ALREADY INVALID with its Update command blocked
+      // on a number the record actually holds; and the write gate at `:L216` is
+      // `txtBillingPeriod.Text <> ""`, so filling the box changes what an untouched save STORES. The
+      // values are therefore stated beside the boxes, in the listing's own formatting.
+      it('states every withheld value, in the wording the role listing uses', () => {
+        editMode(role(0));
+        openAdvanced();
+
+        expect(withheldNotice()).toBe(
+          'This role has no paid-membership terms, so the boxes below are left empty. ' +
+            'The values held for it are Service Fee 0.00, Billing Period 0, Trial Fee 0.00 and ' +
+            'Trial Period 0.',
+        );
+        // And the boxes themselves are untouched, which is the half of this the legacy owns.
+        expect(input(CONTROL_ID.serviceFee).value).toBe('');
+        expect(input(CONTROL_ID.billingPeriod).value).toBe('');
+        expect(input(CONTROL_ID.trialFee).value).toBe('');
+        expect(input(CONTROL_ID.trialPeriod).value).toBe('');
+        // ⚠ AND THE FORM IS STILL SAVABLE, which is exactly what filling the boxes would have cost: a
+        // rendered `0` in the period box fails the legacy's own `GreaterThan 0` rule, so the screen would
+        // open with a message about a number nobody typed and an Update command that refuses to run.
+        expect(allMessages()).withContext('nothing opened invalid').toEqual([]);
+        expect(command('Update')?.disabled).withContext('and the command is live').toBeFalse();
+      });
+
+      it('states a withheld period of one, because a stored 1 is as invisible as a stored 0', () => {
+        // The shipped `Subscribers` role holds `billingPeriod 1` beside a frequency of None, so its
+        // boxes are blank for the same reason and its stored values are not zeros at all.
+        editMode(role(2, { billingPeriod: 1, trialPeriod: 1 }));
+        openAdvanced();
+
+        expect(withheldNotice()).toContain('Billing Period 1');
+        expect(withheldNotice()).toContain('Trial Period 1');
+      });
+
+      it('names the RECURRENCE UNIT a zero fee hides, which nothing else on the screen shows', () => {
+        // The billing group is suppressed by its FEE, so a role with a zero fee beside a real
+        // recurrence unit hides that unit behind a select reading "None". The trial group is suppressed
+        // BY its frequency being None, so a suppressed trial select is already showing the stored value
+        // and is deliberately not listed.
+        editMode(role(7, { serviceFee: 0, billingFrequency: 'M', billingPeriod: 3 }));
+        openAdvanced();
+
+        expect(withheldNotice()).toContain('Billing Period 3');
+        expect(withheldNotice()).toContain('Billing Frequency Month');
+        expect(withheldNotice())
+          .withContext('the trial select shows its own stored value, so nothing is withheld from it')
+          .not.toContain('Trial Frequency');
+      });
+
+      it('says nothing at all when both groups carry their values themselves', () => {
+        // Priced AND on trial, so neither group is suppressed and every box holds the record.
+        editMode(
+          role(7, {
+            serviceFee: 25,
+            billingPeriod: 1,
+            billingFrequency: 'M',
+            trialFee: 5,
+            trialPeriod: 2,
+            trialFrequency: 'W',
+          }),
+        );
+        openAdvanced();
+
+        expect(withheldNotice()).withContext('nothing is being withheld').toBe('');
+        expect(input(CONTROL_ID.serviceFee).value).toBe('25.00');
+        expect(input(CONTROL_ID.trialPeriod).value).toBe('2');
+      });
+
+      it('describes only the TRIAL group when the billing group carries its own values', () => {
+        // The two groups are suppressed independently and by different tests - the billing group by its
+        // FEE (`EditRoles.ascx.vb:L146`) and the trial group by its FREQUENCY (`:L154`) - so a priced
+        // role with no trial hides two values and shows three, and the sentence must say which.
+        editMode(role(7, { serviceFee: 25, billingPeriod: 1, billingFrequency: 'M' }));
+        openAdvanced();
+
+        expect(withheldNotice()).toBe(
+          'This role has no trial, so the trial boxes below are left empty. ' +
+            'The values held for it are Trial Fee 0.00 and Trial Period 0.',
+        );
+        expect(input(CONTROL_ID.serviceFee).value).toBe('25.00');
+      });
+
+      it('withholds the sentence on the creation form, where there is no record to describe', () => {
+        createMode();
+        openAdvanced();
+
+        expect(withheldNotice()).toBe('');
+      });
+
+      it('leaves out a value the record genuinely does not hold', () => {
+        // An ABSENT amount is not a withheld one. The money sentinel formats to nothing on both screens,
+        // and a caption with nothing after it would invent a value the record has never held.
+        editMode(role(7, { serviceFee: null, trialFee: null }));
+        openAdvanced();
+
+        expect(withheldNotice()).not.toContain('Service Fee');
+        expect(withheldNotice()).not.toContain('Trial Fee');
+        expect(withheldNotice()).toContain('Billing Period 0');
+      });
+    });
 
     describe('a thousands separator must separate thousands', () => {
       // ⚠ THE CASE THAT NAMES THE DEFECT. `1,5` is not a number in any locale this screen writes, and
@@ -3949,7 +4318,10 @@ describe('RoleFormComponent', () => {
         press('Update');
         refuseAsStale(7);
 
-        expect(lastAnnouncement()?.message).toContain('was changed by someone else');
+        // The server's explanation is on the BANNER; the notification states the outcome. Asserted on
+        // both surfaces because the sentence used to be on both AT ONCE.
+        expect(bannerMessage() ?? '').toContain('was changed by someone else');
+        expect(lastAnnouncement()).toEqual({ severity: 'error', message: SAVE_FAILED_MESSAGE });
         expect(navigateSpy).not.toHaveBeenCalled();
 
         const reload: HTMLButtonElement = queryOrFail<HTMLButtonElement>(

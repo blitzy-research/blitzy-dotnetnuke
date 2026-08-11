@@ -1,3 +1,4 @@
+using DnnMigration.Application.Common;
 using DnnMigration.Application.Dtos.Portal;
 using DnnMigration.Domain.Entities;
 using DnnMigration.Domain.Enums;
@@ -237,7 +238,71 @@ public static class PortalMappings
             Aliases = portal.PortalAliases.OrderBy(alias => alias.HttpAlias, StringComparer.OrdinalIgnoreCase)
                                           .Select(alias => ToDto(alias, currentPortalAliasId))
                                           .ToList(),
+            ConcurrencyToken = ConcurrencyTokenFor(portal),
         };
+    }
+
+    /// <summary>
+    /// Derives the optimistic-concurrency token a caller round-trips to prove it is replacing the tenant it
+    /// read.
+    /// </summary>
+    /// <param name="portal">The portal as it currently stands.</param>
+    /// <returns>The token.</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="portal"/> is null.</exception>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THE MEMBER ORDER IS PART OF THE CONTRACT. The token published by a read and the token verified by a
+    /// write are both produced here, so a reordering changes both together and stays self-consistent - but a
+    /// token already in a browser's hands would stop matching, and every open editor would be refused once.
+    /// Adding a member has the same effect. That is acceptable on a deployment boundary and must not be done
+    /// casually. This is the same rule the role token carries, stated the same way, because it is the same
+    /// hazard.
+    /// </para>
+    /// <para>
+    /// EVERY COLUMN THE UPDATE CAN REPLACE CONTRIBUTES, AND ONLY THOSE. The identifier does not: it addresses
+    /// the record rather than forming part of its state. Nor do the four columns no write path on this
+    /// contract touches - the tenant's globally unique identifier, its two stock role designations and its
+    /// administration page - because a token that moved for a reason the caller cannot have caused would
+    /// refuse a save that conflicted with nothing. The write-only payment credential is excluded for the
+    /// opposite reason: no read publishes it, so a caller could never hold a token that accounted for it, and
+    /// including it would make every token instantly stale.
+    /// </para>
+    /// <para>
+    /// The list is deliberately the same set of columns <see cref="ApplyUpdate"/> assigns, in the order that
+    /// member assigns them, so a future field added to the update path has one obvious place to be added here
+    /// and a reviewer can check the two against each other by reading down.
+    /// </para>
+    /// </remarks>
+    internal static string ConcurrencyTokenFor(Portal portal)
+    {
+        ArgumentNullException.ThrowIfNull(portal);
+
+        return ConcurrencyToken.From(
+            portal.PortalName,
+            portal.LogoFile,
+            portal.FooterText,
+            portal.ExpiryDate,
+            portal.UserRegistration,
+            portal.BannerAdvertising,
+            portal.Currency,
+            portal.AdministratorId,
+            portal.HostFee,
+            portal.HostSpace,
+            portal.PageQuota,
+            portal.UserQuota,
+            portal.PaymentProcessor,
+            portal.ProcessorUserId,
+            portal.Description,
+            portal.KeyWords,
+            portal.BackgroundFile,
+            portal.SiteLogHistory,
+            portal.SplashTabId,
+            portal.HomeTabId,
+            portal.LoginTabId,
+            portal.UserTabId,
+            portal.DefaultLanguage,
+            portal.TimeZoneOffset,
+            portal.HomeDirectory);
     }
 
     /// <summary>
@@ -297,6 +362,7 @@ public static class PortalMappings
             TimeZoneOffset = portal.TimeZoneOffset,
             HomeDirectory = portal.HomeDirectory,
             Guid = portal.PortalGuid,
+            ConcurrencyToken = ConcurrencyTokenFor(portal),
         };
     }
 

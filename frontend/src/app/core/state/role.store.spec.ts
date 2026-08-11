@@ -1506,6 +1506,54 @@ describe('RoleStore', () => {
         .toBe(before);
     });
 
+    it('JOINS a group read already in flight rather than abandoning and restarting it', () => {
+      // ⚠ THE MEASURED DUPLICATE. Two role screens each need the group list on entry and each asks for it,
+      // which is correct - neither may render a group selector from data it has not read. What was wrong is
+      // what happened when the second asked while the first was still answering: the handle was
+      // unsubscribed, so the first request was CANCELLED mid-flight and reported as an aborted request, and
+      // an identical one was issued in its place. Runtime testing saw the pair on ordinary role-feature
+      // route changes.
+      //
+      // Joining is not a cache and introduces no staleness: a read IS in flight and it publishes to the
+      // same slots the second call would have published to. The read is still re-issued on every entry
+      // where none is in flight, which the case below pins.
+      store.loadRoleGroups();
+
+      const inFlight = expectGet(ROLE_GROUPS_URL);
+
+      store.loadRoleGroups();
+
+      expect(httpMock.match((candidate) => candidate.url === ROLE_GROUPS_URL))
+        .withContext('the second call issued no request of its own')
+        .toHaveSize(0);
+      expect(inFlight.cancelled)
+        .withContext('and it did not abandon the one already answering')
+        .toBeFalse();
+
+      inFlight.flush(envelopeOf([aRoleGroup({ roleGroupId: 4 })]));
+
+      expect(store.roleGroups().length).withContext('both callers are served by the one read').toBe(1);
+      expect(store.roleGroupsLoading()).toBeFalse();
+    });
+
+    it('reads again on the next entry, so joining cannot become remembering', () => {
+      // ⚠ THE GUARD IS UNSOUND WITHOUT THE HANDLE BEING RELEASED, and it is released in a `finalize`, which
+      // runs on a value, an error and an unsubscription alike. Left set, a completed subscription would
+      // read as in-flight for the rest of the session and every later read would be refused - turning a
+      // duplicate-request fix into a screen that never refreshes its group list. A load-once flag was
+      // considered and refused for the same reason this case exists: the group list is reference data a
+      // selector must show CURRENT.
+      store.loadRoleGroups();
+      expectGet(ROLE_GROUPS_URL).flush(envelopeOf([]));
+
+      store.loadRoleGroups();
+      expectGet(ROLE_GROUPS_URL).flush(envelopeOf([aRoleGroup({ roleGroupId: 7 })]));
+
+      expect(store.roleGroups().length)
+        .withContext('the second entry really did read, and the newer answer is held')
+        .toBe(1);
+    });
+
     it('resolves no group for either pseudo-intent, even with groups loaded', () => {
       store.loadRoleGroups();
       expectGet(ROLE_GROUPS_URL).flush(envelopeOf([aRoleGroup({ roleGroupId: 0 })]));

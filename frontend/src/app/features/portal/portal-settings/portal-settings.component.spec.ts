@@ -290,6 +290,9 @@ function settingsBody(overrides: Partial<PortalSettings> = {}): PortalSettings {
     timeZoneOffset: -480,
     homeDirectory: 'Portals/0',
     guid: 'a2f9c1d4-5b6e-4a70-8c91-0d3e2f4b6a80',
+    // The opaque revision marker every portal read publishes. The screen round-trips it on the
+    // replacement so a save composed against a superseded revision is refused rather than applied.
+    concurrencyToken: 'revision-1',
     ...overrides,
   };
 }
@@ -340,6 +343,9 @@ function detailBody(overrides: Partial<PortalDetail> = {}): PortalDetail {
     timeZoneOffset: -480,
     homeDirectory: 'Portals/0',
     aliases: null,
+
+    // Deliberately the SAME token the settings fixture publishes: one derivation serves both reads.
+    concurrencyToken: 'revision-1',
     ...overrides,
   };
 }
@@ -856,12 +862,27 @@ describe('PortalSettingsComponent', () => {
     return notifications.notifications().map((entry) => entry.severity);
   }
 
-  /** The most recently queued notification, or null when the queue is empty. */
-  function latestNotification(): { readonly severity: string; readonly message: string } | null {
+  /**
+   * The most recently queued notification, or null when the queue is empty.
+   *
+   * ⚠ THE SUPPORT REFERENCE IS PROJECTED ALONGSIDE THE MESSAGE, and it was not. A refusal presented as a
+   * notification now carries the identifier from its problem document, on its own member, exactly as one
+   * presented through the shared banner always has - the queue appends it to the message only AFTER
+   * applying its own length bound, precisely so a long server sentence cannot truncate it away. A
+   * projection that dropped it left cases unable to assert the rule at all, and forced the one case that
+   * cared into an equality on the composed string that broke the moment the reference appeared in it.
+   */
+  function latestNotification(): {
+    readonly severity: string;
+    readonly message: string;
+    readonly reference: string | null;
+  } | null {
     const queue = notifications.notifications();
     const last = queue[queue.length - 1];
 
-    return last === undefined ? null : { severity: last.severity, message: last.message };
+    return last === undefined
+      ? null
+      : { severity: last.severity, message: last.message, reference: last.reference };
   }
 
   beforeEach(() => {
@@ -2161,10 +2182,13 @@ describe('PortalSettingsComponent', () => {
 
       ensureSectionOpen('other');
 
+      // FOUR: the administrator, the time zone, the currency and the default language. The last two
+      // were on the wire and on no tab - published by the API, re-submitted on every save, and
+      // editable nowhere - which is the workflow this group now restores.
       expect(
         required(sectionFieldset('Other Settings'), 'the other-settings group')
           .querySelectorAll('app-form-field').length,
-      ).toBe(2);
+      ).toBe(4);
     });
 
     // The expectation above is the CAUSE of the next two. A closed group has no body in the
@@ -2232,7 +2256,7 @@ describe('PortalSettingsComponent', () => {
       expect(required(fieldLabelled('Banners:'), 'the banners field').label).toBe('Banners:');
     });
 
-    it('renders EXACTLY TWO fields in Other Settings: the administrator and the time zone', () => {
+    it('renders EXACTLY FOUR fields in Other Settings, including the two that had no home', () => {
       showAdvanced();
       ensureSectionOpen('other');
 
@@ -2243,8 +2267,17 @@ describe('PortalSettingsComponent', () => {
         text(field.querySelector('.form-field__label')),
       );
 
-      expect(group.querySelectorAll('app-form-field').length).toBe(2);
-      expect(captions).toEqual(['Administrator', 'Portal TimeZone']);
+      // ⚠ THE ORDER IS THE MARKUP'S AND IS ASSERTED, so a field cannot drift between groups
+      // unnoticed. The currency's LEGACY home was `dshPayment`, a section this screen drops
+      // entirely; rather than resurrect a whole section for one field it sits here, beside the other
+      // site-wide non-host values. The default language IS in its legacy section - `dshOther`.
+      expect(group.querySelectorAll('app-form-field').length).toBe(4);
+      expect(captions).toEqual([
+        'Administrator',
+        'Portal TimeZone',
+        'Currency',
+        'Default Language',
+      ]);
     });
 
     it('renders NO group for appearance, payment, usability, secure transport or the stylesheet editor', () => {
@@ -2359,6 +2392,10 @@ describe('PortalSettingsComponent', () => {
       ensureSectionOpen('other');
       ensureSectionOpen('host');
 
+      // The two new captions sit between the time zone and the host group, which is where the
+      // markup puts them. Both are the legacy resource wording verbatim - `plCurrency.Text` and
+      // `plDefaultLanguage.Text` from `SiteSettings.ascx.resx` - so an operator who knew the legacy
+      // screen reads the same words.
       expect(fieldLabels()).toEqual([
         'User Registration:',
         'Splash Page:',
@@ -2367,6 +2404,8 @@ describe('PortalSettingsComponent', () => {
         'User Page:',
         'Administrator:',
         'Portal TimeZone:',
+        'Currency:',
+        'Default Language:',
         'Expiry Date:',
         'Hosting Fee:',
         'Disk Space:',
@@ -3200,7 +3239,25 @@ describe('PortalSettingsComponent', () => {
       );
       fixture.detectChanges();
 
-      expect(required(latestNotification(), 'a notification').message).toBe(LAST_PORTAL_MESSAGE);
+      // ⚠ ASSERTED ON THE WORDING AND ON THE REFERENCE SEPARATELY, AND EQUALITY ON THE COMPOSED STRING WAS
+      // WHY THIS CASE HAD TO CHANGE. A refusal presented as a notification now carries the support
+      // reference from its problem document, exactly as one presented through the shared banner always
+      // has - the identifier is the only join key between what an operator saw and what the server logged,
+      // and a browser audit measured the asymmetry of quoting it in one surface and not the other. The
+      // queue appends it to `message` AFTER applying its own length bound, so a composed message is
+      // legitimately longer than the wording alone; the wording is still exactly the legacy sentence, and
+      // the `reference` member is what states the rule about the identifier.
+      const refusal = required(latestNotification(), 'a notification');
+
+      expect(refusal.message)
+        .withContext('the legacy sentence, unaltered, at the head of the composed message')
+        .toContain(LAST_PORTAL_MESSAGE);
+      expect(refusal.message.startsWith(LAST_PORTAL_MESSAGE))
+        .withContext('the wording leads; nothing is prepended to it')
+        .toBeTrue();
+      expect(refusal.reference)
+        .withContext('the identifier an operator quotes, carried on its own member so a long server sentence cannot truncate it away')
+        .toBe('00-baseline-trace-01');
       expect(navigate).not.toHaveBeenCalled();
     });
 
@@ -3593,7 +3650,10 @@ describe('PortalSettingsComponent', () => {
         'processorUserId',
         'processorPassword',
         'processorCredentialReference',
-        'currency',
+        // ⚠ `currency` IS NO LONGER IN THIS LIST, and its removal is the point rather than an
+        // omission. It was dropped with the payment SECTION, but the FIELD is a column the API
+        // publishes and the update replaces, so dropping it meant a non-null value appeared on no
+        // tab while being re-submitted on every save. It now has a control in Other Settings.
         // Usability and the control panel.
         'inlineEditor',
         'controlPanelMode',
@@ -3604,8 +3664,9 @@ describe('PortalSettingsComponent', () => {
         'sslEnforced',
         'sslUrl',
         'stdUrl',
-        // Localisation, logging, premium modules and the file system.
-        'defaultLanguage',
+        // Localisation, logging, premium modules and the file system. ⚠ `defaultLanguage` is NOT
+        // here either: the localisation MECHANISM is out of scope, which is why its control is a text
+        // box rather than the legacy culture selector, but the COLUMN is in scope and now editable.
         'siteLogHistory',
         'desktopModules',
         'homeDirectory',
@@ -3658,7 +3719,7 @@ describe('PortalSettingsComponent', () => {
       expect(host().querySelectorAll('script').length).toBe(0);
     });
 
-    it('sends the nine unshown members back UNCHANGED rather than clearing them', () => {
+    it('sends the six unshown members back UNCHANGED rather than clearing them', () => {
       // Required rather than tidy: the update resource REPLACES every column it names, so a
       // member sent as absent is a member cleared. Two of these would do worse than clear —
       // the site-log retention is one of the six the server compares for a non-host caller, and
@@ -3672,13 +3733,68 @@ describe('PortalSettingsComponent', () => {
       expect(body.administratorId).toBe(2);
       expect(body.logoFile).toBe('logo.gif');
       expect(body.backgroundFile).toBe('back.gif');
-      expect(body.currency).toBe('USD');
       expect(body.paymentProcessor).toBe('PayPal');
       expect(body.processorUserId).toBe('merchant-account');
       expect(body.siteLogHistory).toBe(-1);
-      expect(body.defaultLanguage).toBe('en-US');
       expect(body.homeDirectory).toBe('Portals/0');
+
+      // ⚠ THE CURRENCY AND THE DEFAULT LANGUAGE ARE STILL SENT, BUT NO LONGER FROM THIS SET. They
+      // now come from their own controls, hydrated from the same projection, so an untouched save
+      // returns exactly what it read - the property this case is about - while an operator who wants
+      // to change either one finally can. The two assertions stay here to hold that equivalence.
+      expect(body.currency).toBe('USD');
+      expect(body.defaultLanguage).toBe('en-US');
       completeSave(write);
+    });
+
+    /**
+     * ⚠ THE TWO FIELDS THAT WERE ON THE WIRE AND ON NO TAB.
+     *
+     * `GET /portals/-1/settings` published `currency: "USD"` and `defaultLanguage: "en-US"`, the `PUT`
+     * re-submitted both from the loaded snapshot, and neither appeared in any section of either tab -
+     * so a legacy workflow (`cboCurrency` at `sitesettings.ascx:L300`, `cboDefaultLanguage` at `:L401`,
+     * written as arguments eight and twenty-five at `SiteSettings.ascx.vb:L774,L780`) had no successor.
+     */
+    it('carries an EDITED currency and default language to the wire', () => {
+      form().controls.currency.setValue('GBP');
+      form().controls.defaultLanguage.setValue('en-GB');
+      submit();
+
+      const write = takeSave(0);
+      const body = bodyOf(write);
+
+      expect(body.currency).toBe('GBP');
+      expect(body.defaultLanguage).toBe('en-GB');
+      completeSave(write, settingsBody({ currency: 'GBP', defaultLanguage: 'en-GB' }));
+    });
+
+    it('sends absence for an EMPTIED currency or default language, not the empty string', () => {
+      // The same rule every other optional text field on this screen follows, so a cleared box means
+      // the same thing wherever it appears.
+      form().controls.currency.setValue('');
+      form().controls.defaultLanguage.setValue('   ');
+      submit();
+
+      const write = takeSave(0);
+      const body = bodyOf(write);
+
+      expect(body.currency).toBeNull();
+      expect(body.defaultLanguage).toBeNull();
+      completeSave(write, settingsBody({ currency: null, defaultLanguage: null }));
+    });
+
+    it('refuses a currency longer than the column, without sending anything', () => {
+      // `Portals.Currency` is `char(3)` and the server declares `MaximumLength(3)`. The box also
+      // carries the attribute, so a browser stops the fourth character; the validator is what makes
+      // the rule hold for a value that reached the control any other way.
+      form().controls.currency.setValue('TOOLONG');
+      submit();
+
+      http.expectNone((candidate) => candidate.method === 'PUT');
+      expect(form().controls.currency.hasError('maxlength'))
+        .withContext('the client rule is the server rule, so the message is beside the field')
+        .toBeTrue();
+      expect(required(input('currency'), 'the currency box').getAttribute('maxlength')).toBe('3');
     });
 
     it('never returns the processor credential, which it never holds', () => {
@@ -3725,6 +3841,58 @@ describe('PortalSettingsComponent', () => {
       }
 
       completeSave(write);
+    });
+
+    /**
+     * ⚠ THE REVISION MARKER, WHICH IS WHAT MAKES THE NOTE ABOVE SAFE RATHER THAN MERELY NECESSARY.
+     *
+     * The case above establishes that nine unshown members are returned unchanged, because a member
+     * sent as absent is a member cleared. That is exactly what turned a stale save into a silent
+     * catastrophe: a second administrator whose snapshot predated the first administrator's save
+     * returned NINE STALE VALUES the screen never displayed, overwriting committed edits neither of
+     * them had opened, and the API answered `200` to both. The token is the only thing that
+     * distinguishes "returning values I read" from "restoring values someone has since changed".
+     */
+    it('returns the revision marker it read, so a stale save is refusable', () => {
+      submit();
+
+      const write = takeSave(0);
+
+      // From the projection the form was hydrated FROM - the same source as the nine preserved members
+      // asserted above. Re-reading it immediately before the save would obtain the current revision and
+      // the server's check would then always pass while looking watertight.
+      expect(bodyOf(write).concurrencyToken).toBe('revision-1');
+      completeSave(write);
+    });
+
+    it('returns null when the projection served no marker, rather than inventing one', () => {
+      // A last-writer-wins save, exactly as this screen behaved before the member existed. A fabricated
+      // token that happened to match would defeat the very check it appears to satisfy.
+      arrive(7, { settings: settingsBody({ portalId: 7, concurrencyToken: null }) });
+      submit();
+
+      const write = takeSave(7);
+
+      expect(bodyOf(write).concurrencyToken).toBeNull();
+      completeSave(write, settingsBody({ portalId: 7, concurrencyToken: null }));
+    });
+
+    it('adopts the marker the response carries, so a second save is not stale', () => {
+      submit();
+
+      const first = takeSave(0);
+      expect(bodyOf(first).concurrencyToken).toBe('revision-1');
+      completeSave(first, settingsBody({ concurrencyToken: 'revision-2' }));
+
+      // ⚠ THE PROPERTY THAT MAKES CONSECUTIVE SAVES WORK. The store adopts the projection the write
+      // returned, so the next save carries the revision the write PRODUCED rather than the one it was
+      // composed against. Without this, saving twice without reloading would refuse the second save
+      // against the operator's own edit.
+      submit();
+
+      const second = takeSave(0);
+      expect(bodyOf(second).concurrencyToken).toBe('revision-2');
+      completeSave(second, settingsBody({ concurrencyToken: 'revision-2' }));
     });
 
     it('composes NO key-and-value settings request of any kind', () => {
@@ -3878,7 +4046,10 @@ describe('PortalSettingsComponent', () => {
 
       const rendered = fields();
 
-      expect(rendered.length).toBe(12);
+      // FOURTEEN: the twelve that were here plus the currency and the default language, both of
+      // which are captioned and control-associated through the same shared wrapper as every other
+      // field - which is the whole reason the count is asserted rather than the names.
+      expect(rendered.length).toBe(14);
 
       for (const field of rendered) {
         expect(field.label.length).toBeGreaterThan(0);
@@ -4083,7 +4254,10 @@ describe('PortalSettingsComponent', () => {
 
       const raw = form().getRawValue();
 
-      expect(Object.keys(raw).length).toBe(17);
+      // NINETEEN: the seventeen that were here plus the currency and the default language. Both are
+      // declared `nonNullable`, so an emptied box resets to `''` rather than to null and the raw
+      // value stays complete - the property this case exists to hold.
+      expect(Object.keys(raw).length).toBe(19);
       for (const value of Object.values(raw)) {
         expect(value).not.toBeNull();
         expect(value).not.toBeUndefined();

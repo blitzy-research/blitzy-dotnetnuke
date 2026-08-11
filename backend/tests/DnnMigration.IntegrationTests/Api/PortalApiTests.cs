@@ -1619,6 +1619,269 @@ public sealed class PortalApiTests
     }
 
     /// <summary>
+    /// The exact lost-update sequence, reproduced: two callers read the same portal, both save, and the
+    /// second save is refused instead of silently destroying the first caller's committed edit.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// THIS IS THE MEASURED DEFECT, NOT AN ANALOGY. Runtime testing opened one portal in two sessions, saved
+    /// from the first and then saved from the second without reloading, and BOTH saves answered <c>200</c>
+    /// with the first operator's changes gone. What made it worse than an ordinary last-write-wins is the
+    /// shape of the payload: the request replaces every column of the tenant, and about twenty of them are
+    /// values the editing screen never displays, so the destruction reached fields NEITHER operator had
+    /// opened. The assertion below therefore checks two things - that the stale save is refused, and that the
+    /// first caller's edit is still stored afterwards.
+    /// </para>
+    /// <para>
+    /// The refusal is a <c>409</c> because the request conflicts with current state rather than being
+    /// malformed: re-sending the same body cannot succeed while that state holds. The reason code is asserted
+    /// too, so a caller can distinguish this from the other conflicts this controller reports.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortal_FromASnapshotAnotherCallerHasAlreadyReplaced_IsRefusedAndPreservesTheStoredEdit()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        (PortalDetailDto created, CreatePortalRequest createRequest) = await CreatePortalWithRequestAsync(host);
+        using HttpClient client = await CreateAdministratorClientForAsync(createRequest, created);
+
+        // ONE READ, SHARED BY BOTH SAVES. This is what "two sessions with the screen open" means: the token
+        // both requests carry is the token that single read published.
+        using HttpResponseMessage read = await client.GetAsync(PortalRoute(created.PortalId));
+        read.StatusCode.Should().Be(HttpStatusCode.OK);
+        PortalDetailDto snapshot = await ReadDetailAsync(read);
+        snapshot.ConcurrencyToken.Should().NotBeNullOrWhiteSpace(
+            "a read must publish the token, or a caller has nothing to send back");
+
+        UpdatePortalRequest first = EchoHostOnlyFields(snapshot);
+        first.ConcurrencyToken = snapshot.ConcurrencyToken;
+        first.PortalName = snapshot.PortalName;
+        first.FooterText = "Committed by the first caller " + Suffix();
+
+        using HttpResponseMessage firstSave = await client.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            first,
+            ApiTestFixture.Json);
+        firstSave.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PortalDetailDto afterFirst = await ReadDetailAsync(firstSave);
+        afterFirst.ConcurrencyToken.Should().NotBe(
+            snapshot.ConcurrencyToken,
+            "the token must move when the record moves, or it cannot detect anything");
+
+        // The second caller still holds the ORIGINAL token and is amending a field the first caller never
+        // touched - which is precisely the case that used to succeed and destroy the first caller's footer.
+        UpdatePortalRequest second = EchoHostOnlyFields(snapshot);
+        second.ConcurrencyToken = snapshot.ConcurrencyToken;
+        second.PortalName = snapshot.PortalName;
+        second.Description = "Committed by the second caller " + Suffix();
+
+        using HttpResponseMessage secondSave = await client.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            second,
+            ApiTestFixture.Json);
+
+        secondSave.StatusCode.Should().Be(
+            HttpStatusCode.Conflict,
+            "a save built on a snapshot that has since been replaced must be refused, not applied");
+
+        ProblemDetails? problem = await secondSave.Content.ReadFromJsonAsync<ProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Type.Should().Contain(
+            "portal.concurrency_conflict",
+            "the reason must be a stable code so a client can tell this conflict from the others");
+
+        // THE POINT OF THE WHOLE FIXTURE: the first caller's committed edit is still there.
+        using HttpResponseMessage reread = await client.GetAsync(PortalRoute(created.PortalId));
+        PortalDetailDto stored = await ReadDetailAsync(reread);
+        stored.FooterText.Should().Be(
+            first.FooterText,
+            "the refused save must not have been applied even partially");
+        stored.Description.Should().NotBe(
+            second.Description,
+            "the stale caller's value must not be stored");
+    }
+
+    /// <summary>
+    /// A caller that re-reads after the conflict and re-applies its change succeeds, so the refusal is
+    /// recoverable rather than a dead end.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// A guard that cannot be satisfied is a bug, not a protection. This asserts the recovery path the
+    /// refusal's own message instructs the caller to take - read again, re-apply - and it is the reason the
+    /// token is published by every portal read rather than only by the write.
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortal_AfterRereadingFollowingAConflict_Succeeds()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        (PortalDetailDto created, CreatePortalRequest createRequest) = await CreatePortalWithRequestAsync(host);
+        using HttpClient client = await CreateAdministratorClientForAsync(createRequest, created);
+
+        using HttpResponseMessage read = await client.GetAsync(PortalRoute(created.PortalId));
+        PortalDetailDto snapshot = await ReadDetailAsync(read);
+
+        UpdatePortalRequest overtaking = EchoHostOnlyFields(snapshot);
+        overtaking.ConcurrencyToken = snapshot.ConcurrencyToken;
+        overtaking.PortalName = snapshot.PortalName;
+        overtaking.FooterText = "Overtaken " + Suffix();
+        using HttpResponseMessage overtaken = await client.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            overtaking,
+            ApiTestFixture.Json);
+        overtaken.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        UpdatePortalRequest stale = EchoHostOnlyFields(snapshot);
+        stale.ConcurrencyToken = snapshot.ConcurrencyToken;
+        stale.PortalName = snapshot.PortalName;
+        stale.Description = "Retried " + Suffix();
+        using HttpResponseMessage refused = await client.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            stale,
+            ApiTestFixture.Json);
+        refused.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+        // The recovery the refusal asks for: read again, keep the intended change, resend.
+        using HttpResponseMessage refreshed = await client.GetAsync(PortalRoute(created.PortalId));
+        PortalDetailDto current = await ReadDetailAsync(refreshed);
+
+        UpdatePortalRequest retried = EchoHostOnlyFields(current);
+        retried.ConcurrencyToken = current.ConcurrencyToken;
+        retried.PortalName = current.PortalName;
+        retried.Description = stale.Description;
+
+        using HttpResponseMessage accepted = await client.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            retried,
+            ApiTestFixture.Json);
+
+        accepted.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "re-reading and re-applying is the documented recovery and must work");
+        (await ReadDetailAsync(accepted)).Description.Should().Be(stale.Description);
+    }
+
+    /// <summary>
+    /// An update that carries no token is still applied, so no caller written before the token existed is
+    /// refused.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The trade is asserted rather than left to documentation, because it is the one property of this guard a
+    /// reader is most likely to assume the other way round. A caller that omits the token opts out of the
+    /// protection and gets the legacy last-write-wins behaviour; a caller that supplies it is protected. Every
+    /// other refusal on this route still applies to a body without a token, which is why the assertion checks
+    /// for success rather than merely "not 409".
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortal_WithNoConcurrencyTokenAtAll_IsStillApplied()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        (PortalDetailDto created, CreatePortalRequest createRequest) = await CreatePortalWithRequestAsync(host);
+        using HttpClient client = await CreateAdministratorClientForAsync(createRequest, created);
+
+        UpdatePortalRequest request = EchoHostOnlyFields(created);
+        request.ConcurrencyToken = null;
+        request.PortalName = created.PortalName;
+        request.Description = "Applied without a token " + Suffix();
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "an omitted token means the caller has not opted into the protection, not that it is refused");
+        (await ReadDetailAsync(response)).Description.Should().Be(request.Description);
+    }
+
+    /// <summary>
+    /// The settings route carries the same protection as the portal route, and a token read from either
+    /// screen is honoured by either write.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE REASON THIS TEST EXISTS. Both portal write paths hand the same request interface to the same
+    /// mapper and replace the same twenty-five columns, so they share one lost-update surface. Protecting only
+    /// the route a report happened to exercise would move the defect to the sibling route rather than remove
+    /// it - and the sibling route is the one the settings screen uses. The first half asserts the settings
+    /// route refuses a stale save; the second asserts the two tokens are interchangeable, which is what makes
+    /// "one concurrency idiom, not two" a checkable claim rather than a comment.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortalSettings_FromAStaleSnapshot_IsRefusedAndTheTwoPortalTokensAreInterchangeable()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        (PortalDetailDto created, CreatePortalRequest createRequest) = await CreatePortalWithRequestAsync(host);
+        using HttpClient client = await CreateAdministratorClientForAsync(createRequest, created);
+        var settingsRoute = new Uri(
+            $"/api/v1/portals/{Route(created.PortalId)}/settings",
+            UriKind.Relative);
+
+        using HttpResponseMessage read = await client.GetAsync(settingsRoute);
+        read.StatusCode.Should().Be(HttpStatusCode.OK);
+        PortalSettingsDto snapshot = (await read.Content.ReadEnvelopeAsync<PortalSettingsDto>())!;
+        snapshot.ConcurrencyToken.Should().NotBeNullOrWhiteSpace();
+
+        // The two reads of the same unchanged record must agree, or a token obtained from one screen could
+        // not be sent from the other.
+        using HttpResponseMessage detailRead = await client.GetAsync(PortalRoute(created.PortalId));
+        PortalDetailDto detail = await ReadDetailAsync(detailRead);
+        detail.ConcurrencyToken.Should().Be(
+            snapshot.ConcurrencyToken,
+            "one derivation serves both reads, so the settings screen and the edit screen cannot disagree "
+            + "about which revision they are looking at");
+
+        UpdatePortalSettingsRequest first = SettingsUpdateFrom(snapshot);
+        first.FooterText = "Settings committed first " + Suffix();
+        using HttpResponseMessage firstSave = await client.PutAsJsonAsync(
+            settingsRoute,
+            first,
+            ApiTestFixture.Json);
+        firstSave.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        UpdatePortalSettingsRequest stale = SettingsUpdateFrom(snapshot);
+        stale.Description = "Settings committed second " + Suffix();
+        using HttpResponseMessage staleSave = await client.PutAsJsonAsync(
+            settingsRoute,
+            stale,
+            ApiTestFixture.Json);
+
+        staleSave.StatusCode.Should().Be(
+            HttpStatusCode.Conflict,
+            "the settings route replaces the same columns, so it must refuse a stale save too");
+
+        ProblemDetails? problem = await staleSave.Content.ReadFromJsonAsync<ProblemDetails>();
+        problem!.Type.Should().Contain("portal.concurrency_conflict");
+
+        using HttpResponseMessage reread = await client.GetAsync(settingsRoute);
+        PortalSettingsDto stored = (await reread.Content.ReadEnvelopeAsync<PortalSettingsDto>())!;
+        stored.FooterText.Should().Be(first.FooterText);
+
+        // INTERCHANGEABLE, PROVEN BOTH WAYS: a token read from the DETAIL screen satisfies the SETTINGS write.
+        using HttpResponseMessage detailAfter = await client.GetAsync(PortalRoute(created.PortalId));
+        PortalDetailDto detailToken = await ReadDetailAsync(detailAfter);
+
+        UpdatePortalSettingsRequest crossed = SettingsUpdateFrom(stored);
+        crossed.ConcurrencyToken = detailToken.ConcurrencyToken;
+        crossed.KeyWords = "crossed, tokens";
+        using HttpResponseMessage crossedSave = await client.PutAsJsonAsync(
+            settingsRoute,
+            crossed,
+            ApiTestFixture.Json);
+
+        crossedSave.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "a token published by the detail read must satisfy the settings write, or this API has two "
+            + "concurrency idioms rather than one");
+    }
+
+    /// <summary>
     /// Portal updates cannot inject an administrator membership or page reference owned by another tenant.
     /// </summary>
     /// <returns>A task representing the test.</returns>
@@ -4981,6 +5244,14 @@ public sealed class PortalApiTests
         DefaultLanguage = settings.DefaultLanguage,
         TimeZoneOffset = settings.TimeZoneOffset,
         HomeDirectory = settings.HomeDirectory,
+
+        // Carried, because a real client carries it: the settings screen reads this token and returns it so a
+        // stale whole-row replacement is refused with 409 rather than silently destroying another operator's
+        // committed edit. Echoing it here means the ordinary round-trip cases in this file exercise the
+        // matching path, and a helper that produced a body the API would refuse would be a poor stand-in for
+        // a caller. Every use of this helper builds from a FRESH read, so the token is always current; a case
+        // that deliberately needs a stale one overwrites the member explicitly.
+        ConcurrencyToken = settings.ConcurrencyToken,
     };
 
     /// <summary>Reads a portal representation out of a response, failing the test when it is absent.</summary>

@@ -133,6 +133,37 @@ export interface AppNotification {
    * session-ended notice raised immediately before ejecting to the sign-in screen is the other.
    */
   readonly survivesNavigation: boolean;
+
+  /**
+   * Whether this entry retires itself on the surface's countdown, or `null` to let the surface decide from
+   * {@link AppNotification.severity} as it always has.
+   *
+   * ⚠ SEVERITY IS A PROXY FOR "DOES THIS NEED THE READER TO DO SOMETHING", AND ON ONE NOTIFICATION IT IS
+   * THE WRONG PROXY. The surface retires the two severities that require nothing of the reader and exempts
+   * `'warning'` and `'error'` on three stated grounds: they report something that did NOT happen, they
+   * frequently carry the support reference an operator has to quote, and removing them on a timer would
+   * destroy the only record of a failure. Every one of those grounds is about a FAULT - something the
+   * operator has to act on, or report to someone who can.
+   *
+   * The route guards' access refusal satisfies none of them. It carries no reference, because nothing
+   * failed and there is nothing to look up; and it asks for nothing, because the remedy is a permission
+   * the operator does not hold and cannot grant themselves. The blanket exemption applied to it anyway, on
+   * the strength of its severity alone, and a browser audit measured the consequence: the refusal stood on
+   * screen for four minutes and forty-two seconds and was cleared only by navigating away.
+   *
+   * Deliberately NOT fixed by giving `'warning'` a timer - the block above and the surface's own set both
+   * refuse that with a measurement, and both are right - and deliberately not fixed by lowering the refusal
+   * to `'info'` so that it slips past the set: severity is derived from the response status in ONE shared
+   * place, and choosing a quieter word for a refusal in order to reach a timer would corrupt that decision
+   * to buy a display behaviour. Lifetime is asked as its own question instead, of the only party that knows
+   * the answer. This service already holds that callers choose the severity and nothing here derives one;
+   * this member extends the same rule to expiry.
+   *
+   * `null` is the default and preserves today's behaviour exactly, so a caller with no opinion keeps the
+   * severity-derived lifetime and nothing already on screen changes.
+   */
+  readonly selfDismisses: boolean | null;
+
 }
 
 /**
@@ -401,6 +432,7 @@ export class NotificationService {
     message: string,
     reference: string | null = null,
     survivesNavigation = false,
+    selfDismisses: boolean | null = null,
   ): void {
     // The bound is applied BEFORE the emptiness test, so a message that is only whitespace is still
     // recognised as blank after truncation.
@@ -421,18 +453,25 @@ export class NotificationService {
       message: composed,
       reference: quoted,
       survivesNavigation,
+      selfDismisses,
     };
 
     this._notifications.update((queue) => {
       // The newest entry, and whether this one repeats it. Compared on all three stored members, so a
       // second occurrence carrying a different support reference is a genuinely different report and
       // survives as its own row.
+      //
+      // ⚠ THE LIFETIME OPINION IS PART OF THE COMPARISON. Two entries wording the same sentence at the same
+      // severity are still different reports when one of them expires and the other does not, and collapsing
+      // them would silently impose the FIRST one's lifetime on the second - so a refusal raised where it is
+      // meant to retire itself could be held permanently by an identical earlier entry that was not.
       const newest = queue.at(-1);
       const repeats =
         newest !== undefined &&
         newest.severity === entry.severity &&
         newest.message === entry.message &&
-        newest.reference === entry.reference;
+        newest.reference === entry.reference &&
+        newest.selfDismisses === entry.selfDismisses;
       const retained = repeats ? queue.slice(0, -1) : queue;
 
       // Written as a surplus count rather than a `length === cap` test so that it is total: it collapses to
@@ -479,6 +518,15 @@ export class NotificationService {
   /**
    * Queues a warning.
    *
+   * ⚠ DO NOT USE THIS FOR A SERVER REFUSAL - CALL {@link NotificationService.notify} INSTEAD. This
+   * helper cannot carry a support reference, and warning is exactly the severity a server refusal resolves
+   * to: the shared classifier maps 401, 403, 404 and 429 to `'warning'`, and every one of those answers
+   * arrives with a correlation identifier in its problem document. Reaching for this helper because the
+   * severity matched silently discarded that identifier at three separate call sites, one of which left a
+   * refused save with nothing quotable anywhere on the screen. The signature is deliberately left as it is,
+   * because the many genuine client-side warnings below it - an incomplete form, a bound that cannot be
+   * met - have no reference to quote and should not be made to pretend otherwise.
+   *
    * @param message The statement to present.
    * @param survivesNavigation Whether the statement must outlive the next change of screen. Pass `true`
    *   ONLY when this call is immediately followed by a deliberate navigation whose destination is where the
@@ -492,8 +540,15 @@ export class NotificationService {
   /**
    * Queues a failure.
    *
-   * The one convenience method that forwards a support reference, because a failure is the only outcome that
-   * has one to quote.
+   * The one convenience method that forwards a support reference.
+   *
+   * ⚠ IT IS NOT THE ONLY OUTCOME THAT HAS ONE TO QUOTE, WHICH THIS NOTE USED TO CLAIM, and the claim
+   * was the reason references went missing. A refusal answered `403` or `404` also carries a correlation
+   * identifier, and the shared classifier resolves both to `'warning'` - so the belief that only an
+   * error-severity outcome has an identifier is contradicted by the very function that assigns the
+   * severity. What is true is narrower: a SUCCESS has nothing to quote, because nothing failed. Any
+   * outcome derived from a problem document has an identifier regardless of the severity it resolves to,
+   * and must reach {@link NotificationService.notify} so it can pass one.
    *
    * @param message The already-composed, display-ready plain-text message.
    * @param reference The support reference to quote, or `null` when there is none.

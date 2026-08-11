@@ -664,4 +664,30 @@ public sealed class PortalSettingsDto
     /// schema-faithful; reacting to the sentinel is a service concern.
     /// </remarks>
     public Guid Guid { get; set; }
+
+    /// <summary>
+    /// Gets or sets the optimistic-concurrency token a caller round-trips on a settings update to prove it
+    /// is replacing the record it read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// OPAQUE, AND DELIBERATELY SO. It is derived from the tenant's own mutable columns rather than from a
+    /// version counter the schema does not have - Rule T4 forbids adding one - so it changes whenever any of
+    /// them changes and reveals nothing about which. A caller stores it and sends it back on
+    /// <see cref="UpdatePortalSettingsRequest.ConcurrencyToken"/>; it must not be parsed, compared for
+    /// ordering, or built by a client.
+    /// </para>
+    /// <para>
+    /// ONE DERIVATION SERVES BOTH PORTAL WRITE PATHS. <c>PortalMappings.ConcurrencyTokenFor</c> produces this
+    /// value and the one on <c>PortalDetailDto</c>, and <c>PortalService</c> verifies both writes against it,
+    /// so the settings screen and the portal-edit screen cannot disagree about what "the record I read" means
+    /// and a token obtained from either read is honoured by either write. Both writes reach one mapper,
+    /// <c>PortalMappings.ApplyUpdate</c>, and replace the same twenty-five columns, which is why the same
+    /// protection belongs on both rather than only on the one a report happened to exercise.
+    /// </para>
+    /// <para>
+    /// A request that omits it is still applied, so no caller written before the token existed is refused.
+    /// </para>
+    /// </remarks>
+    public string ConcurrencyToken { get; set; } = string.Empty;
 }

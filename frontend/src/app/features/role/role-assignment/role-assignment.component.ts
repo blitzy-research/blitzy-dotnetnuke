@@ -220,6 +220,24 @@ import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.di
  * `ModuleHelp.Text` is `'<h1>About Manage Security Roles</h1><p>…</p>'` — module help has
  * no home in the shared component set, so it is read for context and never rendered.
  */
+/**
+ * One entry of the account drop-down, with its label already composed.
+ *
+ * `alreadyInRole` is published alongside the label rather than being inferred from it, so a
+ * specification asserts the FACT rather than matching on wording, and a stylesheet or a future
+ * affordance can react to it without parsing prose.
+ */
+export interface AccountChoiceEntry {
+  /** The account the entry denotes. Every integer is meaningful; nought is a real identifier. */
+  readonly userId: number;
+
+  /** The text the option renders. */
+  readonly label: string;
+
+  /** Whether the addressed role's membership rows in hand already include this account. */
+  readonly alreadyInRole: boolean;
+}
+
 export const ROLE_ASSIGNMENT_TEXT = Object.freeze({
   /** `RoleTitle.Text` with its `{0}` placeholder filled by the role's name. */
   titleTemplate: 'Manage Users in Role: {0}',
@@ -444,6 +462,60 @@ export const ROLE_ASSIGNMENT_TEXT = Object.freeze({
 
   /** The unselected entry of that drop-down. */
   userChoicePrompt: '<None Specified>',
+
+  /**
+   * Appended to a drop-down entry for an account this role ALREADY holds.
+   *
+   * ⚠ THE ENTRY IS STILL OFFERED, AND THAT IS LEGACY PARITY RATHER THAN AN OVERSIGHT.
+   * `SecurityRoles.ascx.vb:L204` fills the control from `UserController.GetUsers(PortalId, False)` -
+   * every account in the tenant, with no exclusion of existing members - and the legacy screen relied on
+   * that: choosing an account that already held the role is how its `GetDates` first branch
+   * (`:L279-L288`) showed the membership's stored bounds, which is the only way the screen ever offered
+   * to AMEND one. Removing those entries would look tidier and would delete a workflow.
+   *
+   * What was genuinely missing is that the entry said nothing. An operator choosing it got a form that
+   * silently meant something different from the one beside it - the command renames itself to "Update
+   * User Role" only AFTER the choice is made. Saying so on the entry itself moves that knowledge to
+   * before the choice, which costs no affordance.
+   */
+  accountAlreadyInRoleSuffix: ' — already in this role',
+
+  /**
+   * Confirmation for a membership WRITE. `{0}` is the account, `{1}` is the role.
+   *
+   * MIGRATION - net-new at the SUCCESS band, and the omission it closes was measured. The legacy handler
+   * was silent: `SecurityRoles.ascx.vb:L546` rebound the grid and said nothing, and nothing in
+   * `SecurityRoles.ascx.resx` carries an outcome sentence for either write. Silence was serviceable on a
+   * postback screen because the whole page came back and the grid visibly changed; on this screen the
+   * grid is one region of a document that does not otherwise move, so a write could complete with no
+   * announcement at all - while every OTHER write in this application, role create, role update, role
+   * delete, group delete, portal save and alias save, announces at the success band. Runtime testing
+   * measured a membership added and a membership removed with nothing said either time.
+   *
+   * The three sentences are distinct because the three outcomes are: enrolling an account, amending the
+   * bounds of an enrolment it already had, and ending one. The legacy screen's own command label made the
+   * first two distinction (`AddUser.Text` against `UpdateRole.Text`), so honouring it here is parity of
+   * vocabulary rather than an invention.
+   */
+  assignmentAdded: '{0} was added to the {1} role.',
+
+  /** Confirmation for amending an existing membership's bounds. `{0}` account, `{1}` role. */
+  assignmentUpdated: "{0}'s membership of the {1} role was updated.",
+
+  /** Confirmation for ending a membership. `{0}` account, `{1}` role. */
+  assignmentRemoved: '{0} was removed from the {1} role.',
+
+  /**
+   * Stands in for an account name the screen does not hold when a write settles.
+   *
+   * A floor rather than an expected path: the name is captured at dispatch for an assignment and comes
+   * from the targeted row for a removal, so both ordinary paths have one. Reporting the outcome without a
+   * name is deliberately preferred to withholding the outcome, which is the defect being closed.
+   */
+  unnamedAccount: 'The account',
+
+  /** Stands in for the role's name before the role read has settled. Same reasoning as above. */
+  unnamedRole: 'selected',
 
   /** Shown while the tenant's account policy is being read, before either control is offered. */
   accountPolicyLoading: 'Reading how this site asks you to choose an account…',
@@ -697,6 +769,18 @@ interface DeferredNotice {
 
   /** The message itself, already plain text. */
   readonly message: string;
+
+  /**
+   * The support reference to quote, or `null` when this outcome has none.
+   *
+   * ⚠ REQUIRED, NOT OPTIONAL, SO EVERY PRODUCER HAS TO STATE ITS ANSWER. A server refusal
+   * carries a correlation identifier and a success does not, and the difference is a property of the
+   * outcome rather than of the call site - so leaving the member optional would let a refusal-shaped
+   * producer inherit a success's silence by simply not mentioning it, which is precisely how the
+   * duplicate-name refusal on the sibling role form came to render a message with no reference beside
+   * a banner that had one. Declared required, a new producer arrives having to say which it is.
+   */
+  readonly reference: string | null;
 }
 
 /** Validation key raised when a date box holds something that is not a calendar date. */
@@ -1510,6 +1594,34 @@ export class RoleAssignmentComponent {
    * Absence is `null`: account identifiers seed at one on this schema, but sibling tables seed
    * at zero and minus one, so absence is never a number here.
    */
+  /**
+   * The account whose boxes must be RE-BASELINED once the membership listing settles after a write, or
+   * `null` when no write is awaiting one.
+   *
+   * Deliberately a SECOND marker rather than a reuse of {@link awaitedPrefillUserId}. The two are read by
+   * different bridges at different moments: the prefill marker is consumed when a PROBE settles, and this
+   * one when the LISTING settles. Sharing one signal would let the prefill bridge fire immediately on a
+   * post-write marker - the probe is not in flight then - and write the boxes from rows the write has not
+   * yet refreshed.
+   */
+  /**
+   * Whether the membership write in flight AMENDS an existing enrolment rather than creating one.
+   *
+   * Captured at dispatch: the write itself changes the fact, so reading it afterwards would report the
+   * post-write state and every add would announce itself as an update.
+   */
+  private readonly writeWasAnAmendment: WritableSignal<boolean> = signal(false);
+
+  /**
+   * The account name the write in flight concerns, captured at dispatch for the same reason.
+   *
+   * A REMOVAL takes its name from the row it targets instead - see `outstandingRemoval` - because the row
+   * is what the operator pressed the command on and it may not be the account the picker holds.
+   */
+  private readonly writeSubjectName: WritableSignal<string | null> = signal<string | null>(null);
+
+  private readonly awaitedRebaselineUserId: WritableSignal<number | null> = signal<number | null>(null);
+
   private readonly awaitedPrefillUserId: WritableSignal<number | null> = signal<number | null>(
     null,
   );
@@ -1683,6 +1795,74 @@ export class RoleAssignmentComponent {
     }
 
     return this.store.assignmentsMeta();
+  });
+
+  /**
+   * The drop-down's entries, each carrying the label the option renders.
+   *
+   * Built here rather than in the template so the "already in this role" note is composed in one place
+   * and can be asserted from a specification. The identifier is untouched: the option's value stays the
+   * account key, so annotating a label cannot change which account an entry denotes.
+   *
+   * An account is marked from the ROWS IN HAND. On a role whose membership exceeds one page an unmarked
+   * entry therefore means "not on the page you are looking at" rather than "not a member" - which is
+   * why the mark is an ADDITIVE note and never a disabled or withheld entry: an absent mark must not be
+   * readable as a promise.
+   */
+  public readonly accountChoiceEntries: Signal<readonly AccountChoiceEntry[]> = computed(() => {
+    const members: readonly UserRole[] = this.assignments();
+
+    return this.accountChoicesSignal().map((choice: UserListItem) => {
+      const already: boolean = members.some((row: UserRole) => row.userId === choice.userId);
+      const base = `${choice.displayName} (${choice.username})`;
+
+      return {
+        userId: choice.userId,
+        label: already ? `${base}${ROLE_ASSIGNMENT_TEXT.accountAlreadyInRoleSuffix}` : base,
+        alreadyInRole: already,
+      };
+    });
+  });
+
+  /**
+   * Whether the page of memberships in hand IS the whole membership.
+   *
+   * ⚠ THIS IS WHAT MAKES A LOCAL ANSWER TRUSTWORTHY. The membership listing is paged, so an account
+   * absent from the rows on screen is normally UNKNOWN rather than a non-member. When the served total
+   * is no greater than the number of rows held, there is no second page for a membership to hide on,
+   * and absence from the rows becomes proof of absence from the role.
+   *
+   * The served total is used rather than a requested size, so this answers `false` — the cautious
+   * direction, which asks the server — until a real answer has landed. `UNRESOLVED_PAGE_META` reports a
+   * total of nought against nought rows, which is deliberately NOT treated as complete: a slice read
+   * for another role must not license a conclusion about this one.
+   */
+  private readonly membershipPageIsComplete: Signal<boolean> = computed(() => {
+    const addressed = this.roleIdSignal();
+
+    if (addressed === null || this.store.assignmentsRoleId() !== addressed) {
+      return false;
+    }
+
+    const meta: ApiMeta = this.assignmentsMeta();
+    const held: number = this.assignments().length;
+
+    return meta.pageSize > 0 && meta.totalCount <= held;
+  });
+
+  /**
+   * The chosen account's membership as the ROWS IN HAND report it, or `null` when they do not.
+   *
+   * Compared with `===` because zero and minus one are legitimate account identifiers on this schema.
+   */
+  private readonly membershipFromRows: Signal<UserRole | null> = computed(() => {
+    const chosen = this.selectedUserSignal();
+
+    if (chosen === null) {
+      return null;
+    }
+
+    return this.assignments().find((row: UserRole) => row.userId === chosen.userId) ?? null;
   });
 
   /**
@@ -2012,13 +2192,37 @@ export class RoleAssignmentComponent {
   public readonly selectedMembership: Signal<UserRole | null> = computed(() => {
     const addressed = this.roleIdSignal();
     const chosen = this.selectedUserSignal();
-    const key = this.store.probedAssignmentKey();
 
-    if (addressed === null || chosen === null || key === null) {
+    if (addressed === null || chosen === null) {
       return null;
     }
 
-    if (key.roleId !== addressed || key.userId !== chosen.userId) {
+    // ⚠ THE ROWS IN HAND ARE CONSULTED FIRST, AND THEY ARE AUTHORITATIVE WHEN THEY ANSWER. A row of this
+    // role's membership listing carries the account, the effective bound and the expiry bound - every
+    // member the probe would return - so asking the server for a fact already on screen buys nothing.
+    const fromRows: UserRole | null = this.membershipFromRows();
+
+    if (fromRows !== null) {
+      return fromRows;
+    }
+
+    // ABSENT FROM A COMPLETE LISTING IS PROOF OF NON-MEMBERSHIP, so the answer is `null` without a
+    // request. This is the arm that removes the 404: the probe asked a question whose ordinary answer is
+    // "not found", and Chrome logs every 4xx as a console error however cleanly the application handles
+    // it - runtime testing measured three red console entries in one short session on the happy path,
+    // one for selecting a non-member and one more after each successful removal left the account
+    // selected. A checkpoint requirement of "no console errors during ordinary use" cannot be met by
+    // handling that response better; it can only be met by not asking a question shaped that way.
+    if (this.membershipPageIsComplete()) {
+      return null;
+    }
+
+    // ONLY A MEMBERSHIP THAT COULD BE ON A PAGE NOT IN HAND still needs the server, and that request may
+    // still answer 404. It is reachable only on a role whose membership exceeds one page, which is not
+    // the ordinary case this screen is used in.
+    const key = this.store.probedAssignmentKey();
+
+    if (key === null || key.roleId !== addressed || key.userId !== chosen.userId) {
       return null;
     }
 
@@ -2648,6 +2852,11 @@ export class RoleAssignmentComponent {
         if (failure !== null && failure.operation === 'loadAssignments') {
           this.raise(this.failureNoticeFor(failure));
         }
+
+        // ⚠ THE POST-WRITE RE-BASELINE, PERFORMED HERE BECAUSE THIS IS THE MOMENT THE ROWS BECOME
+        // TRUSTWORTHY. `reprobeSelectedMembership` only left a marker; the listing this write re-read has
+        // just settled, so the rows now describe the membership as stored.
+        this.rebaselineAfterWrite();
       });
     });
 
@@ -2690,6 +2899,12 @@ export class RoleAssignmentComponent {
         const failure = settled.failure;
 
         if (failure === null || settled.operation !== awaited) {
+          // ⚠ SUCCESS IS ANNOUNCED, WHICH IT PREVIOUSLY WAS NOT. See `assignmentAdded` for the measured
+          // omission and why the legacy screen's silence does not carry over to a document that does not
+          // reload. The sentence is chosen from the state captured AT DISPATCH, so it agrees with the
+          // command label the operator pressed rather than with the state the write produced.
+          this.raise(this.writeSuccessNotice(awaited, target));
+
           // ⚠ ON SUCCESS ONLY. A refused write changed nothing, so re-asking the probe after one would
           // spend a request to be told what the screen already knows.
           this.reprobeSelectedMembership();
@@ -2979,6 +3194,22 @@ export class RoleAssignmentComponent {
       return;
     }
 
+    // ⚠ THE SERVER IS ASKED ONLY WHEN THE ANSWER IS NOT ALREADY ON SCREEN. A row of the membership
+    // listing carries every member the probe would return, and absence from a COMPLETE listing is proof
+    // of non-membership, so both of those cases prefill immediately and issue no request at all. The
+    // probe survives for the one case neither covers: a membership that could be sitting on a page this
+    // screen has not read.
+    //
+    // This is what removes the console error the probe produced on the happy path - see the note on
+    // `selectedMembership` - and it also removes a whole round trip from the ordinary interaction.
+    if (this.membershipFromRows() !== null || this.membershipPageIsComplete()) {
+      this.awaitedPrefillUserId.set(null);
+      this.store.clearProbedAssignment();
+      this.applyProbeAnswer(this.membershipFromRows());
+
+      return;
+    }
+
     this.awaitedPrefillUserId.set(user.userId);
     this.store.probeAssignment(roleId, user.userId);
   }
@@ -3069,6 +3300,13 @@ export class RoleAssignmentComponent {
       return;
     }
     this.problemSignal.set(null);
+
+    // ⚠ CAPTURED AT DISPATCH, BECAUSE THE ANSWER CHANGES AS A RESULT OF THE WRITE. Whether this enrols an
+    // account or amends an enrolment it already had is exactly what the write is about to alter, so the
+    // confirmation's wording has to be decided from the state BEFORE it - the same state the command's own
+    // label was rendered from, so the sentence agrees with the button the operator pressed.
+    this.writeWasAnAmendment.set(this.selectedMembership() !== null);
+    this.writeSubjectName.set(this.selectedUserSignal()?.displayName ?? null);
     this.awaitedWrite.set('assignUser');
     // The identifier is captured from the command's own return value, so what this screen waits on is
     // the very write it just dispatched and not merely "a write of this kind".
@@ -3607,14 +3845,18 @@ export class RoleAssignmentComponent {
    * the operator performed without having chosen an account.
    */
   private reprobeSelectedMembership(): void {
-    const roleId = this.roleIdSignal();
     const chosen = this.selectedUserSignal();
 
-    if (roleId === null || chosen === null) {
+    if (this.roleIdSignal() === null || chosen === null) {
       return;
     }
 
-    this.store.probeAssignment(roleId, chosen.userId);
+    // ⚠ A MARKER ONLY. NOTHING IS READ HERE, BECAUSE NOTHING TRUSTWORTHY IS AVAILABLE YET. The store
+    // re-reads the membership listing as part of the write, and that read is still IN FLIGHT at this
+    // point - so the rows in hand are the PRE-write rows. Consulting them here would conclude that a
+    // just-added member is not a member, and that a just-removed member still is. The re-baseline
+    // therefore waits for the listing to settle; the membership read bridge performs it.
+    this.awaitedRebaselineUserId.set(chosen.userId);
   }
 
   /**
@@ -3627,6 +3869,108 @@ export class RoleAssignmentComponent {
    *
    * @param membership The chosen account's membership of the addressed role, or `null`.
    */
+  /**
+   * The confirmation a SUCCESSFUL membership write reports.
+   *
+   * Three outcomes, three sentences: enrolling an account, amending the bounds of an enrolment it already
+   * had, and ending one. The distinction between the first two comes from the flag captured at dispatch,
+   * which is the same state the command's own label was rendered from.
+   *
+   * The subject name is the account's DISPLAY name, taken from the row for a removal - the row the command
+   * was pressed on, which need not be the account the picker holds - and from the picker for an
+   * assignment. Where neither is available the sentence still stands, naming the account generically
+   * rather than being withheld: an outcome reported without a name is far better than an outcome not
+   * reported at all, which is the defect this closes.
+   *
+   * @param awaited Which write settled.
+   * @param target The membership row a removal targeted, or `null` for an assignment.
+   * @returns The notice to raise.
+   */
+  private writeSuccessNotice(
+    awaited: AwaitedAssignmentWrite,
+    target: UserRole | null,
+  ): DeferredNotice {
+    const roleName: string = this.role()?.roleName ?? this.text.unnamedRole;
+
+    if (awaited === 'removeAssignment') {
+      const account: string = target?.displayName ?? this.text.unnamedAccount;
+
+      return {
+        severity: 'success',
+        message: this.text.assignmentRemoved.replace('{0}', account).replace('{1}', roleName),
+        // A completed write has nothing for an operator to escalate, so there is no reference to quote.
+        reference: null,
+      };
+    }
+
+    const account: string = this.writeSubjectName() ?? this.text.unnamedAccount;
+    const template: string = this.writeWasAnAmendment()
+      ? this.text.assignmentUpdated
+      : this.text.assignmentAdded;
+
+    return {
+      severity: 'success',
+      message: template.replace('{0}', account).replace('{1}', roleName),
+      // A completed write has nothing for an operator to escalate, so there is no reference to quote.
+      reference: null,
+    };
+  }
+
+  /**
+   * Re-baselines the two bounds from the stored membership once a write's listing re-read has settled.
+   *
+   * ⚠ WHAT THIS CLOSES. A successful addition left the form exactly as the operator had typed it while
+   * the command's own label flipped to the amend wording - so the screen offered to UPDATE a membership
+   * from boxes that no longer described it. With the expiry left empty the server DERIVES a bound
+   * (`RoleController.vb:L493-L501` back-dates a used trial, and the paid-term rules set one otherwise),
+   * so the empty box was not merely stale, it was a value: pressing the amend command would have written
+   * the derived bound away without the operator ever seeing it. Runtime testing measured exactly that
+   * sequence - add with an expiry, `204`, listing re-read carrying the stored bound, and two boxes still
+   * holding the pre-write entry beneath an "Update User Role" command.
+   *
+   * MIGRATION: a deliberate divergence, and a small one. The legacy handler rebound only its GRID after
+   * a write (`SecurityRoles.ascx.vb:L546`) and left its own boxes alone, which it could afford because
+   * its command's wording came from the control's ROLE/USER mode (`:L243`, `:L250`) and never claimed to
+   * be updating anything. This screen's wording does make that claim, so the values behind it are made
+   * to agree with it.
+   *
+   * Does nothing unless a write left a marker AND the account it named is still the chosen one, so a
+   * listing read the operator triggered by paging or sorting never rewrites boxes they are typing in.
+   * The marker is its own signal rather than the prefill marker: the prefill bridge fires when a PROBE
+   * settles, which on this path is before the re-read lands, so sharing one marker would re-baseline
+   * from pre-write rows.
+   *
+   * The rows are consulted first and the server is asked only when they cannot answer, which is the same
+   * rule {@link selectedMembership} and {@link selectUser} follow - one rule, in three places that need
+   * it, rather than three rules.
+   */
+  private rebaselineAfterWrite(): void {
+    const awaited: number | null = this.awaitedRebaselineUserId();
+
+    if (awaited === null) {
+      return;
+    }
+
+    this.awaitedRebaselineUserId.set(null);
+
+    const chosen = this.selectedUserSignal();
+    const roleId = this.roleIdSignal();
+
+    if (chosen === null || roleId === null || chosen.userId !== awaited) {
+      return;
+    }
+
+    if (this.membershipFromRows() !== null || this.membershipPageIsComplete()) {
+      this.store.clearProbedAssignment();
+      this.applyProbeAnswer(this.membershipFromRows());
+
+      return;
+    }
+
+    this.awaitedPrefillUserId.set(chosen.userId);
+    this.store.probeAssignment(roleId, chosen.userId);
+  }
+
   private applyProbeAnswer(membership: UserRole | null): void {
     const effective = membership === null ? NO_DATE : toCalendarDateValue(membership.effectiveDate);
     const expiry = membership === null ? NO_DATE : toCalendarDateValue(membership.expiryDate);
@@ -3705,9 +4049,15 @@ export class RoleAssignmentComponent {
         // so one decision had two homes and they disagreed.
         severity: failure.summary.severity,
         message: published === null ? ROLE_ASSIGNMENT_TEXT.removalRefused : published,
+        // The wording is overridden above; the identifier the server recorded it under is not.
+        reference: failure.summary.supportReference,
       };
     }
-    return { severity: failure.summary.severity, message: failure.summary.message };
+    return {
+      severity: failure.summary.severity,
+      message: failure.summary.message,
+      reference: failure.summary.supportReference,
+    };
   }
 
   /**
@@ -3723,7 +4073,11 @@ export class RoleAssignmentComponent {
    */
   private failureNoticeFor(failure: RoleStoreFailure): DeferredNotice {
     this.problemSignal.set(failure.problem);
-    return { severity: failure.summary.severity, message: failure.summary.message };
+    return {
+      severity: failure.summary.severity,
+      message: failure.summary.message,
+      reference: failure.summary.supportReference,
+    };
   }
 
   /**
@@ -3741,7 +4095,11 @@ export class RoleAssignmentComponent {
     const problem = readProblemDetails(error);
     this.problemSignal.set(problem);
     const summary = summarizeProblem(problem);
-    return { severity: summary.severity, message: summary.message };
+    return {
+      severity: summary.severity,
+      message: summary.message,
+      reference: summary.supportReference,
+    };
   }
 
   /** Raises a deferred message, if there is one. */
@@ -3749,7 +4107,7 @@ export class RoleAssignmentComponent {
     if (notice === null) {
       return;
     }
-    this.notifications.notify(notice.severity, notice.message);
+    this.notifications.notify(notice.severity, notice.message, notice.reference);
   }
 
   /** Remembers a pairing the server has refused, so its command stops being offered. */

@@ -1948,6 +1948,61 @@ describe('MembershipSettingsComponent', () => {
       );
     });
 
+    /**
+     * ⚠ THE OUTCOME IS BROUGHT TO THE READER, NOT MERELY RENDERED WHERE IT BELONGS. This form is longer
+     * than a viewport, its actions sit at the foot and its outcome surface renders at the head, so an
+     * operator pressing Update from a scroll offset of 712px was measured seeing NO visible change at
+     * all: the refusal was on the page, above the fold, unreachable without scrolling back and with
+     * nothing to say it was there. Moving focus fixes it for both readers at once - it carries a sighted
+     * operator's viewport to the message and it puts a keyboard reader's next Tab beside it - and it is
+     * what makes a SECOND identical refusal perceptible, since a live region announces a change and an
+     * unchanged sentence announces nothing the second time.
+     *
+     * The focus target is the live region rather than the first invalid control, because a server refusal
+     * is not a per-field validity failure: the form is valid by the client's rules, and the sibling
+     * directive that focuses an invalid control deliberately does nothing on a submit that passed.
+     */
+    it('moves focus to the outcome so a refusal is reachable from the foot of the form', () => {
+      arrive();
+
+      submitForm();
+      expectRequest('PUT', SETTINGS_URL).flush(
+        problem('user.membership_settings.invalid', 400, 'The request could not be processed as submitted.'),
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      const live = query('.error-banner-live');
+
+      expect(live).withContext('the outcome surface is rendered').not.toBeNull();
+      expect(live?.getAttribute('tabindex'))
+        .withContext('programmatically focusable, and never in the tab order')
+        .toBe('-1');
+      expect(document.activeElement)
+        .withContext('focus is ON the outcome, not left on a control below the fold')
+        .toBe(live);
+    });
+
+    it('leaves focus alone when the banner was already there on arrival', () => {
+      // The converse, and the reason the reveal lives in this branch rather than in the shared banner: a
+      // refusal that was on screen before the reader did anything must not pull focus, because nobody
+      // asked it to. Here the READ is refused, so the banner renders during arrival with no submit
+      // involved.
+      create();
+      expectRequest('GET', SETTINGS_URL, 'the policy read').flush(
+        problem('auth.not_permitted', 403, 'You are not permitted to read this policy.'),
+        { status: 403, statusText: 'Forbidden' },
+      );
+      fixture.detectChanges();
+
+      expect(query('.error-banner-live')?.textContent ?? '')
+        .withContext('the refusal is on screen')
+        .toContain('You are not permitted to read this policy.');
+      expect(document.activeElement)
+        .withContext('and it did not take focus, because the reader asked for nothing')
+        .not.toBe(query('.error-banner-live'));
+    });
+
     it('pins a per-field refusal to the control the server named', () => {
       arrive();
 
@@ -2152,6 +2207,34 @@ describe('MembershipSettingsComponent', () => {
       // and lists nothing, so the shared data table has no business here either.
       expect(host().querySelectorAll('table')).withContext('no table of any kind').toHaveSize(0);
       expect(queryAll('app-data-table')).withContext('and no grid component').toHaveSize(0);
+    });
+
+    /**
+     * ⚠ NO AUTHORING COMMENTARY REACHES THE SCREEN, AND 1101 CHARACTERS OF IT ONCE DID. One annotation
+     * block's closing delimiter sat above the note that followed it rather than below, so the following
+     * note rendered as an unwrapped text node directly beneath this component - 14px, measured at 1672px
+     * wide and 86px tall, present in the accessibility tree, and sitting immediately above the one
+     * sentence on this screen genuinely addressed to an operator. A template comment fails SILENTLY: it
+     * renders rather than erroring, so no build, no type-check and no lint reported it.
+     *
+     * Asserted on the RENDERED TEXT rather than on the markup, because the markup legitimately contains
+     * every one of these strings inside comments - a markup assertion would fail on correct code and
+     * would have passed on the defect had it looked only for a tag. Four needles, each characteristic of
+     * this file's annotation voice and none of which belongs in anything an operator reads: the warning
+     * glyph these notes are marked with, a legacy source citation, a back-quoted identifier, and the
+     * word this particular leaked block opened with.
+     */
+    it('renders no authoring commentary as page copy', () => {
+      arrive();
+
+      const copy: string = host().innerText;
+
+      expect(copy).withContext('no annotation marker').not.toContain('⚠');
+      expect(copy).withContext('no legacy source citation').not.toContain('.vb:L');
+      expect(copy).withContext('no back-quoted identifier').not.toContain('`');
+      expect(copy)
+        .withContext('and not the opening words of the block that leaked')
+        .not.toContain('THE PROVENANCE DISCLOSURE');
     });
 
     it('emits none of the legacy spacing content', () => {

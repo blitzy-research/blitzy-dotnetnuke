@@ -559,18 +559,20 @@ describe('PortalAliasListComponent', () => {
   }
 
   /**
-   * Consumes the collection re-read that a CREATION now triggers, answering with `rows`.
+   * Consumes the collection re-read that a WRITE triggers, answering with `rows`.
    *
-   * ⚠ WHY A CREATION ISSUES A SECOND REQUEST AT ALL. Creation used to splice the 201 body onto
-   * the array already in hand, while an update re-read the collection because its `PUT` answers
-   * with no body. Both write paths now take the collection from the server, so a created row
-   * cannot land in an order the collection endpoint did not choose, and cannot carry only the
-   * members the create response happened to include. The response body is still used for the
+   * ⚠ WHY A WRITE ISSUES A SECOND REQUEST AT ALL. Creation used to splice the 201 body onto the
+   * array already in hand, while an update re-read the collection because its `PUT` answers with no
+   * body; a REMOVAL filtered the row out locally and asked nothing. All three write paths now take
+   * the collection from the server, so a created row cannot land in an order the collection endpoint
+   * did not choose or carry only the members the create response happened to include, and a removal
+   * cannot leave another operator's insertions unseen or leave the server-set `isCurrent` mark
+   * attached to a row that no longer resolves the tenant. The response body is still used for the
    * record just written - the selection and the detail both come from it.
    *
    * @param rows The collection the server answers the re-read with.
    */
-  function settleCreateReread(rows: readonly PortalAlias[]): void {
+  function settleWriteReread(rows: readonly PortalAlias[]): void {
     expectRequest('GET', aliasesUrl(-1)).flush(envelope(rows));
     settle();
   }
@@ -1263,7 +1265,7 @@ describe('PortalAliasListComponent', () => {
 
       call.flush(envelope(alias(21, longest)), { status: 201, statusText: 'Created' });
       settle();
-      settleCreateReread([alias(7, 'localhost'), alias(21, longest)]);
+      settleWriteReread([alias(7, 'localhost'), alias(21, longest)]);
 
       expect(fieldMessages()).toHaveSize(0);
     });
@@ -1408,7 +1410,7 @@ describe('PortalAliasListComponent', () => {
 
       call.flush(envelope(alias(21, 'example.com:8443/child')), { status: 201, statusText: 'Created' });
       settle();
-      settleCreateReread([alias(7, 'localhost'), alias(21, 'example.com:8443/child')]);
+      settleWriteReread([alias(7, 'localhost'), alias(21, 'example.com:8443/child')]);
 
       expect(notifications()).toEqual([{ severity: 'success', message: SAVED_MESSAGE }]);
     });
@@ -1463,7 +1465,7 @@ describe('PortalAliasListComponent', () => {
 
       call.flush(envelope(alias(21, 'example.com')), { status: 201, statusText: 'Created' });
       settle();
-      settleCreateReread([alias(7, 'localhost'), alias(21, 'example.com')]);
+      settleWriteReread([alias(7, 'localhost'), alias(21, 'example.com')]);
 
       expect(notifications()).toEqual([{ severity: 'success', message: SAVED_MESSAGE }]);
       expect(textOf('td.data-table__cell,th.data-table__cell')).toContain('example.com');
@@ -1551,9 +1553,16 @@ describe('PortalAliasListComponent', () => {
       expect(textOf('td.data-table__cell,th.data-table__cell')).not.toContain('localhost');
       expect(textOf('td.data-table__cell,th.data-table__cell')).toContain('localhost:4200');
 
-      // A removal is exact for an unpaged collection, so the row is dropped in place and nothing is
-      // re-read.
-      httpMock.expectNone((candidate) => candidate.method === 'GET');
+      // ⚠ AND THE COLLECTION IS RE-READ, WHICH THIS CASE USED TO ASSERT THE ABSENCE OF. The local
+      // filter above is exact for the row REMOVED - the collection is unpaged, so its size is its
+      // length - and that is why the row disappears before the re-read lands. It says nothing about
+      // the rows nobody here wrote: another operator's insertions stayed invisible until the next
+      // navigation, and `isCurrent`, which the server sets on the row THIS request resolved the
+      // tenant through, stayed attached to a row an operator had just removed. Create and update
+      // both ask again; this now does too.
+      settleWriteReread([alias(8, 'localhost:4200')]);
+      expect(textOf('td.data-table__cell,th.data-table__cell')).not.toContain('localhost');
+      expect(textOf('td.data-table__cell,th.data-table__cell')).toContain('localhost:4200');
     });
 
     it('addresses the row whose command was pressed, not the first one', () => {
@@ -1592,7 +1601,7 @@ describe('PortalAliasListComponent', () => {
         statusText: 'Created',
       });
       settle();
-      settleCreateReread([alias(7, 'localhost'), alias(21, 'example.com')]);
+      settleWriteReread([alias(7, 'localhost'), alias(21, 'example.com')]);
 
       expect(notifications()).toEqual([{ severity: 'success', message: SAVED_MESSAGE }]);
     });
@@ -1612,7 +1621,7 @@ describe('PortalAliasListComponent', () => {
         statusText: 'Created',
       });
       settle();
-      settleCreateReread([alias(7, 'localhost'), alias(21, 'example.com')]);
+      settleWriteReread([alias(7, 'localhost'), alias(21, 'example.com')]);
     });
 
     it('shows the wait while a read is outstanding, and only then', () => {
@@ -2271,6 +2280,9 @@ describe('PortalAliasListComponent', () => {
         statusText: 'No Content',
       });
       settle();
+
+      // The removal re-reads the collection, as every other write on this resource does.
+      settleWriteReread([alias(8, 'localhost:4200')]);
 
       expect(dialogue()).withContext('the question is closed').toBeNull();
       expect(query('form')).withContext('and the form with it').toBeNull();

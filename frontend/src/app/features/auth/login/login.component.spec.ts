@@ -2951,6 +2951,48 @@ describe('LoginComponent', () => {
       expect(query('.login__notice')).toBeNull();
     });
 
+    it('paints NO required message after a SUCCESSFUL sign-in, though it has just emptied both boxes', () => {
+      // ⚠ THE MEASURED DEFECT, AND IT IS THE SCREEN ACCUSING ITSELF. The credential is cleared the moment a
+      // session is held, deliberately and for a stated security reason - a review found the account name and
+      // sixteen masked characters still in the DOM after a successful authentication. But the flag that
+      // licenses this screen to word its own validators was left raised, so the instant those two controls
+      // became empty they were reported as MISSING, on a sign-in that had SUCCEEDED. A browser audit measured
+      // the window at 165.6 milliseconds - from +502.4 to +668.0 after the press, corroborated by five
+      // consecutive animation frames and nine screencast frames - with the form carrying
+      // `ng-submitted ng-pristine ng-invalid` and the signed-in shell ALREADY PAINTED behind an empty
+      // red-outlined card reading both sentences.
+      //
+      // The navigation that follows normally destroys this component before a person registers it, which is
+      // why it survived review; and by the same reasoning that clears the credential at all, that navigation
+      // is not guaranteed - a refused route leaves this form standing, and then the false accusation is the
+      // resting state rather than a flash.
+      create();
+      fillCredentials();
+      submit();
+
+      const attempt = expectExactlyOneLoginRequest('one attempt, one request');
+
+      attempt.flush(credentialPayload());
+      httpMock
+        .expectOne((candidate) => candidate.method === 'GET' && candidate.url === ME_URL)
+        .flush(identityPayload());
+      fixture.detectChanges();
+
+      // The clearing itself is asserted too, so this case can never be "fixed" by keeping the credential.
+      expect(requiredControl(LOGIN_CONTROL_IDS.username).value).withContext('emptied').toBe('');
+      expect(requiredControl(LOGIN_CONTROL_IDS.password).value).withContext('emptied').toBe('');
+
+      const messages = queryAll('.form-field__error').map((node) => (node.textContent ?? '').trim());
+
+      expect(messages)
+        .withContext('a successful sign-in reports no missing account name')
+        .not.toContain(LOGIN_REQUIRED_MESSAGES.username);
+      expect(messages)
+        .withContext('nor a missing credential')
+        .not.toContain(LOGIN_REQUIRED_MESSAGES.password);
+      expect(messages).withContext('nor anything else').toEqual([]);
+    });
+
     it('does not bring it back when that new attempt is refused', () => {
       // The other half. A refused attempt renders its own inline refusal, and re-presenting a
       // withdrawal notice beside it would read as an explanation of the refusal.

@@ -1,5 +1,6 @@
 using System.Globalization;
 using DnnMigration.Application.Abstractions;
+using DnnMigration.Application.Common;
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Portal;
 using DnnMigration.Application.Dtos.User;
@@ -35,6 +36,17 @@ public sealed class PortalService : IPortalService
     private const string PagingInvalidCode = "portal.paging_invalid";
 
     private const string NotFoundCode = "portal.not_found";
+
+    /// <summary>
+    /// Reason code returned when a caller's update carries a concurrency token that no longer matches the
+    /// stored tenant, so the record moved between the read and the write.
+    /// </summary>
+    /// <remarks>
+    /// The suffix <c>concurrency_conflict</c> is what the API surface maps to <c>409 Conflict</c>, and it is
+    /// the same suffix the role contract uses for the same outcome - deliberately, so a client has one
+    /// conflict to recognise rather than two spellings of it.
+    /// </remarks>
+    private const string ConcurrencyConflictCode = "portal.concurrency_conflict";
 
     private const string CreationFailedCode = "portal.creation_failed";
 
@@ -873,6 +885,27 @@ public sealed class PortalService : IPortalService
                 return Result<PortalDetailDto?>.Success(null);
             }
 
+            // OPTIMISTIC CONCURRENCY, CHECKED BEFORE ANY OTHER RULE. The order is deliberate and matches the
+            // role contract: a caller holding a stale snapshot must be told that the record moved under it,
+            // not that some field of the snapshot it is trying to restore is now invalid or now names a page
+            // that has since been removed - those are symptoms of the staleness rather than separate faults.
+            //
+            // MIGRATION: the legacy screen posted the whole record back with no version check of any kind
+            // (SiteSettings.ascx.vb cmdUpdate_Click reads every control and calls the 27-argument save), so
+            // one operator could silently destroy another's committed edit. Because this request replaces
+            // EVERY column and roughly twenty of them are never displayed by the editing screen, the
+            // destruction reached fields neither operator had opened: runtime testing saved from two sessions
+            // and measured the earlier operator's changes gone with both saves answering 200. Rule T5
+            // requires the departure from legacy behaviour to be recorded rather than absorbed, and it is, in
+            // MIGRATION_NOTES.md. A request that omits the token is still applied, so no caller that predates
+            // the token is refused.
+            if (IsWritingOverSomeoneElsesEdit(portal, request))
+            {
+                return Result<PortalDetailDto?>.Failure(
+                    ConcurrencyConflictCode,
+                    DescribeConcurrencyConflict(portalId));
+            }
+
             await EnsureHostOnlyFieldsUnchangedAsync(portal, request, cancellationToken).ConfigureAwait(false);
 
             Result references = await ValidateUpdateReferencesAsync(portal, request, cancellationToken)
@@ -1122,6 +1155,22 @@ public sealed class PortalService : IPortalService
         if (portal is null)
         {
             return Result<PortalSettingsDto?>.Success(null);
+        }
+
+        // OPTIMISTIC CONCURRENCY, CHECKED BEFORE ANY OTHER RULE, for the reason given on UpdatePortalAsync: a
+        // caller holding a stale snapshot must be told the record moved under it, not that a field of the
+        // snapshot it is restoring is now refused or now names a page that has since been removed.
+        //
+        // The check is on THIS path as well as on UpdatePortalAsync because both paths hand the same request
+        // interface to the same mapper and replace the same twenty-five columns. Protecting one and leaving
+        // the other would move the lost-update surface to the sibling route rather than remove it, and this
+        // is the route the settings screen uses. The token is derived by one function for both reads, so a
+        // token obtained from either screen verifies here.
+        if (IsWritingOverSomeoneElsesEdit(portal, request))
+        {
+            return Result<PortalSettingsDto?>.Failure(
+                ConcurrencyConflictCode,
+                DescribeConcurrencyConflict(portalId));
         }
 
         // Both public update resources replace the same stored row and therefore share the same
@@ -1766,6 +1815,61 @@ public sealed class PortalService : IPortalService
         return Result<string>.Success(
             string.Concat(parentAuthority, AliasPathSeparator.ToString(), submittedAlias));
     }
+
+    /// <summary>
+    /// Reports whether a whole-record portal write would overwrite an edit made after the caller read the
+    /// record.
+    /// </summary>
+    /// <param name="portal">The portal as it currently stands.</param>
+    /// <param name="request">The submitted state, carrying the token the caller read.</param>
+    /// <returns>
+    /// <see langword="true"/> when the caller supplied a token that no longer matches the stored record, so
+    /// the write must be refused; otherwise <see langword="false"/>.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// ONE GUARD FOR BOTH PORTAL WRITE PATHS, on purpose. <c>UpdatePortalAsync</c> and
+    /// <c>UpdatePortalSettingsAsync</c> hand the same request interface to the same mapper and replace the
+    /// same twenty-five columns, so they share one lost-update surface and must share one remedy; two copies
+    /// of this comparison would eventually disagree.
+    /// </para>
+    /// <para>
+    /// A CALLER THAT SUPPLIES NO TOKEN IS NOT REFUSED. <see cref="ConcurrencyToken.Matches"/> treats a null
+    /// or blank submitted token as a match, which is what keeps every caller written before the token existed
+    /// working - see the member documentation on <c>IPortalSettingsUpdateRequest.ConcurrencyToken</c> for why
+    /// that trade is made explicitly rather than silently.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy screen posted the whole record back with no version check of any kind
+    /// (<c>SiteSettings.ascx.vb</c> <c>cmdUpdate_Click</c> reads every control and calls the
+    /// twenty-seven-argument save), so one operator silently destroyed another's committed edit - and because
+    /// the payload replaces every column while the editing screen displays only some of them, the destruction
+    /// reached fields neither operator had opened. Rule T5 requires the departure from legacy behaviour to be
+    /// recorded rather than absorbed, and it is, in MIGRATION_NOTES.md.
+    /// </para>
+    /// </remarks>
+    private static bool IsWritingOverSomeoneElsesEdit(Portal portal, IPortalSettingsUpdateRequest request)
+        => !ConcurrencyToken.Matches(
+            request.ConcurrencyToken,
+            PortalMappings.ConcurrencyTokenFor(portal));
+
+    /// <summary>
+    /// Composes the explanation a refused stale portal write reports.
+    /// </summary>
+    /// <param name="portalId">The portal the caller addressed.</param>
+    /// <returns>The explanation.</returns>
+    /// <remarks>
+    /// Shared by both write paths so the two cannot drift into reporting the same condition differently, which
+    /// is also why it says "reload the portal" rather than naming one of the two screens: runtime testing showed
+    /// the same sentence reaching an operator on the portal EDIT form as well as on the Site Settings screen, and
+    /// an instruction naming the wrong screen is worse than a general one. It
+    /// names the state that changed and the action that recovers from it, and it discloses nothing about WHICH
+    /// field moved - the token is opaque, and a caller that could infer the changed column from a refusal
+    /// would be reading another operator's edit through an error message.
+    /// </remarks>
+    private static string DescribeConcurrencyConflict(int portalId)
+        => FormattableString.Invariant(
+            $"Portal {portalId} was changed by someone else after you read it, so nothing was written. Reload the portal to see the current values, then apply your change again.");
 
     /// <summary>
     /// Refuses an update in which a caller who is not a host account has altered a host-only field.

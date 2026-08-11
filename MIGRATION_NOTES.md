@@ -16631,3 +16631,397 @@ budgets, or raising them to where nothing could trip them, was the alternative a
 false alarm: a threshold that never fires teaches a reader to ignore the output, and the next increase
 would then arrive unmeasured. A warning that fires on growth nobody has justified is the whole point of
 the setting.
+
+## QA remediation: thirty-eight findings, and what closing them changed
+
+A runtime pass over the administration console at the development topology — the Angular application on
+port 4200 addressing the API on port 8080 directly, with no proxy between them — raised thirty-eight
+numbered findings across the five preserved domains. Thirty-five were closed by a change to the code and
+three by measurement without one, and the three are recorded here beside the thirty-five, because a finding
+closed without a diff is the part of this record most easily mistaken later for an omission.
+
+What follows is not one entry per finding. Sixteen entries record a behavioural difference an operator can
+observe, several of them closing more than one finding at once. Four of those sixteen record a decision to
+resolve a finding by a mechanism other than the one it proposed, with the legacy evidence that made the
+proposal wrong. One entry records a change declined outright. One records a parity decision that changed
+nothing and matters anyway. The last two collect the findings closed by measurement and the observations
+this work deliberately left alone.
+
+### The module detail read is gated on the edit permission, and the view permission is now carried by nothing
+
+`GET /api/v1/modules/{moduleId}` was gated on the view permission and returned the module's complete
+administrative record — its business controller class, its cache and visibility settings, its container and
+alignment, and its soft-deletion state. A plain registered member could read all of it for any module a page
+granted them view on, including rows already in the recycle bin. Worse, the same record was *harder* to read
+than to write: an administrator refused a read on a module could still update and delete it, because the
+write actions were gated on the edit permission and the read was not.
+
+The read now carries the edit permission. One change closes three findings, because all three were the same
+defect seen from three sides: the administrative record reaches only administrative callers, the read is
+nowhere stricter than the write, and a module created with view inheritance switched off — which seeds no
+permission rows of its own — becomes openable by the administrator who created it, where before it answered
+403 to its own author and offered no in-product remedy.
+
+**The legacy gate is the authority for this, not a security preference.** The screen that rendered this
+record in the original application, `Website/admin/Modules/ModuleSettings.ascx.vb` at L191, gated itself on
+`PortalSecurity.IsInRoles(AdministratorRoleName)` or the page's own administrator roles — which is exactly
+what the edit permission expresses in this model. The view grant bought something else entirely: the
+module's *rendered content*, which this API does not serve at all.
+
+**Soft-deleted rows stay readable to an administrator**, deliberately. That is the recycle bin, and the
+finding's own report agreed.
+
+**The module view policy is retained although no action now carries it, and the member says so.** It is kept
+because the grant it names is real, is evaluated by the same requirement handler as its three siblings, and is
+the policy a content-serving address would have to use; deleting it would leave the catalogue describing three
+of the four key-and-scope pairings the permission model actually stores. The property that a view policy does
+not demand an authenticated caller — which is what makes a grant to the unauthenticated pseudo-role
+expressible at all — is still exercised, by the page read, which carries its own view policy.
+
+### The duplicate-role refusal quotes the legacy sentence, and names no identifier
+
+Submitting a role name that already exists answered with a sentence naming the existing row's identifier and
+the tenant's identifier. The authoritative wording is in the legacy resource file — `DuplicateRole.Text` in
+`EditRoles.ascx.resx` — and it names neither: "A role with the same name already exists. The role was not
+added." That sentence is now transcribed verbatim, in one place, and the refusal reports it.
+
+The collation-collision explanation that was added earlier is preserved in substance, because a name refused
+for a reason the operator cannot see on screen is worse than a terse one. It now names only the *stored
+name* — which the listing already renders — and no row identifier and no tenant identifier.
+
+### The server admits a paid-membership period of zero where the form still refuses one
+
+The role columns for billing period and trial period legitimately hold zero for every unpaid role, and the
+read publishes that zero. The write contract refused it, so an operator who read a role and submitted its
+own representation back unchanged was refused on two fields they had never touched.
+
+The server contract now admits zero, and only beside a declared cycle of none — a positive period is always
+fine, zero beside a real cycle is still refused, and a negative period is always refused. **The Angular
+form's strictly-positive rule is deliberately untouched**, so what an operator is told while typing is
+exactly what the legacy page told them.
+
+**The asymmetry is the point, and the legacy evidence is what makes it correct.** The strictly-positive
+rule was a *page control* in the original application, `valBillingPeriod2`, whose runtime wording comes from
+the resource file and reads "Billing Period Must Be Greater Than Zero" — the inline message in the markup
+saying "or equal to" is overridden at runtime by the resource key. There was no server-side rule at all.
+Reproducing the page control on the form is therefore exact parity; reproducing it on the wire invents a
+constraint the original never had and breaks a round trip the original never attempted, because the legacy
+read projection suppressed the zero before it could reach the box.
+
+The rule now has exactly one implementation, shared by both request validators and by the domain-level shape
+check. The third of those was a second, duplicated copy of the same rule, and it was found only because an
+integration round trip failed after the validators were relaxed.
+
+### A fee is staged at the store's own scale, so the created representation equals a later read
+
+Creating a role with a service fee finer than four decimal places answered with the value as submitted and
+stored it rounded, so the representation the caller was handed disagreed with the one the next read would
+give them. The value is now rounded to the stored scale — away from zero, matching SQL Server's own
+conversion — as it is staged onto the entity, before it is written.
+
+**Why staging rather than a post-write re-read.** Entity Framework answers a read issued after a write from
+its change tracker, so the difference is not observable that way however the read is phrased, and rounding
+at staging costs no extra round trip.
+
+### A role name is stored trimmed
+
+Surrounding whitespace in a role name was stored verbatim while the uniqueness check ignored it, so a name
+could be created that could never be created again and never matched what the operator typed. The name is
+now trimmed as it is staged, and both duplicate pre-checks look up the trimmed string, so the check asks
+about the value that will actually be stored.
+
+**This diverges from the original, which stored the padding.** It is recorded on the same footing as the
+existing invisible-character rule. The pre-check had to be trimmed as well rather than left to the index,
+because the collation ignores trailing whitespace and not leading whitespace.
+
+### The portal write carries a concurrency token, and the token is derived from content rather than a row version
+
+Both portal write paths replaced twenty-five columns with no version check, roughly twenty of which are not
+on the screen an operator is looking at, so two administrators editing different tabs silently overwrote one
+another. The read now publishes a token, both write requests carry it, and a write whose token does not match
+the stored record is refused with a conflict rather than applied.
+
+**Both write paths carry it, not only the one the finding named.** The two requests reach one mapper and
+replace the same columns, so protecting only the record route would have moved the lost-update surface onto
+the settings route — and the settings route is the one operators actually reach, because the portal listing's
+only row action targets it. The record route has no inbound link anywhere in the application.
+
+**The token is content-derived, and that is a bounded limitation rather than an oversight.** Rule T4 forbids
+adding a version column to the legacy schema, so the token is a hash over the same twenty-five members the
+mapper replaces, in the order it replaces them. A strict change-and-change-back by a third party therefore
+leaves a holder of the original snapshot able to save. This is identical to the role token that preceded it,
+and it is deliberate.
+
+Excluded from the hash: the identifier, the portal's global identifier, the two stock role designations, the
+administration page identifier, and the write-only processor credential reference — the last because no read
+publishes it, so including it would make every token instantly stale.
+
+### Currency and default language return as free text, not as selectors
+
+Both members were on the wire, on no tab, and re-submitted on every save. Both were editable workflows in
+the original application, on the payment and other tabs of the site settings page. They are now editable
+again, in the other-settings section, as text inputs inside the shared field wrapper, bounded by the same
+lengths the columns and the server validator declare.
+
+**Text inputs rather than selectors, because both legacy option sets came from excluded subsystems.** The
+currency list came from the Lists subsystem and this schema has twenty-five tables and no list table at all;
+the language list came from the localisation subsystem, which is not ported. Inventing an option set would
+refuse values the column legitimately holds.
+
+**Currency moved tab.** Its legacy home was the payment section, which has no successor here, so it sits with
+the other settings rather than justifying a whole section for one field. The captions and help text are the
+legacy resource strings verbatim.
+
+### The withheld paid-membership terms are stated in prose rather than rendered into boxes that would refuse them
+
+Four stored zeros on an unpaid role rendered as empty boxes, so an operator could not tell a stored zero from
+a stored nothing. The finding proposed rendering the zeros.
+
+**That fix is refused, with the legacy evidence cited.** The page control on this form is strictly positive,
+so a rendered zero opens the form already invalid on two fields nobody has touched; and the legacy write gate
+was "the box is not empty", so filling the boxes would change what an untouched save stores. Both are
+regressions dressed as a fix.
+
+Instead the Advanced section states every withheld value in prose, in the listing's own formatting: the role
+has no paid-membership terms, the boxes are left empty, and the values held for it are named. The formatting
+helpers are shared with the bind path so the two cannot drift.
+
+### The membership picker still offers accounts that already hold the role, and now says so
+
+Selecting an account that was already a member issued a keyed lookup that answered 404 as a matter of course,
+which is control flow through a failure and put a console error in front of the operator on an ordinary
+selection. Existing membership is now derived from the member list the screen has already fetched, and the
+keyed lookup survives only for the case where that list is genuinely unread. On the ordinary path the
+selection issues no request at all.
+
+**The member is not withheld from the picker.** The legacy screen filled this list with no exclusion and
+pre-filled the bounds from the existing row, which is how an operator amended a membership's dates. Removing
+members from the list would delete that workflow. The option label instead says "already in this role".
+
+### The import destination picker opens on a prompt, and states its transfer constraint rather than filtering by it
+
+The picker opened with nothing selected and no prompt, so the control's own value did not say that no choice
+had been made. It now opens on a prompt option bound to a genuine null — not a sentinel, which could collide
+with module zero under the identity seed — carrying the same "<None Specified>" string the legacy screen
+inserted at index zero of this very picker, and which two sibling screens already render.
+
+**A destination whose package cannot accept content is still offered.** The legacy screen had no module field
+at all and refused an unsupported destination at submission, which the migrated endpoint reproduces exactly.
+A client-side filter could evaluate only half the legacy predicate, because the definition read publishes
+whether a package is portable but not its business controller class, and a half-predicate either hides a
+usable destination silently or mislabels one. The constraint is stated in the field's help text instead, and
+the server refusal remains the authority.
+
+### A profile data type with no name is rendered as a prefixed reference
+
+Every row painted an em-dash, conflating a row whose stored type is the absent-value sentinel with a row
+whose stored type is a real number this build cannot name. Naming it is impossible in this schema: the
+legacy lookup reads a list table, and there is no list table. The em-dash is now reserved for the sentinel
+and a real value renders as a prefixed reference, which cannot be read as a type name and can only be read
+as a reference to one. The clipped explanatory sentence that was already beside it is unchanged.
+
+### Collapsed disclosure regions keep a resolvable target, and this diverges from four sibling components
+
+Every toggle on the module settings screen dropped its `aria-controls` while its region was collapsed,
+because the region's body is removed from the document and a dangling reference is invalid. Each region now
+has an always-present empty hidden placeholder carrying the body's identifier, so the reference always
+resolves while the region's *contents* are still removed — tab order and the accessibility tree are
+unchanged, and there is no visual artefact, which was measured three independent ways.
+
+The placeholder carries the identifier alone: no class, because the body class declares a grid display that
+beats the user-agent hidden rule and would paint an empty region; and no role or label, because an empty
+named region is a worse answer than a target the collapsed state legitimately excludes.
+
+**Four sibling components still drop the attribute when collapsed** — the shared field wrapper, with its help
+toggle; the account form, with three regions; the profile screen, with two; and the portal settings screen,
+with its tab strip and three sections. They are not wrong; they are the other valid reading of the same rule,
+and the reading this screen now takes is the one the navigation sidebar already took. The divergence is
+recorded here rather than resolved by rewriting ten more regions that no finding named.
+
+### An access refusal retires on a timer, and the notification gained a member to say so
+
+The notification raised when a route guard refuses a navigation stood until the operator changed screen —
+measured at four minutes forty-two seconds with the operator standing still. It was exempt from the dismissal
+timer because it is warning severity, and the exemption is deliberate and documented: a fault an operator has
+not acted on must not vanish from under them while they are reading it.
+
+**The exemption was right and the proxy it used was wrong.** Severity stands in for "does this need the
+reader to do something", and on exactly this one notification the proxy is wrong: a refused navigation is
+finished, nothing failed, and there is nothing to act on. The notification now carries a `selfDismisses`
+member that names the real question, and this one entry answers yes. The severity is untouched, so nothing
+else about how it is announced changes. Measured after the change: eight seconds on two instruments in two
+runs, with the hover pause still holding it for as long as a reader keeps the pointer on it.
+
+**Worth recording: a portal administrator can never see this refusal in ordinary use.** No link in the
+interface leads to a refused route for them — the two host-only routes are filtered out of the navigation
+entirely, and the second is linked only from inside the first.
+
+### The notification region is not clipped at any viewport, and the region is deliberately not moved
+
+The same finding reported the notification clipped at a thousand-pixel viewport. It is not, and the
+measurement is exhaustive: every per-side overflow delta is exactly zero at 375, 1000, 1440 and 1920 pixels;
+scroll width equals client width and scroll height equals client height on all five elements, so nothing
+hides behind a silently promoted overflow; the message measures one line box with a hundred and twenty-five
+pixels of slack; and the arithmetic shows the box cannot overflow while the browser's scrollbar gutter is
+under twenty-four pixels, where Chrome's is fifteen.
+
+What the report almost certainly describes is occlusion rather than clipping: the fixed notification covers
+seventeen pixels of the footer's twenty-one-pixel copyright line, leaving a sliver of glyph tops beneath it
+that reads exactly like clipped text. It is identical at 1440 and 1920, so the finding's own scoping is wrong
+as well.
+
+**No change was made, on four grounds.** The reported defect is measurably absent; it is not specific to the
+viewport named; the AAP specifies ten shared components and no notification component at all, so there is no
+placement specification to violate; and a fix would couple the viewport-anchored region to the footer's
+intrinsic height, which the footer stylesheet deliberately leaves unfixed and documents why — a fixed height
+would clip the notice the moment a reader raised their base font size.
+
+**A robust fix does exist and is declined rather than unavailable.** The region is a bottom-anchored
+reversed column, so the stack grows upward, which means raising its block-end inset would clear the footer
+for any stack depth. It is declined on the coupling ground, not on impossibility.
+
+### A confirmation raised while leaving a screen is handed to a root-lived relay
+
+A save that completed after its screen had already navigated away announced its success into an injection
+context that was being destroyed, so the operator was redirected with no confirmation that anything had
+happened. Every editing screen announces from an effect it owns, and an effect cannot outlive its owner.
+
+A new `DeferredOutcomeService` is provided in the root environment injector, so it is constructed once for
+the application and is not destroyed by a route change. A screen being destroyed with an outcome still
+outstanding hands it over; the relay raises it on the next screen. The hand-over is guarded so it can happen
+at most once per outcome from at most one owner.
+
+**This has no legacy counterpart at all.** The original application had no client-side navigation to lose a
+confirmation across. It is net-new architecture, recorded as such, and it is why `selfDismisses` and the
+relay are described together: both exist because a notification in this application has a lifetime that the
+screen which raised it does not control.
+
+### Every server refusal announced as a notification quotes the request's correlation reference
+
+A refusal reported as a notification quoted the reference an operator could give to support only when it was
+error severity. Refusals at 401, 403, 404 and 429 resolve to *warning* severity through the shared
+classifier, and every one of them carries a correlation identifier, so on those the identifier was in hand
+and discarded. On at least one screen — the account form's concurrent-deletion 404 — there is no page banner
+for a warning at all, so the notification is the entire report and the operator was left with nothing
+quotable.
+
+Five sites now forward the reference, joining the majority that already did: the module settings screen, the
+role form, the account form, the module import screen, and the membership screen's deferred outcome. The
+severity of a refusal is derived from the one shared classifier at all five, so a warning banner no longer
+sits beside an error notification describing the same event.
+
+**The root cause was a false premise written into a documentation comment**, and it is why the first attempt
+at this fix missed four of the five sites. The convenience method for error severity documented itself as
+"the one convenience method that forwards a support reference, because a failure is the only outcome that has
+one to quote" — a claim the shared classifier in the same codebase contradicts. Believing it made the warning
+convenience method, which structurally cannot carry a reference because its second parameter means something
+else, look like an acceptable channel for a server refusal. The claim is corrected in place, and the warning
+method now carries a note saying it must not be used for one.
+
+**Its signature is deliberately unchanged.** About fifteen genuine client-side warnings — an incomplete form,
+a bound not met — have no reference to quote, and should not be made to pretend they do.
+
+**One deferred-notice shape became a required member rather than an optional one.** The membership screen
+describes an outcome before it raises it, and the description carried only a severity and a message, so the
+identifier was discarded at the moment of description, before any call was made. `reference` is now required,
+so a new producer must state its answer — including stating null for a success — rather than inheriting a
+success's silence.
+
+**Recorded and not changed:** the banner and the notification spell the same severity level with different
+attribute values, `danger` against `error`. They are two components with their own attribute vocabularies and
+the operator-visible word agrees, which is what the finding concerns.
+
+### Heading cells and data cells break words by different rules, and the sort control wraps
+
+An email address overflowed its cell into the next column, because the shared table declares a fixed layout
+where column widths are settled independently of content, and the break rule in force was the one that is
+ignored when a box's intrinsic minimum size is computed. Changing it to the rule that is honoured contained
+the address. Separately, a sortable heading's label sat twelve pixels below a plain one, because a flex
+container whose items are not baseline-aligned exposes no baseline to the surrounding line box; aligning them
+to the baseline brought the two to within zero pixels.
+
+**The first of those changes caused a regression, and the regression is worth recording because the mechanism
+is not obvious.** The selector was `th, td`, not `td`. The two break keywords break lines identically and
+differ only in what they contribute to an intrinsic minimum — and that difference is decisive inside a flex
+container, because a flex item's automatic minimum size *is* its min-content size. Under the honoured rule
+that floor falls to a single character, so a sortable heading's inline-flex button shrank into its column and
+its label was broken mid-word. A comment asserting "nothing else changes" was part of what let it through,
+and it has been corrected in place rather than deleted.
+
+**Three rules now express one mechanism.** Data cells break anywhere, because that is what contains an
+unbreakable address. Heading cells break on word boundaries, so a label can never be shredded. And the sort
+button wraps, so its container's automatic minimum is the widest single item rather than the sum of them —
+which is what keeps the button inside its cell now that the whole-word floor is back. Without the third rule
+the button stood ten pixels outside its cell and painted its direction glyph into the neighbouring column,
+where a reader could attribute the sort to the wrong heading.
+
+**Two alternatives to the third rule were rejected on the merits**: a zero minimum width would let the button
+shrink past its label and reinstate the mid-word break, and hiding the overflow would clip the sort cue.
+
+**Accepted cosmetic consequence.** When the label and the glyph wrap onto two lines they are distributed
+through the button's existing minimum height, so the glyph floats a little under nine pixels below the label
+rather than snug against it. Packing the lines to the start would tidy it and risks moving the label's top,
+and therefore the baseline alignment that was just measured to zero. It is left alone.
+
+**Still open and not attempted.** Data cells still break mid-word on a handful of values on two grids. That
+is plain text directly in a cell, where both keywords behave identically, so it predates this work; the cause
+is the fixed table layout dividing its width equally between twelve or thirteen columns with no per-column
+widths declared. Fixing it means introducing per-column widths into the shared table component, which is a
+design change beyond every finding raised.
+
+### The per-property visibility control renders only on the account holder's own profile, and the gate is client-side
+
+A finding reported the per-property profile visibility workflow as not implemented, on the evidence that the
+API advertises the capability and the screen shows no control. Both halves of that are true and the
+conclusion does not follow: the control renders, on the same URL, when the account holder is looking at their
+own profile — two labelled selectors, three options each, pre-selected to the stored value, and a change
+round-trips and persists.
+
+This is the legacy gate exactly. `Website/admin/Users/Profile.ascx.vb` at L58-63 computes its visibility
+affordance as the tenant policy *and* the viewer being the profile's subject, so an administrator editing
+somebody else's profile never saw the control in the original application either. The definitions half of the
+finding is groundless in the same way: the legacy definitions grid declares no visibility column, and the
+legacy definition editor is a localisation form.
+
+**The gate is client-side, and that is parity rather than a security boundary.** The API returns the
+capability flag and the full visibility values even when an administrator requests another account's profile.
+That is not a disclosure defect — an administrator is the highest visibility tier and already sees every
+value, so the integer tells them nothing they are not authorised to know — and the legacy gate was itself a
+presentation affordance. Recorded here so it is not later mistaken for an authorisation check that is missing
+one half.
+
+### Findings closed by measurement, with no change
+
+Three findings, plus half of a fourth, were closed without a diff. Two of them are below; the third is the
+profile visibility control in the entry above, which has its own section because the parity it establishes
+outlives the measurement that established it; and the half is the notification clipping.
+
+**A module create was reported to raise no confirmation.** It raises one, measured on five independent
+instruments: inserted a quarter of a second after the press, retired seven thousand nine hundred and ninety
+milliseconds later, carrying success severity and the sentence the code declares. The redirect happens
+between those two moments, which is why a sampler armed after the redirect and not surviving the route change
+sees an empty region.
+
+**A submit control was reported never to be disabled or marked busy during an in-flight write.** Both
+bindings were already present and both genuinely apply: the disabled attribute and the busy attribute were
+observed together thirty milliseconds into a window that closed at thirty-one, and a throttled replay held
+them for two seconds entirely inside the in-flight window. The original observation was taken before paint.
+
+**The notification clipping** is recorded above with its geometry and the four grounds for leaving the region
+where it is.
+
+### What the remediation left as observations rather than changes
+
+Recorded here because each was looked at and deliberately not acted on, and an unrecorded look reads later as
+an omission: the portal record screen has no inbound link anywhere in the application, so the only route to
+it is a typed address or a programmatic navigation; a declined unsaved-changes prompt consumes the history
+entry it was aimed at, which is router bookkeeping rather than a defect; a confirmation already on screen does
+not survive a *subsequent* route change, which is the documented one-navigation lifetime rather than a fault;
+a successful delete that navigates on completion therefore surfaces no confirmation at all, which is the same
+family as the outcome relay above and is the one place it is not yet applied; the membership screen's outcome
+banner persists across edits until the next submit; that screen's notification checkbox is permanently
+disabled because the mail subsystem is not ported; the account form's not-found handling injects an unclassed
+paragraph that is easy to mistake for a banner when auditing; and administrative feature bundles are
+preloaded into a non-administrative browser, which is the mandated preloading strategy and not an
+authorisation hole, since the guards refuse every one of those routes and no data is fetched.
+

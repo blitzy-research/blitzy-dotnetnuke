@@ -222,8 +222,42 @@ public sealed class ModulesController : ControllerBase
     /// <param name="tabModuleId">Selects one placement when the module appears on several tabs.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns>The module, or <c>404 Not Found</c> when it does not exist in this portal.</returns>
+    // MIGRATION: THE ADMINISTRATIVE RECORD IS GATED ON EDIT, NOT ON VIEW, AND THE LEGACY SCREEN IS THE
+    //            AUTHORITY. What this action returns is ModuleDetailDto - cacheTime, visibility,
+    //            moduleOrder, header, footer, inheritViewPermissions, isDeleted - which is the record the
+    //            legacy module settings screen rendered, and that screen admitted only two callers:
+    //            ModuleSettings.ascx.vb L191 redirects to Access Denied unless
+    //            PortalSecurity.IsInRoles(PortalSettings.AdministratorRoleName) OR
+    //            PortalSecurity.IsInRoles(PortalSettings.ActiveTab.AdministratorRoles). Nothing in the
+    //            legacy application ever handed a module's CONFIGURATION to a caller holding only a page
+    //            VIEW grant; what a VIEW grant bought was the module's rendered CONTENT, which this API
+    //            does not serve at all.
+    //
+    //            THREE MEASURED CONSEQUENCES OF THE VIEW GATE THIS REPLACES, all reproduced against a live
+    //            installation before the change:
+    //              1. DISCLOSURE. A plain registered user holding nothing but the public Home page's
+    //                 All-Users VIEW grant received a payload byte-identical to the administrator's for
+    //                 modules 1, 7 and 9 - soft-deleted rows included, each carrying isDeleted: true.
+    //              2. READ STRICTER THAN WRITE. On module 5 the administrator was refused the read (403)
+    //                 while the settings read, the update and the delete on that same module all succeeded
+    //                 - the inverse of least privilege, and reachable because a module may carry an EDIT
+    //                 grant with no VIEW grant beside it.
+    //              3. A MODULE UNOPENABLE BY ITS OWN AUTHOR. Creating with inheritViewPermissions left at
+    //                 its legacy default of false (ModuleInfo.vb L747) seeds no ModulePermission VIEW row,
+    //                 so the administrator who had just created the module was refused its detail read
+    //                 while its settings endpoint stayed open. The settings screen gates its form on this
+    //                 read, so the remedy could not be applied through the product.
+    //            All three are one defect - the read was gated on a different grant from every operation
+    //            that consumes it - and this attribute is the whole of the fix. It widens nothing: EDIT is
+    //            strictly the stronger grant, so every caller admitted here was already admitted to the
+    //            settings read, the update and the delete on the same module.
+    //
+    //            SOFT-DELETED ROWS REMAIN READABLE TO AN ADMINISTRATOR, DELIBERATELY. Legacy kept a removed
+    //            module recoverable through the recycle bin, so its record stayed readable to the
+    //            administrator; only the disclosure to a non-administrator was wrong, and the gate is what
+    //            corrected it.
     [HttpGet("{moduleId:int}")]
-    [Authorize(Policy = PolicyNames.ModuleView)]
+    [Authorize(Policy = PolicyNames.ModuleEdit)]
     [ProducesResponseType(typeof(ApiResponse<ModuleDetailDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]

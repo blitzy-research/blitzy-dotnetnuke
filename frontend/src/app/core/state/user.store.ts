@@ -1777,9 +1777,19 @@ export class UserStore implements OnDestroy {
    * screen has just asked for, turning one stale query into several redundant requests.
    */
   resetSearchCriteria(): void {
-    // Reads in flight belong to the query being abandoned. Left running, the later of the two
-    // answers wins and repopulates the listing this method has just emptied.
-    this.cancelReads();
+    // ⚠ ONLY THE LISTING READ IS ABANDONED, AND THIS USED TO ABANDON EVERY READ THE STORE HAD. The
+    // paragraph above states the intent exactly - the tenant's membership settings and profile
+    // declarations must survive, because discarding them "would turn one stale query into several
+    // redundant requests" - and the blanket cancellation contradicted it: those two reads have nothing
+    // to do with the query, yet a request in flight for either was killed on arrival at the listing.
+    // Measured: saving the account policy composes a settings re-read followed by a listing read at the
+    // size that policy declares, and arriving at the listing aborted the settings read mid-flight
+    // (`GET /users/settings`, status 0, deterministic on both attempts), so the composition the write
+    // deliberately performs was thrown away and the listing sized itself from whatever was already held.
+    //
+    // What must still be abandoned is the read belonging to the query being replaced: left running, the
+    // later of the two answers wins and repopulates the listing this method has just emptied.
+    this.cancelListingRead();
 
     this._failure.set(null);
     this._users.set(emptyPagedResult<UserListItem>());
@@ -3528,8 +3538,43 @@ export class UserStore implements OnDestroy {
     this.definitionRequest = null;
     this.memberServicesRequest?.unsubscribe();
     this.memberServicesRequest = null;
+
+    // ⚠ EVERY READ FLAG THIS METHOD ABANDONS A REQUEST FOR IS LOWERED HERE, AND THREE OF THEM WERE NOT.
+    // Unsubscribing kills the request WITHOUT delivering next, error or complete, so nothing downstream
+    // ever runs the handler that would have lowered the flag - the abandonment is silent by design. A flag
+    // left raised is therefore permanent for the lifetime of the screen: measured on the account listing,
+    // `POST /users/search` was abandoned by a route change and the grid then held `aria-busy="true"`, a
+    // "Loading…" indicator and five sort controls marked `aria-disabled`, with ZERO further requests over
+    // 5.2 seconds and no self-heal - only choosing a letter or "All" recovered it, because those issue a
+    // fresh read that raises and then lowers the flag itself. The same latch reached the listing by a
+    // second route as well, the redirect that follows a create, and both routes ran through the query
+    // reset - which is why that path now abandons the listing read alone through
+    // {@link UserStore.cancelListingRead}, and why this method keeps the blanket behaviour it is named
+    // for: it serves teardown and the session boundary, where every read genuinely is being discarded.
+    //
+    // The two flags that were already correct are correct for the same reason and are left where they are:
+    // `_memberServicesLoading` immediately below, and the pair the detail helper lowers. The three added
+    // here complete the set - one flag lowered for each request abandoned above, with none left over.
+    this._usersLoading.set(false);
+    this._membershipSettingsLoading.set(false);
+    this._profileDefinitionsLoading.set(false);
     this._memberServicesLoading.set(false);
     this.cancelDetailReads();
+  }
+
+  /**
+   * Abandons the read that belongs to the listing query, and nothing else.
+   *
+   * Separate from {@link UserStore.cancelReads} because the two have different scopes and only one of
+   * them is safe to call when a query is merely being replaced: the tenant's account policy and profile
+   * declarations are not part of a query, so a request in flight for either must survive. Lowering the
+   * flag is not optional - unsubscribing delivers no next, no error and no complete, so nothing else
+   * will ever lower it, and a raised flag renders as a permanently busy grid.
+   */
+  private cancelListingRead(): void {
+    this.listRequest?.unsubscribe();
+    this.listRequest = null;
+    this._usersLoading.set(false);
   }
 
   /** Abandons the reads that belong to the selected account. */

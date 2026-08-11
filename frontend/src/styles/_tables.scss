@@ -100,10 +100,52 @@ td {
   // explicit column width to have any effect — neither of which belongs in a
   // global rule. A component needing a single-line column can set both in its own
   // scoped stylesheet.
-  overflow-wrap: break-word;
+  //
+  // ⚠ `anywhere` RATHER THAN `break-word`, AND THE DIFFERENCE IS THE WHOLE FIX.
+  // The two keywords permit the same breaks, and differ in ONE respect that decides
+  // this case: `break-word` is ignored when the box's intrinsic minimum size is
+  // computed, while `anywhere` is honoured. In a fixed-layout table the column width
+  // is settled independently of the content, so a cell holding a run wider than its
+  // share never got the break `break-word` appeared to promise — the run simply
+  // overflowed a `td` whose `overflow` is visible, and painted across the column
+  // beside it. Measured on the account listing with the three optional columns
+  // enabled: eleven columns in a 1358px fixed-layout table, an address content run
+  // of [1228,1345] against a cell box of [1224,1338] — a 7px spill on one row and
+  // 19px on the next, overprinting the timestamp in the neighbouring column so that
+  // both values became unreadable at once. `anywhere` makes the minimum size that of
+  // the widest breakable fragment, so the browser breaks the run and it stays inside
+  // its own column. A run with ordinary break opportunities still breaks at them
+  // first, so prose is unaffected.
+  //
+  // ⚠ "NOTHING ELSE CHANGES" WAS WRONG, AND A REGRESSION SWEEP CAUGHT IT. This declaration sits
+  // on `th, td`, so it reached the HEADING cells too - and a sortable heading's label does not sit
+  // in a plain box, it sits inside a flex button. A flex item's AUTOMATIC MINIMUM SIZE is its
+  // min-content size, which is the one thing these two keywords disagree about: under `break-word`
+  // that minimum stays the whole word, so the button refuses to shrink past its own label; under
+  // `anywhere` it falls to a single character, so the button shrank to the column width and the
+  // label was broken mid-word. Measured on the role listing: thirteen columns sharing 1198px at
+  // exactly 92px each, rendering the heading `Description` as `Descripti` / `on`. A heading broken
+  // across a syllable is a worse fault than the spill this rule was written for - and it is the very
+  // same mechanism read the other way round, which is why the heading is told the opposite thing
+  // below rather than this rule being reverted and the measured spill let back in.
+  overflow-wrap: anywhere;
 }
 
 th {
+  // ⚠ A HEADING IS A FIXED LABEL, NOT CONTENT, AND MUST NEVER BE SHREDDED. The rule above needs
+  // `anywhere` so an unbreakable DATA run - an address, a package name - cannot escape its column and
+  // overprint its neighbour. A heading has the opposite requirement: its text is a short label chosen
+  // by the application rather than arbitrary stored data, so there is no long-token case to contain,
+  // and breaking it mid-word destroys the one cue telling a reader what the column holds. This is a
+  // narrowing of when a break is permitted rather than a removal of the safety net: `break-word` still
+  // allows one in the pathological case of a single word wider than the entire column.
+  //
+  // Set here rather than by dropping `th` from the shared selector above, because every other
+  // declaration in that block - the padding step, the alignment, the border treatment - is
+  // deliberately shared by both cell kinds, and splitting the selector would duplicate all of them
+  // and invite the two to drift apart.
+  overflow-wrap: break-word;
+
   font-weight: var(--font-weight-bold);
 
   color: var(--color-primary);
@@ -211,9 +253,42 @@ th[aria-sort] > button {
   // around it, so the button lands centred under a column header and at the start edge under a
   // header a component has re-aligned, without this file restating either alignment. The gap
   // reserves room for the component's direction indicator beside the label.
+  //
+  // ⚠ `baseline` RATHER THAN `center`, BECAUSE A CENTRED FLEX CONTAINER HAS NO BASELINE TO SHARE.
+  // A heading row mixes two shapes: a sortable label inside this button, and a plain text label in
+  // a heading that offers no sorting. They must sit on ONE line, and with centred items they did
+  // not — a flex container whose items are not baseline-aligned exposes no item baseline to the
+  // line box around it, so the container was positioned by its own edge instead and the label
+  // inside it landed measurably off the neighbouring text: 389px against 377px on the account
+  // listing, a 12px step across a single heading row. Aligning the items to their baselines gives
+  // the container the label's own baseline, so both shapes share the line by construction. The
+  // direction indicator sits on that same baseline, which is where a glyph reading as punctuation
+  // beside a word belongs, and neither the inline-level positioning nor the gap above is affected.
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
   gap: var(--space-1);
+
+  // ⚠ WRAPPING IS WHAT KEEPS THIS BUTTON INSIDE ITS OWN CELL, and it is required by the heading
+  // rule above rather than being a stylistic choice. Telling a heading `break-word` keeps its label's
+  // min-content size at the whole word, which is the point - the label must never be shredded. But a
+  // flex container's automatic minimum size is the SUM of its items' contributions when it cannot
+  // wrap, so this button inherited a floor of label + gap + indicator and refused to shrink into a
+  // narrower cell. Measured on the role listing, whose thirteen columns leave an 84.14px content box:
+  // the label `Description` is 82.52px, plus a 4px gap and a 12px indicator gives 98.52px, so the
+  // button stood 10.38px outside its cell and, once that column was sorted, painted its direction
+  // glyph into the column beside it.
+  //
+  // Permitting a wrap makes the automatic minimum the WIDEST SINGLE ITEM instead of the sum - here
+  // 82.52px, which fits - so the label keeps its own line whole and the indicator drops beneath it
+  // only in the one case where there is genuinely no room for both. Nothing else moves: the other
+  // nine headings on that grid are narrow enough to keep both on one line, and `align-items` applies
+  // per flex line, so the label and the glyph still share a baseline whenever they share a line.
+  //
+  // The two alternatives were rejected on the merits. `min-width: 0` lets the button shrink past its
+  // label, which reinstates the mid-word break this whole pair of rules exists to prevent. `overflow:
+  // hidden` clips the indicator, destroying the only cue that says which direction the column is
+  // sorted in. Wrapping loses neither the label nor the cue.
+  flex-wrap: wrap;
   text-align: inherit;
 
   @include mx.focus-ring;

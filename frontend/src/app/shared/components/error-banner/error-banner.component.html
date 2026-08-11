@@ -62,8 +62,25 @@
 
   The wrapper carries no padding, border or background of its own, so while it is empty it
   paints nothing and resolves to zero height.
+
+  ⚠ IT IS ALSO PROGRAMMATICALLY FOCUSABLE, AND `-1` IS THE WHOLE POINT OF THE VALUE. A negative
+  index keeps the region OUT of the tab order - a reader tabbing through a form never lands on it, so
+  nothing is added to the sequence they already know - while allowing a screen that has just submitted
+  to move focus here deliberately. That is what makes an outcome reachable when the form is longer than
+  the viewport: the announcement alone reaches a screen-reader user, but a sighted operator who pressed
+  a control at the foot of a long form and whose outcome rendered at the top of it saw NOTHING happen,
+  measured from a scroll offset of 712px. Focus is moved by the SCREEN rather than by this component,
+  because only the screen knows whether the banner appeared in answer to something a person just did
+  or was already there when they arrived - moving focus in the second case would displace a reader who
+  had not asked for anything. This attribute is the affordance; the decision stays with the caller.
 -->
-<div class="error-banner-live" role="alert" aria-live="assertive" aria-atomic="true">
+<div
+  class="error-banner-live"
+  role="alert"
+  aria-live="assertive"
+  aria-atomic="true"
+  tabindex="-1"
+>
   @if (hasProblem()) {
     <!--
       The severity is carried as a data attribute on THIS element rather than on the

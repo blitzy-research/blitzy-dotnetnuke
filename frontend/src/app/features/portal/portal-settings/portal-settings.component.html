@@ -776,6 +776,79 @@
                   The offset from Coordinated Universal Time, in minutes. Behind UTC is
                   negative — for example −480 for Pacific Time.
                 </p>
+
+                <!--
+                  MIGRATION: `cboCurrency` from `sitesettings.ascx:L300-L304`, written as argument
+                  eight of the portal update at `SiteSettings.ascx.vb:L774`. It was previously
+                  returned unchanged from the loaded snapshot and shown nowhere, so a value the API
+                  publishes — `USD` on the measured installation — appeared on no tab and in no
+                  section while still being re-submitted on every save. That is a legacy workflow
+                  with no successor, so the field is restored here.
+
+                  ⚠ A TEXT BOX RATHER THAN THE LEGACY SELECTOR, and the reason is a scope boundary
+                  rather than a shortcut. `SiteSettings.ascx.vb:L320-L327` filled the list from
+                  `ctlList.GetListEntryInfoCollection("Currency")` — the list subsystem, which is
+                  excluded, and whose `Lists` table is not among the twenty-five this installation
+                  has. There is therefore no source for the option set, and inventing one would
+                  refuse values the column holds and the server accepts, including whatever an
+                  installation already stores. The column is `char(3)` and the server's only rule is
+                  that length, so that is the only rule applied. The divergence is recorded in
+                  MIGRATION_NOTES.md.
+
+                  ⚠ IN *THIS* SECTION, NOT ITS LEGACY ONE. The legacy screen kept it under `dshPayment`
+                  ("Payment Settings", `sitesettings.ascx:L294`), a section this screen drops entirely
+                  along with its other subject matter. Restoring a whole section for one field would be
+                  a larger change than the finding needs; placing the field beside the other
+                  site-wide, non-host values keeps it editable with the smallest structural change.
+                -->
+                <app-form-field
+                  [label]="fieldLabel['currency']"
+                  [for]="controlId('currency')"
+                  [help]="fieldHelp['currency']"
+                  [error]="messagesFor('currency')"
+                >
+                  <div class="portal-settings__control portal-settings__control--narrow">
+                    <input
+                      type="text"
+                      formControlName="currency"
+                      [id]="controlId('currency')"
+                      [maxlength]="maxLength.currency"
+                      autocomplete="off"
+                    />
+                  </div>
+                </app-form-field>
+
+                <!--
+                  MIGRATION: `cboDefaultLanguage` from `sitesettings.ascx:L401-L405`, written as
+                  argument twenty-five of the portal update at `SiteSettings.ascx.vb:L780`. Same
+                  history as the currency above: on the wire, on no tab, and re-submitted anyway.
+
+                  ⚠ A TEXT BOX RATHER THAN THE LEGACY CULTURE SELECTOR, for the same class of reason.
+                  `SiteSettings.ascx.vb:L422` filled it with
+                  `Localization.LoadCultureDropDownList(..., CultureDropDownTypes.NativeName, ...)`,
+                  and the localisation subsystem is out of scope — no translation runtime is in the
+                  pinned dependency surface, so the culture catalogue has no source here. The column
+                  is `nvarchar(10)` and the server's only rule is that length. Recorded in
+                  MIGRATION_NOTES.md.
+
+                  This field IS in its legacy section: `dshOther` is where the legacy screen kept it.
+                -->
+                <app-form-field
+                  [label]="fieldLabel['defaultLanguage']"
+                  [for]="controlId('defaultLanguage')"
+                  [help]="fieldHelp['defaultLanguage']"
+                  [error]="messagesFor('defaultLanguage')"
+                >
+                  <div class="portal-settings__control portal-settings__control--narrow">
+                    <input
+                      type="text"
+                      formControlName="defaultLanguage"
+                      [id]="controlId('defaultLanguage')"
+                      [maxlength]="maxLength.defaultLanguage"
+                      autocomplete="off"
+                    />
+                  </div>
+                </app-form-field>
               </div>
             }
           </fieldset>

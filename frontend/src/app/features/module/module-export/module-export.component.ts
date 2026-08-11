@@ -1235,7 +1235,16 @@ export class ModuleExportComponent {
     // a missing module as warnings rather than as faults, which matches the legacy access-denied screen's
     // own use of the warning presentation in both of its branches. Its three values are all notification
     // severities, so nothing is remapped and no fault severity can be reached by accident.
-    this.notifications.notify(failure.summary.severity, message);
+    // ⚠ THE SUPPORT REFERENCE TRAVELS WITH IT. The summary has carried a `supportReference` member all
+    // along, and dropping it here threw away the only join key between what an operator saw in the
+    // browser and the request as the server recorded it - the correlation identifier the server
+    // validated, which is what appears on the response header, on the request envelope in its log and on
+    // every audit event the request produced. A browser audit measured the asymmetry: a refusal presented
+    // through the shared banner read `Reference: <id>`, while the same class of refusal presented as a
+    // notification read nothing an operator could quote. The notification surface appends it AFTER its own
+    // message bound, so a long server sentence cannot truncate the identifier away, and a document that
+    // carried none resolves to null and is simply not quoted.
+    this.notifications.notify(failure.summary.severity, message, failure.summary.supportReference);
   }
 
   /**

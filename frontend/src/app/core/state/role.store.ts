@@ -1693,13 +1693,52 @@ export class RoleStore implements OnDestroy {
    * Legacy: `Roles.ascx.vb:L108`. Unpaged, and no coordinate is held for it.
    */
   loadRoleGroups(): void {
-    this.roleGroupsRequest?.unsubscribe();
+    // ⚠ AN IDENTICAL READ ALREADY IN FLIGHT IS JOINED, NOT RESTARTED, and this line used to abandon it.
+    // Two role screens each need the group list on entry and each asks for it, which is correct - neither
+    // may render a group selector from data it has not read. What was not correct is what happened when the
+    // second asked while the first was still answering: the handle was unsubscribed, so the first request
+    // was cancelled mid-flight and reported as an aborted request, and a second identical one was issued in
+    // its place. Runtime testing saw the pair on ordinary role-feature route changes.
+    //
+    // Returning here is NOT a cache and introduces no staleness of any kind: a read IS in flight, it will
+    // publish to the same slots this call would have published to, and the caller's need is met by it. The
+    // read is still re-issued on every entry where none is in flight, so a screen never renders stale
+    // groups, and the explicit re-reads after a role-group write are untouched.
+    //
+    // Deliberately narrower than a load-once flag, which was considered and refused: the group list is
+    // reference data a selector must show CURRENT, so remembering that it was once read would trade a
+    // measured duplicate for an unmeasurable staleness window.
+    //
+    // ⚠ THE TEST IS THE LOADING SIGNAL AND NOT THIS METHOD'S OWN HANDLE, and testing the handle was the
+    // first attempt at this and was WRONG. Two different methods here read the group list: this one, whose
+    // handle is `roleGroupsRequest`, and {@link RoleStore.loadRoleAdministration}, which reads the groups as
+    // the HEAD of a chain and holds the whole chain on `rolesRequest` so that cancelling it abandons
+    // whichever half is outstanding. A handle test therefore cannot see the read the listing screen has in
+    // flight, which is precisely the pair a route change from the listing to the form produces - so the
+    // guard would have looked correct and prevented nothing on the one path that was measured. The loading
+    // signal is the only fact BOTH strategies maintain: each raises it before reading and each lowers it in
+    // a `finalize`, which runs on a value, an error and an unsubscription alike.
+    if (this._roleGroupsLoading()) {
+      return;
+    }
+
     this._roleGroupsLoading.set(true);
     this.clearFailure();
 
+    // ⚠ THE HANDLE IS RELEASED HERE, AND THE GUARD ABOVE IS UNSOUND WITHOUT IT. `finalize` runs on every
+    // ending - a value, an error, and an unsubscription - so nulling it there is what makes "a read is in
+    // flight" a question the handle can actually answer. Left set, a completed subscription would read as
+    // in-flight for the rest of the session and the guard above would refuse every later read, turning a
+    // duplicate-request fix into a screen that never refreshes its group list. The order matters too: the
+    // handle is cleared alongside the loading flag, in the one place that is reached however the read ends.
     this.roleGroupsRequest = this.roleService
       .listRoleGroups()
-      .pipe(finalize(() => this._roleGroupsLoading.set(false)))
+      .pipe(
+        finalize(() => {
+          this.roleGroupsRequest = null;
+          this._roleGroupsLoading.set(false);
+        }),
+      )
       .subscribe({
         next: (response) => {
           this._roleGroups.set(response.data);

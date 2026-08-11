@@ -188,6 +188,7 @@ import { PortalStore } from '../../../core/state/portal.store';
 import {
   conflictMessage,
   problemMessage,
+  problemSupportReference,
   statusMessage,
   stripLegacyBreakTags,
 } from '../../../core/utils/form-errors.util';
@@ -284,6 +285,25 @@ const EXPIRY_DATE_MAX_LENGTH = 15;
 
 /** `txtHostFee maxlength="10"` — lower-case in the source. */
 const HOST_FEE_MAX_LENGTH = 10;
+
+/**
+ * Terminal width of `Portals.Currency`: `[char] (3) NULL`.
+ *
+ * ⚠ MEASURED FROM THE COLUMN AND THE SERVER, NOT FROM A LEGACY `MaxLength`, because the legacy
+ * control was a SELECTOR (`cboCurrency`) and carried none — a selector cannot overflow its column.
+ * `UpdatePortalRequestValidator` declares `MaximumLength(3)` on this member, so this is the same
+ * three the server enforces, restated here so a typing mistake is a message beside the field rather
+ * than a round trip.
+ */
+const CURRENCY_MAX_LENGTH = 3;
+
+/**
+ * Terminal width of `Portals.DefaultLanguage`: `nvarchar(10) NOT NULL`.
+ *
+ * Measured from the column and from the server's own `MaximumLength(10)`, for the same reason as
+ * the currency above: the legacy control was a culture selector and declared no length.
+ */
+const DEFAULT_LANGUAGE_MAX_LENGTH = 10;
 
 /** `txtHostSpace`, `txtPageQuota` and `txtUserQuota`, all `MaxLength="6"`. */
 const QUOTA_MAX_LENGTH = 6;
@@ -423,6 +443,8 @@ const FIELD_LABEL = Object.freeze({
   userTabId: 'User Page:',
   administratorId: 'Administrator:',
   timeZoneOffset: 'Portal TimeZone:',
+  currency: 'Currency:',
+  defaultLanguage: 'Default Language:',
   expiryDate: 'Expiry Date:',
   hostFee: 'Hosting Fee:',
   hostSpace: 'Disk Space:',
@@ -456,6 +478,8 @@ const FIELD_HELP = Object.freeze({
   userTabId: 'The User Page for your site.',
   administratorId: 'The Administrator User for the site.',
   timeZoneOffset: 'The TimeZone for the location of the site.',
+  currency: 'The Currency used on the site.',
+  defaultLanguage: 'The Default Language for the site.',
   expiryDate: 'The Expiry Date is the date that the Hosting Contract for the portal expires.',
   hostFee: 'The Hosting Fee is the monthly charge for hosting this site.',
   hostSpace:
@@ -659,8 +683,13 @@ interface PortalSettingsFormModel {
 
   // Other Settings. The time zone is an offset in whole minutes; the administrator holds an
   // account key, with `NO_ADMINISTRATOR_SELECTED` standing in for the wire contract's absence.
+  // The currency and the default language are free text rather than selectors — see the two
+  // MIGRATION notes on their controls in the template for why, and for why the currency appears in
+  // this group at all when the legacy screen kept it in a section that has no successor.
   administratorId: FormControl<number>;
   timeZoneOffset: FormControl<string>;
+  currency: FormControl<string>;
+  defaultLanguage: FormControl<string>;
 
   // Host Settings — rendered only for a host account, always hydrated.
   expiryDate: FormControl<string>;
@@ -674,8 +703,6 @@ interface PortalSettingsFormModel {
 type PreservedMembers = Pick<
   PortalSettings,
   | 'backgroundFile'
-  | 'currency'
-  | 'defaultLanguage'
   | 'homeDirectory'
   | 'logoFile'
   | 'paymentProcessor'
@@ -1315,6 +1342,21 @@ export class PortalSettingsComponent {
       nonNullable: true,
       validators: [timeZoneOffsetCheck],
     }),
+
+    // LENGTH ONLY, AND NO CLOSED VALUE SET. The legacy controls were selectors, so their legality
+    // came from the list they were filled from rather than from a validator: the currency list came
+    // from the excluded list subsystem and the culture list from the excluded localisation
+    // subsystem. Neither list has a source here, and INVENTING one would refuse values the server
+    // accepts and the column holds — including whatever the installation already stores. The length
+    // is the one rule that IS the server's, so it is the one rule reproduced.
+    currency: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.maxLength(CURRENCY_MAX_LENGTH)],
+    }),
+    defaultLanguage: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.maxLength(DEFAULT_LANGUAGE_MAX_LENGTH)],
+    }),
     expiryDate: new FormControl('', {
       nonNullable: true,
       validators: [Validators.maxLength(EXPIRY_DATE_MAX_LENGTH), expiryDateTypeCheck],
@@ -1387,6 +1429,8 @@ export class PortalSettingsComponent {
     description: METADATA_MAX_LENGTH,
     keyWords: METADATA_MAX_LENGTH,
     footerText: FOOTER_TEXT_MAX_LENGTH,
+    currency: CURRENCY_MAX_LENGTH,
+    defaultLanguage: DEFAULT_LANGUAGE_MAX_LENGTH,
     expiryDate: EXPIRY_DATE_MAX_LENGTH,
     hostFee: HOST_FEE_MAX_LENGTH,
     hostSpace: QUOTA_MAX_LENGTH,
@@ -1503,7 +1547,17 @@ export class PortalSettingsComponent {
       this.announcedSettingsFailure = failure;
 
       if (failure !== null) {
-        this.notifications.notify(failure.severity, this.describeSaveFailure(failure));
+        // ⚠ THE SUPPORT REFERENCE TRAVELS WITH IT, and it was being dropped. The failure record carries the
+        // problem document, so the correlation identifier the server validated for the request is right here -
+        // the only join key between what an operator saw in the browser and the request as the server logged
+        // it. A browser audit measured the asymmetry it left: the same refusal read `Reference: <id>` when the
+        // shared banner presented it and nothing quotable when a notification did. A document carrying none
+        // resolves to null and is simply not quoted.
+        this.notifications.notify(
+          failure.severity,
+          this.describeSaveFailure(failure),
+          problemSupportReference(failure.problem),
+        );
       }
     });
 
@@ -1517,7 +1571,17 @@ export class PortalSettingsComponent {
       this.announcedDetailFailure = failure;
 
       if (failure !== null) {
-        this.notifications.notify(failure.severity, this.describeDeleteFailure(failure));
+        // ⚠ THE SUPPORT REFERENCE TRAVELS WITH IT, and it was being dropped. The failure record carries the
+        // problem document, so the correlation identifier the server validated for the request is right here -
+        // the only join key between what an operator saw in the browser and the request as the server logged
+        // it. A browser audit measured the asymmetry it left: the same refusal read `Reference: <id>` when the
+        // shared banner presented it and nothing quotable when a notification did. A document carrying none
+        // resolves to null and is simply not quoted.
+        this.notifications.notify(
+          failure.severity,
+          this.describeDeleteFailure(failure),
+          problemSupportReference(failure.problem),
+        );
       }
     });
 
@@ -2411,6 +2475,8 @@ export class PortalSettingsComponent {
       userTabId: wirePageToSelected(source.userTabId),
       administratorId: wireAdministratorToSelected(source.administratorId),
       timeZoneOffset: numberToText(source.timeZoneOffset),
+      currency: source.currency === null ? '' : source.currency,
+      defaultLanguage: source.defaultLanguage === null ? '' : source.defaultLanguage,
       expiryDate: instantToDateInput(source.expiryDate),
       hostFee: numberToText(source.hostFee),
       hostSpace: numberToText(source.hostSpace),
@@ -2426,14 +2492,23 @@ export class PortalSettingsComponent {
   /**
    * Composes the update request.
    *
-   * MIGRATION: THE NINE MEMBERS THIS SCREEN DOES NOT SHOW ARE RETURNED UNCHANGED, AND THAT
+   * MIGRATION: THE SIX MEMBERS THIS SCREEN DOES NOT SHOW ARE RETURNED UNCHANGED, AND THAT
    *   IS REQUIRED RATHER THAN TIDY. The update resource carries the portal's whole editable
    *   state and REPLACES every column it names, so a member sent as absent is a member
-   *   cleared. Sending absence for the logo, the background, the currency, the payment
-   *   processor and its account, the site-log retention, the default language or the home
-   *   directory would erase settings this screen never offered to change.
+   *   cleared. Sending absence for the logo, the background, the payment processor and its
+   *   account, the site-log retention or the home directory would erase settings this screen
+   *   never offered to change.
    *
-   *   Two of them would do worse than erase. The host-owned comparison the server performs
+   *   ⚠ IT WAS EIGHT, AND TWO OF THEM SHOULD NEVER HAVE BEEN AMONG THEM. The currency and the
+   *   default language were returned unchanged and shown nowhere, so values the API publishes -
+   *   `USD` and `en-US` on the measured installation - appeared on no tab and in no section
+   *   while being re-submitted on every save: invisible, uneditable, and a legacy workflow with
+   *   no successor. Both are now edited fields in Other Settings. The remaining six are unshown
+   *   because their SUBJECT MATTER is out of scope - file management for the three file
+   *   references, the dropped payment section for the processor pair, and the host-owned log
+   *   retention - not merely because no control was built for them.
+   *
+   *   Two of the six would do worse than erase. The host-owned comparison the server performs
    *   for a non-host caller includes the site-log retention and the expiry date, so
    *   returning absence for a retention value that is actually set would refuse the whole
    *   save with a `403` naming fields the operator never touched. And the administrator must
@@ -2458,8 +2533,6 @@ export class PortalSettingsComponent {
     const edited = this.form.getRawValue();
     const preserved: PreservedMembers = {
       backgroundFile: source.backgroundFile,
-      currency: source.currency,
-      defaultLanguage: source.defaultLanguage,
       homeDirectory: source.homeDirectory,
       logoFile: source.logoFile,
       paymentProcessor: source.paymentProcessor,
@@ -2490,6 +2563,14 @@ export class PortalSettingsComponent {
       administratorId: selectedAdministratorToWire(edited.administratorId),
       timeZoneOffset: this.optionalWholeNumber(edited.timeZoneOffset),
 
+      // Now EDITED rather than preserved. Both were previously returned unchanged from the loaded
+      // snapshot, which meant a non-null value the API published — `USD` and `en-US` on the measured
+      // installation — appeared on no tab and in no section while still being re-submitted on every
+      // save: invisible, uneditable, and a workflow the legacy screen offered that had no successor.
+      // An emptied box sends absence, matching every other optional text field on this screen.
+      currency: textOrNull(edited.currency),
+      defaultLanguage: textOrNull(edited.defaultLanguage),
+
       // Host Settings. A blank box saves ZERO for the fee and the three quotas, which is
       // the measured legacy default, and absence for the expiry date.
       expiryDate: dateInputToInstant(edited.expiryDate),
@@ -2503,6 +2584,20 @@ export class PortalSettingsComponent {
 
       // Never held, and therefore never returned.
       processorCredentialReference: null,
+
+      // ⚠ THE REVISION THIS SUBMISSION WAS COMPOSED AGAINST, ROUND-TRIPPED VERBATIM, AND THE ONLY
+      // MEMBER HERE THAT DESCRIBES NO SETTING. It comes from `source` - the same resource every
+      // preserved member above comes from - so it describes exactly the snapshot this payload
+      // reconstructs. That matters most on THIS request precisely because of the note above: the
+      // payload replaces every column, and nine of the values it carries are ones this screen never
+      // shows, so a second administrator saving an older snapshot destroyed the first
+      // administrator's committed edits to fields NEITHER of them had opened. Sending the token makes
+      // the server refuse that stale save with `409 portal.concurrency_conflict` instead of applying
+      // it.
+      //
+      // Never fabricated: a read that served no token yields `null` here, which the server treats as
+      // an opt-out and applies - the legacy last-writer-wins behaviour rather than a refusal.
+      concurrencyToken: source.concurrencyToken,
     };
   }
 

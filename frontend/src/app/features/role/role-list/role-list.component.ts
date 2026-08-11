@@ -1226,7 +1226,17 @@ export class RoleListComponent implements OnInit {
    * the page that was ASKED for even while the answer for it is still outstanding — binding the served
    * index would make the control jump back to the previous page for the duration of every request.
    */
-  protected readonly pageIndex: Signal<number> = computed(() => this.store.rolesPage().pageIndex);
+  protected readonly pageIndex: Signal<number> = computed(() =>
+    // ⚠ THE ACCOUNT-NARROWED READ IS UNPAGED, SO ITS COORDINATES ARE DERIVED FROM THE ROWS THEMSELVES.
+    // `GET /users/{userId}/roles` answers with a plain array and no metadata, so there IS no served
+    // page for it - and reading the BROWSABLE listing's coordinate here made the pager describe a
+    // different question than the grid was answering. Runtime testing measured the contradiction:
+    // `/roles?userId=2` rendered two rows, announced "2 records.", and printed "1-4 of 4" underneath,
+    // because the four was the total of an unrelated group narrowing. Zero is the only honest index for
+    // a collection returned in full. This mirrors `sortDir`, which already answers `null` under the
+    // same narrowing for the same reason.
+    this.narrowedToAccount() ? FIRST_PAGE_INDEX : this.store.rolesPage().pageIndex,
+  );
 
   /**
    * The page size in effect.
@@ -1237,6 +1247,15 @@ export class RoleListComponent implements OnInit {
    * by nothing, so the requested size stands in until a real answer has landed.
    */
   protected readonly servedPageSize: Signal<number> = computed(() => {
+    // The narrowed read is unpaged, so the window IS the answer: every row it returned is on the one
+    // page there is. Taken from the same computed the grid renders rather than from a separate slice,
+    // so the summary and the rows cannot disagree by construction. A floor of one keeps the pager's
+    // arithmetic defined when the account holds no role at all - the summary then reports the zero
+    // state, which is what it reports for any empty collection.
+    if (this.narrowedToAccount()) {
+      return Math.max(this.roles().length, 1);
+    }
+
     const served: number = this.store.rolesMeta().pageSize;
 
     if (served > 0) {
@@ -1250,9 +1269,18 @@ export class RoleListComponent implements OnInit {
     return this.store.rolesPage().pageSize ?? ROLES_PAGE_SIZE;
   });
 
-  /** How many roles the current narrowing matches, as the SERVER reported it. */
-  protected readonly totalCount: Signal<number> = computed(
-    () => this.store.rolesMeta().totalCount,
+  /**
+   * How many roles the current narrowing matches.
+   *
+   * The SERVER'S total for the browsable listing, whose read is paged and whose total is therefore the
+   * only thing that can describe a match set larger than the page in hand. For the account-narrowed
+   * read - which is unpaged - the total is the number of rows returned, counted from the same computed
+   * the grid renders. Deriving it is not an approximation here: an array returned in full IS its own
+   * total, and the alternative measured on the running application was a pager that reported another
+   * narrowing's total beneath this one's rows.
+   */
+  protected readonly totalCount: Signal<number> = computed(() =>
+    this.narrowedToAccount() ? this.roles().length : this.store.rolesMeta().totalCount,
   );
 
   /**
@@ -2415,6 +2443,15 @@ export class RoleListComponent implements OnInit {
    * @param pageIndex The page to move to, counted from zero.
    */
   protected onPageChange(pageIndex: number): void {
+    // ⚠ A PAGE TURN MEANS NOTHING UNDER THE ACCOUNT NARROWING, so it is refused rather than dispatched.
+    // That read is unpaged and its coordinates are derived from the rows in hand, so the pager reports a
+    // single full page and draws no page steps - this arm is a floor rather than an expected path. It
+    // exists because navigating would put a `page` parameter in the address that the narrowed read
+    // cannot honour, leaving an address that describes a page nobody can be on.
+    if (this.narrowedToAccount()) {
+      return;
+    }
+
     // A page turn is a PUSHED history entry, not a replaced one: runtime testing found that pressing back
     // from page three was not possible because paging created no entry at all, and returning to the page you
     // came from is the ordinary meaning of that button.
@@ -2778,7 +2815,20 @@ export class RoleListComponent implements OnInit {
       return;
     }
 
-    this.notifications.notify(failure.summary.severity, this.failureMessage(failure));
+    // ⚠ THE SUPPORT REFERENCE TRAVELS WITH IT. The summary has carried a `supportReference` member all
+    // along, and dropping it here threw away the only join key between what an operator saw in the
+    // browser and the request as the server recorded it - the correlation identifier the server
+    // validated, which is what appears on the response header, on the request envelope in its log and on
+    // every audit event the request produced. A browser audit measured the asymmetry: a refusal presented
+    // through the shared banner read `Reference: <id>`, while the same class of refusal presented as a
+    // notification read nothing an operator could quote. The notification surface appends it AFTER its own
+    // message bound, so a long server sentence cannot truncate the identifier away, and a document that
+    // carried none resolves to null and is simply not quoted.
+    this.notifications.notify(
+      failure.summary.severity,
+      this.failureMessage(failure),
+      failure.summary.supportReference,
+    );
   }
 
   /**

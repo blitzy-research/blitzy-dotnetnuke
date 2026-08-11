@@ -5,6 +5,7 @@ using DnnMigration.Application.Dtos.Role;
 using DnnMigration.Application.Dtos.Tab;
 using DnnMigration.Application.Validation;
 using DnnMigration.Domain.Common;
+using DnnMigration.Domain.Enums;
 using FluentAssertions;
 using FluentValidation.Results;
 using Xunit;
@@ -153,31 +154,81 @@ public class StorageRangeBoundTests
     }
 
     /// <summary>
-    /// A role period that is not strictly positive is refused on both paths, with the legacy wording.
+    /// A role period that is not strictly positive is refused on both paths where a recurring cycle is
+    /// declared, with the legacy wording.
     /// </summary>
     /// <remarks>
     /// This is the ONLY bound the legacy screen declared on either period - <c>valBillingPeriod2</c> at
     /// <c>editroles.ascx</c> L114 and <c>valTrialPeriod2</c> at L146, both greater than zero - and it is
     /// asserted on both verbs because both write the same columns.
+    /// <para>
+    /// A CYCLE IS DECLARED HERE DELIBERATELY. Zero alongside a real frequency is the value the legacy
+    /// validator existed to refuse, because a cycle of zero units can never advance an expiry date. Zero
+    /// alongside NO cycle is a different value with a different meaning - it is what the portal template's
+    /// own roles carry and what the read projection reports - and is admitted; that half is asserted by
+    /// <see cref="RolePeriodOfZero_WithNoCycleDeclared_IsAcceptedOnBothPaths"/>. A negative period is
+    /// refused whatever the frequency, which the second case here covers with no frequency at all.
+    /// </para>
     /// </remarks>
     [Theory]
-    [InlineData(0)]
-    [InlineData(-1)]
-    public void RolePeriods_ThatAreNotPositive_AreRefusedOnBothPaths(int period)
+    [InlineData(0, BillingFrequency.Month)]
+    [InlineData(-1, BillingFrequency.Month)]
+    [InlineData(-1, null)]
+    public void RolePeriods_ThatAreNotPositive_AreRefusedOnBothPaths(int period, BillingFrequency? frequency)
     {
         new CreateRoleRequestValidator().Validate(new CreateRoleRequest
         {
             RoleName = "Subscribers",
             BillingPeriod = period,
+            BillingFrequency = frequency,
             TrialPeriod = period,
+            TrialFrequency = frequency,
         }).IsValid.Should().BeFalse();
 
         new UpdateRoleRequestValidator().Validate(new UpdateRoleRequest
         {
             RoleName = "Subscribers",
             BillingPeriod = period,
+            BillingFrequency = frequency,
             TrialPeriod = period,
+            TrialFrequency = frequency,
         }).IsValid.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A role period of zero is accepted on both paths when no recurring cycle is declared beside it, so a
+    /// role the portal template created can be read and written back unchanged.
+    /// </summary>
+    /// <remarks>
+    /// THE ASYMMETRY THIS CLOSES WAS MEASURED. The template's roles are created with both periods at zero
+    /// beside a frequency of <c>N</c>, and the read projection reports those columns faithfully as Rule T7
+    /// requires - so runtime testing read a role, echoed the response back verbatim, and was refused
+    /// <c>400</c> naming both period members. No consumer could carry out a read-modify-write of any role
+    /// the template had created. Both spellings of "no cycle" are asserted: the explicit <c>None</c>
+    /// frequency the read emits, and an absent frequency, which the contract also reads as no cycle.
+    /// </remarks>
+    [Theory]
+    [InlineData(BillingFrequency.None)]
+    [InlineData(null)]
+    public void RolePeriodOfZero_WithNoCycleDeclared_IsAcceptedOnBothPaths(BillingFrequency? frequency)
+    {
+        new CreateRoleRequestValidator().Validate(new CreateRoleRequest
+        {
+            RoleName = "Subscribers",
+            BillingPeriod = 0,
+            BillingFrequency = frequency,
+            TrialPeriod = 0,
+            TrialFrequency = frequency,
+        }).IsValid.Should().BeTrue();
+
+        new UpdateRoleRequestValidator().Validate(new UpdateRoleRequest
+        {
+            RoleName = "Subscribers",
+            BillingPeriod = 0,
+            BillingFrequency = frequency,
+            TrialPeriod = 0,
+            TrialFrequency = frequency,
+        }).IsValid.Should().BeTrue();
     }
 
     /// <summary>

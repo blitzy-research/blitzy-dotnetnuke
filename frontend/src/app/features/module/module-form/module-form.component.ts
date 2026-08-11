@@ -1804,7 +1804,20 @@ export class ModuleFormComponent {
         //   presented one with a yellow warning in both of its branches, and presenting a refusal in
         //   danger styling would say something is broken when the system is working as configured. A
         //   conflict and a server fault remain errors. No status is examined here.
-        this.notifications.notify(failure.summary.severity, failure.summary.message);
+        // ⚠ THE SUPPORT REFERENCE TRAVELS WITH IT. The summary has carried a `supportReference` member all
+        // along, and dropping it here threw away the only join key between what an operator saw in the
+        // browser and the request as the server recorded it - the correlation identifier the server
+        // validated, which is what appears on the response header, on the request envelope in its log and on
+        // every audit event the request produced. A browser audit measured the asymmetry: a refusal presented
+        // through the shared banner read `Reference: <id>`, while the same class of refusal presented as a
+        // notification read nothing an operator could quote. The notification surface appends it AFTER its own
+        // message bound, so a long server sentence cannot truncate the identifier away, and a document that
+        // carried none resolves to null and is simply not quoted.
+        this.notifications.notify(
+          failure.summary.severity,
+          failure.summary.message,
+          failure.summary.supportReference,
+        );
       });
     });
   }

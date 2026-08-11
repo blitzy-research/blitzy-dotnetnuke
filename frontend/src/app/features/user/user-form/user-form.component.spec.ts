@@ -135,6 +135,15 @@ describe('UserFormComponent', () => {
   const USER_UNLOCKED_MESSAGE = 'User successfully Unlocked';
   const PASSWORD_CHANGE_REQUIRED_MESSAGE = 'This user must change their password at next login';
   const USER_UPDATED_MESSAGE = 'User account updated';
+
+  /**
+   * The creation confirmation, with the placeholder the component substitutes.
+   *
+   * Restated here rather than imported for the reason every other sentence in this block is: the wording is
+   * the subject of the assertion, so a case must fail when the component's copy changes rather than follow
+   * it silently.
+   */
+  const USER_CREATED_MESSAGE = 'User account {name} created';
   const NO_USER_MESSAGE = "This account doesn't exist";
   const NOT_AUTHORIZED_MESSAGE = 'You are not authorized to edit this user.';
   const EMAIL_CONFLICT_MESSAGE =
@@ -175,6 +184,14 @@ describe('UserFormComponent', () => {
     503: 'Service Unavailable',
   });
 
+    /**
+   * The correlation identifier every refusal fixture below carries.
+   *
+   * Named rather than left inline, so an assertion about the reference an operator is handed can state
+   * the identifier it expects instead of repeating the literal and hoping the two stay equal.
+   */
+  const FIXTURE_CORRELATION_ID = 'f0e7d1b2-3c45-4a6b-8c9d-0e1f2a3b4c5d';
+
   /** A live problem document, complete in every member the API emits. */
   function problem(
     code: string,
@@ -188,7 +205,7 @@ describe('UserFormComponent', () => {
       status,
       detail,
       traceId: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
-      correlationId: 'f0e7d1b2-3c45-4a6b-8c9d-0e1f2a3b4c5d',
+      correlationId: FIXTURE_CORRELATION_ID,
     };
 
     return errors === undefined ? document : { ...document, errors };
@@ -469,6 +486,13 @@ describe('UserFormComponent', () => {
       severity: String(args[0]),
       message: String(args[1]),
     }));
+  }
+
+  /** The support reference each generic announcement quoted, oldest first. */
+  function announcementReferences(): readonly (string | null)[] {
+    return notifySpy.calls
+      .allArgs()
+      .map((args) => (typeof args[2] === 'string' && args[2].length > 0 ? args[2] : null));
   }
 
   /** Every string handed to any notification channel. */
@@ -863,6 +887,55 @@ describe('UserFormComponent', () => {
   // ---------------------------------------------------------------------------------------------------
 
   describe('creating an account', () => {
+    it('still announces a creation that settles AFTER the operator has left the screen', () => {
+      // ⚠ THE MEASURED DEFECT, SHARED WITH THE SIBLING ROLE FORM AND FIXED THE SAME WAY ON BOTH. The write
+      // bridges here are effects in this component's injection context, so they die WITH the component: an
+      // operator who submits and then immediately clicks somewhere else destroys the only party that was
+      // going to tell them what happened. A browser audit measured it on the role form - `201`, never
+      // aborted, record created, no confirmation anywhere - and this screen has the identical shape, so
+      // fixing one and not the other would be a trap for whoever met the second.
+      //
+      // The hand-over announces and deliberately does NOT navigate: the operator chose to be elsewhere.
+      create();
+      fillCreationForm();
+      press(CREATE_SUBMIT_LABEL);
+
+      const write = expectRequest('POST', USERS_URL, 'the creation');
+
+      // Destroying the fixture is exactly what a route change does, and it is what tore the bridge down.
+      fixture.destroy();
+      successSpy.calls.reset();
+
+      write.flush(envelope(account(9)), { status: 201, statusText: 'Created' });
+      TestBed.flushEffects();
+
+      expect(successSpy)
+        .withContext('named from the account the SERVER stored, by the party that outlived the screen')
+        .toHaveBeenCalledWith(USER_CREATED_MESSAGE.replace('{name}', 'ada.lovelace'));
+    });
+
+    it('says NOTHING when a creation that outlived the screen was refused', () => {
+      // The other half, and deliberately silent: a refusal is a document whose home is the banner ON this
+      // screen, and this screen is gone. There is no field for a field message to sit beside and no form to
+      // correct. The store still holds the failure, so returning here presents it in full.
+      create();
+      fillCreationForm();
+      press(CREATE_SUBMIT_LABEL);
+
+      const write = expectRequest('POST', USERS_URL, 'the creation');
+
+      fixture.destroy();
+      successSpy.calls.reset();
+
+      write.flush(
+        { type: 'urn:test', title: 'Conflict', status: 409, detail: 'That account name is taken.' },
+        { status: 409, statusText: 'Conflict' },
+      );
+      TestBed.flushEffects();
+
+      expect(successSpy).not.toHaveBeenCalled();
+    });
+
     it('posts the eight declared members and answers 201', () => {
       create();
 
@@ -1324,6 +1397,69 @@ describe('UserFormComponent', () => {
       expect(host().textContent ?? '').toContain(NOT_AUTHORIZED_MESSAGE);
       expect(field<HTMLInputElement>(CONTROL_ID.firstName).disabled).withContext('withheld').toBeTrue();
       expect(button(UPDATE_SUBMIT_LABEL)?.disabled).toBeTrue();
+    });
+
+    it('QUOTES the support reference when a refusal is announced', () => {
+      // ⚠ THE CHANNEL THAT CARRIES REFUSALS IS THE ONE THAT WAS DROPPING THE IDENTIFIER. The shared
+      // classifier resolves 401, 403, 404 and 429 to WARNING, so every server refusal this screen reports
+      // travels the warning channel - and the banner deliberately keeps only ERROR-severity failures, to
+      // avoid saying the same thing twice. That makes this announcement the WHOLE report for a refusal, and
+      // it was handing the operator a refused save with no quotable identifier anywhere on the screen.
+      arriveEditing(account(7));
+
+      type(CONTROL_ID.firstName, 'Augusta');
+      press(UPDATE_SUBMIT_LABEL);
+      expectRequest('PUT', userUrl(7)).flush(
+        problem(
+          'auth.not_permitted',
+          403,
+          'The authenticated caller is not permitted to perform this operation.',
+        ),
+        { status: 403, statusText: 'Forbidden' },
+      );
+      fixture.detectChanges();
+
+      expect(notifications().map((entry) => entry.severity))
+        .withContext('a refusal is a warning, not a fault')
+        .toContain('warning');
+      expect(announcementReferences())
+        .withContext('and quotes the identifier the server recorded the refusal under')
+        .toContain(FIXTURE_CORRELATION_ID);
+    });
+
+    it('quotes NO reference when the refusal carried none to quote', () => {
+      // The other half of the rule: the identifier is quoted because the answer HAD one, never as
+      // decoration. Without this case the one above could be satisfied by inventing an identifier, which
+      // would hand support a reference it cannot find.
+      //
+      // ⚠ A REFUSAL DOCUMENT WITHOUT A CORRELATION MEMBER, NOT A TRANSPORT FAILURE. Written first as
+      // a dropped connection, which does not exercise this screen at all: a transport failure is announced
+      // by the shared HTTP failure interceptor, not by this component, so the case measured zero
+      // announcements and failed for a reason that had nothing to do with references. The refusal is
+      // therefore expressed the way the rule is actually reached - a genuine `403` this screen announces
+      // itself, whose document simply carries no identifier to pass on. The fixture builder always supplies
+      // one, so the document is written out here rather than borrowed from it.
+      arriveEditing(account(7));
+
+      type(CONTROL_ID.firstName, 'Augusta');
+      press(UPDATE_SUBMIT_LABEL);
+      expectRequest('PUT', userUrl(7)).flush(
+        {
+          type: 'urn:dnnmigration:error:auth.not_permitted',
+          title: 'Forbidden',
+          status: 403,
+          detail: 'The authenticated caller is not permitted to perform this operation.',
+        },
+        { status: 403, statusText: 'Forbidden' },
+      );
+      fixture.detectChanges();
+
+      expect(notifications().map((entry) => entry.severity))
+        .withContext('the refusal is still reported, and still as a warning')
+        .toContain('warning');
+      expect(announcementReferences().filter((quoted) => quoted !== null))
+        .withContext('with nothing quoted, because there was nothing to quote')
+        .toEqual([]);
     });
 
     it('withholds the submit command while a write is outstanding', () => {

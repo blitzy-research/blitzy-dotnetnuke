@@ -69,6 +69,20 @@ public static class PolicyNames
     /// Grants an action when the caller holds <c>PermissionKey.VIEW</c> on the module identified by
     /// the request, at <c>PermissionScope.Module</c>. Requires a module identifier in the route.
     /// </summary>
+    /// <remarks>
+    /// ⚠ NO ACTION CARRIES THIS POLICY, AND THAT IS THE CORRECT STATE RATHER THAN AN OVERSIGHT. A module
+    /// VIEW grant is what the legacy application checked before rendering a module's CONTENT into a page
+    /// (<c>ModuleController.vb</c> L131-L137 resolves the authorised view roles for exactly that purpose),
+    /// and this API serves no module content: every module address it exposes returns or changes the
+    /// module's CONFIGURATION, which the legacy settings screen gated on administration
+    /// (<c>ModuleSettings.ascx.vb</c> L191). The detail read did carry this policy and was moved to
+    /// <see cref="ModuleEdit"/>, because gating it on the weaker grant handed the administrative record -
+    /// soft-deleted rows included - to any caller holding nothing but a public page's All-Users VIEW.
+    /// The member is retained rather than deleted because the grant it names is real, is evaluated by the
+    /// same requirement handler as its three siblings, and is the policy a content-serving address would
+    /// have to use; removing it would leave the catalogue describing three of the four key-and-scope
+    /// pairings the permission model actually stores.
+    /// </remarks>
     public const string ModuleView = "ModuleView";
 
     /// <summary>

@@ -50,6 +50,7 @@ import {
   ChangeDetectionStrategy,
   Component,
   computed,
+  DestroyRef,
   effect,
   ElementRef,
   inject,
@@ -61,7 +62,10 @@ import type { Signal, WritableSignal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
 import { Router } from '@angular/router';
-import { problemDetailsFieldErrors, problemDetailsMessage } from '../../../core/models/problem-details.model';
+// `problemDetailsMessage` is deliberately NOT imported here any more: this screen no longer resolves
+// a document's sentence for itself. The banner does it, from the document and the fallback it is
+// given — see `reportFailure`.
+import { problemDetailsFieldErrors } from '../../../core/models/problem-details.model';
 import { failureCode } from '../../../core/utils/form-errors.util';
 import {
   containedIconPathValidator,
@@ -78,6 +82,8 @@ import type {
   StoredBillingFrequency,
   UpdateRoleRequest,
 } from '../../../core/models/role.model';
+import { DeferredOutcomeService } from '../../../core/services/deferred-outcome.service';
+import type { DeferredOutcome } from '../../../core/services/deferred-outcome.service';
 import { NotificationService, type NotificationSeverity } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
 import { PortalStore } from '../../../core/state/portal.store';
@@ -1034,6 +1040,73 @@ function coerceFrequency(value: StoredBillingFrequency | null | undefined): Bill
 }
 
 /**
+ * The caption beside a frequency code, taken from the one list that owns those words.
+ *
+ * @param value A code from the closed write vocabulary.
+ * @returns The caption the select shows for it.
+ */
+function frequencyCaption(value: BillingFrequency): string {
+  return BILLING_FREQUENCY_OPTIONS.find((option) => option.value === value)?.label ?? '';
+}
+
+/**
+ * Whether the legacy bind fills the BILLING group's three boxes from the record.
+ *
+ * `EditRoles.ascx.vb:L146` gates all three billing controls on one test —
+ * `If Format(objRoleInfo.ServiceFee, "#,##0.00") <> "0.00" Then` — so a fee that FORMATS to zero
+ * leaves the fee, the period and the frequency exactly as they opened. An ABSENT fee is answered the
+ * same way: the money sentinel is `Single.MinValue`, which no `#,##0.00` format renders as "0.00",
+ * so the legacy comparison succeeded and the boxes were filled with a sentinel — behaviour
+ * {@link formatMoney} already declines to reproduce, and this predicate agrees with it rather than
+ * with the raw comparison, so that no screen ever prints a sentinel as an amount.
+ *
+ * Extracted rather than inlined because TWO places now need the same test, and a bind that fills a
+ * box and a notice that states what the box is not showing must never disagree about which case they
+ * are in.
+ *
+ * @param role The role as the API reported it.
+ * @returns True when the billing boxes are filled from the record.
+ */
+function isRolePriced(role: Role): boolean {
+  const fee = role.serviceFee;
+  if (typeof fee !== 'number' || !Number.isFinite(fee) || fee <= LEGACY_ABSENT_MONEY_THRESHOLD) {
+    return false;
+  }
+  return fee !== 0;
+}
+
+/**
+ * Whether the legacy bind fills the TRIAL group's two boxes from the record.
+ *
+ * `EditRoles.ascx.vb:L154` gates both trial controls on `If objRoleInfo.TrialFrequency <> "N"` — the
+ * FREQUENCY, not the fee. That asymmetry between the two groups is the legacy's own and is preserved
+ * as measured.
+ *
+ * @param role The role as the API reported it.
+ * @returns True when the trial boxes are filled from the record.
+ */
+function isRoleOnTrial(role: Role): boolean {
+  return coerceFrequency(role.trialFrequency) !== NO_FREQUENCY;
+}
+
+/**
+ * Joins captioned values into the tail of one English sentence.
+ *
+ * @param parts The phrases, already in the order they should be read.
+ * @returns `"a"`, `"a and b"`, or `"a, b and c"`.
+ */
+function joinPhrases(parts: readonly string[]): string {
+  if (parts.length === 0) {
+    return '';
+  }
+  const last = parts[parts.length - 1] ?? '';
+  if (parts.length === 1) {
+    return last;
+  }
+  return `${parts.slice(0, -1).join(', ')} and ${last}`;
+}
+
+/**
  * Narrows an incoming role-group id to a value the select can hold.
  *
  * Reproduces `EditRoles.ascx.vb:L141-L144`: select the option whose value matches, and when no
@@ -1111,6 +1184,33 @@ const SUPPRESSED_TERMS: ResolvedTerms = Object.freeze({
   fee: 0,
   period: 1,
   frequency: NO_FREQUENCY,
+});
+
+/** A stored paid-membership value the legacy bind leaves out of its box, and the box it belongs to. */
+interface WithheldTerm {
+  /** The field the value belongs to, in that field's own words. */
+  readonly caption: string;
+  /** The value as the role LISTING renders it, so both screens read the record identically. */
+  readonly value: string;
+}
+
+/** The answer when nothing is being withheld, shared so the signal's identity is stable. */
+const NO_WITHHELD_TERMS: readonly WithheldTerm[] = Object.freeze<readonly WithheldTerm[]>([]);
+
+/**
+ * The captions the withheld-terms notice names its values by.
+ *
+ * These are the fields' visible labels with one deliberate difference: the two period captions drop
+ * the trailing "(Every)". That parenthetical is an INSTRUCTION to whoever is typing into the pair of
+ * controls — "every 2 weeks" — and the notice is not labelling a control, it is stating a value the
+ * record holds, where the word would read as part of the number.
+ */
+const WITHHELD_TERM_CAPTIONS = Object.freeze({
+  serviceFee: 'Service Fee',
+  billingPeriod: 'Billing Period',
+  billingFrequency: 'Billing Frequency',
+  trialFee: 'Trial Fee',
+  trialPeriod: 'Trial Period',
 });
 
 
@@ -1300,6 +1400,14 @@ export class RoleFormComponent {
   private readonly router = inject(Router);
 
   /**
+   * Reports a write that settles after this screen has gone; see {@link RoleFormComponent.handOverPendingWrite}.
+   */
+  private readonly deferredOutcome = inject(DeferredOutcomeService);
+
+  /** This screen's lifetime, held for the one hand-over below and nothing else. */
+  private readonly destroyRef = inject(DestroyRef);
+
+  /**
    * The identity, read for ONE fact: which tenant the caller belongs to.
    *
    * The tenant is taken from the caller rather than from a route segment, because this screen
@@ -1378,6 +1486,20 @@ export class RoleFormComponent {
   private readonly failure: WritableSignal<ProblemDetails | null> = signal<ProblemDetails | null>(
     null,
   );
+
+  /**
+   * The sentence the banner falls back to when {@link failure}'s document says nothing useful.
+   *
+   * Held beside the document rather than derived from it because the choice of sentence depends on
+   * WHICH refusal arrived — a permission denial, a duplicate name, a stale read — and that is known
+   * only at the moment the store's record is read. The banner resolves document-before-fallback
+   * itself, so supplying one can never override a sentence the server actually sent.
+   *
+   * The empty string means "nothing to say", which the banner reads as silence rather than as an
+   * empty message; it is cleared with the document by {@link clearFailure} so the two can never
+   * disagree about whether there is a failure on screen.
+   */
+  private readonly failureFallbackMessage: WritableSignal<string> = signal<string>('');
 
   /**
    * True once a save has been refused because the role changed after this screen read it.
@@ -1644,6 +1766,9 @@ export class RoleFormComponent {
   /** The refusal to render in the shared error banner, or `null`. */
   protected readonly problem: Signal<ProblemDetails | null> = this.failure.asReadonly();
 
+  /** The banner's fallback sentence for the current failure; empty when there is nothing to add. */
+  protected readonly failureFallback: Signal<string> = this.failureFallbackMessage.asReadonly();
+
   /** True while this screen is holding a snapshot the server has already refused. */
   protected readonly conflicted: Signal<boolean> = this.staleRead.asReadonly();
 
@@ -1713,6 +1838,97 @@ export class RoleFormComponent {
   protected readonly nameAtLimitNotice =
     `Maximum length reached. A role name may hold ${ROLE_NAME_MAX_LENGTH} characters, ` +
     `and any further characters are not accepted.`;
+
+  /**
+   * The stored paid-membership values the legacy bind withholds from their boxes.
+   *
+   * ⚠ THE BOXES STAY EMPTY AND THE SCREEN SAYS SO. That is the whole of this member, and the reason
+   * it exists rather than the boxes simply being filled is recorded on {@link applyRole}: filling
+   * them would break the legacy validator and the legacy write gate, both of which this screen is
+   * required to match. What was genuinely wrong was that NOTHING on the screen distinguished "the
+   * record holds zero" from "the record holds nothing", while the role listing beside it printed
+   * `0.00` and `0` for the very same row. So the values are stated, in the LISTING's own formatting
+   * ({@link formatMoney} and {@link formatPeriod} are the functions that screen uses), and the two
+   * screens now report one record identically.
+   *
+   * A value is listed only when it has something to say: a genuinely absent amount or period formats
+   * to the empty string and is left out, because an absence is not a withheld value and printing a
+   * caption with nothing after it would invent one.
+   *
+   * The two FREQUENCY selects need care rather than symmetry. The trial group is suppressed BY its
+   * frequency being `None`, so a suppressed trial select is already showing the stored value and has
+   * nothing withheld — listing it would be false. The billing group is suppressed by its FEE, so a
+   * role with a zero fee beside a real recurrence unit does hide that unit, and only that case is
+   * listed.
+   */
+  protected readonly withheldTerms: Signal<readonly WithheldTerm[]> = computed(() => {
+    const role = this.loadedRole();
+    if (role === null) {
+      return NO_WITHHELD_TERMS;
+    }
+
+    const terms: WithheldTerm[] = [];
+    const state = (caption: string, value: string): void => {
+      if (value !== '') {
+        terms.push({ caption, value });
+      }
+    };
+
+    if (!isRolePriced(role)) {
+      state(WITHHELD_TERM_CAPTIONS.serviceFee, formatMoney(role.serviceFee));
+      state(WITHHELD_TERM_CAPTIONS.billingPeriod, formatPeriod(role.billingPeriod));
+
+      const billingFrequency = coerceFrequency(role.billingFrequency);
+      if (billingFrequency !== NO_FREQUENCY) {
+        state(WITHHELD_TERM_CAPTIONS.billingFrequency, frequencyCaption(billingFrequency));
+      }
+    }
+
+    if (!isRoleOnTrial(role)) {
+      state(WITHHELD_TERM_CAPTIONS.trialFee, formatMoney(role.trialFee));
+      state(WITHHELD_TERM_CAPTIONS.trialPeriod, formatPeriod(role.trialPeriod));
+    }
+
+    return terms;
+  });
+
+  /**
+   * The sentence the advanced section prints above the paid-membership boxes, or nothing.
+   *
+   * The lead names WHICH boxes are empty and why, because "some values are not shown" would leave a
+   * reader hunting; the tail states them. Authored wording — no legacy resource covers a state the
+   * legacy screen never explained, exactly as the protected-role notice above records for itself.
+   *
+   * MIGRATION: a NET ADDITION. It changes no control, no validator and no request; it only stops the
+   * screen being silent about a value it is holding back.
+   */
+  protected readonly withheldTermsNotice: Signal<string> = computed(() => {
+    const terms = this.withheldTerms();
+    if (terms.length === 0) {
+      return '';
+    }
+
+    const role = this.loadedRole();
+    if (role === null) {
+      return '';
+    }
+
+    const billingWithheld = !isRolePriced(role);
+    const trialWithheld = !isRoleOnTrial(role);
+
+    let lead: string;
+    if (billingWithheld && trialWithheld) {
+      lead = 'This role has no paid-membership terms, so the boxes below are left empty.';
+    } else if (billingWithheld) {
+      lead = 'This role has no service fee, so the billing boxes below are left empty.';
+    } else {
+      lead = 'This role has no trial, so the trial boxes below are left empty.';
+    }
+
+    const stated = joinPhrases(terms.map((term) => `${term.caption} ${term.value}`));
+
+    return `${lead} The values held for it are ${stated}.`;
+  });
 
 
 
@@ -2034,6 +2250,53 @@ export class RoleFormComponent {
         this.form.enable({ emitEvent: false });
       }
     });
+
+    this.destroyRef.onDestroy(() => this.handOverPendingWrite());
+  }
+
+  /**
+   * Hands an outstanding write over to be reported after this screen has gone.
+   *
+   * ⚠ THE WRITE BRIDGE ABOVE IS AN EFFECT IN THIS COMPONENT'S INJECTION CONTEXT, SO IT DIES WITH THIS
+   * COMPONENT - and an operator who submits and then immediately goes somewhere else destroys the only
+   * party that was going to tell them what happened. The store's command is already in flight and
+   * completes regardless: a browser audit measured the request answering `201`, never aborted, the role
+   * genuinely created, the destination screen healthy - and no confirmation anywhere. The outcome was
+   * published to a signal slot with nobody left watching it.
+   *
+   * Registered ONLY when a write is still outstanding, which is exactly the condition under which the
+   * bridge will not run: the bridge clears the marker as its first act on settling, so a marker still set
+   * at teardown proves it has not fired and cannot. That is what keeps the two from both speaking.
+   *
+   * The verdict is resolved here rather than in the service because only this screen knows the shape of
+   * its own store: the settled record must be OURS, matched on the identifier the store handed back at
+   * dispatch rather than on an aggregate flag, and a failure is attributed only when the settled
+   * operation is the one we were waiting for. Anything else is somebody else's write and reads as
+   * pending, which leaves the watch in place for our own.
+   *
+   * A refusal is deliberately relayed as a failure and therefore said nothing about; see the service for
+   * why a decontextualised refusal is worse than silence. Returning to this screen still presents it in
+   * full, because the store kept it.
+   */
+  private handOverPendingWrite(): void {
+    const awaited = this.awaitedMutation();
+    const awaitedId = this.awaitedMutationId();
+
+    if (awaited === null) {
+      return;
+    }
+
+    const verdict: Signal<DeferredOutcome> = computed<DeferredOutcome>(() => {
+      const settled = this.roleStore.mutation();
+
+      if (settled === null || settled.id !== awaitedId) {
+        return 'pending';
+      }
+
+      return settled.failure !== null && settled.operation === awaited ? 'failed' : 'succeeded';
+    });
+
+    this.deferredOutcome.announceWhenSettled(verdict, () => MUTATION_SUCCESS_MESSAGE[awaited]);
   }
 
   // -------------------------------------------------------------------------
@@ -2051,6 +2314,20 @@ export class RoleFormComponent {
     if (this.saving() || this.readOnly()) {
       return;
     }
+
+    // ⚠ THE SERVER'S LAST WORD IS RETIRED THE MOMENT UPDATE IS PRESSED AGAIN, and it is retired
+    // HERE - above the validity gate - rather than after it, which is where the clear used to sit.
+    // Runtime testing found the consequence: a duplicate name was refused with a `409`, the operator
+    // cleared the name and pressed Update, the press was blocked by the presence rule, and the
+    // banner went on saying that a role with the same name already exists - about a name that was no
+    // longer in the box, beside a field message saying the name was missing. A refusal document
+    // describes the snapshot that was SENT; once a further attempt is made it no longer describes
+    // anything on screen, whether that attempt reaches the server or not.
+    //
+    // The stale-read flag is deliberately NOT cleared with it. That flag is a state rather than a
+    // message - every save from this snapshot carries the same refused marker - so the recovery block
+    // and its re-read command must survive, and they carry their own standing sentence.
+    this.clearFailure();
 
     if (this.form.invalid) {
       this.form.markAllAsTouched();
@@ -2089,7 +2366,6 @@ export class RoleFormComponent {
       return;
     }
 
-    this.failure.set(null);
     const key = this.roleKey();
 
     if (key === null) {
@@ -2501,7 +2777,7 @@ export class RoleFormComponent {
    */
   private resetToCreateDefaults(): void {
     this.loadedRole.set(null);
-    this.failure.set(null);
+    this.clearFailure();
     this.form.reset();
     this.form.markAsPristine();
     this.form.markAsUntouched();
@@ -2527,7 +2803,7 @@ export class RoleFormComponent {
     // to another cannot let the first answer land on the second form. The outcome, including the
     // not-found bounce `:L170-L172` performed, reaches this screen through the read bridge in the
     // constructor rather than through a subscription here.
-    this.failure.set(null);
+    this.clearFailure();
     this.awaitedRoleKey.set(key);
     this.roleStore.selectRole(key);
   }
@@ -2585,12 +2861,35 @@ export class RoleFormComponent {
    * declared `sglServiceFee As Single = 0`, `intBillingPeriod As Integer = 1` and `"N"` as its own
    * defaults. Numbers are sent, never nulls.
    *
-   * Verified on the wire rather than by reading alone: the API REFUSES a zero billing period outright
-   * (`PUT /api/v1/roles/2` with `billingPeriod: 0` answers `400`, "Billing Period Must Be Greater
-   * Than Zero"), so even a hand-crafted request cannot round-trip that stored zero back. The one real
-   * consequence is that saving such a role moves its stored `billingPeriod` from 0 to 1 - the legacy's
-   * own default, and the only value the write contract accepts. That is recorded in MIGRATION_NOTES as
-   * a deliberate difference, not hidden here.
+   * The one real consequence is that saving such a role moves a stored `billingPeriod` of 0 to 1 -
+   * the legacy's own default. That is recorded in MIGRATION_NOTES as a deliberate difference, not
+   * hidden here. (The API now ADMITS a period of 0 beside a frequency of `None`, so the value is no
+   * longer unrepresentable on the wire; it remains unreachable from this form because the box the
+   * legacy left empty resolves to the legacy default, which is parity rather than a limitation.)
+   *
+   * ⚠ WHAT WAS WRONG, AND WHAT WAS DONE ABOUT IT. The blank boxes were reported again from the
+   * opposite direction - not as data loss but as a DISAGREEMENT between two screens: the role listing
+   * prints this record's zeros as `0.00` and `0` while this screen prints nothing, "and nothing tells
+   * the operator the blank is not the stored value". That half of the report is correct, and both
+   * renderings are individually faithful - `Roles.ascx.vb:L152-L185` prints every non-sentinel value
+   * verbatim, and `:L146-L156` here withholds it - so the legacy disagreed with itself in exactly the
+   * same way.
+   *
+   * The suggested repair was to render the zeros into these boxes, and it is REFUSED because it breaks
+   * two rules this screen is required to match:
+   *
+   *   * `valBillingPeriod2` (`editroles.ascx:L111-L114`) is `GreaterThan 0`, and the resource declares
+   *     its message as "Must Be Greater Than Zero". A rendered `0` is a value the legacy screen's own
+   *     validator refuses, so an untouched role would open ALREADY INVALID and its Update command
+   *     would be blocked until the operator typed over a number the record actually holds.
+   *   * the write gate at `:L216` is `txtBillingPeriod.Text <> ""`. Filling the box changes which
+   *     branch an untouched save takes, which is a change to what gets STORED - the one thing the
+   *     behaviour-preservation obligation does not permit.
+   *
+   * So the boxes keep the legacy bind and the screen states the withheld values instead, in the
+   * listing's own formatting - see {@link withheldTerms} and {@link withheldTermsNotice}. The operator
+   * can now read the stored terms from either screen and gets the same answer, and nothing that is
+   * validated or submitted has moved.
    *
    * @param role The role as the API reported it.
    */
@@ -2602,14 +2901,10 @@ export class RoleFormComponent {
     // arrival passes through, including the first one.
     this.staleRead.set(false);
 
-    const fee = role.serviceFee;
-    const priced =
-      typeof fee === 'number' && Number.isFinite(fee) && fee > LEGACY_ABSENT_MONEY_THRESHOLD
-        ? fee !== 0
-        : false;
+    const priced = isRolePriced(role);
 
     const trialFrequency = coerceFrequency(role.trialFrequency);
-    const onTrial = trialFrequency !== NO_FREQUENCY;
+    const onTrial = isRoleOnTrial(role);
 
     this.form.setValue({
       roleName: textOrEmpty(role.roleName),
@@ -2617,7 +2912,7 @@ export class RoleFormComponent {
       roleGroupId: this.form.controls.roleGroupId.value,
       isPublic: role.isPublic,
       autoAssignment: role.autoAssignment,
-      serviceFee: priced ? formatMoney(fee) : '',
+      serviceFee: priced ? formatMoney(role.serviceFee) : '',
       billingPeriod: priced ? formatPeriod(role.billingPeriod) : '',
       billingFrequency: priced ? coerceFrequency(role.billingFrequency) : NO_FREQUENCY,
       trialFee: onTrial ? formatMoney(role.trialFee) : '',
@@ -2684,7 +2979,7 @@ export class RoleFormComponent {
    * @param key The role id being deleted, which may legitimately be `0`.
    */
   private deleteRole(key: number): void {
-    this.failure.set(null);
+    this.clearFailure();
     this.awaitedMutation.set('deleteRole');
     // The identifier is captured from the command's own return value, so the bridge waits on the very
     // write dispatched here rather than on "a write of this kind, from anywhere".
@@ -2925,6 +3220,22 @@ export class RoleFormComponent {
   // -------------------------------------------------------------------------
 
   /**
+   * Retires whatever refusal is on screen — the document and the sentence the banner falls back to.
+   *
+   * The pair is cleared TOGETHER and only here, because a fallback sentence left behind on its own
+   * keeps the banner visible with no document to explain it: the banner shows itself for a non-empty
+   * fallback by design, which is what makes a document-less transport failure reportable at all.
+   *
+   * Called from every point that supersedes a refusal — a fresh read, a reset to the creation
+   * defaults, a delete, and the start of every submission — so that the banner never describes a
+   * request older than the one in flight.
+   */
+  private clearFailure(): void {
+    this.failure.set(null);
+    this.failureFallbackMessage.set('');
+  }
+
+  /**
    * Turns a refusal into something the user can act on.
    *
    * The API answers every refusal with an RFC 7807 document, so the document is the contract and is
@@ -2956,15 +3267,18 @@ export class RoleFormComponent {
    * the creation path is the duplicate-name refusal the legacy detected for itself and carries the
    * legacy sentence as its fallback; a permission refusal carries the access-denied sentence. Both are
    * FALLBACKS: the server's own `detail` wins when it sent one, which is what
-   * {@link ProblemSummary.message} already resolves.
+   * {@link ProblemSummary.message} already resolves — and both are now handed to the BANNER, which is
+   * the surface that resolves document-before-fallback, rather than to the notification queue, which
+   * has no document to prefer and would only repeat what the banner is already showing.
    *
    * The document is stored whole, so `traceId` and `correlationId` survive into the banner for
    * support to quote.
    *
    * @param failure The store's record of the refusal, whose summary carries the severity.
-   * @param fallback The wording to use when the document says nothing useful.
+   * @param outcome This screen's own sentence for what did not happen. It is what the notification
+   * announces, and it is the banner's last-resort fallback for a refusal with no wording of its own.
    */
-  private reportFailure(failure: RoleStoreFailure, fallback: string): void {
+  private reportFailure(failure: RoleStoreFailure, outcome: string): void {
     // ⚠ THE STATUS IS READ FROM THE STORE'S RECORD, NOT FROM THE DOCUMENT. The two go missing
     // independently - a transport failure has a status and no document - so deriving one from the
     // other would collapse the distinction the wording branches below exist to make.
@@ -2980,31 +3294,68 @@ export class RoleFormComponent {
     // The one classification, resolved once by the shared function and consumed here.
     const severity: NotificationSeverity = failure.summary.severity;
 
-    if (status === UNAUTHORIZED || status === FORBIDDEN) {
-      this.notifications.notify(severity, problemDetailsMessage(problem, ACCESS_DENIED_MESSAGE));
-      return;
-    }
-
     // ⚠ THE TWO `409`s ARE NOT THE SAME FAILURE and must not share a response. A duplicate name is
     // corrected in a field; a stale read cannot be corrected in the form at all, because every
     // subsequent save carries the same refused marker. Keyed on the published failure code, so the
     // branch cannot be selected by a coincidence of status.
-    if (status === CONFLICT && failureCode(problem) === CONCURRENCY_CONFLICT_CODE) {
+    const staleRead: boolean =
+      status === CONFLICT && failureCode(problem) === CONCURRENCY_CONFLICT_CODE;
+
+    if (staleRead) {
       this.staleRead.set(true);
-      this.notifications.notify(
-        severity,
-        problemDetailsMessage(problem, CONCURRENCY_CONFLICT_MESSAGE),
-      );
-
-      return;
     }
 
-    if (status === CONFLICT) {
-      this.notifications.notify(severity, problemDetailsMessage(problem, DUPLICATE_ROLE_MESSAGE));
-      return;
+    // WHICH SENTENCE THE BANNER USES IF THE DOCUMENT CARRIES NONE. Every branch below states the
+    // wording this screen owns for that refusal, and the banner prefers the server's own `detail`
+    // over all of them - which is exactly what `problemDetailsMessage` did when these sentences were
+    // handed to the notification instead.
+    let bannerFallback: string;
+    if (status === UNAUTHORIZED || status === FORBIDDEN) {
+      bannerFallback = ACCESS_DENIED_MESSAGE;
+    } else if (staleRead) {
+      bannerFallback = CONCURRENCY_CONFLICT_MESSAGE;
+    } else if (status === CONFLICT) {
+      bannerFallback = DUPLICATE_ROLE_MESSAGE;
+    } else {
+      bannerFallback = outcome;
     }
 
-    this.notifications.notify(severity, problemDetailsMessage(problem, fallback));
+    this.failureFallbackMessage.set(bannerFallback);
+
+    // ⚠ THE NOTIFICATION CARRIES THE OUTCOME AND THE BANNER CARRIES THE DOCUMENT, so one refusal is
+    // never spelled out twice in two places at once. It used to be: this method handed
+    // `problemDetailsMessage(problem, …)` to the notification, which resolves to the document's own
+    // `detail` - the very sentence the banner beside it was already rendering - so a duplicate name
+    // painted an inline banner reading "A role with the same name already exists. The role was not
+    // added." and, simultaneously, a notification reading the same words. Two announcements of one
+    // fault, which is the repetition the conflict block on this screen already declines to add.
+    //
+    // The split is the sibling portal form's stated rule, and it is now this screen's too: the
+    // notification says WHAT HAPPENED in this screen's own words, and the banner says WHY in the
+    // server's, with the field messages beside the fields they belong to. A transport failure carries
+    // no document at all, and then the outcome sentence is the whole report - which is why it is
+    // never suppressed, and why the banner is given the same sentence as its fallback so that a
+    // reader who has scrolled past the notification still finds one.
+    //
+    // ⚠ THE SPLIT MUST NOT SPLIT THE SUPPORT REFERENCE, and dividing the wording is exactly how it
+    // came to. Measured: submitting a duplicate role name produced `409` carrying
+    // `correlationId: b9ce219d-57be-4bc3-b52e-1783d9d5e0a3` in both the response header and the problem
+    // body; the banner rendered `Reference: b9ce219d-...`; and this notification rendered `The role
+    // could not be saved.` with THREE child nodes - severity, message, dismiss - and no reference node
+    // at all. The identifier was in hand and was dropped on the floor.
+    //
+    // That is not cosmetic, because the two surfaces do NOT fail over to one another. The banner sits at
+    // the top of a form long enough to scroll, so an operator who submits from the bottom sees this
+    // notification and nothing else. Handing them the outcome without the identifier tells them the save
+    // was refused and leaves them no way to say WHICH refusal it was - and the browser console is no
+    // fallback either, since the same measurement found the `403` and `404` on a sibling screen produced
+    // no console entry whatsoever. The reference is the only join between what the operator saw and what
+    // the server recorded, and the queue appends it AFTER applying its own length bound precisely so a
+    // long server sentence can never truncate it away.
+    //
+    // Read from the shared summary rather than re-derived from the document here, so this screen quotes
+    // the same identifier the banner beside it quotes, resolved once in the one place that resolves it.
+    this.notifications.notify(severity, outcome, failure.summary.supportReference);
   }
 
   /**

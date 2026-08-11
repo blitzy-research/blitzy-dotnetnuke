@@ -724,24 +724,43 @@ describe('ModuleSettingsComponent', () => {
       ]);
     });
 
-    it('removes a closed region body rather than hiding it', () => {
+    it('removes a closed region\'s CONTENTS rather than hiding them', () => {
       // .module-settings__body declares display:grid, and the user-agent [hidden] rule loses to any author
-      // rule, so a hidden body would still be visible. Removal is the only correct collapse.
+      // rule, so a hidden BODY would still be visible. Removing the contents is the only correct collapse.
+      // What remains behind is the empty, class-less placeholder the neighbouring spec pins down, which
+      // exists purely so the toggle's aria-controls resolves in both states.
       expect(q('#module-settings-header')).toBeNull();
 
       open('security');
 
       expect(q('#module-settings-header')).not.toBeNull();
-      expect(qa('.module-settings__body[hidden]').length).toBe(0);
+      expect(qa('.module-settings__body[hidden]').length)
+        .withContext('no real region body is ever merely hidden')
+        .toBe(0);
     });
 
-    it('reports its state through aria-expanded and names its region only while that region exists', () => {
+    it('reports its state through aria-expanded and names its region in BOTH states', () => {
       const head = toggleFor('pageSettings')!;
       expect(head.getAttribute('aria-expanded')).toBe('false');
 
-      // CLOSED: no reference, because the region is removed from the document rather than hidden
-      // (proven by the preceding spec), so a constant attribute would leave a dangling IDREF.
-      expect(head.hasAttribute('aria-controls')).toBeFalse();
+      // ⚠ CLOSED: THE REFERENCE IS PUBLISHED AND IT RESOLVES, WHICH IS THE OPPOSITE OF WHAT THIS SPEC
+      // USED TO ASSERT. Two earlier revisions each got half of this right. The first declared
+      // aria-controls never at all; the second declared it only while the region was open, reasoning
+      // that a closed region is REMOVED from the document so a constant attribute would leave a
+      // dangling IDREF. The reasoning was sound and the conclusion still wrong: a toggle whose
+      // aria-controls disappears is a control that names nothing in the state where a reader most needs
+      // to know what it governs, and assistive technology has no way to describe the target it is about
+      // to reveal. The template now keeps an EMPTY, `hidden` placeholder carrying the body's id while
+      // the region is closed, so the identity survives the state change and the reference resolves in
+      // both states - while the region's CONTENTS are still removed rather than hidden, which is what
+      // the neighbouring specs protect.
+      const closedGoverned: string | null = head.getAttribute('aria-controls');
+      expect(closedGoverned)
+        .withContext('a collapsed toggle still names the region it governs')
+        .toBe('module-settings-body-pageSettings');
+      expect(q(`#${closedGoverned}`))
+        .withContext('and that name resolves: no dangling IDREF is ever published')
+        .not.toBeNull();
 
       head.click();
       fixture.detectChanges();
@@ -749,16 +768,13 @@ describe('ModuleSettingsComponent', () => {
       const opened = toggleFor('pageSettings')!;
       expect(opened.getAttribute('aria-expanded')).toBe('true');
 
-      // OPEN: the reference is published, and it RESOLVES. This spec previously asserted that
-      // aria-controls was never offered at all, reasoning that it "would point outside the
-      // document while the region is closed". That was right about the closed state and wrong to
-      // conclude the attribute could never be declared: assistive technology could not identify
-      // the region the control governs even when the region was present. The binding is now
-      // conditional, so the closed state keeps the property the old assertion was protecting
-      // while the open state gains the association it was denying.
+      // OPEN: the same reference, resolving to the same id - now carrying the real region.
       const governed: string | null = opened.getAttribute('aria-controls');
       expect(governed).toBe('module-settings-body-pageSettings');
       expect(q(`#${governed}`)).not.toBeNull();
+      expect(governed)
+        .withContext('the id is STABLE across the state change, which is what makes the reference valid')
+        .toBe(closedGoverned);
 
       // And the toggle does not point at itself - a control naming its own id tells AT nothing.
       expect(governed).not.toBe(opened.getAttribute('id'));
@@ -766,8 +782,36 @@ describe('ModuleSettingsComponent', () => {
       opened.click();
       fixture.detectChanges();
 
-      // CLOSED AGAIN: withdrawn with the region, so no dangling reference is ever left behind.
-      expect(toggleFor('pageSettings')?.hasAttribute('aria-controls')).toBeFalse();
+      // CLOSED AGAIN: still named, still resolving, and the id has not drifted.
+      const reclosed = toggleFor('pageSettings')!;
+      expect(reclosed.getAttribute('aria-controls')).toBe('module-settings-body-pageSettings');
+      expect(q('#module-settings-body-pageSettings')).not.toBeNull();
+    });
+
+    /**
+     * The placeholder must stay INERT, because an always-present element is only safe if it cannot be
+     * seen, cannot be reached and cannot be mistaken for the region itself. Four separate expectations,
+     * each of which would pass while one of the others failed.
+     */
+    it('keeps the collapsed region\'s placeholder empty, hidden and unstyled', () => {
+      const placeholder = q('#module-settings-body-pageSettings');
+
+      expect(placeholder).not.toBeNull();
+      expect(placeholder?.hasAttribute('hidden'))
+        .withContext('hidden, so no user agent renders it')
+        .toBeTrue();
+      expect((placeholder?.innerHTML ?? 'x').length)
+        .withContext('empty, so it holds no control and can trap no focus')
+        .toBe(0);
+      expect(placeholder?.classList.contains('module-settings__body'))
+        .withContext(
+          'it must NOT carry the body class: that class declares display:grid, which beats the ' +
+            'user-agent [hidden] rule and would paint an empty region',
+        )
+        .toBeFalse();
+      expect(placeholder?.querySelectorAll('input, select, textarea, button').length)
+        .withContext('no focusable descendant, so the tab order is untouched')
+        .toBe(0);
     });
 
     it('closes an open region again', () => {
@@ -2428,6 +2472,125 @@ describe('ModuleSettingsComponent', () => {
         // Neither empty state accompanies it, and no form is seeded from a module that was never read.
         expect(fixture.nativeElement.querySelector('app-empty-state')).toBeNull();
         expect(fixture.nativeElement.querySelector('form.module-settings')).toBeNull();
+      });
+
+      /**
+       * ⚠ THE DEFINITION IS READ FOR THE ADDRESSED MODULE, NEVER FOR THE ONE LEFT BEHIND. Runtime testing
+       * measured this on every move between two modules: the store's module slot still holds the previous
+       * module until the new address answers, so the definition read fired once with the OLD `moduleDefId`.
+       * Moving from module 2 (definition 4, administrative) to module 7 (definition 2) issued
+       * `GET /module-definitions/4`, which answers `404`, and the screen raised "The requested item could
+       * not be found." over a module whose own reads had all succeeded. The per-identifier memo those
+       * effects keep could not prevent it - it suppresses a REPEAT of one identifier, and a stale
+       * identifier is a different one.
+       *
+       * Asserted as an ABSENCE of the wrong request rather than as the presence of the right one, because
+       * only the absence distinguishes the fix from the defect: both arrangements eventually read the
+       * correct definition.
+       */
+      it('reads no definition until the loaded module is the one addressed', () => {
+        activate();
+
+        // Move to a different module carrying a DIFFERENT definition. The store still holds module 0.
+        fixture.componentRef.setInput('moduleId', 5);
+        fixture.detectChanges();
+
+        httpMock.expectNone(
+          (candidate) => candidate.url === DEFINITION_URL,
+          'the module left behind must not have its definition re-read against the new address',
+        );
+        httpMock.expectNone(
+          (candidate) =>
+            candidate.method === 'GET' &&
+            candidate.url === '/api/v1/permissions' &&
+            candidate.params.get('moduleDefinitionId') === '14',
+        );
+
+        // Only once the addressed module answers does its own definition become addressable.
+        httpMock.expectOne('/api/v1/modules/5').flush({
+          data: { ...moduleDetailOf(), moduleId: 5, moduleDefId: 21 },
+        });
+        httpMock.expectOne('/api/v1/modules/5/settings').flush({ data: settingsBagOf() });
+        fixture.detectChanges();
+
+        expect(httpMock.expectOne('/api/v1/module-definitions/21').request.method)
+          .withContext('the definition read follows the address, not the residue of the last one')
+          .toBe('GET');
+
+        httpMock.match(() => true).forEach((request) => request.flush({ data: [] }));
+        fixture.detectChanges();
+      });
+
+      /**
+       * ⚠ THE REFUSAL THIS SCREEN RECEIVES ON ITS **OWN** READ IS HONOURED, AND THIS CASE EXISTS BECAUSE
+       * IT WAS NOT. Measured against the running application: on an administrative module the three reads
+       * answer 200 for the module, **403 `module.settings_protected`** for the settings, and 404 for the
+       * definition, because the tenant catalogue publishes no entry for an administrative definition. The
+       * store holds ONE failure slot, the 404 lands LAST and takes it, and the not-found branch of the
+       * announcer deliberately DISCARDS the document in favour of a transient advisory - so the banner
+       * emptied itself, the render gate consulted only the module read, and a full sixteen-control
+       * EDITABLE form rendered under no banner at all, offering a save the server had already refused.
+       *
+       * Three separate expectations, because each would pass on its own while the screen was still wrong:
+       * the form must be absent, the banner must be present, and the banner must carry the SETTINGS
+       * refusal rather than the definition's absence. The last is the load-bearing one - it is what proves
+       * the gate keys on this screen's own read and not on whichever failure happened to arrive last.
+       */
+      it('withholds the form and states the refusal when the SETTINGS read alone is refused', () => {
+        fixture.componentRef.setInput('pages', null);
+        fixture.componentRef.setInput('moduleId', 0);
+        fixture.detectChanges();
+
+        const refusal = {
+          type: 'urn:dnnmigration:error:module.settings_protected',
+          title: 'Forbidden',
+          status: 403,
+          detail: 'Administrative module settings are available only through their typed privileged endpoint.',
+          traceId: '00-settings-refusal-01',
+        };
+
+        // The module itself reads cleanly, which is exactly the condition that used to admit the form.
+        httpMock.expectOne(MODULE_URL).flush({ data: moduleDetailOf() });
+        httpMock
+          .expectOne(SETTINGS_URL)
+          .flush(refusal, { status: 403, statusText: 'Forbidden' });
+        fixture.detectChanges();
+
+        // The definition read becomes addressable once the module resolves, and it is answered LAST with
+        // the absence that used to overwrite the refusal above.
+        httpMock.expectOne(DEFINITION_URL).flush(null, { status: 404, statusText: 'Not Found' });
+        httpMock.expectOne(TABS_URL).flush({ data: [tabOf()] });
+        fixture.detectChanges();
+
+        expect(fixture.nativeElement.querySelector('form.module-settings'))
+          .withContext('no editable form may be offered for settings the server refused to disclose')
+          .toBeNull();
+
+        const banner: HTMLElement | null = fixture.nativeElement.querySelector('.error-banner');
+
+        expect(banner)
+          .withContext('the refusal is stated rather than swallowed by the later absence')
+          .not.toBeNull();
+        expect(banner?.textContent ?? '')
+          .withContext('the SETTINGS document, not the definition 404, is what the operator reads')
+          .toContain('Administrative module settings are available only through their typed privileged endpoint.');
+        expect(banner?.textContent ?? '')
+          .withContext('its own trace identifier, so the refusal can be correlated in the server log')
+          .toContain('00-settings-refusal-01');
+      });
+
+      /**
+       * The converse, which is what stops the fix above becoming a screen that never opens: a settings read
+       * that SUCCEEDS clears any refusal held from a previous address, so the form renders normally. Without
+       * this expectation a component that latched the refusal permanently would pass the case above.
+       */
+      it('reopens the form once a settings read succeeds', () => {
+        activate();
+
+        expect(fixture.nativeElement.querySelector('form.module-settings'))
+          .withContext('a permitted settings read renders the form, refusal state cleared')
+          .not.toBeNull();
+        expect(fixture.nativeElement.querySelector('.error-banner')).toBeNull();
       });
 
       /**

@@ -539,14 +539,22 @@ public sealed class RoleService : IRoleService
         // over (PortalID, RoleName), so GetRoleByName (membership DataProvider.vb:L94) can match at
         // most one row and a non-null answer IS the duplicate report - no separate existence member is
         // needed on the repository contract.
+        //
+        // THE NAME IS TRIMMED FIRST, so this check asks about the string that will actually be stored.
+        // RoleMappings trims on write (the reasoning is recorded there), and the collation ignores
+        // trailing whitespace but NOT leading whitespace - so without the trim a submitted " Editors"
+        // matched nothing here, was stored as "Editors", and collided at the index instead, turning a
+        // reportable outcome into a caught provider fault.
+        string requestedName = request.RoleName.Trim();
+
         Role? clashing = await _roles
-            .GetByNameAsync(portalId, request.RoleName, cancellationToken)
+            .GetByNameAsync(portalId, requestedName, cancellationToken)
             .ConfigureAwait(false);
         if (clashing is not null)
         {
             return Result<RoleDetailDto>.Failure(
                 RoleNameDuplicateCode,
-                DescribeNameClash(portalId, request.RoleName, clashing));
+                DescribeNameClash(requestedName, clashing));
         }
 
         Role role = RoleMappings.ToNewRole(portalId, request);
@@ -611,9 +619,13 @@ public sealed class RoleService : IRoleService
         }
         catch (DuplicateKeyException)
         {
+            // The SAME wording the pre-check reports for the same outcome, which is the point made above
+            // about publishing one code rather than two: the loser of the race and the caller who arrived
+            // second are told the same thing because they can act on it the same way. The sentence is the
+            // legacy resource string, so it names neither the tenant nor any row identifier.
             return Result<RoleDetailDto>.Failure(
                 RoleNameDuplicateCode,
-                $"Portal {portalId} already has a role named '{request.RoleName}'.");
+                RoleTermsRules.DuplicateRoleMessage);
         }
 
         _cache.InvalidatePortal(portalId);
@@ -752,14 +764,18 @@ public sealed class RoleService : IRoleService
         // GetRoleByName at membership DataProvider.vb L94 - can match at most one row, and a match whose
         // identifier differs from the edited role IS the duplicate report. Without it a rename onto an
         // existing name would reach the provider and surface as a server fault naming no field.
+        // Trimmed for the same reason as the creation path: the check must ask about the string the write
+        // will store, which RoleMappings trims.
+        string requestedName = request.RoleName.Trim();
+
         Role? clashing = await _roles
-            .GetByNameAsync(portalId, request.RoleName, cancellationToken)
+            .GetByNameAsync(portalId, requestedName, cancellationToken)
             .ConfigureAwait(false);
         if (clashing is not null && clashing.RoleId != roleId)
         {
             return Result<RoleDetailDto>.Failure(
                 RoleNameDuplicateCode,
-                DescribeNameClash(portalId, request.RoleName, clashing));
+                DescribeNameClash(requestedName, clashing));
         }
 
         RoleMappings.ApplyUpdate(role, request);
@@ -1864,7 +1880,9 @@ public sealed class RoleService : IRoleService
     /// MIGRATION: the nine validator controls on <c>Website/admin/Security/editroles.ascx</c> guarded
     /// both the create and the edit posts of one screen, so the same rules apply to both requests. The
     /// fee-versus-period asymmetry is genuine and is preserved: a fee may be zero, because a free role
-    /// is legitimate, while a period may not, because a cycle of zero units cannot advance an expiry.
+    /// is legitimate, while a period may not WHERE A CYCLE IS DECLARED, because a cycle of zero units
+    /// cannot advance an expiry. Both period rules delegate to the same predicate the write validators
+    /// apply, so this second line of defence cannot come to disagree with the first.
     /// A shape violation is reported by exception because this operation's contract names no reason code
     /// for one; the API edge renders it as a bad request alongside the validator's own problems.
     /// </remarks>
@@ -1915,14 +1933,20 @@ public sealed class RoleService : IRoleService
             throw new DomainException("Trial Fee Must Be Greater Than or Equal to Zero");
         }
 
-        if (billingPeriod is int period && period <= 0)
+        // The PAIR is judged, not the period alone, and the predicate is the one the write validators apply
+        // so the two cannot drift apart. A cycle of zero units is still refused - it could never advance an
+        // expiry - while a period of zero beside NO cycle is the value the portal template's own roles carry
+        // and the value the read projection reports, so refusing it made a value this API emits a value it
+        // would not accept. The reasoning and the measurement are on
+        // RoleTermsRules.IsPeriodAdmissibleForFrequency.
+        if (!RoleTermsRules.IsPeriodAdmissibleForFrequency(billingPeriod, billingFrequency))
         {
-            throw new DomainException("Billing Period Must Be Greater Than Zero");
+            throw new DomainException(RoleTermsRules.BillingPeriodNotPositiveMessage);
         }
 
-        if (trialPeriod is int trialUnits && trialUnits <= 0)
+        if (!RoleTermsRules.IsPeriodAdmissibleForFrequency(trialPeriod, trialFrequency))
         {
-            throw new DomainException("Trial Period Must Be Greater Than Zero");
+            throw new DomainException(RoleTermsRules.TrialPeriodNotPositiveMessage);
         }
 
         if (billingFrequency is BillingFrequency billing && !Enum.IsDefined(typeof(BillingFrequency), billing))
@@ -1969,29 +1993,46 @@ public sealed class RoleService : IRoleService
     /// Describes a role-name clash in terms of the role that ALREADY holds the name, rather than in terms of
     /// the name the caller typed.
     /// </summary>
-    /// <param name="portalId">The tenant the clash was found in.</param>
     /// <param name="requestedName">The name the caller submitted.</param>
     /// <param name="clashing">The role that already holds a name the store treats as equal.</param>
     /// <returns>A sentence naming the existing role.</returns>
     /// <remarks>
+    /// <para>
     /// ⚠ THE TWO NAMES ARE NOT ALWAYS THE SAME STRING, and that is the whole reason this member exists.
     /// The uniqueness index on (PortalID, RoleName) is evaluated under the database's collation, which gives
     /// no sort weight to supplementary-plane characters, zero-width characters or trailing spaces - so a
     /// submitted name of "Editors" plus an emoji collides with a stored "Editors". Reporting the SUBMITTED
-    /// name in that case, as this refusal previously did, names a role that exists nowhere: runtime testing
-    /// measured an operator being told a portal already had a role whose name could not be found in any of
-    /// its 115 rows. Naming the stored role and its identifier lets the operator go and look at it, and
-    /// saying explicitly that the store treats the two as equal explains why a name they can see to be
-    /// different was refused.
+    /// name in that case names a role that exists nowhere: runtime testing measured an operator being told a
+    /// portal already had a role whose name could not be found in any of its 115 rows. Naming the STORED role
+    /// lets the operator go and look at it, and saying explicitly that the store treats the two as equal
+    /// explains why a name they can see to be different was refused.
+    /// </para>
+    /// <para>
+    /// MIGRATION: NEITHER THE ROW IDENTIFIER NOR THE TENANT IDENTIFIER APPEARS IN EITHER SENTENCE, AND BOTH
+    /// USED TO. The exact-match arm read "Portal -1 already has a role named 'X' (identifier 35)." and the
+    /// collation arm led with "Portal -1 already has role 35, …". Two obligations were being broken at once.
+    /// The first is wording parity: <c>EditRoles.ascx.resx</c> declares <c>DuplicateRole.Text</c> as "A role
+    /// with the same name already exists. The role was not added.", and the legacy screen showed that
+    /// sentence and nothing else, so the exact-match arm below is now that resource string verbatim. The
+    /// second is information hiding: a primary-key value and a tenant identifier are internal facts an
+    /// operator cannot act on, and a refusal is the one response an unauthenticated or lightly authorised
+    /// caller can provoke on demand, which makes it the wrong place to publish either.
+    /// </para>
+    /// <para>
+    /// The collation arm keeps its explanation, because withdrawing it would restore the defect it was
+    /// written for - a refusal an operator cannot reconcile with anything on their screen. It names the
+    /// STORED NAME only, which is not an internal detail at all: it is the text the roles listing already
+    /// renders in the row above or below the one the operator is trying to create. What it no longer does is
+    /// hand over the row's identifier, which added nothing to the remedy the sentence already states.
+    /// </para>
     /// </remarks>
-    private static string DescribeNameClash(int portalId, string requestedName, Role clashing)
+    private static string DescribeNameClash(string requestedName, Role clashing)
     {
         ArgumentNullException.ThrowIfNull(clashing);
 
         return string.Equals(clashing.RoleName, requestedName, StringComparison.Ordinal)
-            ? FormattableString.Invariant(
-                $"Portal {portalId} already has a role named '{clashing.RoleName}' (identifier {clashing.RoleId}).")
+            ? RoleTermsRules.DuplicateRoleMessage
             : FormattableString.Invariant(
-                $"Portal {portalId} already has role {clashing.RoleId}, named '{clashing.RoleName}', and the database treats that name as identical to '{requestedName}'. Choose a name that differs in visible, sortable characters.");
+                $"A role named '{clashing.RoleName}' already exists, and the database treats that name as identical to '{requestedName}'. Choose a name that differs in visible, sortable characters. The role was not added.");
     }
 }

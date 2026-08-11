@@ -671,33 +671,55 @@ public class CreateRoleRequestValidatorTests
     }
 
     /// <summary>
-    /// A billing period of exactly zero is refused, even though the message the caller receives says zero
-    /// ought to be allowed.
+    /// A billing period of exactly zero is refused when a recurring cycle is declared beside it.
     /// </summary>
     /// <remarks>
-    /// This test and the message it asserts are the sharpest expression of the migration discipline in this
-    /// file: the assertion deliberately expects a message that disagrees with the behaviour, because that is
-    /// what the legacy declaration did. A future reader who "fixes" the wording will break this test, and
-    /// the annotation below is why it must not be fixed.
+    /// This is the value <c>valBillingPeriod2</c> existed to refuse: a cycle of zero units could never
+    /// advance an expiry date, so the derivation would answer a membership that lapsed the instant it was
+    /// created. Zero beside NO cycle is a different value with a different meaning and is accepted - see
+    /// <see cref="BillingPeriod_AtExactlyZero_WithNoCycle_IsAccepted"/>.
     /// </remarks>
     // MIGRATION: valBillingPeriod2 (editroles.ascx L111-L114) declares Operator="GreaterThan"
-    // ValueToCompare="0" at L114 while its own ErrorMessage at L113 reads "<br>Billing Period Must Be
-    // Greater Than or Equal to Zero". The message CONTRADICTS its operator. The OPERATOR is authoritative
-    // and is reproduced exactly - a submitted zero is REFUSED, as this test proves - and the contradictory
-    // wording is carried across UNCHANGED and deliberately NOT corrected. Relaxing the operator to agree
-    // with the text would accept a billing cycle of zero units, which could never advance an expiry date.
-    // Corroboration: the runtime resource value at EditRoles.ascx.resx L195 reads "<br>Billing Period Must
-    // Be Greater Than Zero" and therefore AGREES with the operator; and EditRoles.ascx.vb L213 initialises
-    // the period to 1, the smallest value a strictly-positive comparison admits.
+    // ValueToCompare="0" at L114 while its own inline ErrorMessage at L113 reads "<br>Billing Period Must Be
+    // Greater Than or Equal to Zero". The inline message is NOT the wording an operator ever saw: the
+    // control carries resourcekey="valBillingPeriod2" and the runtime resource value at
+    // EditRoles.ascx.resx reads "<br>Billing Period Must Be Greater Than Zero", which AGREES with the
+    // operator. EditRoles.ascx.vb L213 corroborates it by initialising the period to 1, the smallest value a
+    // strictly-positive comparison admits. Both the operator and the wording an operator actually read are
+    // therefore reproduced here exactly.
     [Fact]
     public async Task BillingPeriod_AtExactlyZero_IsRefused()
     {
         CreateRoleRequest request = ValidRequest();
         request.BillingPeriod = 0;
+        request.BillingFrequency = BillingFrequency.Month;
 
         ValidationResult result = await _validator.ValidateAsync(request);
 
         ShouldReport(result, nameof(CreateRoleRequest.BillingPeriod), BillingPeriodNotPositive);
+    }
+
+    /// <summary>
+    /// A billing period of exactly zero is ACCEPTED when no recurring cycle is declared beside it.
+    /// </summary>
+    /// <remarks>
+    /// The portal template creates its roles with both periods at zero beside a frequency of <c>N</c>, and
+    /// the read projection reports those columns faithfully as Rule T7 requires - so refusing the pair on
+    /// write made a value the API emits a value the API would not accept, and runtime testing measured a
+    /// read-modify-write of such a role being refused 400 on both period members. Zero here means "no
+    /// cycle", which is what the store means by it.
+    /// </remarks>
+    [Fact]
+    public async Task BillingPeriod_AtExactlyZero_WithNoCycle_IsAccepted()
+    {
+        CreateRoleRequest request = ValidRequest();
+        request.BillingPeriod = 0;
+        request.BillingFrequency = BillingFrequency.None;
+
+        ValidationResult result = await _validator.ValidateAsync(request);
+
+        ShouldAccept(result);
+        ShouldNotReport(result, nameof(CreateRoleRequest.BillingPeriod));
     }
 
     /// <summary>
@@ -715,10 +737,28 @@ public class CreateRoleRequestValidatorTests
     {
         CreateRoleRequest request = ValidRequest();
         request.TrialPeriod = 0;
+        request.TrialFrequency = BillingFrequency.Month;
 
         ValidationResult result = await _validator.ValidateAsync(request);
 
         ShouldReport(result, nameof(CreateRoleRequest.TrialPeriod), TrialPeriodNotPositive);
+    }
+
+    /// <summary>
+    /// A trial period of exactly zero is ACCEPTED when no trial cycle is declared beside it, matching the
+    /// billing pair and matching what the portal template's own roles carry.
+    /// </summary>
+    [Fact]
+    public async Task TrialPeriod_AtExactlyZero_WithNoCycle_IsAccepted()
+    {
+        CreateRoleRequest request = ValidRequest();
+        request.TrialPeriod = 0;
+        request.TrialFrequency = BillingFrequency.None;
+
+        ValidationResult result = await _validator.ValidateAsync(request);
+
+        ShouldAccept(result);
+        ShouldNotReport(result, nameof(CreateRoleRequest.TrialPeriod));
     }
 
     // ------------------------------------------------------------------------
@@ -1371,13 +1411,18 @@ public class CreateRoleRequestValidatorTests
     [Fact]
     public async Task SeveralBadFields_AreAllReportedTogether()
     {
+        // The two periods are negative rather than zero, because zero is refused only beside a declared
+        // cycle and the frequency this request submits is the invalid default - so a zero would be reported
+        // as admissible here and the fact would assert one failure fewer than it means to. A negative period
+        // is refused whatever the frequency, which keeps this fact about REPORTING SEVERAL FAILURES AT ONCE
+        // rather than about the period rule itself.
         CreateRoleRequest request = new()
         {
             RoleName = string.Empty,
             ServiceFee = -1m,
-            BillingPeriod = 0,
+            BillingPeriod = -1,
             TrialFee = -1m,
-            TrialPeriod = 0,
+            TrialPeriod = -1,
             BillingFrequency = default(BillingFrequency),
         };
 

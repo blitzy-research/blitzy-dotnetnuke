@@ -30,6 +30,7 @@ import {
   ChangeDetectionStrategy,
   Component,
   computed,
+  DestroyRef,
   effect,
   inject,
   input,
@@ -46,6 +47,8 @@ import { Router, RouterLink } from '@angular/router';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import { UserCreateStatus } from '../../../core/models/user.model';
 import type { CreateUserRequest, UpdateUserRequest, UserDetail } from '../../../core/models/user.model';
+import { DeferredOutcomeService } from '../../../core/services/deferred-outcome.service';
+import type { DeferredOutcome } from '../../../core/services/deferred-outcome.service';
 import { NotificationService } from '../../../core/services/notification.service';
 import type { NotificationSeverity } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
@@ -1041,6 +1044,12 @@ export class UserFormComponent {
    */
   private readonly notifications = inject(NotificationService);
 
+  /** Reports a write that settles after this screen has gone; see {@link UserFormComponent.handOverPendingWrite}. */
+  private readonly deferredOutcome = inject(DeferredOutcomeService);
+
+  /** This screen's lifetime, held for the one hand-over below and nothing else. */
+  private readonly destroyRef = inject(DestroyRef);
+
   /**
    * Used only for the two measured redirects and the password cross-link.
    */
@@ -1904,7 +1913,12 @@ export class UserFormComponent {
       }
 
       untracked(() => {
-        this.announceFailure(failure.summary.severity, failure.summary.message, failure.code);
+        this.announceFailure(
+          failure.summary.severity,
+          failure.summary.message,
+          failure.code,
+          failure.summary.supportReference,
+        );
       });
     });
 
@@ -2074,6 +2088,64 @@ export class UserFormComponent {
     // now a `404`, so that announcer already words it — through the measured vocabulary and at the warning
     // severity the legacy guard sites used — and a second effect here would announce the same sentence twice
     // into a shared live region.
+
+    this.destroyRef.onDestroy(() => this.handOverPendingWrite());
+  }
+
+  /**
+   * Hands an outstanding create or update over to be reported after this screen has gone.
+   *
+   * ⚠ THE TWO WRITE BRIDGES ABOVE ARE EFFECTS IN THIS COMPONENT'S INJECTION CONTEXT, SO THEY DIE WITH
+   * THIS COMPONENT. An operator who submits and then immediately goes somewhere else destroys the only
+   * party that was going to tell them what happened: the store's request completes and the account really
+   * is created or changed, and nothing says so. The identical defect was measured on the sibling role form
+   * - `201`, never aborted, record created, no confirmation - and is fixed the same way on both, because
+   * fixing one of two screens that share a mechanism is a trap for whoever meets the other.
+   *
+   * Registered ONLY for a write still outstanding. Each bridge lowers its own submitted marker as its
+   * first act on settling, so a marker still raised at teardown proves that bridge has not fired and
+   * cannot - which is what keeps exactly one party speaking for any one write.
+   *
+   * ⚠ THE CREATE PATH DELIBERATELY DOES NOT RELAY A GENERATED CREDENTIAL. Where one was generated, the
+   * successful create hands it over ON this screen and defers its own redirect precisely so it can be
+   * read; a credential cannot follow an operator to another screen, and this screen is gone. The account
+   * still exists, so the creation is confirmed exactly as any other, and a credential nobody read is
+   * recoverable the way any forgotten credential is. Confirming the create while the credential is lost is
+   * strictly better than the previous behaviour, which lost both.
+   *
+   * The delete path is not relayed: it redirects to the return address, and an operator who has already
+   * left has had the departure it was going to give them.
+   */
+  private handOverPendingWrite(): void {
+    const created: boolean = this.createSubmitted();
+    const updated: boolean = this.updateSubmitted();
+
+    if (!created && !updated) {
+      return;
+    }
+
+    // The store publishes one in-flight flag and one failure slot for the account commands, which is all
+    // either bridge above reads, so the verdict is resolved from exactly the facts they use.
+    const verdict: Signal<DeferredOutcome> = computed<DeferredOutcome>(() => {
+      if (this.store.saving()) {
+        return 'pending';
+      }
+
+      return this.store.failure() !== null ? 'failed' : 'succeeded';
+    });
+
+    // Named from the account the SERVER confirmed rather than from the form, for the reason the create
+    // bridge records: the two can differ, and a confirmation naming something that was not stored is worse
+    // than none. Evaluated at announce time, so the record has arrived by the time it is read.
+    this.deferredOutcome.announceWhenSettled(verdict, () => {
+      if (updated) {
+        return USER_UPDATED_MESSAGE;
+      }
+
+      const stored = this.selectedUser();
+
+      return stored === null ? null : USER_CREATED_MESSAGE.replace('{name}', stored.username);
+    });
   }
 
   // COMMANDS — SUBMIT
@@ -2813,14 +2885,19 @@ export class UserFormComponent {
    * @param severity The severity the shared summariser resolved.
    * @param message The summariser's own sentence, used when nothing more specific applies.
    * @param code The machine-readable failure code, or null.
+   * @param reference The support reference the server recorded this answer under, or null.
    */
   private announceFailure(
     severity: ProblemSeverity,
     message: string,
     code: string | null,
+    reference: string | null,
   ): void {
     if (severity === 'error') {
-      // The banner owns errors. It can only render one when a document arrived.
+      // The banner owns errors. It can only render one when a document arrived - so this branch is
+      // reached only by a TRANSPORT failure, which never carried a problem document and therefore has
+      // no correlation identifier to quote. The omission here is the absence of a reference, not the
+      // discarding of one; the branch below is the one that had an identifier and dropped it.
       if (this.problem() === null) {
         this.notifications.error(this.wordFailure(message, code));
       }
@@ -2830,7 +2907,13 @@ export class UserFormComponent {
 
     const channel: NotificationSeverity = severity === 'warning' ? 'warning' : 'info';
 
-    this.notifications.notify(channel, this.wordFailure(message, code));
+    // ⚠ THE REFERENCE TRAVELS WITH THE REFUSAL, and this is the channel that carries refusals. The
+    // shared classifier resolves 401, 403, 404 and 429 to WARNING, so every server refusal this screen
+    // reports arrives HERE rather than in the error branch above - and each one carried a correlation
+    // identifier in its problem document. This notification is also the whole report for them, because the
+    // banner deliberately keeps only error-severity failures to avoid saying the same thing twice, so
+    // dropping the identifier here left a refused save with no quotable reference anywhere on the screen.
+    this.notifications.notify(channel, this.wordFailure(message, code), reference);
   }
 
   /**

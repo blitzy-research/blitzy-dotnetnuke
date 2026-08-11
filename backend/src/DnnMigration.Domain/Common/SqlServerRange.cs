@@ -43,6 +43,54 @@ public static class SqlServerRange
     public const decimal MaximumMoney = 922_337_203_685_477.5807m;
 
     /// <summary>
+    /// The number of fractional digits a <c>money</c> column retains.
+    /// </summary>
+    /// <remarks>
+    /// Four, because <c>money</c> is a 64-bit integer of ten-thousandths. It follows directly from the two
+    /// bounds above and is named rather than written as a literal at each use.
+    /// </remarks>
+    public const int MoneyScale = 4;
+
+    /// <summary>
+    /// Returns the value a <c>money</c> column would hold for the supplied amount.
+    /// </summary>
+    /// <param name="amount">The amount as it stands in memory.</param>
+    /// <returns>The amount rounded to the column's four fractional digits.</returns>
+    /// <remarks>
+    /// <para>
+    /// WHY A DOMAIN CONCERN AND NOT AN INFRASTRUCTURE ONE. A <c>money</c> column cannot hold more than four
+    /// fractional digits, so an aggregate carrying five is carrying a value the store will silently change.
+    /// Applying the column's own scale where the value is STAGED keeps the aggregate, the row and every
+    /// projection taken from the aggregate in agreement, and it does so without a second round trip: a
+    /// post-write read cannot observe the difference anyway, because Entity Framework answers such a read
+    /// from the change tracker and returns the very instance that was staged.
+    /// </para>
+    /// <para>
+    /// THE MEASURED CONSEQUENCE OF NOT DOING THIS. Runtime testing created a role with a service fee of
+    /// <c>1.23456789</c>. The created response echoed <c>1.23456789</c> while the stored value was
+    /// <c>1.2346</c>, so a client that trusted the response it was given - which is the whole purpose of
+    /// returning the created resource - cached a number the installation did not hold, and the difference
+    /// only appeared on some later read.
+    /// </para>
+    /// <para>
+    /// Midpoints round AWAY FROM ZERO, matching SQL Server's own decimal-to-<c>money</c> conversion rather
+    /// than the CLR's banker's default: a fee of <c>0.00005</c> must reach the same value in memory that it
+    /// reaches in the column, and to-even would answer <c>0.0000</c> where the column answers <c>0.0001</c>.
+    /// </para>
+    /// </remarks>
+    public static decimal ToStoredMoney(decimal amount)
+        => Math.Round(amount, MoneyScale, MidpointRounding.AwayFromZero);
+
+    /// <summary>
+    /// Returns the value a <c>money</c> column would hold for the supplied amount, or
+    /// <see langword="null"/> when there is no amount.
+    /// </summary>
+    /// <param name="amount">The amount as it stands in memory, or <see langword="null"/>.</param>
+    /// <returns>The rounded amount, or <see langword="null"/>.</returns>
+    public static decimal? ToStoredMoney(decimal? amount)
+        => amount.HasValue ? ToStoredMoney(amount.Value) : null;
+
+    /// <summary>
     /// The earliest instant a <c>datetime</c> column can hold.
     /// </summary>
     /// <remarks>

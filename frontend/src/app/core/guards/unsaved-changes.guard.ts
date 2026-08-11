@@ -316,7 +316,28 @@ export const unsavedChangesGuard: CanDeactivateFn<unknown> = (component) => {
   // navigation is read for.
   const navigation = inject(Router, { optional: true })?.getCurrentNavigation();
 
-  if (navigation?.extras.replaceUrl === true) {
+  // ⚠ `replaceUrl` ALONE IS NOT A STATEMENT THAT THE APPLICATION INITIATED THE DEPARTURE, AND
+  // TESTING IT ALONE OPENED A SILENT DATA-LOSS PATH. The exemption above it exists for ONE
+  // departure - a save that succeeded and then replaced the address it was reached by - and
+  // `replaceUrl` was read as the signature of that. It is not: the router sets the very same flag on
+  // every navigation the BROWSER drives, because a popstate has already moved the history entry by
+  // the time the router hears about it and replacing is the only way to stay in step with it. So the
+  // one flag was carrying two unrelated meanings, and the browser's Back button inherited the
+  // exemption written for a successful save. A browser audit reproduced it end to end: typing into
+  // `/roles/new` and clicking a sidebar link prompted correctly, and `history.back()` from the same
+  // dirty form changed the route with NO prompt and discarded the edits silently. `beforeunload` does
+  // not cover it either - it is registered by three parties here and none of them sees a
+  // same-document navigation - so this guard was the only thing standing between the Back button and
+  // an operator's unsaved work.
+  //
+  // The trigger is what actually answers the question, and it is answered POSITIVELY rather than by
+  // excluding what is known to be wrong: only an `'imperative'` navigation is one this application
+  // asked for. `'popstate'` is the Back and Forward buttons and `'hashchange'` is the address's
+  // fragment being edited, and neither is a save this screen just completed, so both are challenged
+  // exactly as a link click is. Naming the one admissible trigger rather than blacklisting the two
+  // inadmissible ones means a future trigger arrives challenged rather than exempt, which is the
+  // direction this guard must fail in.
+  if (navigation?.extras.replaceUrl === true && navigation.trigger === 'imperative') {
     return true;
   }
 

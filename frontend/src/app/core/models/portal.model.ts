@@ -688,6 +688,39 @@ export interface PortalDetail {
    * Deliberately **not** a paged envelope: aliases are returned in full.
    */
   readonly aliases: readonly PortalAlias[] | null;
+
+  /**
+   * Opaque marker for the revision of the portal this response describes.
+   *
+   * **A screen reads it and sends it back unchanged.** It is the server's own value,
+   * derived from the twenty-five columns a portal write replaces, and it must not be
+   * parsed, compared for ordering, displayed, or constructed by a client. Sending it on
+   * {@link UpdatePortalRequest.concurrencyToken} or
+   * {@link UpdatePortalSettingsRequest.concurrencyToken} is what lets the server refuse a
+   * save composed against a revision someone else has since replaced, with
+   * `409 portal.concurrency_conflict`, instead of applying it.
+   *
+   * **Nullable, and a null must be sent as a null.** An API build that serves no token
+   * must not make a portal undecodable, so absence is tolerated and surfaces as `null`
+   * rather than as a substituted value. A request carrying no token is still applied — it
+   * is a last-writer-wins update — so a screen must never invent one to fill the gap: a
+   * fabricated token that happened to match would defeat the very check it appears to
+   * satisfy.
+   *
+   * **One token serves both portal write paths.** The detail read and the settings read
+   * publish the same value for the same unchanged record, so a token obtained from either
+   * screen is honoured by either write.
+   *
+   * MIGRATION: NO LEGACY COUNTERPART. The legacy Site Settings screen posted the whole
+   * record back with no revision marker of any kind
+   * (`Website/admin/Portal/SiteSettings.ascx.vb` `cmdUpdate_Click` reads every control and
+   * calls the twenty-seven-argument save), so two administrators each saved their own stale
+   * snapshot and the later save won silently. Because the payload replaces every column
+   * while the screen displays only some of them, the loss reached fields neither
+   * administrator had opened. The token is the target's answer to that and is recorded as
+   * an addition in `MIGRATION_NOTES.md`.
+   */
+  readonly concurrencyToken: string | null;
 }
 
 
@@ -827,6 +860,17 @@ export interface PortalSettings {
    * editable. The all-zero value means "unset" and is never converted to `null`.
    */
   readonly guid: string;
+
+  /**
+   * Opaque marker for the revision of the portal this projection describes.
+   *
+   * Identical in meaning, nullability and handling to
+   * {@link PortalDetail.concurrencyToken} — the same server-side derivation produces both,
+   * so the settings screen and the edit screen cannot disagree about which revision they
+   * are looking at, and a token read here is honoured by either portal write. Read it,
+   * send it back on {@link UpdatePortalSettingsRequest.concurrencyToken}, never invent it.
+   */
+  readonly concurrencyToken: string | null;
 }
 
 
@@ -1072,21 +1116,37 @@ export interface UpdatePortalRequest {
    * client; see the note on {@link PortalDetail}.
    */
   readonly homeDirectory: string | null;
+
+  /**
+   * The {@link PortalDetail.concurrencyToken} of the revision this update was composed
+   * against, or `null`.
+   *
+   * **Round-tripped verbatim from the read that populated the form.** The server compares
+   * it against the portal as it now stands and answers
+   * `409 portal.concurrency_conflict` when the two differ, so this member is the only thing
+   * standing between a whole-record replacement and the silent destruction of another
+   * administrator's committed edit. `null` when the read served no token, which the server
+   * treats as an opt-out and applies. A screen must never fabricate a value here.
+   */
+  readonly concurrencyToken: string | null;
 }
 
 /**
  * Body of `PUT /api/v1/portals/{portalId}/settings`.
  *
  * Mirrors `Dtos/Portal/UpdatePortalSettingsRequest.cs`: the same twenty-six editable
- * values as {@link UpdatePortalRequest}, without the latter's legacy body-level
+ * values as {@link UpdatePortalRequest} plus the shared
+ * {@link UpdatePortalRequest.concurrencyToken}, without the latter's legacy body-level
  * `portalId`. The settings route is the sole authority for the portal being written,
  * so accepting the identifier a second time would create a disagreement the endpoint
  * would then have to detect.
  *
- * Defined from the existing request rather than retyping twenty-six members. A field
+ * Defined from the existing request rather than retyping its members. A field
  * added, removed or renamed on the shared write surface therefore changes both client
  * contracts in one place, matching the shared C# interface used by the mapper,
- * validators and service guards.
+ * validators and service guards — which is how the concurrency token reached this
+ * contract without a second declaration: both portal write paths replace the same
+ * columns, so both must refuse a stale save.
  */
 export type UpdatePortalSettingsRequest = Omit<UpdatePortalRequest, 'portalId'>;
 
@@ -1283,6 +1343,13 @@ export const decodePortalListItem: Decoder<PortalListItem> = objectOf<PortalList
  * no registrations, or as carrying no banner advertising, on the strength of a code this
  * client simply did not know. `guid` is required and non-nullable: the server generates it
  * at creation and every portal has one.
+ *
+ * `concurrencyToken` is decoded as a NULLABLE STRING and nothing more. It is deliberately not
+ * validated for shape, length or encoding: it is the server's own opaque marker, and a
+ * decoder that asserted a format would start rejecting valid tokens the moment the server
+ * changed how it mints them. Absent is tolerated for the same reason — an API build that
+ * serves no token must not make a portal undecodable — and the absence is then visible to
+ * the screen as `null` rather than hidden behind a substituted value.
  */
 export const decodePortalDetail: Decoder<PortalDetail> = objectOf<PortalDetail>({
   portalId: decodeInteger,
@@ -1331,6 +1398,7 @@ export const decodePortalDetail: Decoder<PortalDetail> = objectOf<PortalDetail>(
   timeZoneOffset: nullable(decodeInteger),
   homeDirectory: nullable(decodeString),
   aliases: nullable(arrayOf(decodePortalAlias)),
+  concurrencyToken: nullable(decodeString),
 });
 
 /**
@@ -1379,4 +1447,5 @@ export const decodePortalSettings: Decoder<PortalSettings> = objectOf<PortalSett
   timeZoneOffset: nullable(decodeInteger),
   homeDirectory: nullable(decodeString),
   guid: decodeString,
+  concurrencyToken: nullable(decodeString),
 });

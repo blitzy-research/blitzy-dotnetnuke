@@ -981,6 +981,39 @@ describe('RoleListComponent', () => {
       expect((back as HTMLAnchorElement).getAttribute('href')).toBe(`/users/${ACCOUNT_ID}`);
     });
 
+    it('PAGES ITSELF HONESTLY while narrowed, rather than reporting the tenant listing\u2019s figures', () => {
+      // ⚠ TWO READS, TWO SHAPES, ONE PAGER. While an account is the subject the grid renders the
+      // MEMBERSHIP read - `RolesController.cs` routes it at `users/{userId:int}/roles` and answers with
+      // a bare array, every role the account holds, unpaged - while the tenant listing behind the
+      // narrowing keeps its own paged coordinates. The pager used to read those tenant coordinates on
+      // both paths, so a narrowed screen contradicted itself: runtime testing measured a grid of TWO
+      // rows, a live region announcing "2 records." and a pager reading "1-4 of 4" beneath them, all at
+      // once. A range summary that contradicts the rows it sits beside is worse than no summary,
+      // because it is read as authority.
+      //
+      // The figures are therefore synthesised from the rows actually rendered, and the steps disappear
+      // with them: there is no second page of a membership read to step to, and offering one would
+      // write a page parameter into an address this read cannot honour.
+      arriveForAccount(
+        [roleRow(0, { roleName: 'Administrators' }), roleRow(3, { roleName: 'Translators' })],
+        ACCOUNT_ID,
+        // A tenant listing far larger than the membership, which is what made the contradiction visible.
+        [roleRow(7, { roleName: 'Subscribers' })],
+      );
+
+      expect(renderedRoleNames()).withContext('the memberships are what is rendered').toHaveSize(2);
+
+      const status: Element | null = query('.pagination__status');
+
+      expect(status).withContext('the range summary is rendered').not.toBeNull();
+      expect((status?.textContent ?? '').replace(/\s+/gu, ' ').trim())
+        .withContext('the summary counts the rows on screen, not the tenant listing')
+        .toBe('1\u20132 of 2');
+      expect(queryAll('app-pagination button'))
+        .withContext('and offers no step, because the membership read has no second page')
+        .toHaveSize(0);
+    });
+
     it('offers NO account affordance and issues NO membership read when no account is the subject', () => {
       arrive();
 

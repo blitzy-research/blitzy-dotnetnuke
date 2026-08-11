@@ -1464,10 +1464,30 @@ export class LoginComponent implements OnInit {
    * it makes the intent legible and survives a future change to that initial value. The
    * verification code is deliberately left alone: it is not a credential, it is seeded from the
    * address, and a caller who returns to this screen should not have to fetch it again.
+   *
+   * ⚠ THE ATTEMPT IS RETRACTED WITH THE CREDENTIAL, AND IT HAD TO BE ADDED HERE. Emptying the two
+   * controls without lowering {@link submitAttempted} left this screen accusing itself: the flag is
+   * what licenses `collectMessages` to word a control's own validators, so the instant these two
+   * controls became empty they were reported as MISSING - on a sign-in that had just SUCCEEDED. A
+   * browser audit measured the window at 165.6 milliseconds, from +502.4 to +668.0 after the press,
+   * corroborated by five consecutive animation frames and nine screencast frames, with the form
+   * carrying `ng-submitted ng-pristine ng-invalid` and the signed-in shell ALREADY PAINTED behind an
+   * empty red-outlined card reading "User Name is required." and "Password is required.". The
+   * navigation that follows normally destroys the component before a person registers it, which is
+   * exactly why it survived review for so long - and, by the same reasoning the paragraph above
+   * gives for clearing the credential at all, that navigation is NOT guaranteed: a refused route
+   * leaves this form standing, and then the false accusation is not a flash but the resting state.
+   *
+   * Lowered rather than papered over at the reporting end. `collectMessages` is correct as written -
+   * an attempted submission is precisely when a control's validators should be worded - so the fault
+   * is that an attempt was still on record after the thing it attempted had succeeded and its inputs
+   * had been withdrawn. There is no attempt in flight once the credential is gone, and the next
+   * genuine submission raises the flag again before it validates anything.
    */
   private discardCredential(): void {
     this.form.controls.password.reset('');
     this.form.controls.username.reset('');
+    this.submitAttempted.set(false);
   }
 
   /**

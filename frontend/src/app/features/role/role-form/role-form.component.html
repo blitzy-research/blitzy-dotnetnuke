@@ -100,7 +100,18 @@
     same document are placed on their controls by the component and surface through each field
     wrapper's own error region.
   -->
-  <app-error-banner [problem]="problem()" />
+  <!--
+    THE FAILURE SURFACE. The document is bound, and so is the sentence this screen owns for a
+    refusal that arrives without wording of its own - the banner prefers the server's `detail` over
+    the fallback, so binding one can never talk over what the server actually said.
+
+    ⚠ THE FALLBACK BINDING IS WHAT KEEPS ONE FAULT TO ONE ANNOUNCEMENT. Those sentences used to be
+    handed to the notification queue, which put them beside the banner's own copy of the same
+    words - a duplicate name was reported as an inline banner AND a notification simultaneously,
+    saying the same thing twice about one press. The notification now carries the OUTCOME and this
+    banner carries the DOCUMENT; `reportFailure` records the split and its evidence.
+  -->
+  <app-error-banner [problem]="problem()" [fallbackMessage]="failureFallback()" />
 
   @if (conflicted()) {
     <!--
@@ -500,6 +511,27 @@
             <strong>Warning:</strong> You will need to configure the Payment Processor under
             SiteSettings, in order to enable users to subscribe to fee-base roles/services.
           </p>
+        }
+
+        <!--
+          THE WITHHELD PAID-MEMBERSHIP VALUES. A NET ADDITION with no legacy counterpart, placed
+          immediately above the boxes it describes and below the legacy elements so that their
+          relative order is untouched.
+
+          The legacy left these boxes empty for an unpriced role and said nothing about it, while its
+          own role listing printed the same record's stored zeros verbatim - so one record read two
+          ways with no way to tell which reading was the record. The boxes still follow the legacy
+          bind, because filling them would open an untouched role on a value its own validator
+          refuses and would change which branch a save takes; the sentence is what closes the gap.
+          The reasoning, the measurements and the refused alternative are on `applyRole`.
+
+          The whole sentence is composed in the component and interpolated as ONE string. Angular
+          escapes an interpolation, so a value that reached this screen from the store cannot become
+          markup, and composing it there keeps the comma-and-"and" of an English list out of a
+          template where a control-flow block would have had to assemble it.
+        -->
+        @if (withheldTermsNotice()) {
+          <p class="role-form__notice">{{ withheldTermsNotice() }}</p>
         }
 
         <div class="role-form__grid">
