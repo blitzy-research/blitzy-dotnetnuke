@@ -12,7 +12,7 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
-import { Router } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 
 import type { Signal, WritableSignal } from '@angular/core';
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
@@ -20,8 +20,14 @@ import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/fo
 import { NotificationService } from '../../../core/services/notification.service';
 import { PortalStore } from '../../../core/state/portal.store';
 import { CREDENTIAL_MAX_LENGTH } from '../../../core/utils/credential-bounds.util';
-import { conflictMessage, fieldErrorMessage, summarizeProblem } from '../../../core/utils/form-errors.util';
-import { parseRouteId } from '../../../core/utils/route-id.util';
+import {
+  conflictMessage,
+  fieldErrorMessage,
+  isDuplicateAliasCode,
+  summarizeProblem,
+} from '../../../core/utils/form-errors.util';
+import { readRouteId } from '../../../core/utils/route-id.util';
+import type { RouteIdReading } from '../../../core/utils/route-id.util';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
 import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
@@ -35,6 +41,9 @@ import type {
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { NotificationSeverity } from '../../../core/services/notification.service';
 import type { PortalFailure } from '../../../core/state/portal.store';
+import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
+import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 
 // =============================================================================
 //  PORTAL TYPE
@@ -267,6 +276,34 @@ const ALIAS_SEGMENT_SEPARATOR = '/';
 /** `valPortalName.ErrorMessage` — `signup.ascx:L41` and the resx entry of the same name. */
 const ALIAS_REQUIRED_MESSAGE = 'Portal Name Is Required.';
 
+/**
+ * Announced when a portal-type change replaces an alias the operator had typed.
+ *
+ * AUTHORED-BECAUSE-ABSENT, and the absence is the point: the legacy screen had no such wording
+ * because it needed none. `optType` carried `AutoPostBack="True"` (`signup.ascx:L33`), so the
+ * assignment at `Signup.ascx.vb:L342-L352` arrived inside a full page re-render that announced
+ * itself. The target holds this state on the client, so the same assignment is silent and the
+ * sentence stands in for the signal the postback used to give. See
+ * {@link PortalFormComponent.onPortalTypeSelected} for why the assignment itself is preserved.
+ *
+ * Worded to state what happened and what to do, not to apologise: the operator's next action is to
+ * re-enter the alias, and the sentence names the field so it is findable on a twelve-control form.
+ */
+const ALIAS_REPLACED_MESSAGE =
+  'Changing the Portal Type reset the Portal Alias. Re-enter the alias you want for this portal.';
+
+
+/**
+ * The refusal for a blank site title on the EDIT path — R-M20.
+ *
+ * The server's own wording, restated verbatim from `UpdatePortalRequestValidator:L349` so the field and
+ * the API cannot disagree about one rule. NET-NEW rather than measured: the legacy edit screen declared
+ * no validator on the title at all, so there is nothing to reproduce, and the rule is justified by the
+ * `[nvarchar] (128) NOT NULL` column. The sibling site-settings screen restates the same sentence
+ * against the same rule.
+ */
+const PORTAL_NAME_REQUIRED_MESSAGE = 'Site Title is required.';
+
 /** `valFirstName.ErrorMessage` — `signup.ascx:L80`. */
 const FIRST_NAME_REQUIRED_MESSAGE = 'First Name Is Required.';
 
@@ -279,7 +316,31 @@ const USERNAME_REQUIRED_MESSAGE = 'Username Is Required.';
 /** `valPassword.ErrorMessage` — `signup.ascx:L96`. */
 const PASSWORD_REQUIRED_MESSAGE = 'Password Is Required.';
 
-/** `valConfirm.ErrorMessage` — `signup.ascx:L102`. */
+/**
+ * `valConfirm.ErrorMessage` — `signup.ascx:L102`.
+ *
+ * MIGRATION: THIS SCREEN AND THE ACCOUNT-CREATION SCREEN DELIBERATELY WORD THE SAME FIELDS
+ * DIFFERENTLY, and the difference is carried across rather than harmonised. Side by side, this
+ * screen labels the two fields "Confirm:" and "Email:" while `users/new` labels them "Confirm
+ * Password:" and "Email Address:", and this sentence names the value a third way again. Every one
+ * of those readings is verbatim from its own screen's own resource file, which are different files
+ * written by different hands:
+ *
+ *   Website/admin/Portal/App_LocalResources/Signup.ascx.resx
+ *     plConfirm.Text           = 'Confirm:'
+ *     plEmail.Text             = 'Email:'
+ *     valConfirm.ErrorMessage  = 'Password Confirmation Is Required.'
+ *
+ *   Website/admin/Users/App_LocalResources/User.ascx.resx
+ *     plConfirm.Text           = 'Confirm Password:'
+ *     UserInfo_Email.Text      = 'Email Address:'
+ *
+ * Choosing one wording for both screens would mean OVERWRITING one of the two sources with the
+ * other, and inventing a fourth sentence to reconcile the label with this message would mean text
+ * that appears in neither. Both are changes to what the application says, made on aesthetic
+ * grounds, which is exactly what the migration discipline forbids. The inconsistency is the legacy
+ * author's and is reproduced as found.
+ */
 const CONFIRM_REQUIRED_MESSAGE = 'Password Confirmation Is Required.';
 
 /** `valEmail.ErrorMessage` — `signup.ascx:L107`. */
@@ -344,6 +405,54 @@ const CREATE_ERROR_MESSAGE =
   'Verify Your Details Before You Try Again.';
 
 /**
+ * The sentence shown when the address does not name a readable portal.
+ *
+ * MIGRATION: AUTHORED, because the legacy pair of screens had no such state between them. Creation
+ * and editing were two separate pages - `Signup.ascx` and `SiteSettings.ascx` - so an unreadable
+ * identifier could never select the wrong one; the worst it could do was raise a parse exception on
+ * the editing page, which that page absorbed into its generic module error surface. Merging the two
+ * into one routed screen is what created the possibility of choosing between them wrongly, so the
+ * statement that refuses to choose has to be authored here.
+ *
+ * Worded as an ordinary dead end with a way out. It deliberately does NOT mention creating a portal,
+ * even though the creation form is one route away: an operator who arrived at a malformed address was
+ * trying to reach something that already exists, and offering provisioning instead is precisely the
+ * confusion this branch was added to end.
+ */
+const UNREADABLE_ADDRESS_MESSAGE =
+  'This address does not name a portal that can be read. Return to the portal list and try again.';
+
+/**
+ * The last-resort wording for a failed UPDATE, as distinct from a failed creation.
+ *
+ * MIGRATION: AUTHORED HERE, BECAUSE THE LEGACY UPDATE PATH CARRIES NO WORDING AT ALL.
+ * This screen's edit mode reproduces `Website/admin/Portal/SiteSettings.ascx.vb`, and
+ * that screen has no save-failure resource: every one of its handlers ends at
+ * `Catch exc As Exception` / `ProcessModuleLoadException(Me, exc)` (L124, L153, L176,
+ * L518, L538, L583, L603, L634 among others), which hands the fault to the framework's
+ * generic module-load reporter. `SiteSettings.ascx.resx` holds no error or failure entry
+ * of any kind. So there is no legacy sentence to reproduce, and the honest choice is to
+ * write one rather than to borrow another screen's.
+ *
+ * ⚠ WHY THIS CONSTANT HAS TO EXIST — MEASURED AT RUNTIME. Before it did, BOTH modes fell
+ * back to {@link CREATE_ERROR_MESSAGE}, which is `Signup.ascx.resx:L243-L245` — the
+ * CREATE screen's resource. A failed update therefore told the operator that the error
+ * arose "During The Creation Of Your Portal" and invited them to check a password "For An
+ * Existing User Account", when no portal was being created and this mode renders no
+ * password field at all: both credential controls belong to the create path. The sentence
+ * named the wrong operation and then pointed at two controls that were not on the screen.
+ *
+ * What this one deliberately does NOT do is guess. It states the operation that failed,
+ * states that nothing was changed — which is true, because the API applies the update in
+ * one transaction — and stops. It is a FALLBACK only: the API fills the problem
+ * document's `detail` unconditionally, so a server that answered at all speaks for
+ * itself, and this appears only when nothing but a transport fault came back.
+ */
+const UPDATE_ERROR_MESSAGE =
+  'The portal could not be updated. Nothing was changed. Check the connection and try ' +
+  'again.';
+
+/**
  * The refusal wording for a change to a host-administered term.
  *
  * MIGRATION: AUTHORED HERE, BECAUSE THE LEGACY GUARD CARRIES NO WORDING AT ALL.
@@ -405,6 +514,23 @@ const CANCEL_LABEL = 'Cancel';
 
 /** Where both buttons and both success paths lead. */
 const PORTAL_LIST_ROUTE = '/portals';
+
+/**
+ * The wording of the link to this portal's configuration screen.
+ *
+ * `ControlTitle_.Text` in `SiteSettings.ascx.resx` — the same value the route declares as its
+ * browser title, so the link and the screen it opens are named identically and an operator is
+ * not told one word and shown another.
+ */
+const SETTINGS_LINK_LABEL = 'Site Settings';
+
+/**
+ * The wording of the link to this portal's host names.
+ *
+ * `ControlTitle_.Text` in `PortalAlias.ascx.resx` is "Portal Aliases", matched by the route's
+ * own declared title.
+ */
+const ALIASES_LINK_LABEL = 'Portal Aliases';
 
 /**
  * The template name submitted with every creation.
@@ -590,6 +716,15 @@ const INVALID_ALIAS_ERROR = 'invalidAliasCharacters';
  * to report against; the mapping is written out rather than left absent so that a
  * reader can see the omission is intentional.
  */
+/**
+ * The `id` of the host-name entry control, as the template renders it.
+ *
+ * ⚠ Pf-M8 — named here rather than written into the effect as a literal, so the constant and the
+ * template's own `id`/`for` pair can be checked against each other in one place. A drift here would
+ * make the focus move silently do nothing.
+ */
+const ALIAS_CONTROL_ELEMENT_ID = 'portal-form-alias';
+
 const CREATE_FIELD_MEMBER: Readonly<Record<PortalCreateField, string | null>> = Object.freeze({
   portalType: 'isChildPortal',
   alias: 'portalAlias',
@@ -644,48 +779,34 @@ const CREATE_REQUIRED_MESSAGE: Readonly<Record<PortalCreateField, string | null>
   email: EMAIL_REQUIRED_MESSAGE,
 });
 
+/**
+ * The requiredness sentence for each control of the EDIT form, or `null` where there is no such rule.
+ *
+ * ⚠ THIS MAP IS NOT THE CREATION MAP, AND THE ONE DIFFERENCE IS THE SERVER'S. The update contract
+ * declares `NotEmpty()` on `PortalName` (`UpdatePortalRequestValidator:L385-L387`) and the creation
+ * contract declares only `MaximumLength` (`CreatePortalRequestValidator:L473-L474`), because the legacy
+ * `valPortalName` validator at `signup.ascx:L40-L41` guarded the ALIAS despite its message naming the
+ * portal name. So a blank title is genuinely acceptable when a portal is created and genuinely refused
+ * when one is amended, and the two forms mirror their own endpoint rather than each other.
+ *
+ * The sentence is the SERVER'S OWN, restated verbatim so the field and the API cannot disagree about
+ * the wording of one rule. It is net-new rather than measured: the legacy edit screen declared no
+ * validator on the title, so there is nothing to reproduce, and the rule is justified by the
+ * `[nvarchar] (128) NOT NULL` column rather than by markup. The sibling site-settings screen took the
+ * same decision against the same server rule and restates the same sentence.
+ *
+ * Written as a TOTAL map so that adding a control forces a decision about its requiredness rather than
+ * letting one be inherited by silence.
+ */
+const EDIT_REQUIRED_MESSAGE: Readonly<Record<PortalEditField, string | null>> = Object.freeze({
+  title: PORTAL_NAME_REQUIRED_MESSAGE,
+  description: null,
+  keywords: null,
+});
+
 // =============================================================================
 //  PURE HELPERS
 // =============================================================================
-
-/**
- * Converts a route parameter into an optional portal identifier.
- *
- * ROUTE PARAMETERS ARRIVE AS STRINGS, so the conversion is performed here rather than
- * left implicit. Three properties of it are load-bearing:
- *
- *   * `'0'` becomes `0` and `'-1'` becomes `-1`, faithfully. Both are REAL portal
- *     identifiers — `Portals.PortalID` is declared `IDENTITY(-1,1)`
- *     (`01.00.00.SqlDataProvider:L77`), so the first portal ever created has the
- *     identifier `0` and `-1` is simultaneously a legitimate row key and the value
- *     the legacy null contract used for "absent". Nothing in this function, and
- *     nothing in this file, may treat either as absence;
- *   * ABSENCE IS REPRESENTED BY `undefined` AND BY NOTHING ELSE. The creation route
- *     supplies no `portalId` segment at all, so the input keeps its initial value;
- *     that distinct absence is what {@link PortalFormComponent.isEditMode} tests;
- *   * a MALFORMED segment also becomes `undefined` rather than `NaN`, so no arithmetic
- *     or comparison downstream can encounter one.
- *
- * ⚠ THE PARSE ITSELF IS DELEGATED, and that closed a real gap rather than tidying one.
- * This function used to convert with `Number`, which accepts far more than a decimal
- * integer: `'0x10'` became `16`, `'1e3'` became `1000` and `'1.0'` became `1`, so a
- * malformed address silently addressed a tenant the operator never named. It also
- * checked neither the safe-integer ceiling nor the API's 32-bit range. `parseRouteId` is
- * the one parser in the workspace that makes this conversion, and it reproduces exactly
- * what `int.TryParse` under `NumberStyles.Integer` accepts server-side. This function
- * remains because the ABSENCE REPRESENTATION is this screen's own — the creation route
- * supplies no segment, and `isEditMode` tests `undefined` — and because its name is part
- * of the input contract the route table binds through.
- *
- * @param value The raw route parameter, or a value bound programmatically.
- * @returns The identifier, or `undefined` when none was supplied or the value does not
- * denote a whole number.
- */
-export function toOptionalPortalId(value: string | number | null | undefined): number | undefined {
-  // Coalescing on `null` alone, so `0` and `-1` — both real portal identifiers — pass
-  // through untouched. A `||` here would erase identifier zero.
-  return parseRouteId(value) ?? undefined;
-}
 
 /**
  * Normalises an alias exactly as the legacy screen did, in the legacy order.
@@ -1027,17 +1148,50 @@ const NOT_FOUND_STATUS = 404;
   // (`signup.ascx:L8` and `L73`) has no shared component and none is added: the two
   // groups it delimited are semantic field sets in the paired template.
   imports: [
+    FocusFirstInvalidDirective,
+    SubmitGuardDirective,
     ReactiveFormsModule,
+    RouterLink,
     PageHeaderComponent,
     FormFieldComponent,
     ErrorBannerComponent,
     LoadingSpinnerComponent,
+    FocusFirstInvalidDirective,
   ],
   templateUrl: './portal-form.component.html',
   styleUrl: './portal-form.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PortalFormComponent {
+
+  /**
+   * Registers this screen's unsaved-entry probe with the application's tracker.
+   *
+   * ⚠ WHY A REGISTRATION RATHER THAN A ROUTE-LEVEL READ. Leaving a screen happens two ways and
+   * only one of them is a router navigation: Cancel, an in-application link and the browser's Back
+   * button are navigations a route guard can refuse, while closing or reloading the tab is not, and
+   * only the browser's own unload prompt covers that - which needs the dirty state at an arbitrary
+   * moment rather than at a navigation. One tracker holding probes answers both, and the probe is
+   * released automatically when this screen is destroyed, so a screen that has gone can never hold
+   * a navigation up. Measured before this existed: a dirty form was discarded in silence by all
+   * four exits, with instrumented `confirm`, `alert` and `beforeunload` recording nothing at all.
+   *
+   * A form that is being SAVED is not dirty in the sense that matters here - the entry is on its
+   * way to the server, and prompting about it would ask the operator to confirm discarding work
+   * they have already committed.
+   *
+   * ⚠ THE PARENTHESES ARE LOAD-BEARING AND THEIR ABSENCE WAS A DEFECT. This screen holds TWO forms,
+   * and the guard is `(either is dirty) AND (no save is in flight)`. Written without the brackets,
+   * `&&` binds tighter than `||`, so it parsed as `createForm.dirty || (editForm.dirty && notSaving)`
+   * - which made the CREATE form's dirty state sufficient on its own, save in flight or not. The
+   * operator therefore got 'Leave without saving and discard them?' about the portal they had just
+   * successfully created, on the navigation the save itself triggers. The sibling role-group screen
+   * showed exactly that symptom in a browser from a different cause, which is what sent me looking
+   * here.
+   */
+  private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
+    () => (this.createForm.dirty || this.editForm.dirty) && this.saving() === false,
+  );
   // ---------------------------------------------------------------------------
   //  COLLABORATORS
   // ---------------------------------------------------------------------------
@@ -1085,6 +1239,14 @@ export class PortalFormComponent {
    */
   private readonly hostName: string = inject(DOCUMENT).location.host;
 
+  /**
+   * The document, for the one focus move a server refusal causes.
+   *
+   * ⚠ Pf-M8 — injected rather than reached as a global, so this screen has no ambient dependency and
+   * remains testable. See the constructor for why the move exists and why only one refusal makes it.
+   */
+  private readonly document = inject(DOCUMENT);
+
   // ---------------------------------------------------------------------------
   //  ROUTE INPUT
   // ---------------------------------------------------------------------------
@@ -1103,14 +1265,68 @@ export class PortalFormComponent {
    * shared error banner records: every derived member below is a `computed()` over this
    * one source, and a `computed()` over a plain field would never recompute, so under
    * change-detection-on-push the screen would render whichever mode it saw first and
-   * ignore every later navigation. The transform is written out and specified rather
-   * than taken from the framework's numeric attribute helper, because the behaviour
-   * that matters here is what happens to an ABSENT value and to `'0'` and `'-1'` — see
-   * {@link toOptionalPortalId}.
+   * ignore every later navigation.
+   *
+   * ⚠ DECLARED WITHOUT A TRANSFORM, AND THAT IS DELIBERATE. It used to carry one that parsed the
+   * segment to a number, which meant the parsed value was the only thing the screen could see — and a
+   * parse has exactly one way to say "no" while this screen needs two, because an absent segment must
+   * select the creation form and an unusable one must select neither form. Holding the segment
+   * verbatim and classifying it in {@link portalKey} is what keeps those two answers apart; the
+   * behaviour that matters for `'0'` and `'-1'` is specified there and on
+   * {@link resolvedPortalId}, both of which route through the one shared route-identifier parser.
    */
-  readonly portalId = input<number | undefined, string | number | null | undefined>(undefined, {
-    transform: toOptionalPortalId,
+  readonly portalId = input<string | undefined>(undefined);
+
+  /**
+   * The address parameter, classified once.
+   *
+   * ⚠ THE INPUT NOW CARRIES THE RAW SEGMENT, and that change is the whole fix. It used to declare a
+   * `transform` that mapped both an ABSENT parameter and a MALFORMED one to `undefined`, and the
+   * transform's own note presented the second half as a safety property - "a malformed segment also
+   * becomes `undefined` rather than `NaN`, so no arithmetic downstream can encounter one". That much
+   * was true. What it did not say is that {@link isEditMode} then tested exactly that `undefined`, so
+   * a malformed address selected CREATE mode: `/portals/abc` rendered the live tenant-provisioning
+   * form with all twelve controls enabled, including the six administrator-credential fields and a
+   * working Create Portal command, under a heading offering to add a new portal - and it issued no
+   * request, so the server was never asked whether `abc` named anything.
+   *
+   * Classifying here, once, and deriving mode, readability and the identifier from this one signal is
+   * what stops those three answers from being able to disagree.
+   */
+  private readonly portalKey = computed<RouteIdReading>(() => readRouteId(this.portalId()));
+
+  /**
+   * The addressed portal's identifier, or `undefined` when the address names none.
+   *
+   * ⚠ `undefined` HERE MEANS "NO IDENTIFIER TO FETCH" AND NOTHING MORE - it is deliberately NOT the
+   * mode test, which {@link isEditMode} owns, and not the not-found test, which
+   * {@link addressUnreadable} owns. Every consumer below wants only the identifier, so collapsing the
+   * two non-identifier states is correct for them and for nobody else.
+   *
+   * `0` and `-1` pass through untouched, because both are real portal identifiers:
+   * `Portals.PortalID` is declared `IDENTITY(-1,1)` (`01.00.00.SqlDataProvider:L77`), so the first
+   * portal ever created has the identifier `0`, and `-1` is simultaneously a legitimate row key and
+   * the value the legacy null contract used for absence.
+   */
+  private readonly resolvedPortalId = computed<number | undefined>(() => {
+    const reading = this.portalKey();
+
+    return reading.kind === 'identifier' ? reading.id : undefined;
   });
+
+  /**
+   * Whether the address carries something that is not a portal identifier.
+   *
+   * Rendered by the template as a plain statement INSTEAD of either form. This is the branch whose
+   * absence let the most consequential of the four fall-throughs happen, and it is checked before
+   * both modes for that reason.
+   */
+  protected readonly addressUnreadable = computed<boolean>(
+    () => this.portalKey().kind === 'unreadable',
+  );
+
+  /** The sentence shown when the address does not name a readable portal. */
+  protected readonly unreadableAddressMessage = UNREADABLE_ADDRESS_MESSAGE;
 
   // ---------------------------------------------------------------------------
   //  MODE
@@ -1129,11 +1345,9 @@ export class PortalFormComponent {
    * today, but stating absence as "neither null nor undefined" keeps the contract
    * legible and survives that type being widened.
    */
-  readonly isEditMode: Signal<boolean> = computed(() => {
-    const id: number | undefined = this.portalId();
-
-    return id !== null && id !== undefined && Number.isFinite(id);
-  });
+  readonly isEditMode: Signal<boolean> = computed(
+    () => this.portalKey().kind === 'identifier',
+  );
 
   // ---------------------------------------------------------------------------
   //  THE TWO FORMS
@@ -1183,9 +1397,17 @@ export class PortalFormComponent {
 
   /** The edit form. Bound only while {@link isEditMode} is true. */
   protected readonly editForm: FormGroup<PortalEditFormModel> = new FormGroup<PortalEditFormModel>({
+    // ⚠ REQUIRED HERE AND DELIBERATELY NOT ON THE CREATION FORM, and the asymmetry is the SERVER'S,
+    // not a slip. `UpdatePortalRequestValidator:L385-L387` declares `NotEmpty()` on `PortalName` with
+    // the message restated below, whereas `CreatePortalRequestValidator:L473-L474` declares only
+    // `MaximumLength` — because the legacy `valPortalName` validator at `signup.ascx:L40-L41` guarded
+    // the ALIAS despite its message naming the portal name, so a creation genuinely accepted a blank
+    // title. Mirroring the server field for field is what stops this form declaring a value valid that
+    // the API will refuse; mirroring it on the creation form too would refuse a value the API accepts.
+    // The sibling site-settings screen took the same decision against the same server rule.
     title: new FormControl<string>('', {
       nonNullable: true,
-      validators: [Validators.maxLength(TITLE_MAX_LENGTH)],
+      validators: [Validators.required, Validators.maxLength(TITLE_MAX_LENGTH)],
     }),
     description: new FormControl<string>('', {
       nonNullable: true,
@@ -1355,7 +1577,7 @@ export class PortalFormComponent {
    * `===` on two numbers and is correct for `0` and `-1` alike.
    */
   readonly portal: Signal<PortalDetail | null> = computed(() => {
-    const id: number | undefined = this.portalId();
+    const id: number | undefined = this.resolvedPortalId();
 
     if (id === undefined) {
       return null;
@@ -1411,10 +1633,88 @@ export class PortalFormComponent {
     return this.isEditMode() ? this.canEdit() : true;
   });
 
-  /** The page heading. `Add New Portal` when creating, `Edit Portals` when editing. */
+  /**
+   * The page heading. `Add New Portal` when creating, `Edit Portals` otherwise.
+   *
+   * ⚠ AN UNREADABLE ADDRESS TAKES THE EDIT HEADING, and that is a correction. This computed used
+   * to read purely `isEditMode() ? EDIT : CREATE`, so an address such as `/portals/abc` — which is
+   * not edit mode, because nothing can be read from it — fell to the CREATE heading and put
+   * `Add New Portal` directly above the sentence explaining that the address names no portal. A
+   * real browser measured three different labels on that one screen: this heading saying create,
+   * the route's own document title saying `Edit Portals`, and the body saying neither is possible.
+   *
+   * The test is `isEditMode() || addressUnreadable()` rather than a third heading, because the
+   * distinction the heading draws is whether the address NAMES A RECORD, not whether that record
+   * could be read. `/portals/abc` names one and fails to resolve it; `/portals/new` names none.
+   * Reading it that way costs no new wording, and it makes the heading agree with the document
+   * title the route table already declares instead of contradicting it.
+   */
   protected readonly heading: Signal<string> = computed(() =>
-    this.isEditMode() ? EDIT_HEADING : CREATE_HEADING,
+    this.isEditMode() || this.addressUnreadable() ? EDIT_HEADING : CREATE_HEADING,
   );
+
+  /**
+   * The name of the portal being edited, shown beside the heading, or `undefined`.
+   *
+   * ⚠ THE HEADING ALONE IDENTIFIES NOTHING. It reads "Edit Portals" on every portal, and the
+   * three controls beneath it are a title, a description and a keyword list — none of which
+   * says WHICH tenant is being changed. An operator arriving from the listing, or from a
+   * bookmark, had no way to confirm they were about to rewrite the right one, and the address
+   * bar carries only a number. The sibling settings screen already shows the name here, so this
+   * is the same affordance rather than a new one.
+   *
+   * Absent while the read is in flight and absent in creation mode, where there is no portal
+   * yet to name. A blank or whitespace-only stored name also resolves to absence, because the
+   * shared header renders nothing at all for it rather than an empty line.
+   */
+  protected readonly portalName: Signal<string | undefined> = computed(() => {
+    const held: PortalDetail | null = this.portal();
+
+    if (held === null) {
+      return undefined;
+    }
+
+    const name: string | null = held.portalName;
+
+    return name === null || name.trim().length === 0 ? undefined : name;
+  });
+
+  /**
+   * The address of this portal's settings screen, or `null` when there is no portal.
+   *
+   * ⚠ THE SIBLING SCREENS WERE UNREACHABLE FROM HERE, AND ONE OF THEM WAS UNREACHABLE
+   * ALTOGETHER. Every anchor the application renders was enumerated: nothing anywhere linked
+   * to `:portalId/aliases`, and the listing's single row command targets `:portalId/settings`,
+   * so a portal's host names could only be reached by typing the address. The three portal
+   * screens each own part of one tenant — its terms, its configuration and its host names — and
+   * an operator moving between them had to leave the feature and come back through the
+   * listing.
+   *
+   * MIGRATION: the legacy console reached these as SEPARATE ADMINISTRATION MODULES on separate
+   * pages, from the administration menu — `SiteSettings.ascx.vb:L484-L489` reads the referring
+   * address specifically to detect arrival FROM the Portal Aliases module, which is direct
+   * evidence that the two were distinct destinations an operator moved between. This console
+   * has no per-tenant menu to reproduce, and its navigation rail offers collection entries
+   * only, so the equivalent of that menu is a link between the screens themselves. Without one,
+   * a workflow the legacy console offered is not reachable at all, which the migration's own
+   * parity requirement forbids.
+   *
+   * Typed as a mutable array because that is what the router link input accepts, and returned as
+   * an array so the router composes the segments rather than as an interpolated
+   * string: the identifier can be `0` or `-1`, and both are real tenants.
+   */
+  protected readonly settingsLink: Signal<(string | number)[] | null> = computed(() => {
+    const id: number | undefined = this.resolvedPortalId();
+
+    return id === undefined ? null : ['/portals', id, 'settings'];
+  });
+
+  /** The address of this portal's host names, or `null` when there is no portal. */
+  protected readonly aliasesLink: Signal<(string | number)[] | null> = computed(() => {
+    const id: number | undefined = this.resolvedPortalId();
+
+    return id === undefined ? null : ['/portals', id, 'aliases'];
+  });
 
   /** The submit control's wording. `Create Portal` when creating, `Update` when editing. */
   protected readonly submitLabel: Signal<string> = computed(() =>
@@ -1423,6 +1723,12 @@ export class PortalFormComponent {
 
   /** The cancel control's wording. One value in both modes. */
   protected readonly cancelLabel: string = CANCEL_LABEL;
+
+  /** The wording of the two sibling-screen links. */
+  protected readonly settingsLinkLabel: string = SETTINGS_LINK_LABEL;
+
+  /** @see settingsLinkLabel */
+  protected readonly aliasesLinkLabel: string = ALIASES_LINK_LABEL;
 
   /**
    * The one sentence describing the current failure, or `null` when there is none.
@@ -1438,8 +1744,12 @@ export class PortalFormComponent {
    *   3. a `404` says the portal is gone;
    *   4. a `400` is left to the server's own sentence, because the useful information
    *      is in the per-field messages the form shows beside the fields;
-   *   5. anything else falls back to the legacy creation-failure wording — see
-   *      {@link CREATE_ERROR_MESSAGE}, which is annotation 13.
+   *   5. anything else falls back to a sentence CHOSEN BY MODE — the legacy
+   *      creation-failure wording when creating (see {@link CREATE_ERROR_MESSAGE}, which
+   *      is annotation 13) and {@link UPDATE_ERROR_MESSAGE} when editing. The two are
+   *      separate because the create sentence names the creation of a portal and points at
+   *      a password field that exists only on the create path, so using it for an update
+   *      misdescribes both the operation and the screen.
    */
   protected readonly failureMessage: Signal<string | null> = computed(() => {
     const failure: PortalFailure | null = this.failure();
@@ -1462,10 +1772,20 @@ export class PortalFormComponent {
       return PORTAL_NOT_FOUND_MESSAGE;
     }
 
+    // The fallback is MODE-DEPENDENT. A `400` still yields `null` in both modes, because the
+    // useful information is in the per-field messages beside the fields and a summary sentence
+    // would only compete with them.
+    const modeFallback: string = this.isEditMode() ? UPDATE_ERROR_MESSAGE : CREATE_ERROR_MESSAGE;
     const fallback: string | null =
-      failure.status === BAD_REQUEST_STATUS ? null : CREATE_ERROR_MESSAGE;
+      failure.status === BAD_REQUEST_STATUS ? null : modeFallback;
 
-    return summarizeProblem(failure.problem, fallback).message;
+    // A COMPOSED DOCUMENT IS TREATED AS NO DOCUMENT HERE, so this screen's own wording wins.
+    // The store now composes a problem document for a failure that carried none - which is
+    // what lets every surface render the one shared banner instead of a bare sentence - but a
+    // composed detail is derived from the status alone, whereas the sentence below is the one
+    // the legacy screen used for exactly this operation. A document the SERVER published still
+    // wins, because it knows why the creation failed and this code does not.
+    return summarizeProblem(failure.synthesised ? null : failure.problem, fallback).message;
   });
 
   // ---------------------------------------------------------------------------
@@ -1482,6 +1802,39 @@ export class PortalFormComponent {
    * accepts what the API refuses. Field LABELS and HELP TEXT are deliberately NOT here —
    * they carry no rule, the template owns its own wording, and duplicating them would
    * create two places for one sentence to drift.
+   *
+   * ⚠ THE RENDERED `maxlength` IS DELIBERATELY RETAINED, AGAINST A QA RECOMMENDATION TO DROP IT.
+   * The report observed that typing past a cap is clipped by the browser with no message while the
+   * same value set programmatically keeps its length and DOES raise "Enter at most N characters",
+   * called the pair contradictory, and proposed removing the attribute so the validator governs both.
+   * It is retained, for three measured reasons.
+   *
+   * FIRST, THE ATTRIBUTE IS MEASURED LEGACY BEHAVIOUR, NOT AN ADDITION. `asp:TextBox MaxLength="N"`
+   * renders `maxlength="N"` on the input, and the legacy screens this one replaces declare it with
+   * these very figures: `Website/admin/Portal/signup.ascx` L40 and L52 at 128, L56 and L61 at 500,
+   * L79, L84, L89 and L106 at 100; `Website/admin/Portal/sitesettings.ascx` L38 at 128, L47 and L56
+   * at 475, L65 at 100; `Website/admin/Portal/editportalalias.ascx` L7 at 255. So the legacy screens
+   * clipped typing at exactly these bounds with exactly no message. Removing the attribute would make
+   * over-long typing newly possible and newly error-reporting - a change to ported behaviour, which
+   * AAP §0.9.1 Minimal Change Clause item 3 (identical inputs, identical outcomes) and item 4 (UI
+   * functional parity) both forbid, and which item 1 forbids repairing even where the ported behaviour
+   * is disliked.
+   *
+   * SECOND, THE TWO MECHANISMS GOVERN DIFFERENT SOURCES AND SO CANNOT CONTRADICT EACH OTHER. The
+   * attribute polices what a person can put IN - typing, pasting and dropping are all clipped by the
+   * user agent. The validator polices a value that ARRIVES ALREADY OVER THE BOUND, which only happens
+   * when the API hands back a stored row longer than the current cap; no DOM attribute can police that,
+   * because `setValue` never passes through the control's editing path. That case is real - a legacy
+   * row written under a looser bound - and the right outcome is to TELL the operator rather than
+   * silently truncate their stored data on the next save. So the validator is neither dead nor
+   * duplicative; it is the only guard for the one source the attribute cannot reach.
+   *
+   * THIRD, THE MESSAGE IT PRODUCES IS RENDERED. `messageForControl` handles the framework's
+   * `maxlength` key and reads `requiredLength` from it, so the sentence reaches the field. That holds
+   * whether the error came from the rule declared above or from the maximum-length validator the
+   * framework attaches to a `[maxlength][formControlName]` pair - both report the same key with the
+   * same bound, which is why the property-binding form used in this template is safe here even though
+   * screens whose message map omits that key must use `[attr.maxlength]` instead.
    */
   protected readonly limits = Object.freeze({
     alias: ALIAS_MAX_LENGTH,
@@ -1552,7 +1905,7 @@ export class PortalFormComponent {
    * is already solved.
    */
   private readonly readEffect = effect((): void => {
-    const id: number | undefined = this.portalId();
+    const id: number | undefined = this.resolvedPortalId();
 
     if (id === undefined) {
       return;
@@ -1651,7 +2004,61 @@ export class PortalFormComponent {
       .subscribe((selected: PortalType): void => {
         this.onPortalTypeSelected(selected);
       });
+
+    // ⚠ Pf-M8 — MOVE FOCUS TO THE FIELD A SERVER REFUSAL NAMES.
+    //
+    // The shared focus-to-first-invalid directive cannot cover this case and is not at fault: it
+    // acts on the CLIENT form's validity, and after a server refusal the client form is entirely
+    // valid - the entry was well formed, it simply collided with a host name that already exists.
+    // Runtime measurement confirmed the consequence: after the refusal `document.activeElement` was
+    // `<body>`, so a keyboard operator was returned to the top of the document with no indication of
+    // which of eleven fields to change, even though the banner announced the reason.
+    //
+    // Only the DUPLICATE-HOST-NAME refusal moves focus, for the same reason only it earns a
+    // field-level message: it is the one refusal attributable to a single named field. Everything
+    // else stays where it is, because the banner is an assertive live region and is announced
+    // regardless - stealing focus for a failure with no field to correct would move an operator away
+    // from what they were reading and tell them nothing.
+    effect((): void => {
+      const failure: PortalFailure | null = this.failure();
+
+      if (failure === null) {
+        this.refusalFocusMoved = false;
+
+        return;
+      }
+
+      if (isDuplicateAliasCode(failure.conflictCode) === false) {
+        return;
+      }
+
+      untracked((): void => {
+        // Once per refusal. A resubmission clears the failure first, which resets this flag, so a
+        // second collision moves focus again - but a re-render for any other reason does not fight an
+        // operator who has already started correcting the entry.
+        if (this.refusalFocusMoved) {
+          return;
+        }
+
+        const control = this.document.getElementById(ALIAS_CONTROL_ELEMENT_ID);
+
+        if (control === null) {
+          return;
+        }
+
+        this.refusalFocusMoved = true;
+        control.focus();
+      });
+    });
   }
+
+  /**
+   * Whether focus has already been moved for the refusal currently in hand.
+   *
+   * ⚠ Pf-M8 — see the constructor. Plain state rather than a signal: nothing renders from it, and a
+   * signal read inside the effect that writes it would be a cycle.
+   */
+  private refusalFocusMoved = false;
 
   // ---------------------------------------------------------------------------
   //  FIELD MESSAGES
@@ -1689,21 +2096,61 @@ export class PortalFormComponent {
       }
     }
 
-    return fieldErrorMessage(this.problem(), CREATE_FIELD_MEMBER[field]);
+    const reported: string | null = fieldErrorMessage(
+      this.problem(),
+      CREATE_FIELD_MEMBER[field],
+    );
+
+    if (reported !== null) {
+      return reported;
+    }
+
+    // ⚠ Pf-M8 — A CONFLICT IS BOUND TO THE FIELD THAT CAUSED IT.
+    //
+    // The finding reads "the POST-400 path dead-ends", and runtime testing found that the
+    // recovery path itself is sound - every typed value survives a refusal, every control stays
+    // editable, the submit stays enabled, and correcting the entry and resubmitting works without
+    // a reload. What was missing is narrower and more useful to state precisely: the refusal was
+    // never attached to the FIELD at fault. A duplicate host name is answered `409` with a
+    // published code and a `detail` sentence but with NO `errors` member, and the per-field lookup
+    // above reads only `errors` - so the alias input reported `aria-invalid="false"` while being
+    // the sole reason the write failed, and the operator had to infer from a banner sentence which
+    // of eleven fields to change.
+    //
+    // Only the DUPLICATE-HOST-NAME conflict is mapped, and only onto the alias field, because that
+    // is the one refusal whose cause is a single named field. A conflict about the portal as a
+    // whole has no field to attach to and is left to the banner, which is where a whole-resource
+    // failure belongs.
+    //
+    // The wording is the SHARED conflict vocabulary's, which already holds the legacy
+    // `DuplicatePortalAlias.Text` value against the code the server publishes - so the field and
+    // the banner say the same thing, and neither restates it locally.
+    if (field === 'alias' && isDuplicateAliasCode(this.failure()?.conflictCode ?? null)) {
+      return conflictMessage(this.failure()?.conflictCode);
+    }
+
+    return null;
   }
 
   /**
    * The message to show beside one edit field, or `null` when there is nothing to say.
    *
-   * No control on the edit form is required — the legacy edit screen declared no
-   * required-field validator for the title, the description or the keywords either — so
-   * only a length rule and the server's own report can produce a message here.
+   * ⚠ R-M20 CHANGED THIS. The comment here used to read "no control on the edit form is
+   * required", which was true of the legacy markup and false of the endpoint this form
+   * posts to: `UpdatePortalRequestValidator:L385-L387` declares `NotEmpty()` on
+   * `PortalName`. The title now carries a requiredness rule mirroring it, and
+   * {@link EDIT_REQUIRED_MESSAGE} supplies the server's own sentence for it, so a blank
+   * title is refused beside the field rather than by a banner after a round trip. The
+   * description and the keywords remain unrequired, on both sides.
    *
    * @param field The control to describe.
    * @returns The message, or `null`.
    */
   protected editMessageFor(field: PortalEditField): string | null {
-    const own: string | null = PortalFormComponent.controlMessage(this.editForm.controls[field], null);
+    const own: string | null = PortalFormComponent.controlMessage(
+      this.editForm.controls[field],
+      EDIT_REQUIRED_MESSAGE[field],
+    );
 
     if (own !== null) {
       return own;
@@ -1849,11 +2296,41 @@ export class PortalFormComponent {
     }
 
     const alias = this.createForm.controls.alias;
+    const replaced: string = alias.value;
+    const derived: string = selected === CHILD_PORTAL_TYPE ? `${this.hostName}${ALIAS_SEGMENT_SEPARATOR}` : '';
 
-    alias.setValue(selected === CHILD_PORTAL_TYPE ? `${this.hostName}${ALIAS_SEGMENT_SEPARATOR}` : '', {
+    alias.setValue(derived, {
       emitEvent: false,
     });
     alias.updateValueAndValidity({ emitEvent: false });
+
+    // ⚠ THE OVERWRITE IS KEPT AND THE SILENCE IS NOT, AND THE SPLIT IS DELIBERATE.
+    //
+    // A QA report recorded this as data loss and proposed deriving only into an untouched field.
+    // That proposal is declined on AAP §0.9.1 grounds: `Signup.ascx.vb:L342-L352` assigns
+    // `txtPortalName.Text` unconditionally on every type change, `signup.ascx` L38-L41 shows that
+    // `txtPortalName` IS the control labelled "Portal Alias:", and L33 gives the radio group
+    // `AutoPostBack="True"` so the assignment ran on every click. The legacy therefore destroyed a
+    // typed alias exactly as this does, and Minimal Change Clause item 3 (identical inputs, identical
+    // outcomes) and item 4 (UI functional parity) both require that outcome to survive the migration;
+    // item 1 forbids repairing a ported behaviour merely because it is disliked. The value written
+    // here is byte-identical to the legacy's.
+    //
+    // WHAT IS NOT LEGACY-FAITHFUL IS THE SILENCE, and the migration is what introduced it. The legacy
+    // assignment arrived as part of a FULL PAGE POSTBACK - the whole form visibly re-rendered - so an
+    // operator had an unmistakable signal that fields had been reset by the server. The target replaces
+    // the postback lifecycle with client-held state (AAP §0.1.2), which is correct and which removes
+    // that signal: a radio click now mutates the field in place with nothing to notice. Restoring an
+    // equivalent signal preserves an operator-visible contract the migration broke rather than
+    // improving on the legacy, so it is in scope where changing the value is not.
+    //
+    // It announces only when something was ACTUALLY lost - the field held text and the derivation
+    // replaced it with something else. Choosing the type before typing anything, or re-selecting the
+    // type already in force, destroys nothing and says nothing; announcing either would train the
+    // operator to dismiss the message that matters.
+    if (replaced.length > 0 && replaced !== derived) {
+      this.notifications.warning(ALIAS_REPLACED_MESSAGE);
+    }
   }
 
   /**
@@ -1952,6 +2429,7 @@ export class PortalFormComponent {
     }
 
     this.normaliseAliasControl();
+    this.normaliseTitleControl(this.createForm.controls.title);
 
     // The second gate. Marking touched is what makes the requirement's message visible
     // beside a field the operator did fill in — they typed something, and they are owed an
@@ -1987,12 +2465,23 @@ export class PortalFormComponent {
       return;
     }
 
-    const id: number | undefined = this.portalId();
+    const id: number | undefined = this.resolvedPortalId();
     const detail: PortalDetail | null = this.portal();
 
     if (id === undefined || detail === null) {
       return;
     }
+
+    if (this.editForm.invalid) {
+      this.editForm.markAllAsTouched();
+
+      return;
+    }
+
+    // R-M20 — see `normaliseTitleControl`. Applied AFTER the first gate and followed by a second,
+    // exactly as the creation path above does it, because trimming can shorten a value to nothing
+    // and requiredness therefore has to be re-asked rather than assumed settled.
+    this.normaliseTitleControl(this.editForm.controls.title);
 
     if (this.editForm.invalid) {
       this.editForm.markAllAsTouched();
@@ -2033,6 +2522,48 @@ export class PortalFormComponent {
     }
 
     alias.setValue(normalised, { emitEvent: false });
+  }
+
+  /**
+   * Trims the site title into its own control — R-M20.
+   *
+   * ⚠ THIS SCREEN WAS THE ONE THAT DID NOT DO IT, AND THAT WAS THE FINDING. Runtime testing measured
+   * three screens against one another: the role editor trims its name into the control before judging
+   * it, the site-settings screen trims its title into the control before judging it, and this screen
+   * sent whatever was typed. Twenty-three characters typed became seventeen sent on one resource and
+   * twenty-three on another, for the same class of field, so an operator could not learn one rule.
+   *
+   * ⚠ THE HARM IS A REFUSAL FOR A FIELD THE FORM DECLARED VALID. `Validators.required` counts a
+   * whitespace-only string as present; the server's `NotEmpty()` counts it as empty. Without this, a
+   * title of three spaces passed every gate here and was refused there, and the operator was shown a
+   * server rejection beside a field the form had raised no complaint about.
+   *
+   * TRIMMED INTO THE CONTROL rather than on the way into the request, for the reason the two sibling
+   * screens record: tidying on the way out means the value that was VALIDATED and the value that was
+   * SENT are different strings, and the difference is invisible. Writing it back makes the correction
+   * visible in the field the operator has to fix.
+   *
+   * `emitEvent: false` because this is a display correction and not an operator edit, so it must not
+   * be able to start a cascade through the portal-type reaction this form carries. `setValue` re-runs
+   * the control's validators regardless of that flag, which is what lets the caller re-read validity
+   * immediately afterwards. A control already trimmed is left completely alone, so an unnecessary
+   * write cannot mark a pristine form dirty.
+   *
+   * MIGRATION: `Signup.ascx.vb` and `SiteSettings.ascx.vb` both read `txtPortalName.Text` verbatim,
+   * so the legacy screens trimmed nothing either — and both then relied on a server-side rule that
+   * treats whitespace as absent, which is exactly the gap this closes. Recorded as a deliberate,
+   * consistent divergence rather than as three different behaviours.
+   *
+   * @param control The title control of whichever form is being submitted.
+   */
+  private normaliseTitleControl(control: FormControl<string>): void {
+    const trimmed: string = control.value.trim();
+
+    if (trimmed === control.value) {
+      return;
+    }
+
+    control.setValue(trimmed, { emitEvent: false });
   }
 
   /**
@@ -2184,8 +2715,28 @@ export class PortalFormComponent {
    */
   private afterWrite(message: string): void {
     this.saveRequested.set(false);
-    this.notifications.success(message);
 
-    void this.router.navigate([PORTAL_LIST_ROUTE]);
+    // ⚠ THE FORMS ARE SETTLED BEFORE LEAVING, OR THE UNSAVED-ENTRY GUARD ASKS ABOUT WORK THAT IS
+    // ALREADY SAVED. Clearing `saveRequested` on the line above is precisely what makes `saving()`
+    // false, so from this point on the guard's probe sees a dirty form with no save in flight - and
+    // the navigation below is the one the save itself triggers. Both forms are marked rather than
+    // whichever mode was used, because marking an already-pristine form is a no-op and a mode test
+    // here would be a second place for the mode to be got wrong.
+    this.createForm.markAsPristine();
+    this.createForm.markAsUntouched();
+    this.editForm.markAsPristine();
+    this.editForm.markAsUntouched();
+
+    // `true`: the confirmation is raised immediately before a deliberate redirect and is meant to be
+    // read at the destination - see the redirect below.
+    this.notifications.success(message, true);
+
+    // ⚠ REPLACED, NOT PUSHED, AND THE CONFIRMATION IS MARKED TO SURVIVE THE TRIP. The shell retires
+    // notifications on a completed navigation, and this one is raised in the same task as the
+    // navigation on the next line, so an unmarked confirmation was swept before it could be painted -
+    // and the comment above this method says the list 'is where the written row is visible', which is
+    // exactly why it has to survive the trip there. Replacing rather than pushing keeps BACK from
+    // returning to a form for a record that now exists.
+    void this.router.navigate([PORTAL_LIST_ROUTE], { replaceUrl: true });
   }
 }

@@ -94,7 +94,43 @@
         legacy screen expressed as `cmdDelete.Visible = (intPortalId <> PortalId)`. A portal
         may not be deleted out from under the session viewing it.
       -->
-      <button type="button" [disabled]="busy()" (click)="onDeleteRequested()">Delete</button>
+      <button class="page-action" type="button" [disabled]="busy()" (click)="onDeleteRequested()">Delete</button>
+    }
+
+    <!--
+      ⚠ THE ONLY LINK IN THE APPLICATION TO A PORTAL'S HOST NAMES. Every anchor the console
+      renders was enumerated and none addressed `:portalId/aliases`, so that screen could be
+      reached only by typing its address — while the alias endpoints grant a tenant
+      administrator every action by right.
+
+      MIGRATION: the legacy console reached Site Settings and Portal Aliases as separate
+      administration modules from its menu, and `SiteSettings.ascx.vb:L484-L489` reads the
+      referring address specifically to detect arrival FROM the Portal Aliases module, which is
+      direct evidence that operators moved between the two. This console has no per-tenant menu
+      to reproduce and its rail carries collection entries only, so the link between the screens
+      is where that movement now lives.
+
+      Placed after Delete rather than before it: the destructive command keeps the position the
+      legacy screen gave it, and a navigation link must not sit between an operator and the
+      control they were reaching for.
+    -->
+    @if (aliasesLink(); as aliases) {
+      <!--
+        The accessible name is QUALIFIED WITH THE TENANT while the visible text stays the bare module
+        title, so a reader is told whose host names these are and a speech-input caller can still say
+        what they see: the name BEGINS with the visible text, which is what WCAG 2.5.3 Label in Name
+        requires. When the title has not arrived yet the bare label stands alone rather than being
+        qualified with an empty string.
+
+        An anchor, not a button: this is a navigation to an addressable screen, so it must be
+        middle-clickable and open-in-new-tab-able, and the router link is what makes it both.
+      -->
+      <a
+        class="page-action"
+        [routerLink]="aliases"
+        [attr.aria-label]="portalName() ? aliasesLinkLabel + ': ' + portalName() : aliasesLinkLabel"
+        >{{ aliasesLinkLabel }}</a
+      >
     }
   </app-page-header>
 
@@ -180,8 +216,12 @@
             reference names something whenever it exists and text that is not on the screen
             is never left in the accessibility tree.
           -->
-          <fieldset class="portal-settings__section">
+          <fieldset
+            class="portal-settings__section"
+            [class.portal-settings__section--collapsed]="!isSectionOpen('siteDetails')"
+          >
             <legend>
+              <h2>
               <button
                 type="button"
                 class="portal-settings__toggle"
@@ -189,8 +229,12 @@
                 [attr.aria-controls]="isSectionOpen('siteDetails') ? sectionBodyId('siteDetails') : null"
                 (click)="toggleSection('siteDetails')"
               >
+                <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+                  <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+                </svg>
                 {{ sectionLabel['siteDetails'] }}
               </button>
+              </h2>
             </legend>
 
             @if (isSectionOpen('siteDetails')) {
@@ -198,15 +242,29 @@
                 <app-form-field
                   [label]="fieldLabel['portalName']"
                   [for]="controlId('portalName')"
+                  [required]="true"
                   [help]="fieldHelp['portalName']"
                   [error]="messagesFor('portalName')"
                 >
                   <div class="portal-settings__control">
+                    <!--
+                      ⚠ #24 — REQUIREDNESS IS DECLARED IN THREE PLACES, ON PURPOSE, BECAUSE
+                      THEY REACH THREE DIFFERENT READERS: the field's `[required]` marker is
+                      SEEN, `aria-required` is ANNOUNCED, and the component's own
+                      `Validators.required` is what actually REFUSES the submit. Only the third
+                      changes behaviour; the first two are the disclosure that was missing.
+
+                      `aria-required` rather than the native `required` attribute: the native
+                      one engages the browser's own constraint bubble, which would appear
+                      alongside the field's message region and give the operator two
+                      differently-worded complaints about one field.
+                    -->
                     <input
                       type="text"
                       formControlName="portalName"
                       [id]="controlId('portalName')"
                       [maxlength]="maxLength.portalName"
+                      [attr.aria-required]="true"
                       autocomplete="off"
                     />
                   </div>
@@ -217,6 +275,7 @@
                   excluded, and the measured row count and character limit are preserved.
                 -->
                 <app-form-field
+                  class="portal-settings__field--wide"
                   [label]="fieldLabel['description']"
                   [for]="controlId('description')"
                   [help]="fieldHelp['description']"
@@ -233,6 +292,7 @@
                 </app-form-field>
 
                 <app-form-field
+                  class="portal-settings__field--wide"
                   [label]="fieldLabel['keyWords']"
                   [for]="controlId('keyWords')"
                   [help]="fieldHelp['keyWords']"
@@ -306,8 +366,12 @@
             The caption reads "Site Marketing" — the resource value — and not the markup
             attribute's "Marketing".
           -->
-          <fieldset class="portal-settings__section">
+          <fieldset
+            class="portal-settings__section"
+            [class.portal-settings__section--collapsed]="!isSectionOpen('marketing')"
+          >
             <legend>
+              <h2>
               <button
                 type="button"
                 class="portal-settings__toggle"
@@ -315,8 +379,12 @@
                 [attr.aria-controls]="isSectionOpen('marketing') ? sectionBodyId('marketing') : null"
                 (click)="toggleSection('marketing')"
               >
+                <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+                  <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+                </svg>
                 {{ sectionLabel['marketing'] }}
               </button>
+              </h2>
             </legend>
 
             @if (isSectionOpen('marketing')) {
@@ -409,8 +477,12 @@
             Security Settings. Open by default: its section head declared no collapsed
             state. One surviving field — the registration mode, a portal column.
           -->
-          <fieldset class="portal-settings__section">
+          <fieldset
+            class="portal-settings__section"
+            [class.portal-settings__section--collapsed]="!isSectionOpen('security')"
+          >
             <legend>
+              <h2>
               <button
                 type="button"
                 class="portal-settings__toggle"
@@ -418,8 +490,12 @@
                 [attr.aria-controls]="isSectionOpen('security') ? sectionBodyId('security') : null"
                 (click)="toggleSection('security')"
               >
+                <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+                  <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+                </svg>
                 {{ sectionLabel['security'] }}
               </button>
+              </h2>
             </legend>
 
             @if (isSectionOpen('security')) {
@@ -468,8 +544,12 @@
             screen: these are selectors over pages that already exist, which is all the
             legacy screen offered here too.
           -->
-          <fieldset class="portal-settings__section">
+          <fieldset
+            class="portal-settings__section"
+            [class.portal-settings__section--collapsed]="!isSectionOpen('pages')"
+          >
             <legend>
+              <h2>
               <button
                 type="button"
                 class="portal-settings__toggle"
@@ -477,8 +557,12 @@
                 [attr.aria-controls]="isSectionOpen('pages') ? sectionBodyId('pages') : null"
                 (click)="toggleSection('pages')"
               >
+                <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+                  <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+                </svg>
                 {{ sectionLabel['pages'] }}
               </button>
+              </h2>
             </legend>
 
             @if (isSectionOpen('pages')) {
@@ -498,6 +582,22 @@
                       The option value is bound by VALUE rather than as an attribute, so the
                       control holds a number. An attribute binding would make every stored
                       page identifier a string and break the comparison that selects one.
+
+                      ⚠ THE ENCODED `value="0: -1"` ATTRIBUTE THIS PRODUCES IS DELIBERATE, and
+                      the alternative was measured before it was declined. `[ngValue]` makes
+                      Angular's select accessor write `index: value` into the DOM attribute and
+                      keep the real value in its own option map, which is how a select can hold
+                      a number at all. Switching to `[value]` would remove the encoding and
+                      corrupt the write: the accessor hands back `element.value`, so the control
+                      typed `FormControl<number>` would hold the STRING `'-1'` after any
+                      selection, `selectedPageToWire` compares with `===` against the numeric
+                      sentinel, `'-1' === -1` is false, and the request would carry `"-1"` as a
+                      page identifier instead of the null that "none specified" means.
+
+                      The encoding reaches no user. It is not rendered — the option's text is
+                      its label — it is not the option's accessible name, and it is never
+                      submitted, because this form posts through the store rather than natively.
+                      The only surface it appears on is the DOM inspector.
                     -->
                     <select formControlName="splashTabId" [id]="controlId('splashTabId')">
                       @for (option of pageOptions(); track option.value) {
@@ -564,8 +664,12 @@
             The administrator and the portal time zone are genuine portal columns and remain.
             Its section head declared itself collapsed, and it is.
           -->
-          <fieldset class="portal-settings__section">
+          <fieldset
+            class="portal-settings__section"
+            [class.portal-settings__section--collapsed]="!isSectionOpen('other')"
+          >
             <legend>
+              <h2>
               <button
                 type="button"
                 class="portal-settings__toggle"
@@ -573,8 +677,12 @@
                 [attr.aria-controls]="isSectionOpen('other') ? sectionBodyId('other') : null"
                 (click)="toggleSection('other')"
               >
+                <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+                  <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+                </svg>
                 {{ sectionLabel['other'] }}
               </button>
+              </h2>
             </legend>
 
             @if (isSectionOpen('other')) {
@@ -687,8 +795,12 @@
             postback did — a hidden control kept its value in the serialised control tree.
           -->
           @if (isSuperUser()) {
-            <fieldset class="portal-settings__section">
+            <fieldset
+              class="portal-settings__section"
+              [class.portal-settings__section--collapsed]="!isSectionOpen('host')"
+            >
               <legend>
+                <h2>
                 <button
                   type="button"
                   class="portal-settings__toggle"
@@ -696,8 +808,12 @@
                   [attr.aria-controls]="isSectionOpen('host') ? sectionBodyId('host') : null"
                   (click)="toggleSection('host')"
                 >
-                  {{ sectionLabel['host'] }}
+                  <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+                  <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+                </svg>
+                {{ sectionLabel['host'] }}
                 </button>
+                </h2>
               </legend>
 
               @if (isSectionOpen('host')) {
@@ -822,11 +938,20 @@
         of the same write.
       -->
       <div class="portal-settings__actions">
-        <button type="submit" [disabled]="busy()">Update</button>
+        <button type="submit" [disabled]="busy()"
+          [attr.aria-busy]="busy() ? 'true' : null">Update</button>
         <button type="button" [disabled]="busy()" (click)="onCancel()">Cancel</button>
 
         @if (busy()) {
-          <app-loading-spinner size="small" label="Saving…" />
+          <!--
+            ⚠ THE LABEL IS BOUND, NOT WRITTEN. It read "Saving…" unconditionally, and this indicator
+            shows whenever any request this screen depends on is outstanding - including the refetch
+            that a plain REVISIT issues, where the form renders immediately from the store's held
+            settings and nothing has been submitted at all. An operator was told their work was being
+            saved when it was not. The paired class now chooses the wording from what is actually in
+            flight.
+          -->
+          <app-loading-spinner size="small" [label]="busyLabel()" />
         }
       </div>
 
@@ -847,9 +972,18 @@
     listing asks.
   -->
   @if (confirmingDelete()) {
+    <!-- ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application
+       shows the SAME title, which the shared dialog declares as its default; binding one here is how
+       five different titles for one action came about - runtime testing found `Delete`,
+       `Confirm Delete`, `Delete Module`, `Delete Profile Property` and `Delete role group` across the
+       screens. The legacy had no title to preserve either: every in-scope delete confirmation was a
+       `window.confirm()` carrying the single shared string `DeleteItem`
+       (`Website/App_GlobalResources/SharedResources.resx` L120-L122), with no title at all. The
+       MESSAGE is still bound where a screen has its own legacy wording, because that wording is a
+       resource value this migration must preserve. -->
     <app-confirm-dialog
       [title]="deleteConfirmTitle"
-      [message]="deleteConfirmMessage"
+      [message]="deleteConfirmMessage()"
       [confirmLabel]="deleteConfirmLabel"
       danger
       (confirm)="onDeleteConfirmed()"

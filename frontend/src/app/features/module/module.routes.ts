@@ -1,6 +1,7 @@
 import type { Routes } from '@angular/router';
 
 import { permissionGuard } from '../../core/guards/permission.guard';
+import { unsavedChangesGuard } from '../../core/guards/unsaved-changes.guard';
 
 /**
  * The module administration feature's route barrel.
@@ -142,6 +143,12 @@ export const MODULE_ROUTES: Routes = [
      * policy carries the gate, and a route declaring none carries no gate.
      */
     path: 'new',
+    // ⚠ LEAVING THIS SCREEN IS GUARDED, because it mounts an editing form. Measured before this
+    // existed: Cancel, any in-application link and the browser's Back button all discarded a
+    // dirty form in silence, with instrumented `confirm`, `alert` and `beforeunload` recording
+    // nothing. The guard asks only when the mounted screen reports unsaved entry, so a clean
+    // form still leaves without a word.
+    canDeactivate: [unsavedChangesGuard],
     title: 'Add Module',
     loadComponent: () =>
       import('./module-form/module-form.component').then((m) => m.ModuleFormComponent),
@@ -161,6 +168,7 @@ export const MODULE_ROUTES: Routes = [
      * this path is a bare literal and takes no parameter.
      */
     path: 'import',
+    canDeactivate: [unsavedChangesGuard],
     title: 'Import Module',
     canActivate: [permissionGuard],
     data: { permission: 'PortalAdministrator' },
@@ -200,6 +208,7 @@ export const MODULE_ROUTES: Routes = [
      * by a truthiness test.
      */
     path: ':moduleId',
+    canDeactivate: [unsavedChangesGuard],
     title: 'Module Settings',
     canActivate: [permissionGuard],
     data: { permission: 'ModuleEdit' },
@@ -217,6 +226,12 @@ export const MODULE_ROUTES: Routes = [
      * parameter without having to repeat it.
      */
     path: ':moduleId/settings',
+    // ⚠ LEAVING THIS SCREEN IS GUARDED, because it mounts an editing form. Measured before this
+    // existed: Cancel, any in-application link and the browser's Back button all discarded a
+    // dirty form in silence, with instrumented `confirm`, `alert` and `beforeunload` recording
+    // nothing. The guard asks only when the mounted screen reports unsaved entry, so a clean
+    // form still leaves without a word.
+    canDeactivate: [unsavedChangesGuard],
     title: 'Module Settings',
     canActivate: [permissionGuard],
     data: { permission: 'ModuleEdit' },

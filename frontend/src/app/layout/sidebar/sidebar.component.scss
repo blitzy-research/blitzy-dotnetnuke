@@ -48,7 +48,9 @@
 //        .app-sidebar--collapsed                   state modifier, set from the signal
 //      <button class="app-sidebar__toggle">        the disclosure control
 //      <div class="app-sidebar__regions">          the disclosed region, [hidden] when collapsed
-//        <h2 class="app-sidebar__group">           one group heading per domain
+//        <p class="app-sidebar__group">            one group label per domain - NOT a
+//                                                     heading, so the rail contributes nothing
+//                                                     to the document outline ahead of the h1
 //        <ul class="app-sidebar__list">            that group's destinations
 //          <li class="app-sidebar__item">
 //            <a class="app-sidebar__link">         a destination
@@ -184,15 +186,44 @@
 //  boundary of its own, and removing it from the box tree would drop both.
 :host {
   display: block;
+
+  // WHICH SHELL ARRANGEMENT IS IN FORCE, PUBLISHED AS A READABLE FACT RATHER THAN
+  // RESTATED AS A WIDTH IN TYPESCRIPT. `0` is the stacked arrangement, in which the rail
+  // is a full-width band ABOVE the content; `1` is the side-by-side arrangement, in which
+  // it is a column BESIDE it. The component reads this resolved value to decide the rail's
+  // DEFAULT disclosure state, which is why the fact is published here instead of being
+  // derived from a `window.matchMedia` string: the breakpoint set is declared once, in
+  // `_mixins.scss`, and this file consumes it through the shared mixin exactly as every
+  // other responsive rule does. A media-query literal in the component class would be a
+  // SECOND definition of the same threshold, free to drift from the first with nothing to
+  // detect the drift - which is the failure the mixin's own header forbids.
+  //
+  // The value is a unitless number so it can be compared without parsing a length, and it
+  // is declared on the host rather than on the rail because the component reads it from its
+  // own element.
+  --app-sidebar-side-by-side: 0;
+
+  @include mx.respond-above('md') {
+    --app-sidebar-side-by-side: 1;
+  }
 }
 
 // -----------------------------------------------------------------------------
 //  2. THE RAIL
 // -----------------------------------------------------------------------------
 //  Flexbox, not Grid: the rail stacks its two children along one axis, and the shell
-//  around it already owns the two-dimensional placement. No inline size and no block
-//  size are declared — see the header above for why the width is intrinsic — and no
-//  breakpoint branch is needed, because a single column reflows at every width.
+//  around it already owns the two-dimensional placement. No block size is declared.
+//
+//  ⚠ THE INLINE SIZE IS NOW DECLARED IN THE SIDE-BY-SIDE STATE ONLY, and the header above no
+//  longer tells the whole story. An intrinsic width measures the rail's CONTENT, and the active
+//  destination is painted at the bold weight - so the widest label is wider on the route where it
+//  happens to be active than on any other, and the rail's width therefore depended on where the
+//  operator was standing. Measured: 185px on `/settings/profile-definitions`, where the longest
+//  label "Manage Profile Properties" is active, against 176px everywhere else, which shifted the
+//  ENTIRE page 9px sideways on arrival and back again on departure. The definite size is the measured
+//  widest state, so the rail cannot move; it is taken from the vocabulary rather than authored here,
+//  and it is applied to the rail rather than to the shell's track because the track's own note asks
+//  for exactly that.
 //
 //  The trailing boundary uses the muted ink rather than the border token, matching the
 //  treatment the band above it gives its own lower boundary, so the two chrome edges
@@ -204,12 +235,43 @@
   gap: var(--space-3);
   padding-block: var(--space-3);
   padding-inline: var(--space-4);
+
   border-inline-end: var(--border-width) var(--border-style) var(--color-text-muted);
   background-color: var(--color-surface);
   color: var(--color-primary);
   font-family: var(--font-family-base);
   font-size: var(--font-size-base);
   line-height: var(--line-height-base);
+
+  // THE PAINTED SURFACE FILLS THE REGION THE SHELL GAVE IT, and this closes a visible
+  // defect rather than adding an effect. The shell's grid stretches this component's HOST
+  // to the full height of the sidebar-and-main row, but the fill and the trailing boundary
+  // are painted by THIS element, whose height was its own content - so on every
+  // authenticated screen the tinted strip and its one-pixel edge stopped part way down and
+  // left a white notch above the footer. Measured at 1280x900: the rail painted 441.75px
+  // against a main region of 811.75px.
+  //
+  // A MINIMUM rather than a fixed size, so a rail with more groups than the viewport is
+  // tall still grows instead of clipping, and a percentage rather than a viewport unit so
+  // it tracks the region the shell allocated rather than the window. In the stacked
+  // arrangement the row is `auto`, so the percentage has no definite height to resolve
+  // against and behaves as `auto` - the band keeps hugging its content there, which is
+  // what that arrangement wants.
+  min-block-size: var(--size-full);
+
+  // THE DEFINITE INLINE SIZE, ABOVE THE THRESHOLD ONLY, and that condition is the whole reason this
+  // is a branch. Below it the shell stacks the regions into one column and the rail is a full-width
+  // band, so a definite inline size there would leave the band narrower than the page it sits across.
+  // The threshold comes from the shared mixin, never from a query literal, so it cannot drift from
+  // the shell's own.
+  //
+  // ⚠ IT SITS AT THE END OF THE RULE ON PURPOSE. Sass is changing the ordering semantics of a plain
+  // declaration that FOLLOWS a nested rule, and warns about every such declaration today; placing
+  // this branch mid-rule made the build emit six deprecation warnings against the five declarations
+  // after it. Every nested block in this file therefore comes after the rule's own declarations.
+  @include mx.respond-above('md') {
+    inline-size: var(--layout-rail-inline-size);
+  }
 }
 
 //  Collapsed. The rail keeps its disclosure control and loses only its groups, so the

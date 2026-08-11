@@ -37,7 +37,7 @@
   stable anchor focus is moved to instead. See `report` in the component.
 -->
 <app-page-header [title]="pageTitle">
-  <button #createTrigger type="button" [disabled]="saving()" (click)="openCreate()">
+  <button class="page-action" #createTrigger type="button" [disabled]="saving()" (click)="openCreate()">
     {{ addLabel }}
   </button>
 </app-page-header>
@@ -124,17 +124,31 @@
   waiting state and its own empty state, which is why neither the shared spinner nor the shared
   empty state appears anywhere in this template.
 
-  `sortChange` is deliberately unbound: no column is sortable, because the legacy grid declared
-  neither `AllowSorting` nor a single `SortExpression`. `rowSelect` is unbound for the same kind
-  of reason — every action this screen offers is an explicit button in a row, so activating a row
-  itself would be an affordance the legacy never had.
+  `sortChange` is deliberately unbound: no column is sortable, because THE ENDPOINT ACCEPTS NO
+  ORDERING AT ALL. `ProfileDefinitionsController.ListAsync` takes a cancellation token and nothing
+  else and answers an unpaged `IReadOnlyList`, so there is no sort parameter to send and
+  `SortableFields.cs` declares no set for this collection. That is the durable reason, and it is
+  stated in place of the one that used to be given here — that the legacy grid declared neither
+  `AllowSorting` nor a `SortExpression` — because a census across BOTH legacy trees finds
+  `AllowSorting` exactly once in either of them, in an out-of-scope screen, so the legacy silence
+  is true of every grid in this application and cannot single this one out. Where the endpoint DOES
+  accept an ordering, the affordance is offered: see the portal, account, role, membership and
+  module listings.
+
+  `rowSelect` is unbound for a different reason — every action this screen offers is an explicit
+  button in a row, so activating a row itself would be an affordance the legacy never had.
 
   The caption is projected. `app-data-table` renders it into a real `<caption>` element that is
   visually hidden and present in the accessibility tree, which normalises a legacy inconsistency:
   the legacy grid had no caption at all, so the table reached a screen reader with no accessible
   name.
 -->
-<app-data-table [columns]="columns()" [rows]="rows()" [loading]="loading()">
+<app-data-table
+  [columns]="columns()"
+  [rows]="rows()"
+  [rowKey]="definitionRowKey"
+  [loading]="loading()"
+>
   <span dataTableCaption>{{ gridCaption }}</span>
 </app-data-table>
 
@@ -167,15 +181,33 @@
 
   @if (hasPendingChanges()) {
     <!--
-      The staged-edit count, announced politely. It is derived from the difference between what
-      the operator has staged and what the server holds, so after a batch in which one write was
-      refused it counts exactly the rows still outstanding — which is what makes applying again
-      the natural recovery.
+      The staged-edit count, shown while there is something to apply. It is derived from the
+      difference between what the operator has staged and what the server holds, so after a batch in
+      which one write was refused it counts exactly the rows still outstanding — which is what makes
+      applying again the natural recovery.
+
+      ⚠ THIS CARRIES NO `aria-live`, DELIBERATELY, AND THAT IS A FIX RATHER THAN AN OVERSIGHT. It
+      used to, and it could not work here: the element is rendered only while something is staged, so
+      the region was created already holding its text — which assistive technology need not announce —
+      and destroyed the moment the batch landed, and removing a live region announces nothing. The
+      announcing duty moved to the permanently mounted region below, which is read out for the same
+      count AND for the settled outcome. Declaring `aria-live` in both places would say it twice.
     -->
-    <span class="profile-definitions__form-hint" aria-live="polite">
+    <span class="profile-definitions__form-hint">
       {{ dirtyCount() }} unapplied change(s). "{{ refreshLabel }}" discards them.
     </span>
   }
+
+  <!--
+    THE SCREEN'S POLITE STATUS REGION — always mounted, visually hidden, text swapped.
+
+    Nothing here is visible, so the screen looks exactly as the legacy grid did. What it restores is
+    the non-visual signal the single-page rewrite removed: `cmdUpdate_Click` L444-L452 set no message
+    label, but it re-bound inside a full post-back, and a screen reader announces a document load. A
+    silent, same-document commit left a non-visual reader with no way to tell that Apply had done
+    anything. See `applyAnnouncement` for why the region is mounted unconditionally.
+  -->
+  <span data-visually-hidden role="status" aria-live="polite">{{ applyAnnouncement() }}</span>
 </p>
 
 <!--
@@ -194,7 +226,7 @@
 @if (editorOpen()) {
   <form [formGroup]="form" (ngSubmit)="submitForm()">
     <fieldset class="profile-definitions__form">
-      <legend class="profile-definitions__form-legend">{{ formHeading() }}</legend>
+      <legend class="profile-definitions__form-legend"><h2>{{ formHeading() }}</h2></legend>
 
       <!--
         THE NINE FIELDS, IN `SortOrder` ORDER — name 0, data type 1, category 2, length 3,
@@ -470,7 +502,8 @@
         which is exactly what closing an inline form on the listing achieves.
       -->
       <div class="profile-definitions__form-actions">
-        <button type="submit" [disabled]="saving()">{{ submitLabel() }}</button>
+        <button type="submit" [disabled]="saving()"
+          [attr.aria-busy]="saving() ? 'true' : null">{{ submitLabel() }}</button>
         <button type="button" [disabled]="saving()" (click)="cancelForm()">
           {{ cancelLabel }}
         </button>
@@ -495,8 +528,16 @@
   technology with an EMPTY accessible name.
 -->
 @if (removalTarget() !== null) {
+  <!-- ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application
+       shows the SAME title, which the shared dialog declares as its default; binding one here is how
+       five different titles for one action came about - runtime testing found `Delete`,
+       `Confirm Delete`, `Delete Module`, `Delete Profile Property` and `Delete role group` across the
+       screens. The legacy had no title to preserve either: every in-scope delete confirmation was a
+       `window.confirm()` carrying the single shared string `DeleteItem`
+       (`Website/App_GlobalResources/SharedResources.resx` L120-L122), with no title at all. The
+       MESSAGE is still bound where a screen has its own legacy wording, because that wording is a
+       resource value this migration must preserve. -->
   <app-confirm-dialog
-    [title]="removalTitle"
     [message]="removalMessage"
     [confirmLabel]="deleteLabel"
     [danger]="true"
@@ -613,12 +654,22 @@
 </ng-template>
 
 <!--
-  6. DATA TYPE. Renders the integer, and renders the null-integer sentinel as EMPTY — which is
-  what the legacy did for a type it could not resolve, since `DisplayDataType` L339-L351 started
-  from `Null.NullString` and only replaced it when the lookup found an entry. See the reported
-  gap on the component's own accessor.
+  6. DATA TYPE. Paints the absent-value mark and never the stored integer, because
+  `DisplayDataType` L339-L351 returns the resolved list-entry VALUE or `Null.NullString` and never
+  a number, and the `Lists` vocabulary that would supply the name is unreachable on three counts —
+  excluded by the migration plan, absent from the API, and absent from the schema. The reference
+  itself is not destroyed: it travels in the `title` and in the clipped span, both generated from
+  one accessor so they cannot drift apart. See `UNNAMED_DATA_TYPE_MARK` for the full argument,
+  including why a mark is painted rather than the blank a literal reading would give.
+
+  The mark carries `aria-hidden` and the sentence is clipped, so assistive technology hears words
+  rather than a bare dash — the same pairing used for absent tallies, absent profile values,
+  absent host names, absent role periods and absent module titles.
 -->
-<ng-template #dataTypeCell let-row>{{ dataTypeLabel(row) }}</ng-template>
+<ng-template #dataTypeCell let-row>
+  <span aria-hidden="true" [attr.title]="dataTypeDescription(row)">{{ unnamedDataTypeMark }}</span>
+  <span data-visually-hidden>{{ dataTypeDescription(row) }}</span>
+</ng-template>
 
 <!--
   8-9. DEFAULT VALUE and VALIDATION EXPRESSION.
@@ -649,11 +700,19 @@
   on both members: it renders as an unchecked box and as the negative word, never as blank, and it
   is never reached through a truthiness test or a negation of a nullable.
 
-  The accessible name names the row as well as the column, because "Required" alone in a grid of
-  many rows does not say which property is required. The visible cell keeps the announced word
-  from the shared pipe beside the box, so the current state is readable without inspecting the
-  control — which is also what a legacy reader saw, since the legacy rendered a check box and
-  nothing else.
+  ⚠ THE ACCESSIBLE NAME NAMES THE COLUMN AS WELL AS THE ROW, AND UNTIL NOW IT DID NOT - this note
+  claimed both while the markup carried only the row. Each box announced the property name alone, so
+  the two boxes in one row were both "City" and nothing distinguished making a property REQUIRED from
+  making it VISIBLE; measured across two rows, four boxes reduced to two names. Both halves are needed
+  and neither is decoration: the column word says what the box does, and the row name says which
+  property it does it to, since "Required" alone in a grid of many rows says nothing. The composition
+  lives in the paired class so the two cells cannot drift apart, and it uses the grid's own heading
+  rather than an authored synonym.
+
+  The visible cell keeps the announced word from the shared pipe beside the box, so the current state
+  is readable without inspecting the control — which is also what a legacy reader saw, since the
+  legacy rendered a check box and nothing else. That word stays hidden FROM assistive technology,
+  because the box already publishes its own checked state and a second reading of it would be noise.
 -->
 <ng-template #requiredCell let-row>
   <label class="profile-definitions__bulk-item">
@@ -663,7 +722,7 @@
       [disabled]="saving()"
       (change)="toggleRequired(row, !row.required)"
     />
-    <span data-visually-hidden>{{ row.propertyName }}</span>
+    <span data-visually-hidden>{{ stateCheckboxName(requiredHeading, row.propertyName) }}</span>
     <span aria-hidden="true">{{ row.required | yesNo }}</span>
   </label>
 </ng-template>
@@ -676,7 +735,7 @@
       [disabled]="saving()"
       (change)="toggleVisible(row, !row.visible)"
     />
-    <span data-visually-hidden>{{ row.propertyName }}</span>
+    <span data-visually-hidden>{{ stateCheckboxName(visibleHeading, row.propertyName) }}</span>
     <span aria-hidden="true">{{ row.visible | yesNo }}</span>
   </label>
 </ng-template>

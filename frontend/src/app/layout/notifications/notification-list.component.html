@@ -30,6 +30,17 @@
 
   While the queue is empty the region paints nothing: the stylesheet gives it no padding, no
   border and no background, and an empty element with no content resolves to zero height.
+
+  ⚠ THE REGION IS TAKEN OUT OF FLOW BY ITS OWN STYLESHEET, and the reason is measured rather
+  than aesthetic: in flow each entry cost 42 pixels and pushed everything below it down, so
+  nine of them moved the page's heading from y=83 to y=515 - 49 per cent of a 900-pixel
+  viewport spent on notification chrome, and every measurement of the screen underneath
+  invalidated. It stays HERE in the markup, first inside the main region, so its position in
+  the accessibility tree and in the tab order is unchanged; only its painting is lifted out.
+
+  ⚠ ONLY THE NEWEST FEW ENTRIES ARE RENDERED, and how many are not is STATED rather than
+  swallowed. A surface that quietly hides messages cannot be told apart from one that loses
+  them. Every queued entry remains in the service, so nothing is destroyed by being off screen.
 -->
 <div
   class="notification-list"
@@ -38,7 +49,7 @@
   aria-atomic="false"
   [attr.aria-label]="regionLabel"
 >
-  @for (entry of entries(); track entry.id) {
+  @for (entry of visibleEntries(); track entry.id) {
     <!--
       Tracked by the service's own identifier, which it documents as never reissued for the
       lifetime of the service — not even after a dismissal or a clear. Tracking by the message
@@ -84,5 +95,33 @@
         <span aria-hidden="true">&times;</span>
       </button>
     </div>
+  }
+
+  @if (hiddenCount() > 0) {
+    <!--
+      HOW MANY ARE NOT SHOWN. Rendered inside the live region, so it is announced with the
+      entries rather than as a separate interruption, and worded as a count rather than as an
+      affordance because there is nothing to activate: dismissing the entries above brings the
+      hidden ones into view.
+
+      The number is interpolated into a sentence rather than assembled from fragments, so there
+      is exactly one string to read and nothing for the template compiler's whitespace handling
+      to collapse into the wrong shape.
+    -->
+    <p class="notification-list__overflow">{{ hiddenCount() }} earlier not shown</p>
+  }
+
+  @if (canClearAll()) {
+    <!--
+      CLEARING EVERYTHING AT ONCE. Offered only from the second entry onwards - with one message
+      on screen the per-entry control is already the shorter route - and rendered LAST so it can
+      never sit between two messages or move one under a reader who is mid-sentence.
+
+      A real `button` with an explicit type, and its visible word IS its accessible name, so no
+      label attribute is needed and none is added.
+    -->
+    <button type="button" class="notification-list__clear-all" (click)="clearAll()">
+      {{ clearAllLabel }}
+    </button>
   }
 </div>

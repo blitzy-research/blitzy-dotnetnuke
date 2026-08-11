@@ -36,12 +36,16 @@ import type { UserDetail } from '../../../core/models/user.model';
 import { NotificationService } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
 import { UserStore, type UserFailure, type UserMutation } from '../../../core/state/user.store';
-import { parseRouteId } from '../../../core/utils/route-id.util';
+import { parseRouteId, readRouteId } from '../../../core/utils/route-id.util';
+import { requiredText } from '../../../core/utils/required-text.validator';
 import { EmptyStateComponent } from '../../../shared/components/empty-state/empty-state.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
 import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
+import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
+import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 
 /**
  * Which of the screen's two modes is rendered.
@@ -83,8 +87,41 @@ const UNCATEGORISED_HEADING = 'General';
  */
 const MULTILINE_LENGTH_THRESHOLD = 250;
 
-/** Rows rendered by a multi-line control. */
-const MULTILINE_ROWS = 4;
+/**
+ * The fewest rows a multi-line control ever renders — U-M6.
+ *
+ * Four is what every multi-line control used to render REGARDLESS of how much text it could hold, and
+ * that fixed figure is the defect. Measured against a declaration bounded at four thousand characters:
+ * four rows showed 2.88 per cent of what the field could contain at a 320-unit viewport, so an operator
+ * reviewing a stored answer was reading it through a slot. It is retained as the FLOOR because it is
+ * the right size for a declaration just over the multi-line threshold, where the alternative is a
+ * control mostly full of empty rows.
+ */
+const MULTILINE_MINIMUM_ROWS = 4;
+
+/**
+ * The most rows a multi-line control ever renders — U-M6.
+ *
+ * A ceiling is necessary, because the declared length has no upper bound of its own: a declaration
+ * bounded at forty thousand characters would otherwise render a control taller than any screen, pushing
+ * every property beneath it — and the save command — arbitrarily far down. Twelve rows is roughly a
+ * third of a 900-unit viewport, which leaves the surrounding form navigable. Beyond it, the control's
+ * own internal scroll and the vertical resize handle the shared form vocabulary already gives every
+ * text area are the right affordances.
+ */
+const MULTILINE_MAXIMUM_ROWS = 12;
+
+/**
+ * Declared characters per rendered row, for sizing a multi-line control — U-M6.
+ *
+ * An ESTIMATE and labelled as one: the real figure depends on the control's resolved width, the type
+ * step and the text itself, none of which is knowable when the attribute is written. A hundred and
+ * twenty is deliberately generous against the measured control — roughly 45 to 70 characters fit a line
+ * at the widths this screen resolves to — because the alternative errs towards a control that fills the
+ * viewport. The consequence is that a declaration is sized by ORDER OF MAGNITUDE rather than exactly,
+ * which is all a starting height needs to be: the resize handle and the internal scroll settle the rest.
+ */
+const DECLARED_CHARACTERS_PER_ROW = 120;
 
 /**
  * The legacy-seeded properties the installer gave the RICH-TEXT data type.
@@ -142,6 +179,35 @@ const LEGACY_RICH_TEXT_PROPERTIES: ReadonlySet<string> = new Set(['Biography']);
 const NO_PROPERTIES_MESSAGE =
   'This site declares no profile properties, so there is nothing to show. ' +
   'Define one under Profile Properties to begin.';
+
+/**
+ * Shown once a profile write succeeds.
+ *
+ * MIGRATION: net-new wording, with no legacy counterpart, and the absence of one is explained by the
+ * legacy mechanism rather than by an omission. `Website/admin/Users/Profile.ascx.vb` raises no module
+ * message on its success path and its resources declare none, because a full-page postback was itself
+ * the confirmation - the page visibly reloaded carrying the stored values. Nothing reloads here.
+ *
+ * Phrased to match the sibling screens that already confirm their writes, so one voice is used across
+ * the console rather than one per screen.
+ */
+const PROFILE_SAVED_MESSAGE = 'The profile was saved.';
+
+/**
+ * The sentence shown when the address names no readable account.
+ *
+ * MEASURED LEGACY WORDING, not authored: `ManageUsers.ascx.vb` L207/L221 pairs this warning with
+ * `DisableForm()`, which sets `Visible = False` on every panel — so the legacy answer to a missing
+ * account was this sentence and no form, which is what this screen now does too.
+ *
+ * ⚠ RESTATED HERE RATHER THAN IMPORTED FROM `user-form.component.ts`, WHICH ALSO EXPORTS IT. That
+ * import would reach into a sibling component module for one string and drag its component class
+ * into this screen's lazily-loaded chunk, which is a real cost paid on every visit for nothing.
+ * The two copies are held identical deliberately: one situation must not be described two ways
+ * inside one feature, and an operator following a stale link from the account screen to its
+ * profile must be told the same thing twice rather than two different things.
+ */
+const NO_USER_MESSAGE = "This account doesn't exist";
 
 /**
  * The greatest number of properties one profile write may carry.
@@ -416,27 +482,6 @@ interface ProfileFormModel {
 }
 
 /**
- * A validator that rejects a value consisting only of white space.
- *
- * `Validators.required` accepts a string of spaces and the server does not, so without
- * this the form would accept a blank required value and the request would then fail —
- * the worst of both checks. Reported under the `required` key so one message covers
- * both, which is what the legacy screen showed.
- *
- * @param control The control to check.
- * @returns A `required` error when the value is blank, otherwise `null`.
- */
-const nonBlank: ValidatorFn = (control) => {
-  const value: unknown = control.value;
-
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  return value.trim().length === 0 ? { required: true } : null;
-};
-
-/**
  * Builds the validators one declared property demands.
  *
  * The three rules are the three the declaration carries, and they are applied in the
@@ -458,7 +503,12 @@ function validatorsFor(definition: ProfilePropertyDefinition): ValidatorFn[] {
   const validators: ValidatorFn[] = [];
 
   if (definition.required) {
-    validators.push(Validators.required, nonBlank);
+    // One validator, not two. `requiredText` from `core/utils` covers absence AND blankness and
+    // reports both under the `required` key, which is what this screen's local pair did between
+    // them. It replaced a feature-local copy of the same idea: the blankness rule had been written
+    // out independently here, on the login screen and on the module export screen, and a shared
+    // home is what stops three copies drifting apart from the one server rule they all mirror.
+    validators.push(requiredText);
   }
 
   if (definition.length > 0) {
@@ -540,7 +590,45 @@ function initialValueFor(value: UserProfileValue): string {
 
   const seeded = value.definition.defaultValue ?? '';
 
-  return isNullDateSentinel(seeded) ? '' : seeded;
+  if (isNullDateSentinel(seeded)) {
+    return '';
+  }
+
+  // ⚠ #9 — A DEFAULT THAT ITS OWN DECLARATION WOULD REJECT IS NOT SEEDED, AND THIS ONE GUARD IS WHAT
+  // STOPPED A SINGLE DECLARATION BLOCKING PROFILE EDITING FOR EVERY ACCOUNT IN THE TENANT.
+  //
+  // Measured: one declaration carried a sixty-one character default under a declared length of fifty. The
+  // control was seeded from it, the length validator this file attaches from the SAME declaration rejected
+  // it, and the form was therefore invalid the instant it painted — for every account that had recorded
+  // nothing for that property, which is every account. Nothing on screen could be corrected to fix it,
+  // because the offending value was not the account's: deleting it from the box worked only until the
+  // screen was next opened, and the real correction was to the declaration on a different screen entirely.
+  // The account's own profile was collateral.
+  //
+  // ⚠ IT APPLIES TO THE DEFAULT ALONE AND CAN NEVER REACH A RECORDED VALUE. Every branch above has already
+  // returned by this point: a supplied value returns verbatim, and a written-but-empty value returns empty.
+  // So the only value this guard can withhold is one that came from the declaration rather than from the
+  // account, which is exactly the value nobody entered and nobody can be asked to correct here. Applying
+  // the same test to a recorded value would DESTROY DATA — an over-long stored value is still the
+  // operator's value, and the correct answer for it is the refusal the length rule already raises.
+  //
+  // ⚠ WHY WITHHOLDING RATHER THAN RELAXING THE RULE. The alternative is to stop applying the declared
+  // length when the default violates it, which weakens a rule the server enforces regardless and would
+  // make the client disagree with the server — the exact fault the administrator-bypass note on
+  // {@link UserProfileComponent.onSubmit} explains at length. A default is a SUGGESTION the declaration
+  // offers; a suggestion the declaration itself rejects is not a usable one, so it is not offered. The
+  // field then opens in its natural unset state, and if the property is required the operator is correctly
+  // asked for a valid value instead of being handed an invalid one.
+  //
+  // Only the declared LENGTH is tested, because it is the only declared rule evaluated in the browser. The
+  // tenant's validation expression is deliberately never run here — see {@link validatorsFor} — so a
+  // default that violates the PATTERN cannot make this form invalid on load, and the server's refusal
+  // remains the authority on it.
+  if (value.definition.length > 0 && seeded.length > value.definition.length) {
+    return '';
+  }
+
+  return seeded;
 }
 
 
@@ -740,18 +828,41 @@ function resolveUserId(raw: string | number | undefined): number | null {
   selector: 'app-user-profile',
   standalone: true,
   imports: [
+    FocusFirstInvalidDirective,
+    SubmitGuardDirective,
     ReactiveFormsModule,
     PageHeaderComponent,
     LoadingSpinnerComponent,
     EmptyStateComponent,
     ErrorBannerComponent,
     FormFieldComponent,
+    FocusFirstInvalidDirective,
   ],
   templateUrl: './user-profile.component.html',
   styleUrl: './user-profile.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class UserProfileComponent {
+
+  /**
+   * Registers this screen's unsaved-entry probe with the application's tracker.
+   *
+   * ⚠ WHY A REGISTRATION RATHER THAN A ROUTE-LEVEL READ. Leaving a screen happens two ways and
+   * only one of them is a router navigation: Cancel, an in-application link and the browser's Back
+   * button are navigations a route guard can refuse, while closing or reloading the tab is not, and
+   * only the browser's own unload prompt covers that - which needs the dirty state at an arbitrary
+   * moment rather than at a navigation. One tracker holding probes answers both, and the probe is
+   * released automatically when this screen is destroyed, so a screen that has gone can never hold
+   * a navigation up. Measured before this existed: a dirty form was discarded in silence by all
+   * four exits, with instrumented `confirm`, `alert` and `beforeunload` recording nothing at all.
+   *
+   * A form that is being SAVED is not dirty in the sense that matters here - the entry is on its
+   * way to the server, and prompting about it would ask the operator to confirm discarding work
+   * they have already committed.
+   */
+  private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
+    () => this.form().dirty && this.saving() === false,
+  );
   private readonly store = inject(UserStore);
   private readonly notifications = inject(NotificationService);
 
@@ -850,6 +961,41 @@ export class UserProfileComponent {
   protected readonly resolvedUserId: Signal<number | null> = computed(() =>
     resolveUserId(this.userId()),
   );
+
+  /**
+   * Whether the address supplied a parameter that names no readable account.
+   *
+   * ⚠ THIS EXISTS TO STOP THE SCREEN MAKING A FALSE STATEMENT. Runtime testing reached
+   * `/users/abc/profile` and was told "This site declares no profile properties, so there is
+   * nothing to show" — on a tenant that declares TWELVE. The sentence is not merely unhelpful, it
+   * is factually wrong about the tenant's configuration, and it sends an operator to the Profile
+   * Properties screen to fix something that is not broken.
+   *
+   * The cause is that `hasProperties()` is false in two entirely different situations: the tenant
+   * genuinely declares none, and nothing was ever FETCHED. An unreadable identifier produces the
+   * second — correctly, since no request is issued for a key that cannot be parsed — and the empty
+   * branch then spoke for it. Distinguishing the two is the whole fix; the empty-state branch
+   * itself is right for the case it was written for.
+   *
+   * Presence is tested on the RAW input and readability on the parsed value, which is the same
+   * three-way reading the sibling account screens use. Absent still means "no account addressed",
+   * which is a different situation again and is left to the branches that already handle it.
+   */
+  protected readonly addressUnreadable: Signal<boolean> = computed(
+    () => readRouteId(this.userId()).kind === 'unreadable',
+  );
+
+  /**
+   * The sentence shown when the address names no readable account.
+   *
+   * ⚠ DELIBERATELY THE SAME SENTENCE `/users/abc` AND `/users/0` ALREADY SHOW, and it is the
+   * measured legacy wording rather than an authored one — `ManageUsers.ascx.vb` L207/L221 pair
+   * this warning with `DisableForm()`, which sets `Visible = False` on every panel. One situation
+   * gets one wording across the whole account feature: an operator who follows a stale link to an
+   * account and then to its profile should not be told two different stories about the same
+   * missing record.
+   */
+  protected readonly unreadableAddressMessage: string = NO_USER_MESSAGE;
 
   /**
    * Whether the CALLER is the account whose profile is on screen.
@@ -1149,7 +1295,44 @@ export class UserProfileComponent {
           return;
         }
 
-        this.concludeRemediation();
+        // The save kept the values, so say so. Announced through the shared channel at the success
+        // severity, which is where every other write in this application confirms itself.
+        //
+        // MIGRATION: honestly net-new. The legacy screen carried no success wording for this
+        // action - `Website/admin/Users/Profile.ascx.vb` shows no module message on the success
+        // path and its resources declare none - because a full-page postback was itself the
+        // feedback: the page visibly reloaded carrying the stored values. Nothing reloads here, so
+        // without this the only difference between a save that worked and one that was ignored was
+        // the absence of an error.
+        // ⚠ THE FORM IS SETTLED HERE EXPLICITLY, AND NOT LEFT TO THE REBUILD. The form is a `computed()`
+        // over {@link sections}, and a successful save re-reads the profile - so a NEW, pristine form is
+        // normally built when that read lands, and marking here is then a no-op. Three cases are not
+        // covered by the rebuild, and the third is the serious one. The re-read is asynchronous while this
+        // block is synchronous, so for the interval between them the old, dirty form is still the current
+        // one. A re-read that fails leaves it current permanently, so a SAVED profile would keep
+        // advertising unsaved work for the rest of the screen's life. And the mandatory-completion path
+        // below navigates in THIS task, before any re-read can have landed - so the unsaved-entry guard,
+        // whose probe reads `form().dirty && saving() === false` and whose flag has already fallen, would
+        // refuse that navigation with a prompt asking the operator to discard the very entry that had just
+        // been stored. `window.confirm` blocks the JavaScript thread, so the auto-dismiss timer on the
+        // confirmation raised below would become due while the dialog stood and fire the instant it was
+        // accepted, which is how a redundant prompt swallows the answer to itself.
+        //
+        // Depending on a value CHANGING to clear a flag is the same mistake the portal settings screen
+        // records on its own save path; the honest statement is made here, where the outcome is known.
+        const settledForm = this.form();
+        settledForm.markAsPristine();
+        settledForm.markAsUntouched();
+
+        this.notifications.success(PROFILE_SAVED_MESSAGE);
+
+        // ⚠ ONLY A MANDATORY COMPLETION OF THE CALLER'S OWN PROFILE NAVIGATES. Re-read at settle
+        // time rather than remembered from dispatch, which is sound because the restriction is
+        // held in the session and is cleared by `concludeRemediation` itself - so it is still
+        // standing at this point for exactly the callers it applies to.
+        if (this.auth.sessionRestricted() && this.isSelf()) {
+          this.concludeRemediation();
+        }
       });
     });
   }
@@ -1171,6 +1354,24 @@ export class UserProfileComponent {
    *
    * @param key The section key.
    */
+
+  /**
+   * The DOM id of one section's BODY, for the toggle's `aria-controls`.
+   *
+   * Distinct from {@link the toggle itself}, which names the toggle itself; a control cannot
+   * point `aria-controls` at its own id and expect assistive technology to find the region.
+   * The reference is published ONLY while the section is open — the body is removed from the
+   * document when collapsed, so a constant attribute would leave a dangling IDREF that an
+   * auditing tool reports as an error. Binding it to `null` in the closed state removes the
+   * attribute outright, so the id is asserted exactly when it resolves.
+   *
+   * @param section The section whose body is being named.
+   * @returns A stable id, unique within the screen.
+   */
+  protected sectionBodyId(section: string): string {
+    return `user-profile-body-${section}`;
+  }
+
   protected toggleSection(key: string): void {
     const next = new Set(this.collapsedKeys());
 
@@ -1273,7 +1474,39 @@ export class UserProfileComponent {
   }
 
   /** The number of rows a multi-line control is given. */
-  protected readonly multilineRows: number = MULTILINE_ROWS;
+  /**
+   * How many rows one multi-line control renders — U-M6.
+   *
+   * ⚠ SIZED FROM THE DECLARATION RATHER THAN FIXED AT FOUR, which is the whole of this fix. Every
+   * multi-line control used to render exactly four rows whatever it could hold, so a declaration bounded
+   * at four thousand characters showed 2.88 per cent of its capacity at a 320-unit viewport — a stored
+   * answer read through a slot, with the operator's only recourse being to scroll inside a control four
+   * lines tall.
+   *
+   * The result is clamped at both ends and the reasons differ: the floor keeps a declaration just over
+   * the multi-line threshold from rendering a control that is mostly empty, and the ceiling keeps an
+   * unbounded declaration from rendering a control taller than the screen and pushing the save command
+   * out of reach. The declared length has no maximum of its own, so the ceiling is not optional.
+   *
+   * A declared length of ZERO means no bound at all — the schema defaults it to zero and that is the
+   * absence of a bound, not a bound of nothing, which is the same rule the length validator and the
+   * published attribute both follow — so it takes the ceiling rather than the floor: a field that can
+   * hold anything is the case that most needs the room.
+   *
+   * @param value The property being rendered.
+   * @returns The row count for its control.
+   */
+  protected multilineRowsFor(value: UserProfileValue): number {
+    const declared: number = value.definition.length;
+
+    if (declared <= 0) {
+      return MULTILINE_MAXIMUM_ROWS;
+    }
+
+    const wanted: number = Math.ceil(declared / DECLARED_CHARACTERS_PER_ROW);
+
+    return Math.min(MULTILINE_MAXIMUM_ROWS, Math.max(MULTILINE_MINIMUM_ROWS, wanted));
+  }
 
   /** The wording shown when the tenant has declared no profile property. */
   protected readonly noPropertiesMessage: string = NO_PROPERTIES_MESSAGE;
@@ -1401,13 +1634,19 @@ export class UserProfileComponent {
 
     const dispatched: number = this.store.saveProfile(userId, this.toSubmission(userId));
 
-    // Only a MANDATORY completion of the caller's OWN profile is awaited. An administrator
-    // editing somebody else's profile has nothing of their own to conclude, and an ordinary
-    // caller editing their own profile stays where they are, which is what the legacy screen
-    // did.
-    if (this.auth.sessionRestricted() && this.isSelf()) {
-      this.awaitedSaveId.set(dispatched);
-    }
+    // ⚠ EVERY SAVE IS NOW AWAITED, NOT ONLY A MANDATORY COMPLETION, and that is what fixes a
+    // silent success. Awaiting only the remediation case meant an ordinary save settled with
+    // nothing watching: measured, `PUT /api/v1/users/1/profile` answered `204`, the value DID
+    // persist, and the notification region stayed empty for a polled six seconds with no
+    // `[role=alert]` anywhere - so the operator received no confirmation whatsoever that their
+    // change had been kept. The identical action on the site-settings screen does confirm.
+    //
+    // What remains conditional is the NAVIGATION, not the awaiting: concluding a remediation is
+    // still reserved for a caller completing their OWN mandatory profile, which is decided at
+    // settle time. An administrator editing somebody else's profile has nothing of their own to
+    // conclude, and an ordinary caller editing their own profile stays where they are - which is
+    // what the legacy screen did.
+    this.awaitedSaveId.set(dispatched);
   }
 
   /**
@@ -1433,7 +1672,20 @@ export class UserProfileComponent {
   private concludeRemediation(): void {
     this.auth.noteProfileRemediated();
 
-    void this.router.navigateByUrl('/').catch(() => false);
+    /*
+     * ⚠ REPLACES RATHER THAN PUSHES, for two reasons that agree.
+     *
+     * The first is the convention every post-success departure in this application follows:
+     * leaving BACK pointing at a screen whose work is already done invites the operator to
+     * return to it and repeat the submission.
+     *
+     * The second is that `core/guards/unsaved-changes.guard.ts` reads exactly this flag to tell
+     * a departure the APPLICATION initiated from one the OPERATOR initiated. Without it, the
+     * gate would see a dirty form leaving on an operator-initiated navigation and ask whether to
+     * discard changes that had just been saved successfully — turning a completed remediation
+     * into a prompt suggesting the work was about to be lost.
+     */
+    void this.router.navigateByUrl('/', { replaceUrl: true }).catch(() => false);
   }
 
   /**

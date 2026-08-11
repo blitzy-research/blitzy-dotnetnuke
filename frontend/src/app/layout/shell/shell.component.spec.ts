@@ -1,5 +1,6 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { Component } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { Router, provideRouter } from '@angular/router';
@@ -155,6 +156,19 @@ const SESSION_BODY: AuthSession = {
   },
 };
 
+/**
+ * A deep address used to prove the skip link's `href` follows the current route.
+ *
+ * Several segments deep on purpose: the defect being guarded is that a bare fragment resolves
+ * against the ROOT base href, which is indistinguishable from correct behaviour when the test
+ * never leaves the root.
+ */
+const DEEP_PROBE_PATH = 'deep/route/below/the/root';
+
+/** The inert screen `DEEP_PROBE_PATH` activates. It renders nothing and requests nothing. */
+@Component({ selector: 'app-route-probe', standalone: true, template: '' })
+class RouteProbeComponent {}
+
 describe('ShellComponent', () => {
   let fixture: ComponentFixture<ShellComponent>;
   let component: ShellComponent;
@@ -279,9 +293,17 @@ describe('ShellComponent', () => {
       imports: [ShellComponent],
       providers: [
         // A router is required three times over: the shell renders a router outlet, the
-        // banner it composes renders a router link, and the rail renders router links. An
-        // empty route table satisfies all three without any navigation occurring.
-        provideRouter([]),
+        // banner it composes renders a router link, and the rail renders router links. None
+        // of the three needs a route table at all.
+        //
+        // THE ONE ENTRY EXISTS FOR ONE CASE, and it is a real route rather than a stubbed
+        // navigation on purpose. The skip link's address is refreshed on `NavigationEnd`, so
+        // the only honest way to assert that it follows the operator is to let the real
+        // router complete a real navigation to a deep address - a synthetic event pushed into
+        // the event stream would assert that the handler works, not that the router ever
+        // calls it. Nothing else navigates here (`navigate` is spied below), so the outlet
+        // activates this stub in exactly one case.
+        provideRouter([{ path: DEEP_PROBE_PATH, component: RouteProbeComponent }]),
         // The real client FIRST and the testing backend SECOND: `provideHttpClientTesting()`
         // REPLACES the backend the real client installed, so reversing the two would leave
         // the live backend in place and every expectation below would find nothing.
@@ -501,11 +523,40 @@ describe('ShellComponent', () => {
       // read from the rendered DOM rather than from the component or from a literal,
       // so the assertion survives a rename of the identifier and still fails if the
       // two sides ever drift apart.
+      //
+      // ⚠ THIS USED TO ASSERT THE WHOLE ADDRESS EQUALLED THE BARE FRAGMENT, AND IT HAD
+      // ENCODED A DEFECT. A fragment-only address resolves against the ROOT base href this
+      // application declares, so from a deep route it named a different document; the
+      // address is now composed against the current path, and only its TAIL is the
+      // fragment. The claim in the title — that the fragment names an element that exists
+      // — is unchanged and is what is tested here; the path qualification is the case
+      // below.
       const target = requireElement('a.shell__skip-link').getAttribute('href') ?? '';
       const region = requireElement('main');
 
       expect(region.id).not.toBe('');
-      expect(target).toBe(`#${region.id}`);
+      expect(target.endsWith(`#${region.id}`)).toBeTrue();
+      expect(target.split('#').length).toBe(2);
+    });
+
+    it('qualifies its address with the path currently showing, so the fragment cannot leave the document', async () => {
+      // The hazard being tested is a CROSS-DOCUMENT load: were the anchor's default action
+      // ever to run with a bare fragment, the root base href would resolve it to a different
+      // path and reload the application, discarding the in-memory session. A path-qualified
+      // address makes the fallback a same-document fragment navigation instead.
+      const before = requireElement('a.shell__skip-link').getAttribute('href') ?? '';
+
+      expect(before.startsWith('/')).toBeTrue();
+
+      await router.navigateByUrl(`/${DEEP_PROBE_PATH}`);
+      fixture.detectChanges();
+
+      const after = requireElement('a.shell__skip-link').getAttribute('href') ?? '';
+
+      // The address FOLLOWED the operator. A constant would have failed here, which is the
+      // whole point of reading it after a navigation rather than only on arrival.
+      expect(after).toBe(`/${DEEP_PROBE_PATH}#main-content`);
+      expect(after).not.toBe(before);
     });
 
     it('is labelled with visible text, so its purpose is announced', () => {
@@ -830,7 +881,17 @@ describe('ShellComponent', () => {
       control?.click();
       fixture.detectChanges();
 
-      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+      // ⚠ COUNTED, BECAUSE "EXACTLY ONE" IS THE WHOLE CLAIM. `expectOne` does enforce it - it throws on a
+      // second match - but it asserts by throwing, so the runner records no expectation and reports this
+      // spec as claiming nothing. Matching the set and sizing it makes the number itself the assertion,
+      // which is the property under test rather than a side effect of how it is checked.
+      const revocations = httpMock.match(AUTH_ENDPOINTS.logout);
+
+      expect(revocations)
+        .withContext('two gestures in one tick, one revocation')
+        .toHaveSize(1);
+
+      revocations[0]?.flush(null, { status: 204, statusText: 'No Content' });
     });
 
     it('issues nothing at all when no session is held', () => {

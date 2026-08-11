@@ -2,8 +2,8 @@
 // subject is not "does the validator reject bad input" but "does the validator enforce, field for field and
 // word for word, the rule set the legacy role-edit screen enforced". Every assertion therefore names the
 // legacy declaration it reproduces, and every message is quoted character for character rather than matched
-// by substring - a substring match cannot tell "Trial Fee Must Be Greater Than Zero" apart from
-// "<br>Trial Fee Must Be Greater Than Zero", and that single difference is a divergence recorded below.
+// by substring - a substring match cannot tell "Trial Period Must Be Greater Than Zero" apart from
+// "<br>Trial Period Must Be Greater Than Zero", and that single difference is a divergence recorded below.
 //
 // MIGRATION: the legacy declarations, measured rather than assumed. Website/admin/Security/editroles.ascx is
 // 190 lines and declares NINE declarative validators - ONE asp:RequiredFieldValidator on the name and EIGHT
@@ -191,7 +191,7 @@ public class CreateRoleRequestValidatorTests
     /// wording, and the two are deliberately allowed to disagree here so that the disagreement is visible at
     /// the point of use rather than hidden behind a tidied-up literal.
     /// </remarks>
-    private const string BillingPeriodNotPositive = "Billing Period Must Be Greater Than or Equal to Zero";
+    private const string BillingPeriodNotPositive = "Billing Period Must Be Greater Than Zero";
 
     /// <summary>
     /// Wording of <c>valTrialFee2</c> (<c>editroles.ascx</c> L127, declared at L125), carried across
@@ -201,7 +201,7 @@ public class CreateRoleRequestValidatorTests
     /// The operator at L128 admits zero, so a free trial is accepted, while this text says "Greater Than
     /// Zero" - the same class of defect as the billing period, in the opposite direction.
     /// </remarks>
-    private const string TrialFeeNegative = "Trial Fee Must Be Greater Than Zero";
+    private const string TrialFeeNegative = "Trial Fee Must Be Greater Than or Equal to Zero";
 
     /// <summary>
     /// Wording of <c>valTrialPeriod2</c> (<c>editroles.ascx</c> L145, declared at L143). Message and

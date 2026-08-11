@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, Input } from '@angular/core';
+import { booleanAttribute, ChangeDetectionStrategy, Component, Input } from '@angular/core';
 
 // MIGRATION: the wording is authored here rather than resolved through a resource lookup,
 // so it is not per-locale. Module-private on purpose: the public surface of this module is
@@ -181,4 +181,30 @@ export class EmptyStateComponent {
   public get message(): string {
     return this.resolvedMessage;
   }
+
+  /**
+   * Whether this empty state is the whole screen, and therefore owns its heading.
+   *
+   * ⚠ THE DEFAULT IS `false`, WHICH IS THE EXISTING BEHAVIOUR UNCHANGED. Every in-page use of this
+   * component sits beneath a screen that already carries a level-one heading through the shared page
+   * header, so a level-one heading here would give those screens a second one. That is why the
+   * heading has always been level two, and why it stays level two unless a caller says otherwise.
+   *
+   * MIGRATION: the template's own note conceded the remaining defect and chose to live with it —
+   * "standing alone it leaves a level-two heading with none above it, the lesser of the two defects".
+   * There is exactly one such caller, the route table's unmatched-address fallback, which resolves
+   * directly to this component with no page header above it; a review measured that screen as having
+   * NO level-one heading at all. This input removes the need to choose: the standalone caller asks
+   * for level one and gets a correctly-rooted heading outline, and every other caller is untouched.
+   *
+   * Declared as a boolean about the component's ROLE rather than as a numeric heading level. A level
+   * is an implementation detail of that role, and exposing it would invite a caller to request level
+   * three or four — which this component's single-heading structure cannot express and which would
+   * make the outline worse rather than better.
+   *
+   * Bound by the router's component-input binder from route data, so the key in the route table must
+   * stay spelled exactly as this member is.
+   */
+  @Input({ transform: booleanAttribute })
+  public standalone = false;
 }

@@ -969,7 +969,7 @@ public interface IUserService
     /// A successful result carrying what the write did BEYOND storing the policy - whether the
     /// display-name format changed, and how many accounts were consequently rewritten. Three failure
     /// codes are documented.
-    /// <c>user.membership-settings.source-missing</c> is raised when the tenant has no settings
+    /// <c>user.membership-settings.storage-conflict</c> is raised when the tenant has no settings
     /// source to write to - the same condition that makes the read above answer with a
     /// <see langword="null"/> value; absence is a legitimate answer to a read and an
     /// impossibility for a write, which is why the two members treat it differently.

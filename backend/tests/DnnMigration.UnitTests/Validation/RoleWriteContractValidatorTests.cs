@@ -72,10 +72,10 @@ public class RoleWriteContractValidatorTests
 
     /// <summary>Wording of <c>valBillingPeriod2</c>, whose operator is strictly greater than zero.</summary>
     private const string BillingPeriodNotPositive =
-        "Billing Period Must Be Greater Than or Equal to Zero";
+        "Billing Period Must Be Greater Than Zero";
 
     /// <summary>Wording of <c>valTrialFee2</c>, whose operator admits zero.</summary>
-    private const string TrialFeeNegative = "Trial Fee Must Be Greater Than Zero";
+    private const string TrialFeeNegative = "Trial Fee Must Be Greater Than or Equal to Zero";
 
     /// <summary>Wording of <c>valTrialPeriod2</c>. Message and operator agree.</summary>
     private const string TrialPeriodNotPositive = "Trial Period Must Be Greater Than Zero";

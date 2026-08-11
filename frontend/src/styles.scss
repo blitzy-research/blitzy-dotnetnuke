@@ -171,3 +171,24 @@
 @use './styles/layout';
 @use './styles/tables';
 @use './styles/forms';
+
+// ---------------------------------------------------------------------------------
+//  MOTION KEYFRAMES
+// ---------------------------------------------------------------------------------
+//
+//  Declared HERE, exactly once, and referenced by the `indeterminate-spin` mixin.
+//  Keyframe names are global whatever a component's view encapsulation, so a component
+//  stylesheet declaring its own copy would be 34 identical declarations of one animation
+//  competing for one name - which is what happened when the block briefly lived in the
+//  mixins partial: Sass emitted it into every one of the 33 stylesheets that load that
+//  partial. The mixin that consumes this name carries the reduced-motion guard, so the
+//  animation is applied only to a reader who has not asked for less motion.
+@keyframes dnn-indeterminate-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}

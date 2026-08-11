@@ -32,7 +32,7 @@ import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { provideRouter } from '@angular/router';
+import { Router, provideRouter } from '@angular/router';
 
 import { NotificationService } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
@@ -45,6 +45,7 @@ import type { TestRequest } from '@angular/common/http/testing';
 import type { ApiResponse, PagedResponse } from '../../../core/models/paged-result.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { BillingFrequency, RoleGroup, RoleListItem } from '../../../core/models/role.model';
+import type { UserDetail } from '../../../core/models/user.model';
 
 // =====================================================================================================
 // ADDRESSES
@@ -313,7 +314,12 @@ describe('RoleListComponent', () => {
       providers: [
         provideHttpClient(),
         provideHttpClientTesting(),
-        provideRouter([]),
+        // ⚠ A ROUTE THAT ALWAYS MATCHES, because this screen now keeps its narrowing and its page in the
+        // ADDRESS and writes them with a real navigation. An empty route table refuses every navigation, so
+        // the write would silently fail and the read that follows the address change would never be issued -
+        // which is exactly how thirty cases below started failing when the address contract was introduced.
+        // The component under test is named as the target so the tree is genuinely resolvable.
+        provideRouter([{ path: '**', component: RoleListComponent }]),
         RoleStore,
         { provide: AuthStore, useValue: { administersCurrentPortal: administersPortal } },
       ],
@@ -359,6 +365,19 @@ describe('RoleListComponent', () => {
   function create(): void {
     fixture = TestBed.createComponent(RoleListComponent);
     mounted = true;
+    fixture.detectChanges();
+  }
+
+  /**
+   * Lets a navigation this screen started actually happen.
+   *
+   * The narrowing selector, the pager and the ordering controls write the ADDRESS rather than calling the
+   * store, and a router navigation is asynchronous, so the read that follows one is not issued in the same
+   * task. Anything that changes the narrowing, the page or the ordering must therefore be followed by this
+   * before its request can be expected.
+   */
+  async function settleAddress(): Promise<void> {
+    await fixture.whenStable();
     fixture.detectChanges();
   }
 
@@ -460,7 +479,7 @@ describe('RoleListComponent', () => {
   }
 
   /** Chooses a grouping filter by its rendered label. */
-  function chooseFilter(label: string): void {
+  async function chooseFilter(label: string): Promise<void> {
     const control = field<HTMLSelectElement>(FILTER_CONTROL_ID);
     const option: HTMLOptionElement | undefined = Array.from(control.options).find(
       (candidate) => (candidate.textContent ?? '').trim() === label,
@@ -471,6 +490,10 @@ describe('RoleListComponent', () => {
     control.value = (option as HTMLOptionElement).value;
     control.dispatchEvent(new Event('change'));
     fixture.detectChanges();
+
+    // ⚠ THE NARROWING NOW TRAVELS THROUGH THE ADDRESS, so the read it causes is issued in a LATER task.
+    // Settling here rather than in each caller keeps the asynchrony where its cause is.
+    await settleAddress();
   }
 
   /** A button by its rendered wording. */
@@ -558,6 +581,71 @@ describe('RoleListComponent', () => {
   // ---------------------------------------------------------------------------------------------------
   // PROOF 1 — ARRIVAL
   // ---------------------------------------------------------------------------------------------------
+
+  /**
+   * Answers the subject account's NAME read.
+   *
+   * ⚠ EVERY NARROWED CASE MUST ANSWER THIS, and `afterEach`'s `verify()` is what enforces it. The
+   * screen names the person beneath the heading — `SecurityRoles.ascx.vb` L104-L105 read the account
+   * for exactly that — so narrowing to an account provokes a second read alongside the membership
+   * one, and a case that leaves it open fails as an unanticipated call.
+   *
+   * Answered SEPARATELY from the membership read rather than folded into it, because the two are
+   * independent: the membership read can be refused while the name read succeeds, and vice versa,
+   * and several cases below rely on exactly that.
+   *
+   * @param account The account key the read is expected for.
+   * @param name The display name to answer with, or `undefined` to refuse the read.
+   */
+  function answerAccountNameRead(account: number, name?: string): void {
+    const request = expectRequest('GET', `/api/v1/users/${account}`, 'the account name read');
+
+    if (name === undefined) {
+      request.flush(
+        problem('user.not_found', 404, `Portal -1 has no member bearing identifier ${account}.`),
+        { status: 404, statusText: 'Not Found' },
+      );
+    } else {
+      request.flush(envelope(accountDetail(account, name)));
+    }
+
+    fixture.detectChanges();
+  }
+
+  /**
+   * A minimal account-detail payload, carrying only what the subtitle reads.
+   *
+   * The decoder requires the whole contract, so this states every member rather than the two the
+   * screen consumes — a partial payload would be rejected before the name reached the subtitle.
+   *
+   * @param userId The account key.
+   * @param displayName The name to carry.
+   * @returns The payload.
+   */
+  function accountDetail(userId: number, displayName: string): UserDetail {
+    return {
+      userId,
+      portalId: -1,
+      username: `login_${userId}`,
+      firstName: 'Measured',
+      lastName: 'Member',
+      displayName,
+      email: `member${userId}@example.test`,
+      isSuperUser: false,
+      affiliateId: null,
+      isApproved: true,
+      isLockedOut: false,
+      isOnline: false,
+      mustChangePassword: false,
+      createdDate: '2024-01-05T09:00:00Z',
+      lastLoginDate: null,
+      lastActivityDate: null,
+      lastLockoutDate: null,
+      lastPasswordChangeDate: null,
+      roles: [],
+      canDelete: true,
+    };
+  }
 
   describe('arriving on the screen', () => {
     it('reads the groups first and the roles only once they have answered', () => {
@@ -753,6 +841,7 @@ describe('RoleListComponent', () => {
       fixture.detectChanges();
       expectRequest('GET', accountUrl(account), 'the membership read').flush(envelope(held));
       fixture.detectChanges();
+      answerAccountNameRead(account);
     }
 
     /**
@@ -790,7 +879,7 @@ describe('RoleListComponent', () => {
 
       return rows().map((row) => {
         const cell: HTMLTableCellElement | undefined = Array.from(
-          row.querySelectorAll<HTMLTableCellElement>('td'),
+          row.querySelectorAll<HTMLTableCellElement>('td,th'),
         )[index];
 
         return (cell?.textContent ?? '').trim();
@@ -857,18 +946,39 @@ describe('RoleListComponent', () => {
       fixture.detectChanges();
 
       expect(subtitle()).toBe(`Roles held by account ${ACCOUNT_ID} \u2014 1 role`);
+
+      // The NAME read is answered last, which is what makes the two assertions above meaningful:
+      // both were made while the name was still unknown, so both exercise the identifier fallback.
+      answerAccountNameRead(ACCOUNT_ID, 'Measured Member');
+
+      // And once the name lands, the person is named rather than keyed.
+      expect(subtitle()).toBe('Roles held by Measured Member \u2014 1 role');
     });
 
     it('OFFERS THE WAY BACK to every role in the tenant, at this screen\u2019s own address', () => {
       arriveForAccount();
 
-      const link = queryOrFail<HTMLAnchorElement>(host(), '.role-list__page-action');
+      // ⚠ SELECTED BY LABEL, NOT BY POSITION. Narrowing to an account now offers TWO affordances —
+      // the way BACK to the person and the way SIDEWAYS to every role — and a positional read would
+      // silently assert about whichever happened to come first.
+      const link = queryAll<HTMLAnchorElement>('.role-list__page-action').find(
+        (candidate) => (candidate.textContent ?? '').trim() === 'Show All Roles',
+      );
 
-      expect((link.textContent ?? '').trim()).toBe('Show All Roles');
+      expect(link).withContext('the unnarrowing affordance is offered').not.toBeUndefined();
       // Addressing this same route WITHOUT the parameter is what clears the narrowing, so no
       // second route and no separate command are needed.
-      expect(link.getAttribute('href')).toBe('/roles');
-      expect(pageActions()[0]).toBe('Show All Roles');
+      expect((link as HTMLAnchorElement).getAttribute('href')).toBe('/roles');
+
+      // The way back to the account the operator came from, which is the FIRST of the two.
+      expect(pageActions()[0]).toBe('Back to Account');
+      expect(pageActions()[1]).toBe('Show All Roles');
+
+      const back = queryAll<HTMLAnchorElement>('.role-list__page-action').find(
+        (candidate) => (candidate.textContent ?? '').trim() === 'Back to Account',
+      );
+
+      expect((back as HTMLAnchorElement).getAttribute('href')).toBe(`/users/${ACCOUNT_ID}`);
     });
 
     it('offers NO account affordance and issues NO membership read when no account is the subject', () => {
@@ -899,6 +1009,12 @@ describe('RoleListComponent', () => {
 
       expect(renderedRoleNames()).toEqual(['Translators']);
       expect(subtitle()).toBe(`Roles held by account ${OTHER_ACCOUNT_ID} \u2014 1 role`);
+
+      // The NAME is re-read for the second account too, and until it answers the subtitle keys the
+      // new account rather than naming the previous one.
+      answerAccountNameRead(OTHER_ACCOUNT_ID, 'Second Member');
+
+      expect(subtitle()).toBe('Roles held by Second Member \u2014 1 role');
     });
 
     it('SHOWS NOTHING OF THE PREVIOUS ACCOUNT while a second account is read', () => {
@@ -933,9 +1049,19 @@ describe('RoleListComponent', () => {
 
       expect(renderedRoleNames()).toEqual(['Translators']);
       expect(subtitle()).toBe(`Roles held by account ${OTHER_ACCOUNT_ID} \u2014 1 role`);
+
+      // ⚠ THE SECOND ACCOUNT'S NAME READ IS ANSWERED WITH THE FIRST ACCOUNT'S NAME ON PURPOSE, and
+      // the assertion is that it is IGNORED. The screen pairs a held name with the key it belongs
+      // to, so an answer that arrives for a superseded subject cannot name the current one — the
+      // same protection the rows already have, applied to the label.
+      answerAccountNameRead(OTHER_ACCOUNT_ID, 'Second Member');
+
+      expect(subtitle())
+        .withContext('the name answered for THIS account is the one shown')
+        .toBe('Roles held by Second Member \u2014 1 role');
     });
 
-    it('FALLS BACK to the tenant listing when the membership read is refused', () => {
+    it('shows NO rows and states the refusal when the membership read is refused', () => {
       fixture = TestBed.createComponent(RoleListComponent);
       mounted = true;
       fixture.componentRef.setInput('userId', String(ACCOUNT_ID));
@@ -952,10 +1078,45 @@ describe('RoleListComponent', () => {
       });
       fixture.detectChanges();
 
-      // An empty grid would read as "this account holds nothing", which is a different and false
-      // statement. The tenant listing is shown beside the reported failure.
-      expect(renderedRoleNames()).toEqual(['Subscribers']);
+      /*
+       * ⚠ THIS WAS A CRITICAL FALSE-DATA DEFECT AND THE ASSERTION IS NOW ITS INVERSE. The screen used
+       * to render the TENANT listing here, which meant `/roles?userId=999` - whose read is refused
+       * with `404` "Portal -1 has no member bearing identifier 999" - displayed every role in the
+       * portal beneath the subtitle "Roles held by account 999". It asserted in writing that a
+       * non-existent account held every role, with no banner, no notification and no console error.
+       *
+       * The rows that answer "what roles exist in this tenant" must not stand in for an answer to
+       * "what roles does this account hold" that was never given. Showing none of them, and stating
+       * the refusal, is the only presentation that claims nothing untrue.
+       *
+       * The prior reasoning - that an empty grid reads as "this account holds nothing" - is still
+       * respected, and is why the refusal is now SURFACED: the banner carries the server's own
+       * sentence, so the empty grid is read together with the reason it is empty rather than as a
+       * membership fact. The case below proves a genuinely empty ANSWER is still rendered as one, so
+       * the two are not conflated.
+       */
+      expect(renderedRoleNames())
+        .withContext('no borrowed rows from a different question')
+        .toEqual([]);
       expect(subtitle()).toBe(`Roles held by account ${ACCOUNT_ID}`);
+
+      const banner = query('app-error-banner');
+
+      expect(banner).withContext('the refusal is stated').not.toBeNull();
+      expect(banner?.textContent ?? '')
+        .withContext("and it carries the server's own explanation")
+        .toContain('not permitted');
+
+      // ⚠ THE NAME READ IS INDEPENDENT OF THE MEMBERSHIP READ, and it is REFUSED here too so that
+      // this case proves the pairing the screen relies on: a refused name leaves the subtitle keyed
+      // by identifier rather than blank, and it raises NO second banner of its own. One failure slot
+      // serves this screen, and the membership refusal is the more informative of the two.
+      answerAccountNameRead(ACCOUNT_ID);
+
+      expect(subtitle()).toBe(`Roles held by account ${ACCOUNT_ID}`);
+      expect(queryAll('app-error-banner'))
+        .withContext('the refused name read does not add a second banner')
+        .toHaveSize(1);
     });
 
     it('renders an account that holds NO role as an empty grid, not as the tenant listing', () => {
@@ -1011,15 +1172,146 @@ describe('RoleListComponent', () => {
     it('keeps the tenant-wide affordances beside the account ones, in that order', () => {
       arriveForAccount();
 
-      // The way back is offered FIRST, because it is the affordance that explains the narrowing;
-      // the create affordances remain, gated as they were, so nothing is lost by narrowing.
+      // The way BACK to the person comes first, then the way SIDEWAYS to every role, then the
+      // create affordances, which remain gated as they were — so nothing is lost by narrowing.
+      //
+      // ⚠ THE RETURN PATH IS THE ADDITION THAT CLOSED THE REPORTED DEFECT: an operator who pressed a
+      // per-account command on the account listing could not get back to the account from here.
       expect(pageActions()).toEqual([
+        'Back to Account',
         'Show All Roles',
         'Add New Role',
         'Add New Role Group',
         // Worded as the legacy `UserSettings.Action` was, which is what this screen already renders.
         'User Settings',
       ]);
+    });
+  });
+
+  // =====================================================================================================
+  // ORDERING
+  // =====================================================================================================
+  /**
+   * SORTING IS A NET-NEW AFFORDANCE HERE, AND ITS BOUNDS ARE THE ENDPOINT'S.
+   *
+   * It was previously declined on the ground that the legacy grid had no sort affordance. That is true, and
+   * a case-insensitive census across BOTH legacy trees finds `AllowSorting` exactly ONCE in either of them,
+   * in `Website/admin/Files/filemanager.ascx`, a screen the AAP places out of scope - so not one in-scope
+   * legacy grid could be reordered, INCLUDING the module listing that has offered sorting since it was
+   * written. The census says the same thing about every grid in this application and therefore cannot
+   * support the affordance on one screen and its absence on the rest.
+   *
+   * What bounds it is `SortableFields.Roles` in
+   * `backend/src/DnnMigration.Application/Validation/SortableFields.cs`, which permits every member of the
+   * role list contract. Ten of the eleven are offered; `RoleId` is not, because this grid paints no
+   * identifier column and a control cannot sit on a column that is not shown.
+   */
+  describe('ordering', () => {
+    /** The rendered sort controls, in column order. */
+    function sortControls(): readonly HTMLButtonElement[] {
+      return queryAll<HTMLButtonElement>('th.data-table__header button.data-table__sort');
+    }
+
+    /** The heading cells reporting an active direction. */
+    function announcedDirections(): readonly string[] {
+      return queryAll<HTMLElement>('th.data-table__header')
+        .map((cell) => cell.getAttribute('aria-sort') ?? '')
+        .filter((value) => value === 'ascending' || value === 'descending');
+    }
+
+    it('paints a control on the ten permitted data columns and on neither command column', () => {
+      arrive();
+
+      const names: readonly string[] = sortControls().map(
+        (control) => control.getAttribute('aria-label') ?? '',
+      );
+
+      expect(names).toHaveSize(10);
+
+      // Each control states the action and keeps the visible heading text, per WCAG 2.5.3.
+      for (const control of sortControls()) {
+        const accessibleName: string = control.getAttribute('aria-label') ?? '';
+
+        expect(accessibleName.startsWith('Sort by ')).withContext(accessibleName).toBeTrue();
+        expect(accessibleName).toContain((control.textContent ?? '').trim());
+      }
+    });
+
+    it('re-reads ordered by the pressed column, in the server spelling, from the first page', async () => {
+      arrive();
+
+      // The first data control is the role name, whose column key IS the endpoint's sort name.
+      sortControls()[0]?.click();
+      await settleAddress();
+
+      const ordered: TestRequest = expectRequest('GET', ROLES_URL, 'the ordered role read');
+
+      expect(ordered.request.params.get('sortBy')).toBe('roleName');
+      expect(ordered.request.params.get('sortDir')).toBe('Ascending');
+      expect(ordered.request.params.get('pageIndex')).toBe('0');
+
+      ordered.flush(pageOf([roleRow()]));
+      fixture.detectChanges();
+
+      expect(announcedDirections()).toEqual(['ascending']);
+    });
+
+    it('reverses on the second press and CLEARS on the third', async () => {
+      arrive();
+
+      const press = async (): Promise<void> => {
+        sortControls()[0]?.click();
+        await settleAddress();
+      };
+
+      await press();
+      expectRequest('GET', ROLES_URL).flush(pageOf([roleRow()]));
+      fixture.detectChanges();
+
+      await press();
+      const descending: TestRequest = expectRequest('GET', ROLES_URL, 'the descending read');
+      expect(descending.request.params.get('sortDir')).toBe('Descending');
+      descending.flush(pageOf([roleRow()]));
+      fixture.detectChanges();
+
+      // THE THIRD PRESS RETURNS THE LISTING TO THE SERVER'S OWN ORDER, which is the state the screen
+      // arrives in and which a two-step toggle left reachable only by reloading the page. Asserted on the
+      // WIRE because the omission is the point.
+      await press();
+      const cleared: TestRequest = expectRequest('GET', ROLES_URL, 'the unordered read');
+      expect(cleared.request.params.has('sortBy')).withContext('no key is sent').toBeFalse();
+      expect(cleared.request.params.has('sortDir')).withContext('no direction is sent').toBeFalse();
+      cleared.flush(pageOf([roleRow()]));
+      fixture.detectChanges();
+
+      expect(announcedDirections()).withContext('no column reports itself sorted').toEqual([]);
+    });
+
+    /**
+     * ⚠ THE AFFORDANCE IS WITHHELD WHEN AN ACCOUNT IS THE SUBJECT, and this is not tidiness. Those rows
+     * come from a different and unpaged slice - the memberships the account holds - which the ordering
+     * command cannot reach: it re-reads the browsable listing, so a press would issue a request whose
+     * answer this grid never renders, and the heading would then announce an order the visible rows are not
+     * in. An affordance that does nothing is worse than none.
+     */
+    it('paints no sort control at all while an account is the subject', () => {
+      fixture = TestBed.createComponent(RoleListComponent);
+      mounted = true;
+      fixture.componentRef.setInput('userId', '3');
+      fixture.detectChanges();
+
+      expectRequest('GET', ROLE_GROUPS_URL).flush(envelope([roleGroup()]));
+      fixture.detectChanges();
+      expectRequest('GET', ROLES_URL).flush(pageOf([roleRow(7)]));
+      fixture.detectChanges();
+      expectRequest('GET', '/api/v1/users/3/roles').flush(envelope([roleRow(0)]));
+      fixture.detectChanges();
+      answerAccountNameRead(3, 'Runtime Host');
+
+      expect(sortControls()).toHaveSize(0);
+
+      // And no heading claims a sort state either way.
+      expect(announcedDirections()).toEqual([]);
     });
   });
 
@@ -1040,10 +1332,10 @@ describe('RoleListComponent', () => {
       expect(options).toContain('Trials');
     });
 
-    it('sends a named scope for each pseudo-entry, never its negative number', () => {
+    it('sends a named scope for each pseudo-entry, never its negative number', async () => {
       arrive();
 
-      chooseFilter(ALL_ROLES_OPTION_LABEL);
+      await chooseFilter(ALL_ROLES_OPTION_LABEL);
 
       const all = expectRequest('GET', ROLES_URL, 'the all-roles read');
 
@@ -1056,7 +1348,7 @@ describe('RoleListComponent', () => {
       all.flush(pageOf([roleRow()]));
       fixture.detectChanges();
 
-      chooseFilter(GLOBAL_ROLES_OPTION_LABEL);
+      await chooseFilter(GLOBAL_ROLES_OPTION_LABEL);
 
       const global = expectRequest('GET', ROLES_URL, 'the ungrouped read');
 
@@ -1067,10 +1359,10 @@ describe('RoleListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('sends the real identifier for a chosen group, and returns to the first page', () => {
+    it('sends the real identifier for a chosen group, and returns to the first page', async () => {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services' })]);
 
-      chooseFilter('Paid Services');
+      await chooseFilter('Paid Services');
 
       const call = expectRequest('GET', ROLES_URL, 'the grouped read');
 
@@ -1083,23 +1375,23 @@ describe('RoleListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('reveals the group commands once a real group is chosen, and only then', () => {
+    it('reveals the group commands once a real group is chosen, and only then', async () => {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services' })], [roleRow()]);
 
       // Neither pseudo-entry is a resource, so there is nothing to edit or remove while one is chosen.
       expect(hasGroupCommand('edit')).withContext('nothing to edit').toBeFalse();
 
-      chooseFilter('Paid Services');
+      await chooseFilter('Paid Services');
       expectRequest('GET', ROLES_URL).flush(pageOf([roleRow()]));
       fixture.detectChanges();
 
       expect(hasGroupCommand('edit')).withContext('the group can be edited').toBeTrue();
     });
 
-    it('withholds the group removal while the group still holds roles', () => {
+    it('withholds the group removal while the group still holds roles', async () => {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services' })]);
 
-      chooseFilter('Paid Services');
+      await chooseFilter('Paid Services');
       expectRequest('GET', ROLES_URL).flush(pageOf([roleRow()]));
       fixture.detectChanges();
 
@@ -1108,10 +1400,10 @@ describe('RoleListComponent', () => {
       expect(hasGroupCommand('remove')).withContext('withheld while occupied').toBeFalse();
     });
 
-    it('offers the group removal once the group is empty', () => {
+    it('offers the group removal once the group is empty', async () => {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services' })]);
 
-      chooseFilter('Paid Services');
+      await chooseFilter('Paid Services');
       expectRequest('GET', ROLES_URL).flush(pageOf([]));
       fixture.detectChanges();
 
@@ -1126,17 +1418,17 @@ describe('RoleListComponent', () => {
      * outstanding one before issuing its replacement. Were it not to, the slower first answer would
      * land last and paint rows that do not belong to the narrowing on screen — a silently wrong grid.
      */
-    it('abandons a superseded narrowing, so its answer cannot paint over the newest one', () => {
+    it('abandons a superseded narrowing, so its answer cannot paint over the newest one', async () => {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services' })]);
 
-      chooseFilter('Paid Services');
+      await chooseFilter('Paid Services');
 
       const superseded = expectRequest('GET', ROLES_URL, 'the grouped read');
 
       expect(superseded.request.params.get('roleGroupId')).toBe('4');
 
       // The narrowing changes again before the first answer arrives.
-      chooseFilter(ALL_ROLES_OPTION_LABEL);
+      await chooseFilter(ALL_ROLES_OPTION_LABEL);
 
       const newest = expectRequest('GET', ROLES_URL, 'the all-roles read');
 
@@ -1168,10 +1460,10 @@ describe('RoleListComponent', () => {
      * for. Abandonment therefore belongs to the store's own teardown, and this proves BOTH halves —
      * leaving the screen does not abandon the read, and the store's teardown does.
      */
-    it('leaves an outstanding narrowing to the store, which abandons it on its own teardown', () => {
+    it('leaves an outstanding narrowing to the store, which abandons it on its own teardown', async () => {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services' })]);
 
-      chooseFilter('Paid Services');
+      await chooseFilter('Paid Services');
 
       const outstanding = expectRequest('GET', ROLES_URL, 'the grouped read');
       const store = TestBed.inject(RoleStore);
@@ -1195,15 +1487,15 @@ describe('RoleListComponent', () => {
 
   describe('editing the chosen role group', () => {
     /** Arrives with a real group chosen, which is the editor's precondition. */
-    function arriveWithGroup(roles: readonly RoleListItem[] = [roleRow()]): void {
+    async function arriveWithGroup(roles: readonly RoleListItem[] = [roleRow()]): Promise<void> {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services', description: 'Fee-bearing' })], roles);
-      chooseFilter('Paid Services');
+      await chooseFilter('Paid Services');
       expectRequest('GET', ROLES_URL).flush(pageOf(roles));
       fixture.detectChanges();
     }
 
-    it('opens with the chosen group own values', () => {
-      arriveWithGroup();
+    it('opens with the chosen group own values', async () => {
+      await arriveWithGroup();
 
       pressGroupCommand('edit');
 
@@ -1214,8 +1506,8 @@ describe('RoleListComponent', () => {
       expect(httpMock.match(() => true)).withContext('opening reads nothing').toHaveSize(0);
     });
 
-    it('puts the trimmed values and answers 200 with the stored group', () => {
-      arriveWithGroup();
+    it('puts the trimmed values and answers 200 with the stored group', async () => {
+      await arriveWithGroup();
 
       pressGroupCommand('edit');
       type(GROUP_NAME_CONTROL_ID, '  Premium Services  ');
@@ -1248,8 +1540,8 @@ describe('RoleListComponent', () => {
       expect(query(`#${GROUP_NAME_CONTROL_ID}`)).withContext('the editor closes').toBeNull();
     });
 
-    it('sends an emptied description as null rather than as blank text', () => {
-      arriveWithGroup();
+    it('sends an emptied description as null rather than as blank text', async () => {
+      await arriveWithGroup();
 
       pressGroupCommand('edit');
       type(GROUP_DESCRIPTION_CONTROL_ID, '   ');
@@ -1265,8 +1557,8 @@ describe('RoleListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('refuses an emptied name in the legacy wording and sends nothing', () => {
-      arriveWithGroup();
+    it('refuses an emptied name in the legacy wording and sends nothing', async () => {
+      await arriveWithGroup();
 
       pressGroupCommand('edit');
       type(GROUP_NAME_CONTROL_ID, '');
@@ -1280,8 +1572,8 @@ describe('RoleListComponent', () => {
       expect(query(`#${GROUP_NAME_CONTROL_ID}`)).withContext('the editor stays open').not.toBeNull();
     });
 
-    it('closes without sending anything when abandoned', () => {
-      arriveWithGroup();
+    it('closes without sending anything when abandoned', async () => {
+      await arriveWithGroup();
 
       pressGroupCommand('edit');
       type(GROUP_NAME_CONTROL_ID, 'Premium Services');
@@ -1302,8 +1594,8 @@ describe('RoleListComponent', () => {
      * `role_group.name_duplicate`, and the sentence an operator reads is the PUBLISHED one rather than
      * whatever prose the server happened to send — the published sentence says what to do next.
      */
-    it('reports a duplicate group name at 409 in the published wording, not the server prose', () => {
-      arriveWithGroup();
+    it('reports a duplicate group name at 409 in the published wording, not the server prose', async () => {
+      await arriveWithGroup();
 
       pressGroupCommand('edit');
       type(GROUP_NAME_CONTROL_ID, 'Trials');
@@ -1329,8 +1621,8 @@ describe('RoleListComponent', () => {
         .not.toBe('A group with that name already exists.');
     });
 
-    it('reports a refused replacement as a warning at 403', () => {
-      arriveWithGroup();
+    it('reports a refused replacement as a warning at 403', async () => {
+      await arriveWithGroup();
 
       pressGroupCommand('edit');
       press(GROUP_EDITOR_SUBMIT_LABEL);
@@ -1355,15 +1647,15 @@ describe('RoleListComponent', () => {
 
   describe('removing the chosen role group', () => {
     /** Arrives with a real, EMPTY group chosen, which is the removal's precondition. */
-    function arriveWithEmptyGroup(): void {
+    async function arriveWithEmptyGroup(): Promise<void> {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services' })], []);
-      chooseFilter('Paid Services');
+      await chooseFilter('Paid Services');
       expectRequest('GET', ROLES_URL).flush(pageOf([]));
       fixture.detectChanges();
     }
 
-    it('asks first, then removes with a 204 and re-reads the whole administration', () => {
-      arriveWithEmptyGroup();
+    it('asks first, then removes with a 204 and re-reads the whole administration', async () => {
+      await arriveWithEmptyGroup();
 
       pressGroupCommand('remove');
 
@@ -1393,8 +1685,8 @@ describe('RoleListComponent', () => {
       ]);
     });
 
-    it('sends nothing when the confirmation is dismissed', () => {
-      arriveWithEmptyGroup();
+    it('sends nothing when the confirmation is dismissed', async () => {
+      await arriveWithEmptyGroup();
 
       pressGroupCommand('remove');
       pressDialogue(GROUP_EDITOR_CANCEL_LABEL);
@@ -1404,8 +1696,8 @@ describe('RoleListComponent', () => {
       expect(notifications()).toHaveSize(0);
     });
 
-    it('reports a group still in use at 409 and re-reads both halves', () => {
-      arriveWithEmptyGroup();
+    it('reports a group still in use at 409 and re-reads both halves', async () => {
+      await arriveWithEmptyGroup();
 
       pressGroupCommand('remove');
       pressDialogue(REMOVAL_CONFIRM_LABEL);
@@ -1428,8 +1720,8 @@ describe('RoleListComponent', () => {
       expect(notifications()).toEqual([{ severity: 'error', message: GROUP_IN_USE_MESSAGE }]);
     });
 
-    it('reports a refused removal as a warning at 403 without re-reading', () => {
-      arriveWithEmptyGroup();
+    it('reports a refused removal as a warning at 403 without re-reading', async () => {
+      await arriveWithEmptyGroup();
 
       pressGroupCommand('remove');
       pressDialogue(REMOVAL_CONFIRM_LABEL);
@@ -1540,9 +1832,9 @@ describe('RoleListComponent', () => {
       expect(target).withContext('the picker carries a real label').not.toBeUndefined();
     });
 
-    it('gives each icon-only group command a discernible name and hides its image', () => {
+    it('gives each icon-only group command a discernible name and hides its image', async () => {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services' })], []);
-      chooseFilter('Paid Services');
+      await chooseFilter('Paid Services');
       expectRequest('GET', ROLES_URL).flush(pageOf([]));
       fixture.detectChanges();
 
@@ -1563,9 +1855,9 @@ describe('RoleListComponent', () => {
       });
     });
 
-    it('locks both group commands while a mutation is in flight', () => {
+    it('locks both group commands while a mutation is in flight', async () => {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services' })], []);
-      chooseFilter('Paid Services');
+      await chooseFilter('Paid Services');
       expectRequest('GET', ROLES_URL).flush(pageOf([]));
       fixture.detectChanges();
 
@@ -1608,7 +1900,7 @@ describe('RoleListComponent', () => {
       arrive([roleGroup()], [roleRow(0, { billingFrequency: '4', trialFrequency: 'm' })]);
 
       const cells: readonly string[] = Array.from(
-        (rows()[0] as HTMLTableRowElement).querySelectorAll('td'),
+        (rows()[0] as HTMLTableRowElement).querySelectorAll('td,th'),
       ).map((cell) => (cell.textContent ?? '').trim());
 
       expect(rows()).withContext('the page is rendered rather than refused').toHaveSize(1);
@@ -1622,7 +1914,7 @@ describe('RoleListComponent', () => {
       arrive([roleGroup()], [roleRow(0, { serviceFee: null, billingPeriod: null })]);
 
       const cells: readonly string[] = Array.from(
-        (rows()[0] as HTMLTableRowElement).querySelectorAll('td'),
+        (rows()[0] as HTMLTableRowElement).querySelectorAll('td,th'),
       ).map((cell) => (cell.textContent ?? '').trim());
 
       // Two absences on the wire and one rendering, because a fee of "nothing" is not a fee of zero and
@@ -1735,10 +2027,10 @@ describe('RoleListComponent', () => {
      * predicate. `EditRoles.ascx.vb`'s own group picker offers -1 as a storable choice and never
      * mentions -2 at all — the one is a row value, the other is only ever a view.
      */
-    it('keeps the two pseudo-entries distinct, because only one of them is a stored row value', () => {
+    it('keeps the two pseudo-entries distinct, because only one of them is a stored row value', async () => {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services' })]);
 
-      chooseFilter(ALL_ROLES_OPTION_LABEL);
+      await chooseFilter(ALL_ROLES_OPTION_LABEL);
 
       const all = expectRequest('GET', ROLES_URL, 'the all-roles read');
       const allScope: string | null = all.request.params.get('scope');
@@ -1746,7 +2038,7 @@ describe('RoleListComponent', () => {
       all.flush(pageOf([roleRow()]));
       fixture.detectChanges();
 
-      chooseFilter(GLOBAL_ROLES_OPTION_LABEL);
+      await chooseFilter(GLOBAL_ROLES_OPTION_LABEL);
 
       const ungrouped = expectRequest('GET', ROLES_URL, 'the ungrouped read');
       const ungroupedScope: string | null = ungrouped.request.params.get('scope');
@@ -1770,10 +2062,10 @@ describe('RoleListComponent', () => {
      * group it names and travels as the digit it is. A `if (roleGroupId)` guard anywhere on this path
      * would silently redirect group zero to the ungrouped scope.
      */
-    it('treats group zero as a real group rather than as an absence', () => {
+    it('treats group zero as a real group rather than as an absence', async () => {
       arrive([roleGroup(0, { roleGroupName: 'Seeded Group' })]);
 
-      chooseFilter('Seeded Group');
+      await chooseFilter('Seeded Group');
 
       const grouped = expectRequest('GET', ROLES_URL, 'the group-zero read');
 
@@ -1838,7 +2130,7 @@ describe('RoleListComponent', () => {
         'tr.data-table__row',
       );
 
-      return Array.from(row.querySelectorAll('td')).map((cell) => (cell.textContent ?? '').trim());
+      return Array.from(row.querySelectorAll('td,th')).map((cell) => (cell.textContent ?? '').trim());
     }
 
     /**
@@ -1850,6 +2142,50 @@ describe('RoleListComponent', () => {
      */
     function cellUnder(heading: string): string {
       return cellsOfFirstRow()[columnIndexOf(heading)] ?? '';
+    }
+
+    /**
+     * What a cell of the FIRST row actually PAINTS, with clipped content excluded.
+     *
+     * Two cell kinds on this screen now carry content that is deliberately in the accessibility tree and
+     * deliberately not on the screen: the absent-value mark's own words, and the expansion of a stored
+     * frequency character. `textContent` returns both, so a case asserting on the painted appearance has
+     * to exclude them explicitly — otherwise a rule that changed the VISIBLE output would still pass
+     * because the hidden words made up the difference.
+     *
+     * @param heading The column heading to read under.
+     * @returns The trimmed painted text, with every clipped span removed.
+     */
+    function paintedCellUnder(heading: string): string {
+      const cell: HTMLTableCellElement | undefined = Array.from(
+        rows()[0]?.querySelectorAll<HTMLTableCellElement>('td,th') ?? [],
+      )[columnIndexOf(heading)];
+
+      if (cell === undefined) {
+        return '';
+      }
+
+      const copy: HTMLTableCellElement = cell.cloneNode(true) as HTMLTableCellElement;
+
+      copy.querySelectorAll('.role-list__absent-value').forEach((clipped) => {
+        clipped.remove();
+      });
+
+      return (copy.textContent ?? '').trim();
+    }
+
+    /**
+     * The clipped expansion inside a cell of the first row, or the empty string when there is none.
+     *
+     * @param heading The column heading to read under.
+     * @returns The trimmed clipped text.
+     */
+    function clippedCellUnder(heading: string): string {
+      const cell: HTMLTableCellElement | undefined = Array.from(
+        rows()[0]?.querySelectorAll<HTMLTableCellElement>('td,th') ?? [],
+      )[columnIndexOf(heading)];
+
+      return (cell?.querySelector('.role-list__absent-value')?.textContent ?? '').trim();
     }
 
     /** The ordinal of the column carrying a named heading, asserted to exist. */
@@ -1869,7 +2205,7 @@ describe('RoleListComponent', () => {
 
       return rows().map((row) => {
         const cell: HTMLTableCellElement | undefined =
-          Array.from(row.querySelectorAll<HTMLTableCellElement>('td'))[index];
+          Array.from(row.querySelectorAll<HTMLTableCellElement>('td,th'))[index];
 
         return (cell?.textContent ?? '').trim();
       });
@@ -1923,8 +2259,12 @@ describe('RoleListComponent', () => {
         .filter((cell) => cell.querySelector('.data-table__label--hidden') !== null)
         .map((cell) => (cell.textContent ?? '').trim());
 
-      expect(headerCells()).withContext('two commands plus ten data columns').toHaveSize(12);
-      expect(clipped).toEqual([EDIT_LABEL, MANAGE_USERS_LABEL]);
+      // THREE commands now, not two: the removal command was added to this listing, and the reasoning
+      // for it — parity as a floor rather than a ceiling, plus the three sibling listings that all carry
+      // one — is recorded on the view query in the component. It is headed and clipped exactly like the
+      // two it joins, because it must read as the same kind of column.
+      expect(headerCells()).withContext('three commands plus ten data columns').toHaveSize(13);
+      expect(clipped).toEqual([EDIT_LABEL, MANAGE_USERS_LABEL, 'Delete']);
     });
 
     /**
@@ -1961,7 +2301,7 @@ describe('RoleListComponent', () => {
      * full IEEE-754 value of `Single.MinValue` rather than to a rounded stand-in, because a rounded
      * literal is a different number and would prove nothing about the boundary.
      */
-    it('renders the money and period sentinels as blank cells, at their exact values', () => {
+    it('withholds the two sentinels, and marks the period cells as not recorded', () => {
       arrive(
         [roleGroup()],
         [
@@ -1974,10 +2314,118 @@ describe('RoleListComponent', () => {
         ],
       );
 
-      expect(cellUnder('Fee')).toBe('');
-      expect(cellUnder('Trial')).toBe('');
-      expect(cellUnder('Billing Every')).toBe('');
-      expect(cellUnder('Trial Every')).toBe('');
+      // ⚠ THE TWO FEE COLUMNS CARRY THE MARK TOO, AND THE ASYMMETRY THAT PRECEDED IT WAS FOUND BY A
+      // BROWSER PASS RATHER THAN BY READING. The mark reached the period columns first; a run over the
+      // whole 145-role dataset then found that on the one role whose fees are stored NULL the money cells
+      // rendered as empty strings while the count cells beside them on the SAME ROW carried the mark and
+      // its words. A reader heard "not recorded" for the counts and silence for the fees, for one
+      // indistinguishable state.
+      expect(paintedCellUnder('Fee')).toBe('\u2014');
+      expect(paintedCellUnder('Trial')).toBe('\u2014');
+      expect(clippedCellUnder('Fee')).toBe('not recorded');
+      expect(clippedCellUnder('Trial')).toBe('not recorded');
+
+      // ⚠ R-M1: THE TWO PERIOD COLUMNS NOW MARK THE ABSENCE. An empty cell could not distinguish a
+      // period nobody recorded from one nobody had looked at, and the same grid rendered a stored `-3`
+      // as "-3" — two negative periods presented as different kinds of value. The VALUE is unchanged
+      // and still withheld; the cell says so, with the mark painted and the words clipped.
+      expect(paintedCellUnder('Billing Every')).toBe('\u2014');
+      expect(paintedCellUnder('Trial Every')).toBe('\u2014');
+      expect(clippedCellUnder('Billing Every'))
+        .withContext('a reader who cannot see the dash is told what it means')
+        .toBe('not recorded');
+      expect(clippedCellUnder('Trial Every')).toBe('not recorded');
+    });
+
+    /**
+     * ⚠ ZERO IS A PRICE AND MUST NEVER REACH THE ABSENT BRANCH.
+     *
+     * `RoleController.vb:L494` discriminates a paid assignment from a free one with
+     * `userRole.ServiceFee > 0.0`, so nought is a role that is deliberately FREE — a real, stored,
+     * meaningful value. Marking it "not recorded" would be a lie about the data, and this case is what
+     * stops the absent-value branch from widening into it.
+     */
+    it('renders a zero fee and a zero period as themselves, never as absent', () => {
+      arrive(
+        [roleGroup()],
+        [roleRow(0, { serviceFee: 0, trialFee: 0, billingPeriod: 0, trialPeriod: 0 })],
+      );
+
+      expect(paintedCellUnder('Fee')).toBe('0.00');
+      expect(paintedCellUnder('Trial')).toBe('0.00');
+      expect(paintedCellUnder('Billing Every')).toBe('0');
+      expect(paintedCellUnder('Trial Every')).toBe('0');
+      expect(clippedCellUnder('Fee')).toBe('');
+      expect(clippedCellUnder('Billing Every')).toBe('');
+    });
+
+    /**
+     * ⚠ R-M1, THE OTHER HALF: A NEGATIVE PERIOD THAT IS NOT THE SENTINEL STILL RENDERS ITSELF.
+     *
+     * `Roles.ascx.vb:L152-L162` guards on `period <> Null.NullInteger` and nothing else, so a stored
+     * `-3` is data and is displayed. That behaviour is unchanged — what changed is that the sentinel
+     * case beside it is no longer indistinguishable from it.
+     */
+    it('renders a negative period that is not the sentinel as itself', () => {
+      arrive([roleGroup()], [roleRow(0, { billingPeriod: -3, trialPeriod: -3 })]);
+
+      expect(paintedCellUnder('Billing Every')).toBe('-3');
+      expect(clippedCellUnder('Billing Every'))
+        .withContext('a real value carries no absence words')
+        .toBe('');
+    });
+
+    /**
+     * ⚠ R-M4: AN AMOUNT THE CELL CANNOT STATE EXACTLY SAYS SO, IN WORDS, AND STILL PAINTS ITSELF.
+     *
+     * The column is SQL `money` — exact decimal at the full width of a 64-bit integer — and the wire
+     * carries a JSON number, which is read as an IEEE-754 double. Above `MAX_SAFE_INTEGER / 100` a
+     * double cannot hold an amount to the nearest hundredth, so the figure that arrives has already
+     * moved from the figure that is stored: runtime measurement found `922337203685477.5807` stored
+     * against `922337203685477.63` painted, in the same colour and weight as an exact amount, on the
+     * screen an administrator uses to review what a role costs.
+     *
+     * The rounding happens when the wire is parsed and cannot be undone here, so the cell discloses
+     * rather than corrects. This case pins BOTH halves: the figure is still painted (an operator needs
+     * the magnitude) and the qualifier is present in the accessibility tree.
+     */
+    it('marks a fee too large for a double to state exactly as approximate', () => {
+      arrive(
+        [roleGroup()],
+        [
+          roleRow(0, {
+            serviceFee: 922_337_203_685_477.5807,
+            trialFee: 922_337_203_685_477.5807,
+          }),
+        ],
+      );
+
+      expect(paintedCellUnder('Fee'))
+        .withContext('the magnitude is still painted; only its exactness is qualified')
+        .toBe('922337203685477.63');
+      expect(clippedCellUnder('Fee')).toBe('approximate');
+      expect(clippedCellUnder('Trial')).toBe('approximate');
+    });
+
+    /**
+     * ⚠ THE R-M4 QUALIFIER MUST NOT WIDEN INTO ORDINARY MONEY.
+     *
+     * Every amount an operator will ever type is exact in a double, so a qualifier appearing on one
+     * would be noise on every row of every page — and would train a reader to ignore it on the one
+     * row where it matters. The threshold is `MAX_SAFE_INTEGER / 100`; this case sits an amount just
+     * BELOW it and one far below it, and asserts silence for both.
+     */
+    it('leaves an exactly representable fee unqualified, however large', () => {
+      arrive(
+        [roleGroup()],
+        [roleRow(0, { serviceFee: 90_071_992_547_409.8, trialFee: 9.99, billingPeriod: 1 })],
+      );
+
+      expect(clippedCellUnder('Fee'))
+        .withContext('just below the bound: exact to the cent, so nothing is claimed')
+        .toBe('');
+      expect(paintedCellUnder('Fee')).toBe('90071992547409.80');
+      expect(clippedCellUnder('Trial')).toBe('');
     });
 
     /**
@@ -2023,8 +2471,57 @@ describe('RoleListComponent', () => {
       );
 
       expect(rows()).toHaveSize(codes.length);
-      expect(columnUnder('Billing Period')).toEqual(['N', 'O', 'D', 'W', 'M', 'Y']);
-      expect(columnUnder('Trial Period')).toEqual(['N', 'O', 'D', 'W', 'M', 'Y']);
+
+      // ⚠ THE PAINTED CHARACTER IS UNCHANGED, which is what this case has always been about. The
+      // expansion added for R-M3 is CLIPPED, so it must not appear in the painted reading — and the
+      // painted reading is taken with clipped content excluded precisely so that a rule which started
+      // painting the word would fail here rather than pass on the strength of the hidden text.
+      const painted = (heading: string): readonly string[] =>
+        rows().map((row, index) => {
+          const cell: HTMLTableCellElement | undefined = Array.from(
+            row.querySelectorAll<HTMLTableCellElement>('td,th'),
+          )[columnIndexOf(heading)];
+          const copy = cell?.cloneNode(true) as HTMLElement | undefined;
+
+          copy?.querySelectorAll('.role-list__absent-value').forEach((clipped) => {
+            clipped.remove();
+          });
+
+          expect(copy).withContext(`row ${index} has a cell under "${heading}"`).not.toBeUndefined();
+
+          return (copy?.textContent ?? '').trim();
+        });
+
+      expect(painted('Billing Period')).toEqual(['N', 'O', 'D', 'W', 'M', 'Y']);
+      expect(painted('Trial Period')).toEqual(['N', 'O', 'D', 'W', 'M', 'Y']);
+    });
+
+    /**
+     * ⚠ R-M3: WHAT THE CHARACTER MEANS REACHES A READER, WITHOUT REACHING THE SCREEN.
+     *
+     * The legacy grid bound the raw field rather than the joined description (`roles.ascx:L50-L52`), so
+     * a reader met an unexplained letter while the role editor two clicks away rendered the same datum
+     * as "Month". The expansion closes that gap at zero visual cost, and it takes its words from the one
+     * shared vocabulary the editor's own select captions are built from — so the two screens cannot
+     * drift apart about what `M` is called.
+     */
+    it('clips an expansion of each frequency character for a reader', () => {
+      arrive([roleGroup()], [roleRow(0, { billingFrequency: 'M', trialFrequency: 'Y' })]);
+
+      expect(clippedCellUnder('Billing Period')).toBe('Month');
+      expect(clippedCellUnder('Trial Period')).toBe('Year');
+    });
+
+    /**
+     * A character outside the closed vocabulary contributes NOTHING rather than a guess. The column is
+     * constrained by `FK_Roles_CodeFrequency`, so anything else is data this application cannot
+     * interpret, and narrating it would be inventing a meaning.
+     */
+    it('says nothing about a frequency character it cannot interpret', () => {
+      arrive([roleGroup()], [roleRow(0, { billingFrequency: 'Q' })]);
+
+      expect(paintedCellUnder('Billing Period')).toBe('Q');
+      expect(clippedCellUnder('Billing Period')).toBe('');
     });
 
     /**
@@ -2100,18 +2597,33 @@ describe('RoleListComponent', () => {
 
   describe('structural parity', () => {
     /**
-     * ⚠ THE LEGACY GRID IS UNPAGED. `roles.ascx` declares no `AllowPaging`, no `PagerStyle` visibility,
-     * and no paging control of any kind; `Roles.ascx.vb` binds a plain `ArrayList` straight onto the
-     * grid at L77 and L91 and mentions neither a page index, a page size nor a total. The wire contract
-     * this screen reads IS paged — the endpoint answers a paged envelope — and the reconciliation is
-     * that the screen asks for one page wide enough to hold the tenant's roles and then offers no way
-     * to move between pages. Rendering a pager would be an affordance the legacy screen never had.
+     * ⚠ THE PAGER IS AN ADDITION, AND THIS CASE RECORDS IT AS ONE RATHER THAN DENYING IT.
+     *
+     * `roles.ascx` declares no `AllowPaging`, no `PagerStyle` visibility and no paging control of any
+     * kind; `Roles.ascx.vb` binds a plain `ArrayList` straight onto the grid at L77 and L91 and mentions
+     * neither a page index, a page size nor a total. This case previously asserted that ABSENCE, and the
+     * reconciliation it described was that the screen asked for "one page wide enough to hold the
+     * tenant's roles" — which is not what the store did: it walked page after page and joined them,
+     * because no single request can be wide enough.
+     *
+     * Runtime testing measured what that cost on a hundred and forty-five roles: an eight-thousand-pixel
+     * document at 320 units wide with no affordance but scrolling, three requests per arrival, the whole
+     * walk re-issued on every Back and after every write. The pager replaced the walk. A tenant of the
+     * size the legacy product shipped — six stock roles — still fits one page and is still offered no
+     * page-to-page affordance, which is what this case now pins: the SUMMARY is present because the
+     * pager owns its own shape, and the STEPS are not.
      */
-    it('offers no paging control, because the legacy grid was unpaged', () => {
+    it('draws the pager beneath the grid, and offers no steps when everything fits one page', () => {
       arrive([roleGroup()], [roleRow(0), roleRow(1, { roleName: 'Registered Users' })]);
 
-      expect(query('app-pagination')).toBeNull();
-      expect(queryAll('nav')).withContext('and no pager navigation under another name').toHaveSize(0);
+      const pager: Element | null = query('app-pagination');
+
+      expect(pager).withContext('mounted unconditionally, so the range summary always shows').not.toBeNull();
+      // Two roles at ten a page is one page. The pager renders its summary and withholds the steps, so
+      // a legacy-sized tenant sees no affordance the legacy screen lacked.
+      expect(pager?.querySelectorAll('button') ?? [])
+        .withContext('no page-to-page steps for a single page')
+        .toHaveSize(0);
     });
 
     /** The legacy screen filtered by role GROUP alone. There was no text box and no free-text search. */
@@ -2123,25 +2635,45 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * ⚠ TWO ROW COMMANDS, NOT THREE, AND NO ROW-LEVEL REMOVAL. `roles.ascx` L34-L35 declares exactly
-     * two `dnn:imagecommandcolumn`s — `Edit` and `UserRoles` — and the string `commandname="Delete"`
-     * appears nowhere in the file. A role is removed from its own editor, never from this listing, and
-     * offering a per-row delete here would be a new destructive affordance.
+     * ⚠ THREE ROW COMMANDS: THE TWO THE LEGACY DECLARED, PLUS A REMOVAL THAT IS AN ADDITION.
+     *
+     * `roles.ascx` L34-L35 declares exactly two `dnn:imagecommandcolumn`s — `Edit` and `UserRoles` —
+     * and the string `commandname="Delete"` appears nowhere in the file. The `cmdDelete` control on the
+     * same page is the ROLE-GROUP removal button (`Roles.ascx.vb:L81-L86`), gated on the selected group
+     * holding no roles; it is not a row command and never was. This case previously asserted that the
+     * listing offered no removal, on the reasoning that adding one would be "a new destructive
+     * affordance".
+     *
+     * It is one, and it is added deliberately: functional parity is a floor rather than a ceiling, the
+     * three sibling listings in this application each carry a row-level removal reached through the same
+     * shared confirmation, and roles was the one listing where the workflow existed but could only be
+     * found by opening a role first. The mis-press hazard is answered by construction — the command
+     * opens the shared destructive dialog, which names what will be removed — rather than by leaving the
+     * workflow hidden.
+     *
+     * The two navigation commands stay ANCHORS and the removal is a BUTTON, because one addresses a
+     * screen and the other changes state, and the removal is placed LAST so it is never the command a
+     * pointer meets first.
      */
-    it('offers exactly two commands per row, and no row-level removal', () => {
+    it('offers three commands per row: two links, then the removal button', () => {
       arrive([roleGroup()], [roleRow(0), roleRow(1, { roleName: 'Registered Users' })]);
 
       for (const row of rows()) {
-        const commands: readonly HTMLAnchorElement[] = Array.from(
+        const links: readonly HTMLAnchorElement[] = Array.from(
           row.querySelectorAll<HTMLAnchorElement>('a.role-list__row-action'),
         );
+        const buttons: readonly HTMLButtonElement[] = Array.from(
+          row.querySelectorAll<HTMLButtonElement>('button.role-list__row-action'),
+        );
 
-        expect(commands).withContext('edit and manage-users, and nothing else').toHaveSize(2);
-        expect(commands.map((link) => (link.textContent ?? '').trim())).toEqual([
+        expect(links).withContext('edit and manage-users remain links').toHaveSize(2);
+        expect(links.map((link) => (link.textContent ?? '').trim())).toEqual([
           EDIT_LABEL,
           MANAGE_USERS_LABEL,
         ]);
-        expect(row.querySelectorAll('button')).withContext('no in-row button at all').toHaveSize(0);
+        expect(buttons).withContext('exactly one destructive command, and it is a button').toHaveSize(1);
+        expect(buttons[0]?.type).toBe('button');
+        expect(buttons[0]?.classList).toContain('role-list__row-action--danger');
       }
     });
 
@@ -2230,13 +2762,13 @@ describe('RoleListComponent', () => {
      * the framework and the grid would keep painting the old rows after a narrowing changed. Replacing
      * the array is what makes the re-render happen.
      */
-    it('replaces the row set on a re-read rather than mutating it', () => {
+    it('replaces the row set on a re-read rather than mutating it', async () => {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services' })], [roleRow(0)]);
 
       const store = TestBed.inject(RoleStore);
       const before: readonly RoleListItem[] = store.roleItems();
 
-      chooseFilter('Paid Services');
+      await chooseFilter('Paid Services');
       expectRequest('GET', ROLES_URL).flush(pageOf([roleRow(1, { roleName: 'Subscribers' })]));
       fixture.detectChanges();
 
@@ -2261,16 +2793,16 @@ describe('RoleListComponent', () => {
      * appear at all (neither pseudo-entry is a resource), and an empty listing is what makes the
      * removal command appear rather than only the editor.
      */
-    function arriveWithEmptyGroup(): void {
+    async function arriveWithEmptyGroup(): Promise<void> {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services' })], []);
-      chooseFilter('Paid Services');
+      await chooseFilter('Paid Services');
       expectRequest('GET', ROLES_URL).flush(pageOf([]));
       fixture.detectChanges();
     }
 
     /** The same arrival, named for the cases that care only that a real group is chosen. */
-    function arriveWithChosenGroup(): void {
-      arriveWithEmptyGroup();
+    async function arriveWithChosenGroup(): Promise<void> {
+      await arriveWithEmptyGroup();
     }
 
     /**
@@ -2280,8 +2812,8 @@ describe('RoleListComponent', () => {
      * the row, precisely so the trial-used fact survives (`RoleController.vb` L494-L497). Wording that
      * told an operator the action could not be undone would be false about the system it describes.
      */
-    it('makes no claim of permanence in the removal confirmation', () => {
-      arriveWithEmptyGroup();
+    it('makes no claim of permanence in the removal confirmation', async () => {
+      await arriveWithEmptyGroup();
 
       pressGroupCommand('remove');
 
@@ -2308,8 +2840,8 @@ describe('RoleListComponent', () => {
      * ⚠ THE CONFIRMATION'S PRESENCE IS WHAT "OPEN" MEANS. It exposes no `open` input, so the guard in
      * the template is the whole of the gating: absent until a removal is pending, present once one is.
      */
-    it('raises the confirmation only once a removal is pending', () => {
-      arriveWithEmptyGroup();
+    it('raises the confirmation only once a removal is pending', async () => {
+      await arriveWithEmptyGroup();
 
       expect(query('app-confirm-dialog')).withContext('nothing pending yet').toBeNull();
 
@@ -2330,8 +2862,8 @@ describe('RoleListComponent', () => {
      * component host, not on the button that happens to hold focus. The key is compared by `key`; a
      * `keyCode` comparison would be reading a property the platform has deprecated.
      */
-    it('abandons the removal on Escape without sending anything', () => {
-      arriveWithEmptyGroup();
+    it('abandons the removal on Escape without sending anything', async () => {
+      await arriveWithEmptyGroup();
 
       pressGroupCommand('remove');
 
@@ -2359,11 +2891,11 @@ describe('RoleListComponent', () => {
      * The three-way removal guard is proved elsewhere in this suite; what this case adds is that the
      * refusal an operator READS is the sentence the legacy screen showed, unchanged.
      */
-    it('reports a refusal of authority at warning severity, in the legacy wording', () => {
+    it('reports a refusal of authority at warning severity, in the legacy wording', async () => {
       const accessDenied =
         'Either you are not currently logged in, or you do not have access to this content.';
 
-      arriveWithEmptyGroup();
+      await arriveWithEmptyGroup();
 
       pressGroupCommand('remove');
       pressDialogue(REMOVAL_CONFIRM_LABEL);
@@ -2393,7 +2925,7 @@ describe('RoleListComponent', () => {
      * beside and the refusal is delivered as an announcement. Asserting a message beside the field here
      * would be asserting a screen this component does not present.
      */
-    it('delivers a refused replacement as an announcement, the editor having closed on submission', () => {
+    it('delivers a refused replacement as an announcement, the editor having closed on submission', async () => {
       const refusedKey = 'RoleGroupName';
       const refusedDetail = 'One or more members were refused.';
       const refusal: ProblemDetails = problem('validation.failed', 400, refusedDetail, {
@@ -2405,7 +2937,7 @@ describe('RoleListComponent', () => {
         .withContext('the fixture names the refused member by its wire key')
         .toHaveSize(1);
 
-      arriveWithChosenGroup();
+      await arriveWithChosenGroup();
 
       pressGroupCommand('edit');
       type(GROUP_NAME_CONTROL_ID, 'Premium Services');
@@ -2438,8 +2970,8 @@ describe('RoleListComponent', () => {
      * right while a `<br>` element was parsed out of them, and no element can be present while the
      * characters `<br>` are still visible in the sentence.
      */
-    it('renders stored wording as text, with its layout markup stripped rather than honoured', () => {
-      arriveWithChosenGroup();
+    it('renders stored wording as text, with its layout markup stripped rather than honoured', async () => {
+      await arriveWithChosenGroup();
 
       pressGroupCommand('edit');
       type(GROUP_NAME_CONTROL_ID, '');
@@ -2465,11 +2997,11 @@ describe('RoleListComponent', () => {
      * because the group name reaches the DOM through a different path — an editor control and an
      * announcement rather than a grid cell.
      */
-    it('renders a hostile group name as characters in both the control and the announcement', () => {
+    it('renders a hostile group name as characters in both the control and the announcement', async () => {
       const hostile = '<b>x</b>';
 
       arrive([roleGroup(4, { roleGroupName: hostile })], []);
-      chooseFilter(hostile);
+      await chooseFilter(hostile);
       expectRequest('GET', ROLES_URL).flush(pageOf([]));
       fixture.detectChanges();
 
@@ -2491,4 +3023,231 @@ describe('RoleListComponent', () => {
     });
   });
 
+  // ---------------------------------------------------------------------------------------------------
+  // PROOF — THE ADDRESS CARRIES THE NARROWING AND THE PAGE
+  //
+  // Runtime testing on the sibling portal listing measured five separate desyncs from keeping this state
+  // privately: pager clicks advanced the grid while the address stayed on the bare route, pressing back
+  // from page three was not possible because paging created no history entry at all, a typed address with a
+  // filter on it issued no request, and a fresh arrival from another screen landed on a page and a narrowing
+  // the operator could not see, because these stores are provided at the application root and OUTLIVE their
+  // routes. This block is the contract that closes all of it for the role listing.
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('the address', () => {
+    /**
+     * Mounts the screen on a tenant with enough roles for the pager to render its steps.
+     *
+     * `arrive` reports a total equal to the number of rows it is given, which is one page - and a pager on
+     * one page correctly withholds its steps, so a case that needs to press one has to arrive differently.
+     *
+     * @param totalCount The tenant's role count to report.
+     */
+    function arriveAcrossPages(totalCount: number): void {
+      create();
+      expectRequest('GET', ROLE_GROUPS_URL, 'the group read').flush(envelope([roleGroup()]));
+      fixture.detectChanges();
+      expectRequest('GET', ROLES_URL, 'the role read').flush(pageOf([roleRow()], totalCount));
+      fixture.detectChanges();
+    }
+
+    /** Navigates to an address BEFORE the screen mounts, which is how an entry is simulated. */
+    async function enterAt(url: string): Promise<void> {
+      await TestBed.inject(Router).navigateByUrl(url);
+    }
+
+
+    /**
+     * Presses one of the pager's steps by its accessible name, then settles the navigation it starts.
+     *
+     * The real control rather than the component method, so the case exercises the same path an operator
+     * does - the method is `protected` and reaching past that would be asserting an interface nobody uses.
+     */
+    async function pressStep(name: 'First page' | 'Previous page' | 'Next page' | 'Last page'): Promise<void> {
+      const step: HTMLButtonElement | null = host().querySelector<HTMLButtonElement>(
+        `app-pagination button[aria-label="${name}"]`,
+      );
+
+      expect(step).withContext(`the "${name}" step is offered`).not.toBeNull();
+      expect(step?.disabled).withContext(`the "${name}" step is available`).toBeFalse();
+
+      step?.click();
+      fixture.detectChanges();
+      await settleAddress();
+    }
+
+    /** The query parameters the screen has actually navigated to. */
+    function addressParams(): Readonly<Record<string, string>> {
+      const router: Router = TestBed.inject(Router);
+
+      return router.parseUrl(router.url).queryParams as Readonly<Record<string, string>>;
+    }
+
+    it('writes a chosen narrowing into the address rather than keeping it privately', async () => {
+      await arrive([roleGroup(4, { roleGroupName: 'Paid Services' })]);
+
+      await chooseFilter('Paid Services');
+      expectRequest('GET', ROLES_URL).flush(pageOf([]));
+
+      // The real key, not the legacy `-2`/`-1` vocabulary the dropdown itself still uses.
+      expect(addressParams()['group']).toBe('4');
+    });
+
+    it('writes the two pseudo-narrowings as words, never as their legacy negative numbers', async () => {
+      await arrive();
+
+      await chooseFilter('< All Roles >');
+      expectRequest('GET', ROLES_URL).flush(pageOf([]));
+
+      expect(addressParams()['group'])
+        .withContext('an address is read by people, so -2 says nothing and "all" says everything')
+        .toBe('all');
+    });
+
+    it('omits the default narrowing instead of stating it', async () => {
+      // So the address of a listing nobody has narrowed is the bare route. The measured legacy default is
+      // the UNGROUPED narrowing (`Roles.ascx.vb:L48` initialises to -1, ungrouped per `:L114`).
+      await arrive();
+
+      await chooseFilter('< All Roles >');
+      expectRequest('GET', ROLES_URL).flush(pageOf([]));
+      await chooseFilter('< Global Roles >');
+      expectRequest('GET', ROLES_URL).flush(pageOf([]));
+
+      expect(addressParams()['group']).toBeUndefined();
+    });
+
+    it('writes a page turn into the address, one-based', async () => {
+      // Four pages of roles, so the pager renders its steps at all.
+      arriveAcrossPages(40);
+
+      await pressStep('Next page');
+      expectRequest('GET', ROLES_URL).flush(pageOf([roleRow()], 40));
+
+      expect(addressParams()['currentpage'])
+        .withContext('the address is one-based even though the store and the wire are not')
+        .toBe('2');
+    });
+
+    it('restores a whole view from the address on entry: narrowing and page together', async () => {
+      // ⚠ ONE READ, AT THE RIGHT COORDINATE. Restoring the two through the ordinary commands would issue
+      // two reads, and the narrowing would reset the page on its way through - discarding the page the
+      // address had just asked for. This is the case that would catch that.
+      await enterAt('/roles?group=all&currentpage=3');
+      create();
+
+      expectRequest('GET', ROLE_GROUPS_URL).flush(envelope([roleGroup()]));
+      fixture.detectChanges();
+
+      const read: TestRequest = expectRequest('GET', ROLES_URL);
+
+      expect(read.request.params.get('pageIndex')).toBe('2');
+      // The WIRE spelling, which is not the union member's name: the store maps `AllRoles` to `All`.
+      expect(read.request.params.get('scope')).toBe('All');
+
+      read.flush(pageOf([roleRow()], 40));
+      fixture.detectChanges();
+
+      expect(httpMock.match(() => true))
+        .withContext('and nothing further, so the restore cost exactly one listing read')
+        .toHaveSize(0);
+    });
+
+    it('starts clean on a fresh entry, even though the store outlives the route', async () => {
+      // THE MEASURED DEFECT: a fresh sidebar click landed on the page and narrowing of a previous visit.
+      await arrive();
+
+      await chooseFilter('< All Roles >');
+      expectRequest('GET', ROLES_URL).flush(pageOf([roleRow()], 90));
+      fixture.detectChanges();
+
+      await pressStep('Last page');
+      expectRequest('GET', ROLES_URL).flush(pageOf([roleRow()], 90));
+
+      expect(addressParams()['currentpage'])
+        .withContext('the previous visit really did leave a narrowing and a page behind')
+        .toBe('9');
+      expect(addressParams()['group']).toBe('all');
+
+      fixture.destroy();
+      mounted = false;
+
+      // A fresh arrival at the bare route, with the same store still holding the previous coordinates.
+      await enterAt('/roles');
+      create();
+      expectRequest('GET', ROLE_GROUPS_URL).flush(envelope([roleGroup()]));
+      fixture.detectChanges();
+
+      const read: TestRequest = expectRequest('GET', ROLES_URL);
+
+      expect(read.request.params.get('pageIndex'))
+        .withContext('the bare address means the first page, whatever the store still held')
+        .toBe('0');
+      expect(read.request.params.get('scope'))
+        .withContext('the measured legacy default is the UNGROUPED narrowing')
+        .toBe('Ungrouped');
+
+      read.flush(pageOf([roleRow()]));
+      fixture.detectChanges();
+    });
+
+    it('corrects an address that names no page, and replaces the entry rather than adding one', async () => {
+      await enterAt('/roles?currentpage=abc');
+      create();
+
+      // ⚠ NOTHING IS READ ON THE FIRST EMISSION, WHICH IS THE CONTRACT. An unusable address is replaced and
+      // the handler returns without reading; the replacement emits again and THAT emission does the read. So
+      // the address has to settle before any request exists to expect.
+      expect(httpMock.match(() => true))
+        .withContext('the uncorrected address reads nothing')
+        .toHaveSize(0);
+
+      await settleAddress();
+
+      expectRequest('GET', ROLE_GROUPS_URL).flush(envelope([roleGroup()]));
+      fixture.detectChanges();
+
+      expect(addressParams()['currentpage'])
+        .withContext('an unusable value is corrected away, not obeyed and not kept')
+        .toBeUndefined();
+
+      const read: TestRequest = expectRequest('GET', ROLES_URL);
+
+      expect(read.request.params.get('pageIndex')).toBe('0');
+      read.flush(pageOf([roleRow()]));
+      fixture.detectChanges();
+    });
+
+    it('leaves a parameter belonging to something else on the address alone', async () => {
+      // ⚠ THE CASE THAT PROTECTS `?userId=`. This screen can be narrowed to one account by a route-bound
+      // input reading that parameter. Reconciliation examines only the keys its own writer produces, so an
+      // unusable page beside a foreign parameter corrects the page and keeps the account.
+      await enterAt('/roles?userId=7&currentpage=1');
+      create();
+      await settleAddress();
+
+      expect(addressParams()['userId']).toBe('7');
+      expect(addressParams()['currentpage']).toBeUndefined();
+
+      httpMock.match(() => true).forEach((pending) => pending.flush(envelope([])));
+      fixture.detectChanges();
+      httpMock.match(() => true).forEach((pending) => pending.flush(pageOf([])));
+      fixture.detectChanges();
+    });
+
+    it('reads the narrowing selector once on entry and not again on a page turn', async () => {
+      // Phase-6 work measured a page change down to exactly one request. The groups populate the selector
+      // and no page turn can change them, so re-reading them here would silently return it to two.
+      arriveAcrossPages(40);
+
+      await pressStep('Next page');
+
+      expectRequest('GET', ROLES_URL, 'the page read').flush(pageOf([roleRow()], 40));
+      fixture.detectChanges();
+
+      expect(httpMock.match((candidate) => candidate.url === ROLE_GROUPS_URL))
+        .withContext('the groups are not re-read for a page turn')
+        .toHaveSize(0);
+    });
+  });
 });

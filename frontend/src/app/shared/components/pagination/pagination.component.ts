@@ -1,9 +1,16 @@
+import { DOCUMENT } from '@angular/common';
 import {
+  AfterViewChecked,
   ChangeDetectionStrategy,
   Component,
+  ElementRef,
   EventEmitter,
+  inject,
   Input,
+  OnChanges,
   Output,
+  SimpleChanges,
+  ViewChild,
 } from '@angular/core';
 
 /**
@@ -47,6 +54,15 @@ const PAGINATION_LABELS = {
    * be announced on every list screen.
    */
   region: 'Pagination',
+  /**
+   * Accessible name for the step controls within the group.
+   *
+   * A SECOND name is needed because the group now renders in two shapes: a result count alone when
+   * everything fits one page, and a result count plus the steps when it does not. Naming the inner
+   * cluster keeps "Pagination" attached to the whole, so the count is inside the named region in both
+   * shapes rather than only in the navigable one.
+   */
+  steps: 'Pages',
   first: 'First page',
   previous: 'Previous page',
   next: 'Next page',
@@ -126,13 +142,30 @@ function toTotalCount(value: number): number {
 }
 
 /**
+ * Reduces a bound in-flight flag to a definite boolean.
+ *
+ * Compared against `true` rather than tested for truthiness, in keeping with this component's rule against
+ * truthiness tests, so an absent, null or undefined binding reads as settled rather than as busy. Settled is
+ * the safe default: a component told nothing about a request announces its numbers immediately, which is the
+ * behaviour every caller had before this input existed.
+ *
+ * @param value The bound flag, which a caller may leave unbound.
+ * @returns True only when the caller genuinely said a request is open.
+ */
+function toPending(value: boolean | null | undefined): boolean {
+  return value === true;
+}
+
+/**
  * Page navigation for a list screen, driven by the API's paging metadata.
  *
- * Purely presentational: it takes three numbers in and reports one number out, holds no data, fetches
- * nothing and never changes its own {@link page}, so it cannot claim to be on a page whose request failed.
- * The three inputs are exactly three members of the response envelope's paging metadata, and every
+ * Purely presentational: it takes three numbers and one flag in, reports one number out, holds no data,
+ * fetches nothing and never changes its own {@link page}, so it cannot claim to be on a page whose request
+ * failed. The three numbers are exactly three members of the response envelope's paging metadata, and every
  * derivation from them — the page count, the range on show, whether a step is available — is computed here
- * once, so no two screens can compute them differently.
+ * once, so no two screens can compute them differently. The flag, {@link loading}, exists for one reason
+ * only: the range summary is a LIVE REGION, so it is announced rather than merely shown, and a component
+ * told nothing about an outstanding request will announce a page's contents before that page arrives.
  *
  * MIGRATION: the boundary is ZERO-BASED and the display is ONE-BASED, and the conversion happens here. So
  * {@link page} matches the wire exactly, {@link displayPage} adds the one a person expects, and {@link
@@ -154,7 +187,7 @@ function toTotalCount(value: number): number {
   styleUrl: './pagination.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class PaginationComponent {
+export class PaginationComponent implements OnChanges, AfterViewChecked {
   /**
    * The zero-based index of the page currently shown.
    *
@@ -189,6 +222,37 @@ export class PaginationComponent {
   @Input({ required: true, transform: toTotalCount }) totalCount = 0;
 
   /**
+   * Whether the page these numbers describe is still being fetched.
+   *
+   * ⚠ THIS IS THE FOURTH INPUT ON A SURFACE THIS FILE ELSEWHERE DESCRIBES AS CLOSED AT THREE, and the
+   * reason it earns its place is that without it the component CANNOT tell the truth. The range summary
+   * is a live region, so it is not merely displayed - it is ANNOUNCED. Its wording is composed from
+   * {@link page}, which every list screen binds to the coordinate that was ASKED for rather than the one
+   * that arrived, deliberately, so the visible position readout does not snap back to the previous page
+   * for the duration of every request. The consequence for the announcement is not benign: runtime
+   * measurement under deliberate network throttling caught the summary reading "21-30 of 145" while the
+   * grid beside it still held rows eleven to twenty. A screen-reader user was being told the contents of
+   * a page that did not exist yet.
+   *
+   * ⚠ THE FIX IS TO DEFER THE ANNOUNCEMENT, NOT TO CHANGE THE NUMBERS. Deriving the summary from the
+   * served metadata instead would fix the announcement and break the readout, and suppressing the
+   * summary while a request is open would announce its disappearance and reappearance on every page
+   * turn. `aria-busy` is the mechanism ARIA defines for exactly this: while it is true on a live region
+   * the region's changes are held, and when it clears the region is processed once, in its settled
+   * state. So the wording updates immediately for the eye and is announced once for the ear, and the
+   * two need no longer disagree.
+   *
+   * Optional, defaulting to false, so a caller with nothing asynchronous behind it - or one written
+   * before this input existed - keeps its present behaviour exactly.
+   *
+   * Compared against `true` rather than tested for truthiness, in keeping with this component's rule
+   * against truthiness tests: zero and minus one are legitimate values throughout this data.
+   *
+   * @param value Whether a request for this page is in flight.
+   */
+  @Input({ transform: toPending }) loading = false;
+
+  /**
    * Emits the zero-based index of the page a person asked for.
    *
    * ZERO-BASED, never the one-based number on screen. Only ever emits a whole index inside the available
@@ -202,6 +266,54 @@ export class PaginationComponent {
    * The pager's wording, bound by the template.
    */
   readonly labels = PAGINATION_LABELS;
+
+  /**
+   * The four step controls, read from the view so focus can be repaired after a terminal step.
+   *
+   * Read as element references rather than looked up by selector at the document level so that a screen
+   * mounting two pagers - a listing and a picker within it - can never move focus into the other one.
+   */
+  @ViewChild('firstStep') private firstStep?: ElementRef<HTMLButtonElement>;
+
+  @ViewChild('previousStep') private previousStep?: ElementRef<HTMLButtonElement>;
+
+  @ViewChild('nextStep') private nextStep?: ElementRef<HTMLButtonElement>;
+
+  @ViewChild('lastStep') private lastStep?: ElementRef<HTMLButtonElement>;
+
+  /**
+   * The document, for reading which element holds focus.
+   *
+   * Injected rather than referenced as the global so the component stays testable and renderer-agnostic;
+   * nothing here writes to the document beyond calling `focus()` on its own button.
+   */
+  private readonly document = inject(DOCUMENT);
+
+  /**
+   * Which terminal step a person just activated, while its effect is still pending.
+   *
+   * ⚠ THIS EXISTS BECAUSE FIRST AND LAST DISABLE THEMSELVES. Activating "Last page" moves to the last
+   * page, at which point "Last page" is unavailable and becomes genuinely `disabled` - and a browser
+   * discards focus on an element that becomes disabled, dropping it to `body`. Runtime testing measured
+   * exactly that: focus reached `body` after First and after Last, while Next and Previous retained it
+   * because they stay enabled mid-range. A keyboard user was returned to the top of the document and had
+   * to tab back through the entire page to reach the pager again.
+   *
+   * Held as pending rather than acted on at once because the page has NOT changed yet when the click is
+   * handled: the emission asks the consumer for a page, the consumer fetches it, and the disabled state
+   * only materialises when the new index is bound back. The repair therefore has to wait for that bind,
+   * which is what {@link ngOnChanges} and {@link ngAfterViewChecked} between them do.
+   */
+  private pendingStep: 'first' | 'last' | null = null;
+
+  /**
+   * Whether the bound page has changed since a terminal step was activated.
+   *
+   * Separating "asked for" from "arrived" is what bounds the repair: without it a request that never
+   * completes would leave focus movement armed indefinitely, and a later unrelated render could then
+   * move focus with no person having asked for it.
+   */
+  private stepApplied = false;
 
   /**
    * The number of pages the result set spans.
@@ -246,6 +358,38 @@ export class PaginationComponent {
   }
 
   /**
+   * Whether the pager renders anything at all.
+   *
+   * TRUE AS SOON AS THERE IS A RESULT TO COUNT, which is a wider condition than {@link isNavigable} on
+   * purpose: the group carries a range summary as well as the steps, and the summary is the only
+   * on-screen confirmation of how many records a filter matched. Runtime testing measured what tying
+   * the two together cost - a filter that narrowed 250 portals to seven removed the whole group, so the
+   * screen showed seven rows and no statement anywhere that seven was the entire match set, on every
+   * list. The steps themselves remain gated on {@link isNavigable}, because four permanently disabled
+   * buttons would state the opposite of the truth about what can be reached.
+   *
+   * MIGRATION: a documented divergence from the legacy portals screen and a return to the legacy USERS
+   * screen. Both ran the identical guard `If SuppressPager And ctlPagingControl.Visible Then
+   * ctlPagingControl.Visible = (PageSize < TotalRecords)` - `Website/admin/Portal/Portals.ascx.vb`
+   * L155-L157 and `Website/admin/Users/Users.ascx.vb` L278-L280 - and differed only in
+   * `SuppressPager`: portals hard-coded `Return True` at `Portals.ascx.vb` L112 with the real setting
+   * commented out at L110-L111, so its guard ran and its pager vanished for a single page, while users
+   * read the genuine `Display_SuppressPager` setting whose default is `False`
+   * (`Library/Components/Users/UserModuleBase.vb` L131-L133), so its guard never ran and ITS PAGER
+   * STAYED VISIBLE FOR A SINGLE PAGE. The legacy pager rendered a status cell on every visible pass
+   * (`Library/Controls/PagingControl.vb` L153-L161), so a visible single-page pager did show a
+   * position readout. Keeping the group is therefore the legacy users behaviour, and the divergence is
+   * confined to the portals screen, whose own guard was disabled code.
+   *
+   * Nothing renders while there is nothing to count: a total of zero and an unresolved page size both
+   * report no pages, and a zero-result state belongs to the empty-state component, which says what
+   * happened in words rather than as "0-0 of 0".
+   */
+  get isRendered(): boolean {
+    return this.totalPages > 0;
+  }
+
+  /**
    * The index of the last page, or minus one when there are no pages.
    *
    * Minus one is arithmetic here — one below the first index — and carries none of the legacy absent-integer
@@ -269,6 +413,19 @@ export class PaginationComponent {
     }
 
     return Math.min(this.page, this.lastPageIndex);
+  }
+
+  /**
+   * The value bound to the range summary's `aria-busy`, or `null` at rest.
+   *
+   * A getter rather than a stored value so it cannot fall out of step with {@link loading}, and `null`
+   * rather than the string "false" when settled so the attribute is ABSENT at rest — which is exactly how
+   * the shared grid reports the same state, and the two are read together by anyone auditing how this
+   * application reports progress. The input transform has already settled the flag to a definite boolean,
+   * so no truthiness test appears here either.
+   */
+  get ariaBusy(): 'true' | null {
+    return this.loading ? 'true' : null;
   }
 
   /**
@@ -323,6 +480,7 @@ export class PaginationComponent {
    * rule is stated in one place rather than copied into each of them.
    */
   goFirst(): void {
+    this.armStepRepair('first');
     this.requestPage(FIRST_PAGE_INDEX);
   }
 
@@ -343,6 +501,7 @@ export class PaginationComponent {
   }
 
   goLast(): void {
+    this.armStepRepair('last');
     this.requestPage(this.lastPageIndex);
   }
 
@@ -376,5 +535,81 @@ export class PaginationComponent {
     }
 
     this.pageChange.emit(target);
+  }
+
+  // -------------------------------------------------------------------------
+  // FOCUS REPAIR AFTER A TERMINAL STEP
+  // -------------------------------------------------------------------------
+
+  /**
+   * Notes that the page a person stepped to has arrived.
+   *
+   * @param changes The bindings that changed.
+   */
+  ngOnChanges(changes: SimpleChanges): void {
+    if (this.pendingStep !== null && changes['page'] !== undefined) {
+      this.stepApplied = true;
+    }
+  }
+
+  /**
+   * Returns focus to a usable step once the activated one has disabled itself.
+   *
+   * Runs as a view-checked hook because the repair depends on the DISABLED PROPERTY HAVING BEEN WRITTEN,
+   * which happens during the same change-detection pass that binds the new page - not when the page
+   * arrives in the model. Every early return below is a plain identity or null test, so the common case
+   * where nothing is pending costs one comparison.
+   *
+   * Focus is only taken when it is not already somewhere a person put it: the activated button or the
+   * document body, which are the only two places a browser leaves it after disabling the element under
+   * the pointer or the caret. Anything else means focus has moved on for another reason and must be left
+   * alone.
+   */
+  ngAfterViewChecked(): void {
+    const step = this.pendingStep;
+
+    if (step === null || !this.stepApplied) {
+      return;
+    }
+
+    const source = step === 'first' ? this.firstStep : this.lastStep;
+    const target = step === 'first' ? this.nextStep : this.previousStep;
+    const sourceElement = source?.nativeElement;
+    const targetElement = target?.nativeElement;
+
+    this.pendingStep = null;
+    this.stepApplied = false;
+
+    if (sourceElement === undefined || targetElement === undefined) {
+      return;
+    }
+
+    if (!sourceElement.disabled || targetElement.disabled) {
+      return;
+    }
+
+    const active = this.document.activeElement;
+
+    if (active === null || active === sourceElement || active === this.document.body) {
+      targetElement.focus();
+    }
+  }
+
+  /**
+   * Arms the focus repair for a step that will disable itself, if focus is on it.
+   *
+   * The check that focus is ON THE BUTTON is what stops a programmatic call to {@link goLast} from
+   * pulling focus out of whatever a person was using. A pointer click focuses the button in every browser
+   * this application targets, and a keyboard activation necessarily has focus on it, so the affordance is
+   * repaired in both cases a person can actually produce.
+   *
+   * @param step Which terminal step was activated.
+   */
+  private armStepRepair(step: 'first' | 'last'): void {
+    const element = step === 'first' ? this.firstStep?.nativeElement : this.lastStep?.nativeElement;
+
+    this.pendingStep =
+      element !== undefined && this.document.activeElement === element ? step : null;
+    this.stepApplied = false;
   }
 }

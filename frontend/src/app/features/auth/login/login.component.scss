@@ -121,8 +121,26 @@
 .login__failure {
   display: grid;
   gap: var(--space-2);
-  justify-items: start;
+
+  // ⚠ THE BANNER STRETCHES; ONLY THE COMMAND IS HELD TO ITS CONTENT WIDTH. This region
+  // used to declare `justify-items: start`, which achieved the second of those and broke
+  // the first: a start-aligned grid item is sized to its content, so the shared error
+  // banner shrank to the width of its longest line - measured at 228px against the 1072px
+  // the identical component occupies on a screen that renders it outside a grid. One
+  // component was therefore rendering at two widths for no reason a reader could see, and
+  // a framed surface that stops short of the content it belongs to reads as a stray box
+  // rather than as the screen's error state. Alignment now belongs to the ONE item that
+  // needed it and is declared on that item, so another item added to this region cannot
+  // silently inherit a width constraint that was never meant for it.
 }
+
+// The failure region's only start-aligned item. Declared here rather than as a
+// container-wide alignment so the shared banner beside it keeps the full content width.
+.login__dismiss {
+  // Held to its content width inside the stretching failure region above.
+  justify-self: start;
+}
+
 
 // THE CALM ADVISORY TREATMENT, and it has TWO consumers rather than one. The template
 // renders this class for the rate-limited state inside the failure region and again, on its
@@ -150,7 +168,7 @@
 // contrast threshold as body text - the token vocabulary declares that split explicitly and
 // names this as the token a text consumer must reach for.
 .login__message {
-  color: var(--color-danger);
+  color: var(--color-danger-text);
   font-weight: var(--font-weight-bold);
 }
 

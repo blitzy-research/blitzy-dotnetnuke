@@ -57,13 +57,15 @@ import { HttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { APP_BOOTSTRAP_LISTENER, NgZone } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { PreloadAllModules, PreloadingStrategy, Router, Scroll } from '@angular/router';
-import { firstValueFrom } from 'rxjs';
+import { PreloadingStrategy, Router, Scroll } from '@angular/router';
+import { firstValueFrom, of } from 'rxjs';
+import type { Observable } from 'rxjs';
 
 import { APP_ROUTES } from './app.routes';
 import { appConfig } from './app.config';
 import { NotificationService } from './core/services/notification.service';
 import { TokenStorageService } from './core/services/token-storage.service';
+import { SESSION_ENDED_MESSAGE } from './core/state/session-teardown.service';
 
 import type { Event as RouterNavigationEvent } from '@angular/router';
 import type { AuthSession, CurrentUser } from './core/models/auth.model';
@@ -332,11 +334,51 @@ describe('appConfig', () => {
       expect(TestBed.inject(Router).componentInputBindingEnabled).toBeTrue();
     });
 
-    it('preloads every lazily declared feature bundle', () => {
-      // The eager strategy specifically, not merely "some strategy": the default is no
-      // preloading at all, which type-checks, builds and serves while paying the lazy
-      // bundle cost again on the first navigation into each feature.
-      expect(TestBed.inject(PreloadingStrategy)).toBeInstanceOf(PreloadAllModules);
+    it('preloads every lazily declared feature bundle, but only once a session is held', () => {
+      /*
+       * ASSERTED ON BEHAVIOUR RATHER THAN ON TYPE, and the two things asserted are the two things
+       * that can each be silently lost.
+       *
+       * The first is that preloading happens at all. The router's default is none, which
+       * type-checks, builds and serves while paying the lazy bundle cost again on the first
+       * navigation into each feature - so dropping the strategy is invisible except as a slower
+       * console.
+       *
+       * ⚠ THE SECOND IS THAT IT DOES NOT HAPPEN BEFORE A SESSION EXISTS, and this case used to
+       * require the opposite. It asserted `PreloadAllModules` by identity, which begins fetching as
+       * soon as the FIRST navigation settles - and for an anonymous visitor that navigation settles
+       * on the sign-in screen. A review measured the result: 163,918 bytes, 54.49% of all the
+       * application's JavaScript, downloaded by anyone who could reach the login page, carrying
+       * every administration route name and every API endpoint with it. An `instanceof` check
+       * cannot express that distinction, so the loader is driven directly instead.
+       */
+      const strategy = TestBed.inject(PreloadingStrategy);
+      const tokens = TestBed.inject(TokenStorageService);
+
+      let loaded = 0;
+      const load = (): Observable<unknown> => {
+        loaded += 1;
+
+        return of(null);
+      };
+
+      // Anonymous. The returned stream is subscribed, because a strategy that deferred the work
+      // into the subscription rather than refusing it would otherwise pass while still loading.
+      strategy.preload({ path: 'portals' }, load).subscribe();
+
+      expect(loaded)
+        .withContext('nothing is fetched for a caller with no session')
+        .toBe(0);
+
+      tokens.store(sessionFor(ACCESS_TOKEN, REFRESH_TOKEN));
+
+      strategy.preload({ path: 'portals' }, load).subscribe();
+
+      expect(loaded)
+        .withContext('and the eager behaviour is intact for a caller that has one')
+        .toBe(1);
+
+      tokens.clear();
     });
 
     it('takes over scroll restoration from the browser and puts each screen at the top', async () => {
@@ -523,18 +565,34 @@ describe('appConfig', () => {
         .toBe(SERVER_CORRELATION_ID);
     });
 
-    it('routes an unrecoverable 401 to sign-in and still announces nothing', async () => {
-      // The terminal branch: a session with no renewal credential cannot be recovered, so
-      // the caller learns its request failed and the operator is sent to sign in. The error
-      // interceptor still says nothing, because the sign-in screen IS the message.
-      //
-      // The navigation is spied rather than performed, and resolved rather than left
-      // pending. The real route table is installed, so an actual navigation would fetch the
-      // sign-in feature's lazy bundle over several microtasks that the subject deliberately
-      // does not await — it is re-throwing the server's own response and must not have its
-      // outcome displaced by routing — which would make an address assertion a race.
-      // Asserting the REQUEST to navigate is deterministic and is the fact this case is
-      // about.
+    it('routes an unrecoverable 401 to sign-in, preserving the destination and saying so', async () => {
+      /*
+       * The terminal branch: a session with no renewal credential cannot be recovered, so the
+       * caller learns its request failed and the operator is sent to sign in.
+       *
+       * ⚠ THIS SPECIFICATION USED TO ASSERT THE DEFECT, in both of its halves. It was named
+       * "and still announces nothing", it required `notifications()` to be empty, and it
+       * required the navigation to carry no options - reasoning that "the sign-in screen IS
+       * the message". A review measured why that reasoning does not hold: every successful
+       * create in this application also ends by navigating away, so a sign-in screen arriving
+       * unannounced is indistinguishable from work that was saved, and a submission destroyed
+       * this way was reported by nothing at all - both live regions empty, no console entry.
+       *
+       * The two requirements below replace it. Both are contracts rather than preferences: the
+       * destination is preserved because a gate-blocked navigation already preserved it and the
+       * asymmetry favoured the rarer case, and the address is REPLACED rather than pushed
+       * because the abandoned screen cannot be restored once the session is gone.
+       *
+       * The navigation is spied rather than performed, and resolved rather than left pending. The
+       * real route table is installed, so an actual navigation would fetch the sign-in feature's
+       * lazy bundle over several microtasks that the subject deliberately does not await — it is
+       * re-throwing the server's own response and must not have its outcome displaced by routing —
+       * which would make an address assertion a race. Asserting the REQUEST to navigate is
+       * deterministic and is the fact this case is about.
+       *
+       * The expected `returnUrl` is `'/'` because no navigation has been performed in this harness,
+       * so that is genuinely the address the refused request was issued from.
+       */
       const navigate = spyOn(TestBed.inject(Router), 'navigate').and.resolveTo(true);
 
       tokens.store(sessionFor(ACCESS_TOKEN, ''));
@@ -547,12 +605,32 @@ describe('appConfig', () => {
         .withContext('the original refusal reaches the caller rather than being swallowed')
         .not.toBeNull();
       expect(navigate)
-        .withContext('the operator is asked to sign in again')
-        .toHaveBeenCalledOnceWith(['/login']);
+        .withContext('the operator is asked to sign in again, and told where they were')
+        .toHaveBeenCalledOnceWith(['/login'], {
+          replaceUrl: true,
+          queryParams: { returnUrl: '/' },
+        });
       expect(tokens.accessToken())
         .withContext('and the discarded session leaves no credential behind')
         .toBeNull();
-      expect(notifications.notifications()).toEqual([]);
+
+      // The statement itself. Asserted through the real queue rather than a spy, because the part
+      // that matters is that something READABLE survives to the sign-in screen - a call that was
+      // made and then discarded by the navigation would satisfy a spy and help nobody.
+      const announced = notifications.notifications();
+
+      expect(announced.length).withContext('exactly one statement, not none and not two').toBe(1);
+      expect(announced[0]?.severity)
+        .withContext('a lapsed session is ordinary, so it is a warning and not a failure')
+        .toBe('warning');
+      // Imported rather than spelled again: a specification that restates the sentence passes while
+      // the application says something else.
+      expect(announced[0]?.message)
+        .withContext('it says what happened and what to do, and quotes nothing from the refusal')
+        .toBe(SESSION_ENDED_MESSAGE);
+      expect(announced[0]?.survivesNavigation)
+        .withContext('and it is marked to outlive the very navigation that follows it')
+        .toBeTrue();
     });
   });
 });

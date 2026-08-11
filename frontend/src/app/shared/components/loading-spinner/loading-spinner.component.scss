@@ -2,17 +2,25 @@
 // exactly the sibling template: the host, its decorative indicator glyph and its optional label text.
 // Token values are named, never restated, so the token partial stays their one home.
 //
-// The indicator is STATIC - an indeterminate glyph, not a rotating one. The two design-system constraints
-// that decide that are set out at the `.indicator` rule below.
+// The indicator ROTATES when the reader has not asked for less motion, and is otherwise the same static
+// indeterminate glyph it has always been. Both presentations, and why the rotation is the guarded addition
+// rather than the base state, are set out at the `.indicator` rule below.
 //
-// It `@use`s nothing. The component is non-interactive, its label is visible text and it contains no
-// at-rule, so it needs neither the focus-ring mixin nor the visually-hidden mixin nor a breakpoint - and
-// Sass modules are per-file, so importing a partial it does not consume would add a load with no effect.
+// It `@use`s the MIXINS partial and nothing else, and it did not always need to. The component is
+// non-interactive and its label is visible text, so it needs neither the focus-ring mixin nor the
+// visually-hidden mixin nor a breakpoint - which is why this note used to record that it `@use`d nothing
+// at all. It now contains ONE at-rule, the reduced-motion guard around the indicator's rotation, and a
+// component stylesheet may not author a feature query itself; the guard is a mixin for exactly that
+// reason, so the partial is loaded to consume it. Sass modules are per-file, so this is the single load
+// the file actually uses and no unused partial is imported alongside it.
 //
 // MIGRATION: no legacy ancestor. The legacy portal was full-page-postback Web Forms, so the browser's own
 // page-load indicator WAS the spinner: neither legacy stylesheet carries a spinner, progress or busy
 // selector, and the in-scope admin trees contain no partial-postback progress control. No legacy class
 // name or raster icon is referenced.
+
+
+@use '../../../../styles/mixins' as mx;
 
 :host {
   display: inline-flex;
@@ -44,6 +52,26 @@
   // whatever text it sits beside.
   border-block-start-color: currentColor;
 
+  // MIGRATION: THE INDICATOR ROTATES, AND IT PREVIOUSLY DID NOT. The earlier note recorded two
+  // design-system constraints as the reason, and both were accurate: there was no duration token to
+  // animate with, because the token partial declared no motion group at all and a spacing token
+  // cannot substitute for one - a length is not a duration; and the shared mixin surface exported no
+  // reduced-motion guard, while a component stylesheet may not author a feature query of its own.
+  // THE INDICATOR NOW ROTATES, and the note below - which explained at length why it did
+  // not - is superseded rather than deleted, because its reasoning was sound and only its
+  // premise was wrong. It reasoned that there was no motion token to animate with and no
+  // reduced-motion guard a component was permitted to author. Both now exist in the shared
+  // mixin surface, added there precisely so this component does not have to break the rule
+  // it was respecting: `indeterminate-spin` carries its own duration and wraps itself in a
+  // `prefers-reduced-motion: no-preference` guard, so the static ring remains the
+  // presentation for a reader who has asked for less motion and the movement is the
+  // enhancement for everyone else.
+  //
+  // What forced the change was measurement: the whole bundle contained zero `@keyframes`
+  // rules, so the application's primary signal that a request was in flight conveyed
+  // nothing at all to a sighted reader. The polite live region on the host carried the
+  // state for a screen-reader user and nothing carried it for anyone else.
+  @include mx.indeterminate-spin;
   // MIGRATION: the indicator does NOT rotate, and two design-system constraints decide it rather than
   // preference. First, there is no duration token to animate with - the token partial declares no motion
   // group at all - and it cannot be substituted for, because a spacing token is a length, so an
@@ -54,11 +82,31 @@
   // feature query included. Animating without that guard would impose movement on a reader who has asked
   // their system for less, so the query is not written and the motion is not introduced.
   //
-  // Nothing is lost by degrading: the legacy design had no motion vocabulary whatsoever, so a static
-  // indicator diverges from it in nothing, and the static presentation honours a reduced-motion preference
-  // inherently, for every reader, with no query at all. A circular glyph with one accented arc, beside
-  // visible label text inside the host's polite live region, is a complete indeterminate progress
-  // affordance for sighted and assistive-technology readers alike.
+  // Neither was a reason to leave the indicator still, because BOTH ARE GAPS IN THE VOCABULARY AND
+  // THE VOCABULARY IS EXTENSIBLE BY ITS OWNERS. `--duration-rotate` and `--easing-rotate` now exist
+  // in the token partial, and `motion-safe` now exists in the mixin partial, each added in the file
+  // that owns that kind of value - the same resolution this file already applied to the missing
+  // round-radius value, and which the note above calls "the correct resolution of that gap". The old
+  // note also closed by arguing nothing was lost, on the grounds that the legacy design had no
+  // motion vocabulary. That defends the AESTHETIC and not the FUNCTION: an indeterminate progress
+  // affordance that does not move cannot distinguish a request in flight from one that has stalled,
+  // which is the one thing this component exists to communicate.
+  //
+  // THE STATIC PRESENTATION IS STILL THE BASE STATE. The rotation is added only inside the guard, so
+  // a reader who has asked their system for less motion - or whose browser does not report the
+  // preference at all - sees exactly the indicator that shipped before: a circle with one accented
+  // arc, beside visible label text, inside the host's polite live region. Nothing is taken away from
+  // them and nothing is imposed on them.
+  //
+  // The arc that rotates is the one `border-block-start-color` accents above; a full turn of a
+  // single accented edge is what reads as indeterminate progress.
+  @include mx.motion-safe {
+    animation-name: loading-spinner-rotate;
+    animation-duration: var(--duration-rotate);
+    animation-timing-function: var(--easing-rotate);
+    animation-iteration-count: infinite;
+  }
+
 }
 
 // The three fixed size states, each declared explicitly so the vocabulary the component's TypeScript
@@ -89,4 +137,24 @@
   line-height: var(--line-height-tight);
   min-inline-size: 0; // long labels wrap instead of widening the host
   overflow-wrap: break-word;
+}
+
+// The single turn the indicator repeats.
+//
+// Declared at the top level rather than inside the guard because `@keyframes` is not a
+// declaration and cannot live in a rule; the GUARD is applied where the animation is bound, so
+// these frames are simply never referenced when the reader has asked for less motion. Angular
+// scopes the name to this component, so it cannot collide with another stylesheet's frames.
+//
+// Rotation only - no scale, no opacity, no colour. A single transform keeps the glyph's geometry
+// and its accented arc exactly as the rule above composes them, so the moving indicator and the
+// static one are the same drawing.
+@keyframes loading-spinner-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }

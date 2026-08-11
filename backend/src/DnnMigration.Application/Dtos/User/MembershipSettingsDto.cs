@@ -102,6 +102,30 @@ public sealed class MembershipSettingsDto
     public const bool DefaultRequireValidProfileAtLogin = true;
 
     /// <summary>
+    /// Whether these values were read from a tenant settings store, or are the installation defaults
+    /// because the tenant has no settings source.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: this member exists because the two cases are otherwise INDISTINGUISHABLE to a caller,
+    /// and a screen that cannot tell them apart presents defaults as though an operator had chosen them.
+    /// The legacy read had the same ambiguity - <c>UserModuleBase.GetSettings</c>
+    /// (<c>UserModuleBase.vb:L94-L194</c>) applied a default for every absent key and returned a
+    /// <c>Hashtable</c> that recorded nothing about where a value came from - but the legacy screen was
+    /// rendered by the very module instance whose settings it edited, so the question could not arise: a
+    /// tenant with no account module had no settings screen either. This API is addressable
+    /// independently of any module instance, so the question does arise, and it is answered here rather
+    /// than inferred from the absence of a body.
+    /// </para>
+    /// <para>
+    /// <see langword="false"/> means every value below is the measured legacy default and NOTHING is
+    /// stored for this tenant. It does not mean the read failed: the settings are still the settings
+    /// that apply, which is exactly what the legacy defaults were for.
+    /// </para>
+    /// </remarks>
+    public bool IsStored { get; set; }
+
+    /// <summary>
     /// Whether the users grid shows the first-name column. Legacy key <c>Column_FirstName</c>,
     /// measured default <see langword="false"/> (<c>UserModuleBase.vb:L98-L100</c>), legacy label
     /// "Show First Name Column:".

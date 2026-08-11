@@ -243,7 +243,35 @@
     at L113-L114, OUTSIDE both containers and after them, so they are the form's own
     action row and are authored there.
   -->
-  <app-page-header [title]="heading()" />
+  <!--
+    ⚠ THE HEADER NOW CARRIES TWO THINGS IT DID NOT: an identity and a way out sideways.
+
+    The heading reads "Edit Portals" whichever tenant is open, so the screen named none of
+    them. The stored name goes beside it, which is what the sibling settings screen already
+    does — the same affordance, not a new one — and it renders nothing at all in creation mode
+    or while the read is in flight, because the shared header collapses an absent subtitle.
+
+    The two links project into the header's action slot, which is where that component
+    documents page-level actions belong; they are NOT the form's own commands and must not
+    join the action row at the foot, which submits and cancels. They carry the shared
+    page-action class so they read as the console's other page actions do.
+
+    Withheld entirely in creation mode: neither sibling exists until the portal does, and a
+    link to `/portals/undefined/aliases` resolves to the wildcard route.
+  -->
+  <app-page-header [title]="heading()" [subtitle]="portalName()">
+    @if (settingsLink(); as settings) {
+      <a class="page-action portal-form__sibling" [routerLink]="settings">{{
+        settingsLinkLabel
+      }}</a>
+    }
+
+    @if (aliasesLink(); as aliases) {
+      <a class="page-action portal-form__sibling" [routerLink]="aliases">{{
+        aliasesLinkLabel
+      }}</a>
+    }
+  </app-page-header>
 
   <!--
     The failure surface. Renders nothing when there is no problem document. See
@@ -254,7 +282,24 @@
   -->
   <app-error-banner [problem]="problem()" />
 
-  @if (isEditMode()) {
+  @if (addressUnreadable()) {
+    <!--
+      The address carries something that is not a portal identifier.
+
+      ⚠ THIS BRANCH EXISTS BECAUSE ITS ABSENCE WAS THE MOST CONSEQUENTIAL DEFECT ON THIS SCREEN.
+      An unreadable identifier used to select the `@else` creation branch below, so `/portals/abc`
+      presented the live tenant-provisioning form - twelve enabled controls including the six
+      administrator-credential fields, and a working Create Portal command - under a heading
+      offering to add a new portal, while the sidebar marked Portals active and nothing anywhere on
+      the screen indicated a fault. No request was issued either, so the server never had the
+      chance to disagree.
+
+      It is checked BEFORE both modes, not after, because the two modes between them cover every
+      value and would otherwise leave this state unreachable. Nothing is fetched here, so the
+      failure surface above renders empty and needs no guard of its own.
+    -->
+    <p class="portal-form__notice">{{ unreadableAddressMessage }}</p>
+  } @else if (isEditMode()) {
     <!--
       EDIT MODE RENDERS THREE CONTROLS, AND THE COUNT IS DELIBERATE. The update contract
       declares no alias member - a portal's host names are a sub-resource with a screen
@@ -272,7 +317,7 @@
         <app-loading-spinner size="large" label="Loading portal…" />
       } @else if (canEdit()) {
         <fieldset class="portal-form__section">
-          <legend class="portal-form__legend">Portal Setup</legend>
+          <legend class="portal-form__legend"><h2>Portal Setup</h2></legend>
 
           <div class="portal-form__grid">
             <!--
@@ -355,7 +400,7 @@
   } @else {
     <form class="portal-form__form" [formGroup]="createForm" (ngSubmit)="onSubmit()">
       <fieldset class="portal-form__section">
-        <legend class="portal-form__legend">Portal Setup</legend>
+        <legend class="portal-form__legend"><h2>Portal Setup</h2></legend>
 
         <div class="portal-form__grid">
           <!--
@@ -392,17 +437,14 @@
             activating it ACTIVATES that control - so clicking the words "Portal Type"
             would silently reset the choice to Parent, and an operator who had chosen
             Child would lose it by clicking the caption above it. Passing nothing instead
-            leaves the wrapper's caption element pointing at no control, which the
-            browser's own developer tools report as an unassociated label. That report is
-            about element MISUSE, not about a missing name: measured on the rendered page,
-            the group still carries the accessible name "Portal Type" through the
-            wrapper's `aria-labelledby`, every radio still has its own name, and there are
-            ZERO dangling ARIA references in the document. A pointer-interaction defect
-            affecting every sighted operator is the worse of the two, so the validator
-            hint is accepted knowingly. The clean fix belongs to the shared wrapper, which
-            should render its caption as a plain span when no `for` is supplied and keep
-            the `aria-labelledby` wiring it already has; that is reported rather than
-            patched here, because the wrapper is not this file's to change.
+            costs nothing at all, because the shared wrapper now renders its caption as a
+            plain `span` whenever no `for` is supplied, keeping the `aria-labelledby`
+            wiring it already had. So the group carries the accessible name "Portal Type"
+            through that reference, every radio is named by its own adjacent label, there
+            are ZERO dangling ARIA references, and no element claims an association it
+            does not have - the developer-tools hint about an unassociated label is gone
+            rather than knowingly accepted. Measured on the rendered page after the change:
+            zero bare captions on this screen and zero label-association issues reported.
 
             MIGRATION: this replaces a SERVER ROUND TRIP. `signup.ascx:L33` declares
             `AutoPostBack="True"`, so choosing a type posted the whole page back for
@@ -514,7 +556,7 @@
         screen carried no administrator block either.
       -->
       <fieldset class="portal-form__section">
-        <legend class="portal-form__legend">Security Settings</legend>
+        <legend class="portal-form__legend"><h2>Security Settings</h2></legend>
 
         <div class="portal-form__grid">
           <app-form-field

@@ -53,6 +53,8 @@ import { MODULE_IMPORT_MAX_FILE_BYTES } from '../../../core/models/module.model'
 import type { ModuleImportRequest, ModuleListItem } from '../../../core/models/module.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { ModuleStoreOperation } from '../../../core/state/module.store';
+import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
+import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
 
 // =======================================================================================
 // SCREEN-LOCAL SHAPES
@@ -461,12 +463,15 @@ function toModuleChoices(modules: readonly ModuleListItem[]): readonly ModuleImp
   // common-directive bundle is deliberately absent: the built-in control-flow blocks need no import at
   // all, and pulling that bundle in would re-admit the superseded structural directives beside them.
   imports: [
+    FocusFirstInvalidDirective,
+    SubmitGuardDirective,
     ReactiveFormsModule,
     PageHeaderComponent,
     FormFieldComponent,
     LoadingSpinnerComponent,
     ErrorBannerComponent,
     EmptyStateComponent,
+    FocusFirstInvalidDirective,
   ],
   templateUrl: './module-import.component.html',
   styleUrl: './module-import.component.scss',
@@ -934,13 +939,21 @@ export class ModuleImportComponent {
         return;
       }
 
-      this.notifications.success(IMPORT_SUCCEEDED_MESSAGE);
+      // `true`: the confirmation is raised immediately before a deliberate redirect and is meant to be read at the destination - the module listing.
+      this.notifications.success(IMPORT_SUCCEEDED_MESSAGE, true);
+
+      // ⚠ EXEMPTED FROM THE NAVIGATION SWEEP, WITHOUT WHICH THIS CONFIRMATION IS NEVER SEEN. The
+      //   shell retires notifications on a completed navigation, and this one is raised in the same
+      //   task as the navigation below, so it was queued and swept before it could be painted. An
+      //   import that reports nothing at all is indistinguishable from an import that did nothing.
+      this.notifications.retainAcrossNavigation();
 
       // MIGRATION: the legacy screen redirected on success at L151, and again at L202 from inside its
       //   helper — a redirect issued mid-computation, which is why the helper's remaining branches
       //   could never be reached once it fired. The return below is the same intent expressed once, at
       //   the one place that knows the import finished.
-      void this.router.navigate([MODULE_LIST_ROUTE]);
+      // Replaced, not pushed: the transfer is complete, so BACK must not return to the picker.
+      void this.router.navigate([MODULE_LIST_ROUTE], { replaceUrl: true });
     });
 
     // A refusal on grounds of authority is a different kind of event from a fault: the system is

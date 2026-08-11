@@ -2295,7 +2295,14 @@ describe('PortalStore', () => {
       expect(store.settingsFailure()).toBeNull();
     });
 
-    it('replaces the whole projection and refreshes the listing', () => {
+    it('replaces the whole projection and refreshes a listing it has read', () => {
+      // The listing is read FIRST, and that is now load-bearing rather than incidental setup: the
+      // refresh keeps a listing ALREADY IN HAND coherent with the write - the projection carries
+      // the portal name, the expiry date, the host fee and the host space, each also a listing
+      // column - and the store deliberately does not ask for a listing it has never read. The
+      // sibling case below covers that condition.
+      readListing(singleRowPage(PORTAL_ID), 'the listing this refresh will keep coherent');
+
       const composed = updatePortalSettingsRequest({ portalName: 'Renamed' });
       const saved: PortalSettings[] = [];
 
@@ -2324,6 +2331,122 @@ describe('PortalStore', () => {
       expect(saved.length).toBe(1);
 
       settleListingReread('the listing re-read that follows a settings write');
+    });
+
+    it('issues no listing read after a settings write when no listing has been read', () => {
+      // ⚠ THE MEASURED DEFECT. The refresh above is right when a listing is in hand and wrong when
+      // one is not: the settings screen is reachable by a portal administrator who is NOT permitted
+      // to read the portal listing, so against the running API every save produced
+      // `GET /api/v1/portals` → 403, a console error, and a warning notification - raised globally,
+      // so it followed the operator to whatever screen they had moved on to - complaining about a
+      // listing they never asked for, immediately after a save that had SUCCEEDED.
+      //
+      // This case shares its store with the one above only in shape, not in state: nothing here
+      // reads the listing first, which is exactly the condition the guard tests. Refreshing what
+      // was never read has nothing to keep coherent and nothing on screen to update.
+      store.saveSettings(PORTAL_ID, updatePortalSettingsRequest({ portalName: 'Renamed' }));
+
+      httpMock
+        .expectOne(PORTAL_SETTINGS_URL)
+        .flush(envelope(portalSettings(PORTAL_ID, { portalName: 'Renamed' })));
+
+      expect(heldRecord(store.settings(), 'settings').portalName)
+        .withContext('the write itself still lands')
+        .toBe('Renamed');
+      httpMock.expectNone(
+        (candidate) => candidate.url === PORTALS_URL,
+        'no listing read follows a settings write when no listing has been read',
+      );
+    });
+
+    it('folds the stored projection back into a detail it is already holding', () => {
+      // ⚠ THE MEASURED DEFECT. The write updated the settings slice and refreshed the listing and
+      // left the DETAIL slice holding pre-write values. The settings screen shows the portal's name
+      // beside its title and reads it from the detail, so renaming a portal produced a success
+      // notification beside a heading still announcing the OLD name — and it stayed wrong until the
+      // route was entered again.
+      store.loadPortal(PORTAL_ID);
+      httpMock.expectOne(PORTAL_URL).flush(envelope(portalDetail(PORTAL_ID, { portalName: 'Before' })));
+
+      expect(heldRecord(store.selectedPortal(), 'the detail').portalName).toBe('Before');
+
+      store.saveSettings(PORTAL_ID, updatePortalSettingsRequest({ portalName: 'After' }));
+      httpMock
+        .expectOne(PORTAL_SETTINGS_URL)
+        .flush(envelope(portalSettings(PORTAL_ID, { portalName: 'After' })));
+
+      expect(heldRecord(store.selectedPortal(), 'the detail').portalName).toBe('After');
+    });
+
+    it('leaves the detail members the projection does not carry exactly as they were', () => {
+      // The merge is a spread rather than a field list, so this is the case that proves it adds
+      // nothing and removes nothing. `users`, `pages` and the two role names are detail-only
+      // members; a merge that replaced the record instead of spreading over it would lose them,
+      // and the loss would show up as blank cells rather than as an error.
+      store.loadPortal(PORTAL_ID);
+      httpMock.expectOne(PORTAL_URL).flush(
+        envelope(
+          portalDetail(PORTAL_ID, {
+            portalName: 'Before',
+            users: 42,
+            pages: 7,
+            administratorRoleName: 'Administrators',
+            registeredRoleName: 'Registered Users',
+          }),
+        ),
+      );
+
+      store.saveSettings(PORTAL_ID, updatePortalSettingsRequest({ portalName: 'After' }));
+      httpMock
+        .expectOne(PORTAL_SETTINGS_URL)
+        .flush(envelope(portalSettings(PORTAL_ID, { portalName: 'After' })));
+
+      const held = heldRecord(store.selectedPortal(), 'the detail');
+
+      expect(held.portalName).withContext('the shared member is updated').toBe('After');
+      expect(held.users).toBe(42);
+      expect(held.pages).toBe(7);
+      expect(held.administratorRoleName).toBe('Administrators');
+      expect(held.registeredRoleName).toBe('Registered Users');
+    });
+
+    it('refuses to write one portal\u2019s projection onto another portal\u2019s detail', () => {
+      // A save can complete after the operator has already moved to a different portal, and
+      // writing the first portal's values over the second one's detail is a worse outcome than
+      // leaving the first one stale. The identity guard is what makes the late arrival harmless,
+      // and without a case for it the guard could be deleted with the suite still green.
+      store.saveSettings(PORTAL_ID, updatePortalSettingsRequest({ portalName: 'Late Arrival' }));
+      const written = httpMock.expectOne(PORTAL_SETTINGS_URL);
+
+      store.loadPortal(SECOND_PORTAL_ID);
+      httpMock
+        .expectOne(`${PORTALS_URL}/${SECOND_PORTAL_ID}`)
+        .flush(envelope(portalDetail(SECOND_PORTAL_ID, { portalName: 'The Other Portal' })));
+
+      written.flush(envelope(portalSettings(PORTAL_ID, { portalName: 'Late Arrival' })));
+
+      const held = heldRecord(store.selectedPortal(), 'the detail');
+
+      expect(held.portalId).toBe(SECOND_PORTAL_ID);
+      expect(held.portalName).toBe('The Other Portal');
+    });
+
+    it('reconciles nothing, and fails at nothing, when no detail has been read', () => {
+      // The mirror of the listing guard: a slice never read has nothing to keep coherent. This is
+      // the ordinary case for a portal administrator, who reaches settings by address and never
+      // loads a detail, so it must not throw and must not issue a request of its own.
+      expect(store.selectedPortal()).toBeNull();
+
+      store.saveSettings(PORTAL_ID, updatePortalSettingsRequest({ portalName: 'Renamed' }));
+      httpMock
+        .expectOne(PORTAL_SETTINGS_URL)
+        .flush(envelope(portalSettings(PORTAL_ID, { portalName: 'Renamed' })));
+
+      expect(store.selectedPortal()).toBeNull();
+      httpMock.expectNone(
+        (candidate) => candidate.url === PORTAL_URL,
+        'no detail read is provoked by the reconciliation',
+      );
     });
 
     it('publishes no per-key settings accessor to be called', () => {
@@ -2439,7 +2562,7 @@ describe('PortalStore', () => {
       expect(store.aliasCount()).toBe(0);
     });
 
-    it('appends a created alias to the collection already in hand', () => {
+    it('re-reads the collection after a creation, so both write paths leave the same state', () => {
       store.loadAliases(PORTAL_ID);
       const existing = portalAlias(PORTAL_ID, PORTAL_ALIAS_ID, 'localhost');
       httpMock.expectOne(PORTAL_ALIASES_URL).flush(envelope([existing]));
@@ -2463,18 +2586,32 @@ describe('PortalStore', () => {
 
       posted.flush(envelope(stored), { status: 201, statusText: 'Created' });
 
+      // ⚠ THE COLLECTION IS RE-READ, AND THIS SPEC USED TO ASSERT THE OPPOSITE. It required the
+      // created record to be SPLICED onto the array already in hand "with no second read", on the
+      // reasoning that the server had answered with the stored record so asking again would ask
+      // for what was already held. That is true of the RECORD and false of the COLLECTION: a
+      // spliced row lands where the client puts it - at the end - regardless of the order the
+      // collection endpoint applies, and it carries only the members the create response happened
+      // to include. The update path re-read for a contract reason (its `PUT` answers with no
+      // body), so the two write paths on one resource left the collection in different states.
+      const reread = httpMock.expectOne(PORTAL_ALIASES_URL);
+
+      expect(reread.request.method).toBe('GET');
+
+      reread.flush(envelope([existing, stored]));
+
       const held: readonly PortalAlias[] = heldAliases(store.aliases());
 
       expect(held.map((alias: PortalAlias) => alias.portalAliasId))
-        .withContext('appended to the collection already in hand, with no second read')
+        .withContext("the server's collection, in the server's order")
         .toEqual([PORTAL_ALIAS_ID, OTHER_PORTAL_ALIAS_ID]);
+
+      // The response body is still used for the record just written - nothing about it is
+      // discarded, only the collection is taken from the server.
       expect(store.selectedAliasId()).toBe(OTHER_PORTAL_ALIAS_ID);
       expect(heldRecord(store.selectedAlias(), 'selected alias')).toEqual(stored);
       expect(created.length).toBe(1);
       expect(store.aliasLoading()).toBeFalse();
-
-      // No re-read follows a creation: the server answered with the stored record, so
-      // asking for the collection again would ask for what is already in hand.
     });
 
     it('re-reads the collection after an update answered with no body', () => {
@@ -3040,7 +3177,7 @@ describe('PortalStore', () => {
       }
     });
 
-    it('reports a failure that arrived with no document at all, rather than inventing one', () => {
+    it('composes a truthful document for a failure that arrived with none', () => {
       store.loadPortals();
 
       // A transport status of nought is what an unreachable server looks like, and the
@@ -3055,9 +3192,24 @@ describe('PortalStore', () => {
 
       const failure: PortalFailure = heldFailure(store.listFailure(), 'listing');
 
+      // IT USED TO HOLD NULL HERE, AND THE NULL COST THE CONSUMER A SECOND PRESENTATION. The
+      // reasoning was that manufacturing a document would hand a consumer a title and a detail
+      // that were never sent - which is true, and is why the composed document declares
+      // `type: 'about:blank'`, the value RFC 7807 §4.2 reserves for "no additional semantics
+      // beyond the status code". It is therefore self-describing as composed rather than
+      // published, `problemMessage` lets a caller's own wording outrank it, and the store's
+      // consumers get ONE failure presentation instead of falling through to a bare sentence
+      // for the two modes that carry no body - which runtime testing found byte-identical to
+      // each other.
       expect(failure.problem)
-        .withContext('no document is manufactured for a request that never arrived')
-        .toBeNull();
+        .withContext('a document is composed so every consumer has one presentation')
+        .not.toBeNull();
+      expect(failure.problem?.type)
+        .withContext('declared as carrying no semantics beyond the status')
+        .toBe('about:blank');
+      expect(failure.problem?.detail ?? '')
+        .withContext('and it says what actually happened')
+        .toContain('could not be reached');
       expect(failure.status).toBe(0);
       expect(failure.supportReference).toBeNull();
       expect(failure.conflictCode).toBeNull();

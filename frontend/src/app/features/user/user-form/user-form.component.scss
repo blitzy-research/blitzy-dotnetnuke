@@ -12,7 +12,8 @@
 //     .user-form__legend             .user-form__membership-value
 //     .user-form__section-toggle     .user-form__membership-actions
 //     .user-form__section-body       .user-form__actions
-//     .user-form__grid
+//     .user-form__grid                .user-form__panel
+//     .user-form__group-help         .user-form__group-error
 //
 //     .user-form__credential         .user-form__credential-value
 //     .user-form__credential-title   .user-form__credential-actions
@@ -105,6 +106,46 @@ p {
   @include mx.respond-above('lg') {
     grid-template-columns: var(--grid-track-fluid) var(--grid-track-fluid);
   }
+}
+
+// ⚠ #8 — THE CREDENTIAL COLUMN, AS ONE GRID ITEM. The three credential field sets used to be direct
+// children of the grid above, so auto-placement scattered them across both columns in create mode and
+// the visual order stopped agreeing with the document order. `manageusers.ascx` L59-L63 puts every one
+// of them inside a SINGLE cell, and this is that cell. It arranges its own field sets in one column
+// with the same gap the panels grid uses, so the rhythm is unchanged wherever the panels stack.
+//
+// `align-content: start` keeps the field sets at their natural heights instead of distributing them
+// down a column that is as tall as the membership panel beside it. `min-inline-size: 0` is the
+// automatic-minimum-size correction every grid item in this workspace needs: without it the item
+// cannot shrink below its content's minimum and a long unbroken value inside a field set widens the
+// document.
+.user-form__panel {
+  display: grid;
+  gap: var(--space-3);
+  align-content: start;
+  min-inline-size: 0;
+}
+
+// ⚠ #8 — THE GROUP-LEVEL HELP AND THE GROUP-LEVEL MESSAGE. Both used to be bare paragraphs with no
+// class, inheriting body ink and body size: the help line read as prose rather than as guidance, and
+// the refusal read as prose rather than as a refusal. The shared field component gives a message
+// belonging to ONE control exactly this treatment, and these two belong to a GROUP — the password
+// rule spans two boxes and neither is individually wrong — so the same treatment is declared here
+// rather than borrowed by piercing another component's encapsulation.
+//
+// The message takes the accessible danger ink rather than the raw legacy error hue, which does not
+// clear the contrast floor for normal text; the bold weight is what keeps the state from being carried
+// by colour alone. Neither rule declares a margin: the grid gap above owns the rhythm.
+.user-form__group-help {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.user-form__group-error {
+  margin: 0;
+  color: var(--color-danger-text);
+  font-weight: var(--font-weight-bold);
 }
 
 // -----------------------------------------------------------------------------
@@ -288,6 +329,27 @@ p {
 // above are centred by the same measurement, so start alignment here would have put two
 // command rows on one screen out of step with each other for no gain. The gap stands in for
 // the three `&nbsp;` characters the legacy used to separate delete from save.
+// ⚠ THIS ROW ARRIVES BELOW THE FOLD, AND THAT IS A DECLINED FINDING RATHER THAN AN
+// OVERSIGHT. Runtime measurement at 1280x900, without scrolling: the submit's bottom edge
+// sits at 1,332 against a 900px viewport, so the control is 100% clipped, 432px past the
+// fold, and a hit test at its own centre returns null. At 1920x1080 it is still 100%
+// clipped, 232.5px past. The viewport heights that would show it whole are 1,332 and 1,313.
+//
+// It is left where it is, for the reasons set out at length on the module settings screen's
+// own actions row - which is the other member of this family and was measured alongside it.
+// In short: the whole application contains no `position: sticky` element and exactly one
+// `position: fixed` one (an empty notification container), so pinning would introduce a
+// convention rather than extend one; a pinned row would take its height out of every
+// viewport on all thirteen form screens permanently, worst at 320 where the shell's stacked
+// header and navigation already consume 71.17% of the first viewport; and the legacy screens
+// put their commands at the end of the form, which is where these are. The control is
+// reachable by ordinary scrolling and fully visible at the page bottom, verified at both
+// viewports.
+//
+// Recorded on BOTH screens deliberately. A decision taken once and written down once reads
+// as a decision about one screen; the same measurement in both places is what makes it a
+// convention that was considered and declined, and it is what a future pass adopting the
+// opposite convention needs in order to apply it consistently.
 .user-form__actions {
   display: flex;
   flex-wrap: wrap;
@@ -333,7 +395,7 @@ p {
 // weight repeats the emphasis without depending on hue — so a reader who perceives no red is
 // still told, in words, that the value is shown once.
 .user-form__credential-advisory {
-  color: var(--color-danger);
+  color: var(--color-danger-text);
   font-weight: var(--font-weight-bold);
 }
 

@@ -54,11 +54,42 @@
  * {@link isSignInRoute} below hardens the first half of that invariant so a mistake
  * degrades to "the sign-in screen is reachable" rather than to a redirect cycle.
  *
+ * ## Why this gate stays silent, and where the announcements come from instead
+ *
+ * A review finding recorded that every redirect out of this gate leaves both live regions
+ * empty, and asked for a "you have been signed out" statement here. It is deliberately NOT
+ * added here, because THIS GATE CANNOT TELL THE TWO CASES APART and the wrong one is worse
+ * than silence.
+ *
+ * Token storage is memory-only by design, and that property is load-bearing rather than
+ * incidental — a reload destroys the session precisely because the renewal credential dies
+ * with the JavaScript heap, which is what keeps it off disk. The consequence is that an
+ * anonymous first visit to a protected address and a reload of an authenticated screen
+ * arrive here in states that are IDENTICAL: no session, no reason recorded, a brand-new
+ * heap. Announcing "your session has ended" from here would therefore tell a first-time
+ * visitor, and anyone who followed a shared link, that something had happened to them that
+ * had not — and a false statement about a session is worse than no statement, because it
+ * sends them looking for work they never lost.
+ *
+ * The announcement is instead raised by whichever party actually KNOWS what happened, each
+ * of which holds evidence this gate does not:
+ *
+ *  - `core/interceptors/auth.interceptor.ts` knows a session existed and that its renewal
+ *    was refused, because it held the credential and saw the refusal. It announces that the
+ *    session ended, and preserves the address so signing in returns the operator to it.
+ *  - `core/state/auth.store.ts` knows the operator ASKED to sign out, because it is the
+ *    party they asked. It confirms that instead, in different words, and adds a second
+ *    statement if the server would not confirm the withdrawal.
+ *
+ * Both mark their statement to outlive the change of screen, which is what carries it onto
+ * the sign-in screen this gate redirects to. So the gate is silent and the operator is not:
+ * every redirect that has a knowable cause is explained by the party that knows it, and the
+ * one case with no knowable cause says nothing rather than guessing.
+ *
  * @see `Website/admin/Security/AccessDenied.ascx.vb` — the legacy destination. Both
  * of its branches present the refusal with `ModuleMessage.ModuleMessageType.YellowWarning`,
  * so a refusal was a WARNING and never a fault. This gate's whole affordance is the
- * redirect, so it raises no notification at all — but it must never be changed to
- * escalate a refusal to error severity.
+ * redirect — but it must never be changed to escalate a refusal to error severity.
  */
 
 import { inject } from '@angular/core';
@@ -67,7 +98,7 @@ import type { CanActivateFn, UrlTree } from '@angular/router';
 import { catchError, map, of } from 'rxjs';
 import type { Observable } from 'rxjs';
 
-import { SIGN_IN_ROUTE } from '../config/app-routes.config';
+import { RETURN_URL_QUERY_KEY, SIGN_IN_ROUTE } from '../config/app-routes.config';
 import { TokenStorageService } from '../services/token-storage.service';
 import { AuthStore } from '../state/auth.store';
 
@@ -89,8 +120,15 @@ import { AuthStore } from '../state/auth.store';
  * mismatch actually does — the navigation resolves to the catch-all, silently.
  */
 
-/** The query parameter key carrying the address the caller was trying to reach. */
-const RETURN_URL_KEY = 'returnUrl';
+/**
+ * The query parameter key carrying the address the caller was trying to reach.
+ *
+ * IMPORTED rather than declared, for the same reason the sign-in address above it is: this
+ * gate, the permission gate, the bearer interceptor and the sign-in screen all have to name
+ * the same key, and three of the four used to hold a private copy of it while the fourth
+ * held none. The constants module records what that cost.
+ */
+const RETURN_URL_KEY = RETURN_URL_QUERY_KEY;
 
 /**
  * The leading path segment of an address, with the query string, the fragment and

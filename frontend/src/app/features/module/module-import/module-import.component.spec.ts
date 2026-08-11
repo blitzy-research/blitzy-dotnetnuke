@@ -88,6 +88,21 @@ const MODULE_LIST_ROUTE = '/modules';
  */
 const SETTLE_TURN_CEILING = 256;
 
+/**
+ * How long a wait that is still pending is given in real time once the cheap turns are spent.
+ *
+ * ⚠ THE SECOND HALF OF A CEILING THAT USED TO BE EXPRESSED IN THE WRONG UNIT. See {@link settle} for the
+ * full account: 256 posted-message turns are spent in one or two milliseconds, while the read being
+ * waited for is a native `Blob` promise the browser resolves on its own schedule. This is the duration
+ * that makes the failure bound a bound on TIME, which is the quantity that actually varies.
+ *
+ * Sized as roughly two orders of magnitude more than a small read has ever needed, and paid ONLY by a
+ * wait that never resolves — a submit the screen refuses, which dispatches nothing on purpose. Those
+ * cases are a minority of the thirty-three, so the suite pays well under a second in total for it, and a
+ * wait that resolves promptly pays nothing at all because the predicate ends the loop first.
+ */
+const SETTLE_WALL_CLOCK_FLOOR_MS = 250;
+
 /** The widest page the picker asks for, so its reach is not silently limited to the default page. */
 const CHOICE_PAGE_SIZE = '100';
 
@@ -428,6 +443,27 @@ function yieldMacrotask(): Promise<void> {
 }
 
 /**
+ * Yields one macrotask that costs REAL TIME, for the tail of a wait that has outrun its cheap turns.
+ *
+ * ⚠ DELIBERATELY A TIMER AND NOT A POSTED MESSAGE, which is the whole reason it exists alongside
+ * {@link yieldMacrotask}. A `MessageChannel` message is serviced in microseconds and is exempt from the
+ * nesting clamp browsers apply to timers, so burning turns on one advances the event loop without
+ * advancing the clock — excellent for letting Angular settle, useless as a budget for a native promise
+ * the browser resolves on its own schedule. `setTimeout` is clamped upwards once nested, which is exactly
+ * the property wanted here: each turn costs a few milliseconds of the wall-clock floor.
+ *
+ * ⚠ THIS IS NOT A SYNCHRONISER AND MUST NEVER BECOME ONE. Nothing waits a fixed number of these and then
+ * asserts; {@link settle}'s predicate still decides when a wait is over, and this only stretches the
+ * bound at which an unmet predicate gives up. Zero is passed rather than a guessed interval so the
+ * browser's own clamp sets the granularity instead of this file guessing at it.
+ */
+function yieldTimerTurn(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
+
+/**
  * Narrows an outgoing request body to a plain object, by THROWING rather than by asserting.
  *
  * ⚠ THE BODY IS TYPED AS UNKNOWN AT THE TESTING BACKEND, AND THAT IS THE POINT. The transport cannot know
@@ -747,21 +783,56 @@ describe('ModuleImportComponent', () => {
    * microtask - passes no predicate and simply burns the turns, which costs a `whenStable()` and a posted
    * message each and is measured in microseconds.
    *
-   * Do NOT lower the ceiling, do not make the ceiling the mechanism again, and do not replace any of it
-   * with a fake clock or a timer: the point of this suite is that it reads a REAL file, and wall-clock
-   * time is the one input a specification cannot control.
+   * Do NOT lower the ceiling, do not make the ceiling the mechanism again, and do not make a timer the
+   * synchroniser: the point of this suite is that it reads a REAL file, so the predicate stays the only
+   * thing that decides when the wait is over.
    *
-   * @param turns The most turns to yield for.
-   * @param until Stops as soon as this holds. Omit when there is nothing to wait for.
+   * ⚠⚠ BUT THE CEILING WAS NOT THE GENEROUS BUDGET THE PARAGRAPH ABOVE CLAIMED, AND THE SAME FAILURE
+   * CAME BACK BECAUSE OF IT. Observed once in a full-suite run, 2029 cases deep: a re-submitted transfer
+   * found no request and thereby "proved" nothing was sent — the very inversion described above, and the
+   * screen was innocent. The claim that 256 turns is "far above anything a read needs" compares two
+   * incommensurable units. {@link yieldMacrotask} posts on a `MessageChannel`, which the browser
+   * services in MICROSECONDS and, unlike a timer, without any nesting clamp — so the whole ceiling is
+   * spent in one or two milliseconds of wall-clock time. Meanwhile the thing being waited for is
+   * `Blob.prototype.text()`, a NATIVE PROMISE that Zone.js does not patch: `whenStable()` cannot see it,
+   * the browser resolves it off the main thread on its own schedule, and under load that schedule is
+   * measured in milliseconds. A ceiling of two milliseconds against a wait of ten is not generous, and no
+   * number of turns would have made it so.
+   *
+   * So the ceiling is now expressed in BOTH units, and the two have different jobs. Turns are burned
+   * first, on the same cheap posted messages as before — which is why a wait that resolves promptly, the
+   * overwhelming majority, costs exactly what it always did and no case got slower. Once the turns are
+   * exhausted the loop keeps yielding on REAL timers until {@link SETTLE_WALL_CLOCK_FLOOR_MS} has passed,
+   * so a predicate that has not yet held has been given a duration rather than a count. A predicate that
+   * never holds still fails in the caller, one wall-clock floor later instead of immediately.
+   *
+   * The timer is therefore the FAILURE BOUND and never the synchroniser, which is the distinction the
+   * warning above is really about: nothing here waits a fixed time and then asserts.
+   *
+   * @param turns The most cheap turns to yield for before falling back to real timers.
+   * @param until Stops as soon as this holds. Omit when there is nothing to wait for, in which case the
+   * wall-clock floor does not apply and the cost is the turns alone.
    */
   async function settle(turns = SETTLE_TURN_CEILING, until?: () => boolean): Promise<void> {
-    for (let turn = 0; turn < turns; turn += 1) {
+    const floorEndsAt =
+      until === undefined ? 0 : performance.now() + SETTLE_WALL_CLOCK_FLOOR_MS;
+    let turn = 0;
+
+    for (;;) {
       if (until?.() === true) {
         break;
       }
 
+      // Both bounds must be spent before the wait is abandoned: the cheap turns AND, when something is
+      // actually being waited for, the wall-clock floor.
+      if (turn >= turns && performance.now() >= floorEndsAt) {
+        break;
+      }
+
       await fixture.whenStable();
-      await yieldMacrotask();
+      await (turn >= turns ? yieldTimerTurn() : yieldMacrotask());
+
+      turn += 1;
     }
 
     fixture.detectChanges();
@@ -1392,7 +1463,23 @@ describe('ModuleImportComponent', () => {
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE);
+      expect(notifySpy).toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE, null, true);
+
+      // ⚠ AND THE CONFIRMATION SURVIVES THE NAVIGATION IT IS RAISED WITH. This screen announces and
+      // then leaves for the listing in the same task, and the shell retires notifications on a completed
+      // navigation - so the confirmation was queued and swept before it could be painted. An import that
+      // reports nothing at all is indistinguishable from an import that did nothing. The queue is real
+      // here, so the sweep is run rather than a method call asserted.
+      const service = TestBed.inject(NotificationService);
+      service.clearOnNavigation();
+
+      expect(service.notifications().map((entry) => entry.message))
+        .withContext('the listing is where the imported content is seen')
+        .toEqual([IMPORT_SUCCEEDED_MESSAGE]);
+
+      service.clearOnNavigation();
+
+      expect(service.notifications()).withContext('one navigation deep').toHaveSize(0);
     });
   });
 
@@ -1501,7 +1588,7 @@ describe('ModuleImportComponent', () => {
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE);
+      expect(notifySpy).toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE, null, true);
     });
 
     it('sends NOTHING when the TARGET MODULE is changed while the document is being read', async () => {
@@ -1563,7 +1650,12 @@ describe('ModuleImportComponent', () => {
 
       await settle();
 
-      httpMock.expectNone(() => true);
+      // Counted rather than asserted by `expectNone`, which throws and therefore records no
+      // expectation: the emptiness of what `match` returns is the claim, and an abandoned
+      // attempt that nevertheless dispatched would fail it.
+      expect(httpMock.match(() => true))
+        .withContext('the stale attempt was abandoned, not dispatched')
+        .toEqual([]);
     });
   });
 
@@ -1595,7 +1687,7 @@ describe('ModuleImportComponent', () => {
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      expect(notifySpy).toHaveBeenCalledOnceWith('success', IMPORT_SUCCEEDED_MESSAGE);
+      expect(notifySpy).toHaveBeenCalledOnceWith('success', IMPORT_SUCCEEDED_MESSAGE, null, true);
     });
 
     it('a refused re-entry changes NOTHING on screen', async () => {
@@ -1652,7 +1744,7 @@ describe('ModuleImportComponent', () => {
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE);
+      expect(notifySpy).toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE, null, true);
     });
 
     it('leaves the two choices INTACT through a lock-and-release cycle', async () => {
@@ -1738,12 +1830,12 @@ describe('ModuleImportComponent', () => {
       // ⚠ ASSERTED IN BOTH DIRECTIONS, like the refusal above: it IS success, and it is announced at no
       // other band.
       expect(severitiesAnnouncedFor(IMPORT_SUCCEEDED_MESSAGE)).toEqual(['success']);
-      expect(notifySpy).toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE);
+      expect(notifySpy).toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE, null, true);
 
       // `Import.ascx.vb:L151` redirected on success, and again at L202 from inside its helper - a
       // redirect issued mid-computation, which is why that helper's remaining branches could never be
       // reached once it fired. The navigation here is that intent expressed once.
-      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE]);
+      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE], { replaceUrl: true });
     });
 
     it('synthesises no listing row from the payload it just sent', async () => {
@@ -1768,7 +1860,7 @@ describe('ModuleImportComponent', () => {
       //   flag - so any path that failed to set a message was indistinguishable from one that succeeded.
       //   Success is now the transport's own completion signal; no string is compared against the empty
       //   string to decide an outcome anywhere on this screen.
-      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE]);
+      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE], { replaceUrl: true });
     });
 
     it('never treats an empty or blank response body as a failure, nor a failure as success', async () => {
@@ -1784,7 +1876,7 @@ describe('ModuleImportComponent', () => {
       fixture.detectChanges();
 
       expect(severitiesAnnouncedFor(IMPORT_SUCCEEDED_MESSAGE)).toEqual(['success']);
-      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE]);
+      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE], { replaceUrl: true });
     });
 
     it('shows the busy indicator while the transfer is outstanding', async () => {
@@ -1892,8 +1984,11 @@ describe('ModuleImportComponent', () => {
         .withContext('a refusal of authority is announced once, as a warning')
         .toEqual(['warning']);
       expect(severitiesAnnouncedFor(refusal)).not.toContain('error');
-      expect(notifySpy).toHaveBeenCalledWith('warning', refusal);
-      expect(notifySpy).not.toHaveBeenCalledWith('error', refusal);
+      // The two trailing arguments are the aliases' explicit forwarding: no support reference, and no
+      // reprieve from the screen-lifetime rule. The second matters here - this screen stays put on a
+      // refusal, so the warning must NOT be marked to outlive a change of screen.
+      expect(notifySpy).toHaveBeenCalledWith('warning', refusal, null, false);
+      expect(notifySpy).not.toHaveBeenCalledWith('error', refusal, null, false);
       expect(notifySpy).not.toHaveBeenCalledWith('error', refusal, null);
 
       // The shared surface reaches the same classification independently, so the two never disagree.
@@ -1929,7 +2024,7 @@ describe('ModuleImportComponent', () => {
 
       // The code ends in a fragment the status mapper sends to 500, so this is the shape a genuine
       // import failure takes rather than an invented one.
-      expect(notifySpy).not.toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE);
+      expect(notifySpy).not.toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE, null, true);
       expect(navigateSpy).not.toHaveBeenCalled();
       expect(query('.error-banner')).not.toBeNull();
     });

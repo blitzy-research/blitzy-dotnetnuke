@@ -1,7 +1,6 @@
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { type ApplicationConfig, provideZoneChangeDetection } from '@angular/core';
 import {
-  PreloadAllModules,
   provideRouter,
   withComponentInputBinding,
   withInMemoryScrolling,
@@ -9,6 +8,7 @@ import {
 } from '@angular/router';
 
 import { APP_ROUTES } from './app.routes';
+import { AuthenticatedPreloadingStrategy } from './core/config/authenticated-preloading.strategy';
 import { correlationIdInterceptor } from './core/interceptors/correlation-id.interceptor';
 import { authInterceptor } from './core/interceptors/auth.interceptor';
 import { errorInterceptor } from './core/interceptors/error.interceptor';
@@ -163,6 +163,19 @@ export const appConfig: ApplicationConfig = {
       // administration form means arriving part-way down a screen whose heading is
       // off-screen. Declaring `'top'` reproduces the legacy behaviour by intent
       // instead of by accident, and needs no field in the document to do it.
+      //
+      // ⚠ THIS IS ALSO THE ANSWER TO A REPORTED FINDING, AND THE FINDING IS DECLINED
+      // HERE RATHER THAN IN THE SCREEN THAT RAISED IT. A review of the roles listing
+      // reported that returning with BACK does not restore the scroll offset the
+      // listing was left at. That is true, and it is this declaration doing it, ON
+      // PURPOSE: `'enabled'` is the setting that would restore the offset, and the
+      // project plan names `scrollPositionRestoration: 'top'` explicitly as the
+      // router configuration for this application. Changing it to satisfy one screen
+      // would change arrival behaviour on all twenty-five routes, including every
+      // long form, so the setting stands and the finding is recorded as a deliberate
+      // divergence. The half of that finding which WAS a defect — that returning
+      // re-walked the whole listing instead of the page it was left on — is fixed,
+      // by the listing carrying its page in its own address.
       withInMemoryScrolling({ scrollPositionRestoration: 'top' }),
 
       /**
@@ -178,8 +191,19 @@ export const appConfig: ApplicationConfig = {
        * is an administration console reached by an authenticated operator who will
        * visit several screens in one session, so the bundles are very likely to be
        * wanted. A public site with a single landing page would choose differently.
+       *
+       * ⚠ GATED ON A HELD SESSION, and no longer the framework's built-in. With
+       * `PreloadAllModules` the fetching began as soon as the FIRST navigation
+       * settled, and for an anonymous visitor that navigation settles on the
+       * sign-in screen — so 163,918 bytes, 54.49% of all the application's
+       * JavaScript, were downloaded by anyone who could reach the login page,
+       * carrying every administration route name and every API endpoint with them.
+       * The strategy named below preserves the eager behaviour argued for above
+       * EXACTLY and changes only when it starts. See its own file for why this is
+       * defence in depth rather than an access-control measure, and for the record
+       * of this departure from the plan's literal wording.
        */
-      withPreloading(PreloadAllModules),
+      withPreloading(AuthenticatedPreloadingStrategy),
     ),
 
     /**

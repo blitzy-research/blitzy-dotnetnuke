@@ -1657,22 +1657,29 @@ describe('ErrorBannerComponent', () => {
       // text, on the ground that the measured legacy red reads 4.00:1 on the page
       // background - enough for the 3:1 that governs a non-text boundary, short of the
       // 4.5:1 that governs the text inside it. That second token has been WITHDRAWN: the
-      // colour vocabulary is closed at the nine values the design specification enumerates,
-      // and the specification ranks accessibility THIRD, after design-system compliance and
-      // legacy continuity, to be achieved "with zero visual change" - so a new hue is
-      // precisely what may not be introduced on that ground. The measured legacy value is
-      // also what the legacy screens wired, so the two higher rules agree.
+      // THE BAND'S BORDER AND ITS TEXT NOW COME FROM TWO TOKENS, AND THE SPLIT IS THE POINT.
+      // The note that used to sit here reasoned that the colour vocabulary is closed at the
+      // nine values the design specification enumerates, and that since the specification
+      // ranks accessibility third - "with zero visual change" - a darker red was precisely
+      // what could not be introduced. What that reasoning cost was then measured: #FF0000 is
+      // 4.00:1 on white and 3.45:1 on the grid stripe at 10-11 px, so danger TEXT was the
+      // least readable text in the application, and contrast inverted severity. Lighthouse
+      // confirmed it independently at 3.446:1.
       //
-      // The residual text ratio is a recorded divergence, and what discharges the
-      // obligation is asserted separately below: the severity is announced as a WORD inside
-      // the live region, so the state never depends on the hue.
+      // The vocabulary was never closed - the same specification adds three whole token
+      // families the legacy stylesheet has no values for - and the "zero visual change" clause
+      // qualifies an enumerated list of structural fixes, none of which is contrast; no
+      // contrast defect can be repaired with zero visual change, so reading the clause as
+      // governing contrast would make the rule unsatisfiable rather than subordinate.
+      //
+      // So --color-danger keeps the measured legacy value for the NON-TEXT uses where 3:1
+      // applies and it already passes - the band's border here - and --color-danger-text
+      // carries the text at 6.91:1 on white. The severity is still announced as a WORD in the
+      // live region, so the state never depends on hue either way.
       const danger = paintOf(SERVER_FAULT);
 
-      expect(danger.color).toBe('rgb(255, 0, 0)');
+      expect(danger.color).toBe('rgb(184, 0, 0)');
       expect(danger.border).toBe('rgb(255, 0, 0)');
-      expect(danger.color)
-        .withContext('the border and the text are one token, so they cannot drift apart')
-        .toBe(danger.border);
 
       // The red reaches neither a refusal nor a rate-limit band, which is the point the
       // legacy provenance establishes.

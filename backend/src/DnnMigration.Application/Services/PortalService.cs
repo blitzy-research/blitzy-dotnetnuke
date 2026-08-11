@@ -39,6 +39,18 @@ public sealed class PortalService : IPortalService
     private const string CreationFailedCode = "portal.creation_failed";
 
     /// <summary>
+    /// Reason code recorded - never returned - when the installation's page-permission catalogue does not
+    /// declare a key the new tenant's home page would otherwise have been granted.
+    /// </summary>
+    /// <remarks>
+    /// This code never reaches a caller, so it is deliberately NOT one of the codes the API surface maps to
+    /// a status. It exists so that the audit record for a tenant created with an incomplete grant set is
+    /// searchable, because the repair is an installation-level one and the condition is invisible in the
+    /// response.
+    /// </remarks>
+    private const string PermissionCatalogueIncompleteCode = "portal.permission_catalogue_incomplete";
+
+    /// <summary>
     /// Reason code reported when the requested administrator account name is already taken.
     /// </summary>
     /// <remarks>
@@ -2195,17 +2207,30 @@ public sealed class PortalService : IPortalService
 
         if (viewDefinition is null || editDefinition is null)
         {
-            // Loud, and specific for the operator while staying generic for the caller. The record names the
-            // scope code and the missing keys, because the repair is an installation-level one - the upgrade
-            // scripts own these rows - and an operator reading only the response would have nothing to act
-            // on.
+            // MIGRATION: AN INCOMPLETE PERMISSION CATALOGUE NO LONGER REFUSES THE CREATE, and the reason is
+            // legacy parity rather than leniency. The legacy template parser resolved each key through
+            // PermissionController.GetPermissionByCodeAndKey and then iterated the answer
+            // (ParseTabPermissions, reached from PortalController.CreatePortal at
+            // Library/Components/Portal/PortalController.vb:L980) - an empty answer produced an empty loop,
+            // so the page was created with no grant and the portal came into being regardless. Refusing
+            // instead turned a foreseeable installation condition into the API's only 5xx and made tenant
+            // provisioning impossible on any database whose catalogue rows are absent, which is a
+            // behavioural regression against the system being migrated.
+            //
+            // The condition is still recorded loudly, because it IS an installation defect that an operator
+            // must repair - the upgrade scripts own these rows - and a silently permission-less home page
+            // would otherwise be discovered much later. AuditOutcome.Failed is the declared member for
+            // precisely this shape - "the operation was permitted but could not be completed ... where
+            // proceeding is correct and the failure must still leave a trace" (AuditEvent.cs) - and it is
+            // the grant, not the create, that could not be completed. Whatever the catalogue DOES declare
+            // is still granted below, so a catalogue missing only EDIT still yields the two VIEW grants.
             RecordAudit(new AuditEvent(AuditEventNames.PortalCreated)
             {
                 Outcome = AuditOutcome.Failed,
                 PortalId = portal.PortalId,
                 ResourceType = PortalResourceType,
                 ResourceId = portal.PortalId.ToString(CultureInfo.InvariantCulture),
-                FailureCode = CreationFailedCode,
+                FailureCode = PermissionCatalogueIncompleteCode,
                 Properties = new Dictionary<string, string?>(StringComparer.Ordinal)
                 {
                     ["PermissionCode"] = TabPermissionScopeCode,
@@ -2213,18 +2238,21 @@ public sealed class PortalService : IPortalService
                     ["MissingEditDefinition"] = (editDefinition is null).ToString(CultureInfo.InvariantCulture),
                 },
             });
-
-            return Result<Tab>.Failure(
-                CreationFailedCode,
-                "The installation's page-permission catalogue is incomplete, so the portal was not created.");
         }
 
-        await GrantHomePagePermissionAsync(homePage, viewDefinition, AllUsersRoleId, token)
-            .ConfigureAwait(false);
-        await GrantHomePagePermissionAsync(homePage, viewDefinition, administratorsRole.RoleId, token)
-            .ConfigureAwait(false);
-        await GrantHomePagePermissionAsync(homePage, editDefinition, administratorsRole.RoleId, token)
-            .ConfigureAwait(false);
+        if (viewDefinition is not null)
+        {
+            await GrantHomePagePermissionAsync(homePage, viewDefinition, AllUsersRoleId, token)
+                .ConfigureAwait(false);
+            await GrantHomePagePermissionAsync(homePage, viewDefinition, administratorsRole.RoleId, token)
+                .ConfigureAwait(false);
+        }
+
+        if (editDefinition is not null)
+        {
+            await GrantHomePagePermissionAsync(homePage, editDefinition, administratorsRole.RoleId, token)
+                .ConfigureAwait(false);
+        }
 
         return Result<Tab>.Success(homePage);
     }

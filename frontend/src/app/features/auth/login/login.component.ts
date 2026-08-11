@@ -190,12 +190,14 @@ import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angula
 import type { AbstractControl, ValidationErrors } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 
+import { SIGN_IN_ROUTE } from '../../../core/config/app-routes.config';
 import type { LoginRequest } from '../../../core/models/auth.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { LoginPortalSelector } from '../../../core/utils/http-params.util';
 // MIGRATION: this message moved from `core/services/auth.service` to the store when the store took
 //   ownership of the sign-out policy. The transport now propagates a refused revocation instead of
 //   absorbing it, so the wording belongs beside the state that records the refusal.
+import { RETURN_URL_QUERY_KEY as SHARED_RETURN_URL_QUERY_KEY } from '../../../core/config/app-routes.config';
 import { AuthStore, REVOCATION_FAILED_MESSAGE } from '../../../core/state/auth.store';
 import {
   TOO_MANY_ATTEMPTS,
@@ -207,6 +209,8 @@ import { ErrorBannerComponent } from '../../../shared/components/error-banner/er
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
 import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
+import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
+import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
 
 // ---------------------------------------------------------------------------
 // THE QUERY PARAMETERS THIS SCREEN READS
@@ -232,10 +236,17 @@ import { PageHeaderComponent } from '../../../shared/components/page-header/page
  * `router.createUrlTree(['/login'], { queryParams: { returnUrl: state.url } })`, where
  * the value is the full attempted address including its own query string, preserved
  * byte for byte. **The spelling is the contract** — not `redirect`, `redirectTo`,
- * `next`, `returnURL` or `return_url` — so it is declared once here and read from
- * nowhere else.
+ * `next`, `returnURL` or `return_url`.
+ *
+ * MIGRATION: the literal used to be declared here, under a comment asserting it was "read
+ * from nowhere else". That was never true — two route gates and, later, the bearer
+ * interceptor all WRITE this key, while this screen is the only reader. It is now sourced
+ * from `core/config/app-routes.config.ts`, the module that already owns the sign-in address
+ * for precisely this reason, so the writers and the reader agree by construction. The symbol
+ * is still exported from here because that is the name this screen's specification imports,
+ * and re-exporting costs nothing.
  */
-export const RETURN_URL_QUERY_KEY = 'returnUrl';
+export const RETURN_URL_QUERY_KEY = SHARED_RETURN_URL_QUERY_KEY;
 
 /**
  * The query key that seeds the account name.
@@ -607,6 +618,8 @@ const DELETE_CODE_UNIT = 0x7f;
   selector: 'app-login',
   standalone: true,
   imports: [
+    FocusFirstInvalidDirective,
+    SubmitGuardDirective,
     // Every selector, directive and pipe the paired template uses. Strict template
     // checking turns an unlisted selector into a compile error rather than a silently
     // unrendered element, so this list is exhaustive by necessity.
@@ -621,6 +634,7 @@ const DELETE_CODE_UNIT = 0x7f;
     FormFieldComponent,
     ErrorBannerComponent,
     LoadingSpinnerComponent,
+    FocusFirstInvalidDirective,
   ],
   templateUrl: './login.component.html',
   styleUrl: './login.component.scss',
@@ -1232,7 +1246,10 @@ export class LoginComponent implements OnInit {
       .login(request, this.resolvePortalSelector())
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: () => this.leaveForReturnUrl(),
+        next: () => {
+          this.discardCredential();
+          this.leaveForReturnUrl();
+        },
         // The store has already recorded the failure and advanced the ladder by the time
         // this runs, and the template renders both. What is left to do is the part no
         // signal can express: put the caret back where the person has to act.
@@ -1367,15 +1384,90 @@ export class LoginComponent implements OnInit {
   // -------------------------------------------------------------------------
 
   /**
-   * Leaves this screen for the requested address, or for the default one.
+   * Leaves this screen for the requested address, falling back to the default one when the
+   * requested address turns out to be one this account may not enter.
    *
-   * The promise is deliberately not awaited and its rejection is absorbed, matching how the
-   * rest of the application navigates: a navigation that the router refuses is not
-   * something this screen can act on, and an unhandled rejection would be reported as an
-   * application fault when nothing is faulty.
+   * ⚠ THE OUTCOME OF THE NAVIGATION IS NOW READ, AND THAT CLOSES A MEASURED DEFECT. The
+   * return address is supplied by whichever gate INTERRUPTED the operator, and that gate only
+   * establishes that they were not signed in — not that they are permitted the address once
+   * they are. So a tenant administrator sent to `/login?returnUrl=%2Fportals` signed in
+   * successfully, the permission gate then refused the host-only listing, and because a
+   * refusal CANCELS a navigation rather than redirecting it, the router stayed where it was:
+   * on the sign-in screen. Measured in a browser — the header rendered the signed-in identity
+   * and the rail rendered the full administration map, while the main region still showed the
+   * sign-in form with the credentials filled in and the document title still read "User Log
+   * In". The operator was signed in and looking at a sign-in form.
+   *
+   * The fallback is the default landing address, and that constant is the right answer for
+   * exactly the reason it records about itself: it is the application root, which resolves the
+   * landing screen FROM THE CALLER'S AUTHORITY, so it cannot repeat the problem by naming a
+   * screen some accounts may not enter.
+   *
+   * ⚠ THREE CONDITIONS GUARD THE FALLBACK, AND EACH RULES OUT A WAY OF MAKING THINGS WORSE.
+   *   * The requested address must not already BE the default, or a refusal of the default
+   *     would send this into a loop against itself.
+   *   * No navigation may be in flight. A gate that redirects returns an address rather than a
+   *     refusal, and the router expresses that by resolving THIS navigation `false` and
+   *     scheduling the redirect — so acting on `false` alone would race the gate's own
+   *     destination and could override it.
+   *   * The router must still be showing the sign-in screen. That is the whole condition being
+   *     repaired; anywhere else, something took the operator somewhere and it is not this
+   *     screen's business to second-guess it.
+   *
+   * The promise chain is not awaited and a rejection is absorbed, matching how the rest of the
+   * application navigates: a navigation the router refuses outright is not something this
+   * screen can act on, and an unhandled rejection would be reported as an application fault
+   * when nothing is faulty.
    */
   private leaveForReturnUrl(): void {
-    void this.router.navigateByUrl(this.resolveReturnUrl()).catch(() => false);
+    const requested = this.resolveReturnUrl();
+
+    // ⚠ THE ADDRESS IS REPLACED RATHER THAN PUSHED. The sign-in screen has served its purpose the
+    // moment a session is held, so leaving a history entry for it offers the browser's Back button as
+    // a route back to a form nobody needs - and the unsaved-entry gate reads a replacement as an
+    // application-initiated departure, so it does not question a navigation nobody chose.
+    void this.router
+      .navigateByUrl(requested, { replaceUrl: true })
+      .then((arrived) => {
+        if (arrived || requested === DEFAULT_SIGNED_IN_ROUTE) {
+          return false;
+        }
+
+        if (this.router.getCurrentNavigation() !== null) {
+          return false;
+        }
+
+        if (this.router.url.startsWith(SIGN_IN_ROUTE) === false) {
+          return false;
+        }
+
+        return this.router.navigateByUrl(DEFAULT_SIGNED_IN_ROUTE, { replaceUrl: true });
+      })
+      .catch(() => false);
+  }
+
+  /**
+   * Empties the credential controls the moment a session is held.
+   *
+   * ⚠ THE PASSWORD MUST NOT OUTLIVE ITS USE, and it did. A review measured the account name and
+   * sixteen masked characters still present in the DOM after a SUCCESSFUL authentication, on a
+   * screen the operator had no further use for. Ordinarily the navigation that follows destroys
+   * this component and takes the value with it, which is why the exposure is easy to miss - but
+   * that navigation is not guaranteed: its rejection is deliberately absorbed just above, so a
+   * refused route leaves this form standing, still holding the credential it just used.
+   *
+   * Cleared explicitly rather than left to teardown for that reason, and cleared BEFORE the
+   * navigation is requested so no ordering of the two can leave the value behind.
+   *
+   * `reset('')` rather than `reset()`: both controls are `nonNullable`, so a bare reset restores
+   * the declared initial value - which is the empty string here and would be correct - but naming
+   * it makes the intent legible and survives a future change to that initial value. The
+   * verification code is deliberately left alone: it is not a credential, it is seeded from the
+   * address, and a caller who returns to this screen should not have to fetch it again.
+   */
+  private discardCredential(): void {
+    this.form.controls.password.reset('');
+    this.form.controls.username.reset('');
   }
 
   /**

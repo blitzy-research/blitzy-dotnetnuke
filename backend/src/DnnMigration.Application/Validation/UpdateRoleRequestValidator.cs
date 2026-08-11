@@ -141,20 +141,32 @@ public class UpdateRoleRequestValidator : AbstractValidator<UpdateRoleRequest>
         // valRoleName (editroles.ascx L29-L31): the screen's ONE presence check, and the only
         // unconditional rule here. The width is the NOT NULL column's own. Identical to the creation
         // validator's rule by construction, because both read the same shared definition.
+        // MIGRATION: TEXT INTEGRITY, WHICH THE LEGACY SCREENS DID NOT CHECK AND THIS MIGRATION DOES. Runtime
+        // testing stored a NUL byte and zero-width spaces in this very field and served both back, producing a
+        // role name that no operator can read, retype or tell apart from a visibly identical one - and making
+        // the duplicate-name rule below unenforceable by inspection. The rule refuses invisible characters
+        // only; every printable character the legacy screens accepted, emoji and right-to-left text included,
+        // still passes. Recorded as a deliberate divergence in MIGRATION_NOTES.md per Rule T5.
         RuleFor(request => request.RoleName)
             .NotEmpty()
             .WithMessage(RoleTermsRules.RoleNameRequiredMessage)
-            .MaximumLength(RoleTermsRules.RoleNameMaximumLength);
+            .MaximumLength(RoleTermsRules.RoleNameMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         // No validator was declared on the description, so only the column width is asserted. The
         // rule is inert for an absent value: a length check passes a null.
         RuleFor(request => request.Description)
-            .MaximumLength(RoleTermsRules.DescriptionMaximumLength);
+            .MaximumLength(RoleTermsRules.DescriptionMaximumLength)
+            .Must(TextIntegrityRules.IsMultiLineSafe)
+            .WithMessage(TextIntegrityRules.MultiLineMessage);
 
         // No validator was declared on the invitation code either, and nothing in the schema makes
         // it unique, so a clash is not a conflict and only the width applies.
         RuleFor(request => request.RsvpCode)
-            .MaximumLength(RoleTermsRules.RsvpCodeMaximumLength);
+            .MaximumLength(RoleTermsRules.RsvpCodeMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         // The column width plus the containment rule. THIS is the rule the update path was missing:
         // the creation validator declared it and this one did not, so the same column accepted a
@@ -173,16 +185,18 @@ public class UpdateRoleRequestValidator : AbstractValidator<UpdateRoleRequest>
             .WithMessage(AmountUnrepresentableMessage)
             .When(request => request.ServiceFee.HasValue);
 
-        // valBillingPeriod2 (L114): GreaterThan against 0 - strictly positive - despite the message
-        // wording, which is preserved as the legacy screen wrote it. A cycle of zero units could
-        // never advance an expiry date.
+        // valBillingPeriod2 (L114): GreaterThan against 0 - strictly positive, and the legacy message
+        // says exactly that. An earlier revision here claimed the legacy wording disagreed with this
+        // operator; it does not - EditRoles.ascx.resx declares "Billing Period Must Be Greater Than
+        // Zero" - the disagreement was a mistranscription in RoleTermsRules and is corrected there.
+        // A cycle of zero units could never advance an expiry date.
         RuleFor(request => request.BillingPeriod)
             .GreaterThan(0)
             .WithMessage(RoleTermsRules.BillingPeriodNotPositiveMessage)
             .When(request => request.BillingPeriod.HasValue);
 
-        // valTrialFee2 (L128): GreaterThanEqual against 0 - zero admitted - despite the message
-        // wording, likewise preserved. A free trial is a real configuration.
+        // valTrialFee2 (L128): GreaterThanEqual against 0 - zero admitted, and the legacy message says
+        // "or Equal to Zero", so the two agree here too. A free trial is a real configuration.
         RuleFor(request => request.TrialFee)
             .GreaterThanOrEqualTo(0m)
             .WithMessage(RoleTermsRules.TrialFeeNegativeMessage)

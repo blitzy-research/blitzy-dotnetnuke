@@ -182,9 +182,21 @@
 // genuinely pager-specific: each button holds a single punctuation glyph, and the
 // double-angle and single-angle glyphs have different advance widths, so without
 // a floor the four buttons would be visibly unequal and would shift as the label
-// set changed. A spacing token supplies the floor, and it is a MINIMUM rather than
-// a fixed size, so a longer label still grows the button instead of overflowing
-// it. Native buttons already centre their content, so no alignment is needed.
+// set changed. It is a MINIMUM rather than a fixed size, so a longer label still
+// grows the button instead of overflowing it. Native buttons already centre their
+// content, so no alignment is needed.
+//
+// ⚠ THE FLOOR COMES FROM THE TARGET FAMILY, AND IT DID NOT ALWAYS. It read
+// `var(--space-7)` — a SPACING token evaluating to 2rem — and runtime measurement
+// found the consequence directly: the four buttons rendered 32.00 x 44 and
+// 33.80 x 44, i.e. 10 to 12px short in WIDTH of the 2.75rem the token vocabulary
+// names for "pager controls" by name. The house button supplies the floor on both
+// axes, so the HEIGHT was always right; only this narrower override on the inline
+// axis pulled the width back under it. Sizing a target from the spacing scale is
+// the same mistake the profile-definition row actions carried, and it is worth
+// naming twice: the two scales are free to diverge on any future change to either,
+// and a control floored from the wrong one would then drift in silence.
+
 //
 // Everything else — ink, fill, border, corner radius, both padding axes, type
 // step, weight, line height, cursor, hover, press and the entire disabled
@@ -192,7 +204,7 @@
 // button. See the specificity note in the header for why restating any of it here
 // would be a defect rather than a duplication.
 .pagination__button {
-  min-inline-size: var(--space-7);
+  min-inline-size: var(--target-size-min);
 
   // Included even though the shared forms partial already rings every button, on
   // the mixin's documented guarantee that it is idempotent. It makes the

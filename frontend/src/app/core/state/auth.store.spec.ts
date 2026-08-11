@@ -136,7 +136,7 @@ import { NotificationService } from '../services/notification.service';
 import { TokenStorageService } from '../services/token-storage.service';
 import { isContractViolation } from '../utils/decode.util';
 import { AUTH_STORE_PHASES, AuthStore, REVOCATION_FAILED_MESSAGE } from './auth.store';
-import { SessionTeardownService } from './session-teardown.service';
+import { SESSION_ENDED_MESSAGE, SessionTeardownService } from './session-teardown.service';
 
 // ---------------------------------------------------------------------------
 // PATHS
@@ -448,28 +448,46 @@ function bodyMemberNames(body: unknown): readonly string[] {
  *
  * Recursive on purpose. A credential could leak as a whole slice, as one member of a
  * held contract object, or as one entry of a held list, and a check that only compared
- * whole strings would miss the latter two. There is no cycle to guard against: every
- * value this store publishes is a primitive, a frozen list of strings, or a flat
- * contract object.
+ * whole strings would miss the latter two.
+ *
+ * ⚠ CYCLE-SAFE, AND THAT IS A CORRECTION RATHER THAN DEFENSIVENESS. This helper used to
+ * state outright that there was no cycle to guard against, on the reasoning that every
+ * value the store publishes is a primitive, a frozen list of strings or a flat contract
+ * object. That held for the store's SLICES and stopped holding the moment the sweep
+ * reached a collaborator that holds a framework object: the store's notifier now holds
+ * the application's zone, and a zone references its own parent and children, so the walk
+ * recursed until the stack was exhausted. The fix is to remember what has been visited
+ * rather than to narrow the walk, because narrowing it is what would weaken the
+ * assertion the sweep exists to make. Revisiting a value cannot reveal a secret that
+ * visiting it the first time did not.
  *
  * @param value Anything the store published.
  * @param secret The fixture value that must not appear.
+ * @param seen The object graph already walked, so a cycle terminates.
  * @returns True when the secret appears anywhere inside the value.
  */
-function containsSecret(value: unknown, secret: string): boolean {
+function containsSecret(value: unknown, secret: string, seen = new WeakSet<object>()): boolean {
   if (typeof value === 'string') {
     return value.includes(secret);
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    if (seen.has(value)) {
+      return false;
+    }
+
+    seen.add(value);
   }
 
   if (Array.isArray(value)) {
     const entries: readonly unknown[] = value;
 
-    return entries.some((entry) => containsSecret(entry, secret));
+    return entries.some((entry) => containsSecret(entry, secret, seen));
   }
 
   if (typeof value === 'object' && value !== null) {
     return Object.values(value as Record<string, unknown>).some((entry: unknown) =>
-      containsSecret(entry, secret),
+      containsSecret(entry, secret, seen),
     );
   }
 
@@ -1775,10 +1793,17 @@ describe('AuthStore', () => {
       expect(membersLeaking(store, FAKE_RENEWAL_TOKEN_ROTATED)).toEqual([]);
     });
 
-    it('discards the session when a renewal is refused, and keeps the problem that explains why', async () => {
-      // ⚠ ORDER MATTERS AND IS ASSERTED. The session is discarded FIRST and the failure
-      // recorded second. Reversing the two would clear the very problem a sign-in screen
-      // needs in order to explain why the caller is back at it.
+    it('discards the session when a renewal is refused, and explains it without quoting the wire', async () => {
+      // ⚠ THIS CASE ONCE ASSERTED THE OPPOSITE, AND THE OPPOSITE WAS THE DEFECT. It required the
+      // renewal's own problem document to be RECORDED, on the reasoning that the sign-in screen
+      // needs it in order to explain why the caller is back at it. That screen duly rendered it,
+      // and what an operator saw — measured in a browser — was "Unauthorized" over "The refresh
+      // token is not valid." over a bare correlation identifier: an account of a credential they
+      // never knew existed, for something they had not done.
+      //
+      // The requirement was right and the mechanism was wrong. The ending is explained by the one
+      // owner of the session boundary instead, in wording chosen for a person, and the refusal's
+      // own document goes no further than the caller that asked.
       await signIn();
 
       const inFlight = firstValueFrom(store.refreshSession());
@@ -1794,32 +1819,55 @@ describe('AuthStore', () => {
 
       expect(store.isAuthenticated()).toBe(false);
       expect(store.currentUser()).toBeNull();
-      expect(store.hasFailure()).toBe(true);
-      expect(store.failureStatus()).toBe(401);
-      expect(store.problem())
-        .withContext('the problem survives the discard that preceded it')
-        .not.toBeNull();
-      expect(store.supportReference()).toBe(CORRELATION_ID);
       expect(store.phase()).toBe('idle');
+
+      // Nothing is left in the slot the sign-in screen reads as "your sign-in attempt was refused",
+      // because this was not a sign-in attempt.
+      expect(store.hasFailure())
+        .withContext('a refused renewal is not a refused sign-in and must not present as one')
+        .toBe(false);
+      expect(store.problem()).toBeNull();
+      expect(store.failureStatus()).toBeNull();
+      expect(store.supportReference()).toBeNull();
+
+      // And the operator is still told, in one notice, what actually happened to them.
+      const queued = notifications.notifications();
+
+      expect(queued.length).toBe(1);
+      expect(queued[0]?.message).toBe(SESSION_ENDED_MESSAGE);
+      expect(queued[0]?.severity)
+        .withContext('nothing failed on the operator\'s part, so it is a warning and not an error')
+        .toBe('warning');
+      expect(queued[0]?.message)
+        .withContext('and it names no token, no status code and no correlation identifier')
+        .not.toContain('token');
     });
 
-    it('reports a failure that carries neither a problem document nor a transport status', async () => {
-      // A renewal with nothing to renew from fails before any request is made, so there
-      // is no document and no status to record — yet the command unquestionably failed.
-      // Inferring failure from the presence of its details would report this as success.
+    it('reports a renewal that had nothing to renew from, and reports it as an ending', async () => {
+      // A renewal with no credential to present fails before any request is made, so there is no
+      // document and no status to describe it by — the case that used to prove `recordFailure`
+      // marks a failure even when it carries no details.
+      //
+      // ⚠ THAT PROOF MOVED RATHER THAN DISAPPEARING, and it moved because it was in the wrong
+      // place. The invariant belongs to a REFUSED SIGN-IN, where the recorded failure is what the
+      // sign-in screen shows; it is covered there. Reaching it through a renewal asserted something
+      // else entirely — that an ended session presents as a refused sign-in attempt — which is what
+      // put "The refresh token is not valid." in front of an operator who had not signed in.
       const inFlight = firstValueFrom(store.refreshSession());
 
       await expectAsync(inFlight).toBeRejected();
 
       httpMock.expectNone(REFRESH_URL);
-      expect(store.hasFailure()).toBe(true);
+      expect(store.hasFailure()).toBe(false);
       expect(store.problem()).toBeNull();
       expect(store.failureStatus()).toBeNull();
       expect(store.failureCode()).toBeNull();
-      expect(store.severity())
-        .withContext('a failure nobody anticipated is the one most worth showing')
-        .toBe('error');
       expect(store.phase()).toBe('idle');
+
+      // Silence is still not an option: a caller asked to renew and the session is over.
+      expect(notifications.notifications().map((entry) => entry.message)).toEqual([
+        SESSION_ENDED_MESSAGE,
+      ]);
     });
   });
 
@@ -3353,7 +3401,16 @@ describe('AuthStore', () => {
   // =========================================================================
 
   describe('renewal reporting', () => {
-    it('announces a renewal refused for a reason other than authority, once, in shared wording', async () => {
+    it('words a refused renewal in shared wording, and lets the ending itself have the last word', async () => {
+      // ⚠ WHAT THIS CASE ASSERTS CHANGED, BECAUSE A SPY COUNT WAS NEVER THE QUESTION. It used to
+      // require exactly one call to the announcer and stop there. That passed while an operator saw
+      // NOTHING: the notice is raised inside the renewal, and every path that reaches a refused
+      // renewal then tears the session down — and the teardown empties the queue before it does
+      // anything else. A call count cannot tell those two outcomes apart; the queue can.
+      //
+      // So both halves are asserted. This store still WORDS the refusal, which is what a future
+      // caller renewing WITHOUT ending the session would be reported by. And what an operator is
+      // actually left holding is one notice, raised by the owner of the boundary that was crossed.
       const notify = spyOn(notifications, 'notify').and.callThrough();
 
       for (const status of [429, 500, 503]) {
@@ -3368,23 +3425,35 @@ describe('AuthStore', () => {
 
         await expectAsync(renewal).toBeRejected();
 
-        expect(notify.calls.count())
-          .withContext(`a ${status} is announced exactly once, by this store and by nobody else`)
+        const worded: string[] = notify.calls.allArgs().map((args) => String(args[1]));
+        const fromThisStore: string[] = worded.filter(
+          (message) => message !== SESSION_ENDED_MESSAGE,
+        );
+
+        expect(fromThisStore.length)
+          .withContext(`a ${status} is worded by this store, in the shared summariser's sentence`)
           .toBe(1);
-        expect(String(notify.calls.mostRecent().args[1]).length)
+        expect(fromThisStore[0]?.length)
           .withContext('and it says something rather than announcing an empty sentence')
           .toBeGreaterThan(0);
+
+        expect(notifications.notifications().map((entry) => entry.message))
+          .withContext(`and the ${status} ended the session, so the ending is what is left standing`)
+          .toEqual([SESSION_ENDED_MESSAGE]);
 
         store.reset();
       }
     });
 
-    it('stays silent when authority itself is refused, because arriving at sign-in is the report', async () => {
-      // ⚠ THE ONE STATUS THIS OWNER MUST NOT SPEAK ON, and it was silent before this store took
-      // ownership too: the global announcer returns early on it, on the documented grounds that
-      // `core/interceptors/auth.interceptor.ts` owns the lifecycle of a refused credential. What
-      // that owner does is end the session and send the operator to the sign-in screen. A queued
-      // sentence would arrive alongside the navigation, and the teardown clears the queue anyway.
+    it('says why the session ended when authority itself is refused, without wording it here', async () => {
+      // ⚠ THIS CASE ONCE REQUIRED TOTAL SILENCE, on the reasoning that "arriving at the sign-in
+      // screen IS the report". Measured in a browser, it was not: the teardown was complete and
+      // correct and BOTH live regions were empty, so somebody mid-task reached a sign-in form with
+      // no account, no work and no explanation, and a non-visual operator had nothing at all.
+      //
+      // The silence is still correct HERE, and for the reason the old comment gave — anything queued
+      // inside the renewal is erased by the teardown that follows it. So the sentence comes from the
+      // boundary owner, after the erasure, and this store adds nothing on top of it.
       const notify = spyOn(notifications, 'notify').and.callThrough();
 
       await signIn();
@@ -3397,15 +3466,18 @@ describe('AuthStore', () => {
 
       await expectAsync(renewal).toBeRejected();
 
-      expect(notify)
-        .withContext('the terminal refusal is reported by navigation, not by a sentence')
-        .not.toHaveBeenCalled();
+      expect(notify.calls.allArgs().map((args) => String(args[1])))
+        .withContext('one report of one event, and this store is not the one making it')
+        .toEqual([SESSION_ENDED_MESSAGE]);
+      expect(notifications.notifications().map((entry) => entry.message)).toEqual([
+        SESSION_ENDED_MESSAGE,
+      ]);
       expect(store.isAuthenticated())
         .withContext('and the session is gone regardless')
         .toBeFalse();
     });
 
-    it('announces an unreachable endpoint, which carries no status to be terminal by', async () => {
+    it('reports an unreachable endpoint, which carries no status to be terminal by', async () => {
       const notify = spyOn(notifications, 'notify').and.callThrough();
 
       await signIn();
@@ -3418,15 +3490,32 @@ describe('AuthStore', () => {
 
       await expectAsync(renewal).toBeRejected();
 
-      expect(notify.calls.count())
-        .withContext('a renewal that never reached the server is still reported')
+      // A renewal that never reached the server is still worded by this store...
+      expect(
+        notify.calls
+          .allArgs()
+          .map((args) => String(args[1]))
+          .filter((message) => message !== SESSION_ENDED_MESSAGE).length,
+      )
+        .withContext('a renewal that never reached the server is still worded')
         .toBe(1);
+      // ...and the session ended all the same, which is the part the operator has to act on.
+      expect(notifications.notifications().map((entry) => entry.message)).toEqual([
+        SESSION_ENDED_MESSAGE,
+      ]);
     });
 
     it('says nothing about a renewal belonging to a session that has already been replaced', async () => {
       // The epoch guard the announcement sits behind. A renewal begun before a sign-out arrives
       // afterwards and must neither clear the session that replaced it nor tell the operator that
       // something failed: from where they are standing, nothing did.
+      //
+      // ⚠ THIS IS ALSO THE CASE THAT CAUGHT THE BOUNDARY-OWNER SENTENCE BEING RAISED TOO WIDELY.
+      // The discard in `refreshSession` used to be unconditional, which was harmless while it only
+      // re-emptied stores a replacement had already emptied — and stopped being harmless the moment
+      // an unasked-for ending began EXPLAINING itself, because a renewal refused after a deliberate
+      // sign-out would have told the operator their session had ended, about a session that no
+      // longer existed, in answer to a request they never made.
       const notify = spyOn(notifications, 'notify').and.callThrough();
 
       await signIn();
@@ -3444,6 +3533,9 @@ describe('AuthStore', () => {
       expect(notify)
         .withContext('a superseded renewal reports nothing to anybody')
         .not.toHaveBeenCalled();
+      expect(notifications.notifications())
+        .withContext('and leaves nothing behind for whoever is signed in now to read')
+        .toEqual([]);
     });
   });
 
@@ -3475,9 +3567,32 @@ describe('AuthStore', () => {
         expect(store.revocationOutstanding())
           .withContext(`a ${status} means the credential may still be live, and it is reported`)
           .toBeTrue();
+        /*
+         * ⚠ THIS ASSERTION IS INVERTED FROM WHAT IT USED TO BE, and the inversion is the point.
+         *
+         * It previously required this method to announce {@link REVOCATION_FAILED_MESSAGE} itself, and
+         * carried a comment arguing the reprieve made the statement survive the redirect to the sign-in
+         * screen. Both halves were wrong, and a real browser proved it: the one path that reaches
+         * `logout()` is `SessionLifecycleService.signOut`, which runs its teardown in a `finalize` — so
+         * the message queue is emptied AFTER this method speaks, twice, and a statement raised here was
+         * measured living 10 ms and never rendering a single frame. A reprieve cannot help, because it
+         * survives a change of SCREEN and a teardown is a change of SESSION.
+         *
+         * So the property worth guarding is the opposite one: this method must record the residue and
+         * say NOTHING, leaving the announcement to the actor that outlives the teardown. Asserting the
+         * silence is what stops the announcement being "helpfully" moved back here, which is a change
+         * no other specification would notice — the message would still be raised, and still be
+         * invisible.
+         *
+         * The durable half of the report is asserted immediately above: `revocationOutstanding()` is a
+         * signal the sign-in screen renders, and it is what makes the residue survivable at all.
+         */
         expect(warning)
-          .withContext('and the person is told, once, in words naming what they can do')
-          .toHaveBeenCalledOnceWith(REVOCATION_FAILED_MESSAGE);
+          .withContext(
+            'the store records the residue but must not announce it: anything it raises here is ' +
+              'erased by the teardown that follows, so the statement belongs to the lifecycle service',
+          )
+          .not.toHaveBeenCalled();
 
         store.reset();
       }
@@ -3762,7 +3877,16 @@ describe('AuthStore', () => {
       // consumed credential would mean presenting it again and being refused again.
       httpMock.expectNone(ME_URL);
       expect(store.isAuthenticated()).toBeFalse();
-      expect(store.hasFailure()).toBeTrue();
+
+      // ⚠ AND IT IS REPORTED AS AN ENDING, NOT AS A REFUSED SIGN-IN. This case used to assert a
+      // recorded failure, which the sign-in screen then presented as though the operator had typed
+      // something wrong. A rotated credential arriving blank is a contract violation with no
+      // sentence an operator could act on at all, so it is exactly the case where the boundary
+      // owner's wording is the only usable thing to say.
+      expect(store.hasFailure()).toBeFalse();
+      expect(notifications.notifications().map((entry) => entry.message)).toEqual([
+        SESSION_ENDED_MESSAGE,
+      ]);
     });
 
     it('refuses a deliberate identity read whose payload is not an object', async () => {

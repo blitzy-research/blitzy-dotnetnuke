@@ -101,8 +101,8 @@
     these carry this screen's own class.
   -->
   <app-page-header [title]="pageTitle" [subtitle]="pageSubtitle">
-    <a class="module-list__action" [routerLink]="createLink">{{ pageActionLabel.create }}</a>
-    <a class="module-list__action" [routerLink]="importLink">{{ pageActionLabel.import }}</a>
+    <a class="page-action module-list__action" [routerLink]="createLink">{{ pageActionLabel.create }}</a>
+    <a class="page-action module-list__action" [routerLink]="importLink">{{ pageActionLabel.import }}</a>
   </app-page-header>
 
   <!--
@@ -137,6 +137,18 @@
     there is also no shared component for a select, and adding one is barred by the closed
     component set. The term is matched by the server across the fields it chooses.
   -->
+  <!--
+    ⚠ THE SECTION HEADING, CLIPPED FROM THE PAINTED PAGE. Measured before it existed: `<main>`
+    exposed exactly ONE heading on a listing screen - the page title - so a reader navigating by
+    heading could not move between the control that narrows the list and the list itself. This
+    names the filter region. It is a SIBLING of the control rather than a wrapper around it: the
+    mixin behind the attribute positions the element absolutely, so it never becomes a grid item
+    and cannot open a track in the screen's grid, which is what lets the heading be added without
+    a container and without changing this screen's layout by a single pixel. The records region
+    needs no counterpart because the grid carries its own accessible name in a real `<caption>`.
+  -->
+  <h2 data-visually-hidden>Filter Modules</h2>
+
   <app-search-input
     class="module-list__search"
     [placeholder]="searchPlaceholder"
@@ -160,10 +172,50 @@
     at the severity the shared resolution utility already resolved. A LISTING failure is not,
     precisely so one event is not reported twice - the banner here already shows it in full.
   -->
-  <app-error-banner [problem]="problem()" />
+  <!--
+    ⚠ THE SCROLL ANCHOR IS THIS ELEMENT, NOT THE COMMANDS BELOW IT. A first cut anchored on
+    `module-list__status`, and runtime measurement showed why that is not enough: the banner precedes
+    the commands in document order and is 114 px tall, so scrolling the commands flush to the top left
+    the banner at top −130.5 / bottom −32.5 — entirely above the viewport. The operator saw `Try Again`
+    and `Dismiss` and could not read WHAT had failed without scrolling back up. Anchoring on the banner
+    brings the explanation into view and carries the commands with it, because they sit immediately
+    after it and the two together are shorter than any viewport.
+  -->
+  <app-error-banner #failureBanner [problem]="problem()" />
 
+  <!--
+    ⚠ A RETRY COMMAND, AND THE DISMISS IT STANDS BESIDE IS NOT A SUBSTITUTE FOR ONE. Measured on
+    this screen: with the network unreachable, the whole page offered ZERO affordances matching
+    retry, try-again, reload or refresh — sixty-four interactive elements in the healthy state and
+    sixty-five in the failed one, the single addition being `Dismiss`, which clears the banner and
+    re-attempts nothing. The rows from before the failure are correctly retained, so an operator
+    was left looking at data that was no longer current with no offered way to make it current
+    again; the only route back was to re-trigger whichever control had failed, which on a paging
+    failure means finding the pager again. Recovery was possible and simply not offered.
+
+    Retry re-issues the SAME read the failure interrupted, because the store still holds the
+    query, page coordinate and ordering that request was built from — so it resumes rather than
+    resetting, and an operator does not lose their place to recover it. It is offered first
+    because it is the action that resolves the condition; dismissing is the one that accepts it.
+
+    `module-list__status` is the region the reconciling code brings into view; see the note on
+    the component's failure effect for why that is necessary at all.
+  -->
   @if (problem() !== null) {
     <div class="module-list__status">
+      <!--
+        ⚠ THE RECOVERY AFFORDANCE, AND THIS SCREEN USED TO BE THE ONE LIST WITHOUT IT. The three
+        sibling listings each pair their failure banner with a re-read, and this one offered only a
+        dismissal - which removes the report of the failure without doing anything about the failure,
+        leaving a person on an empty grid whose only remaining recovery is to leave the screen and
+        come back. Placed BEFORE the dismissal, because acting on the failure is the more likely
+        intent and the dismissal is the way out of it.
+
+        ⚠ THE WORDING IS THE SIBLINGS' WORDING, checked against them rather than assumed: the portal,
+        role and account listings all offer `Try again`, and this file's own label constant spells it the
+        same way. A second command reading `Try Again` stood here briefly and was the same offer twice.
+      -->
+      <button class="module-list__action" type="button" (click)="onRetryRead()">Try again</button>
       <button class="module-list__action" type="button" (click)="onDismissFailure()">
         Dismiss
       </button>
@@ -229,6 +281,7 @@
   <app-data-table
     [columns]="columns()"
     [rows]="modules()"
+    [rowKey]="moduleRowKey"
     [sortBy]="sortBy()"
     [sortDir]="sortDir()"
     [loading]="listLoading()"
@@ -251,15 +304,21 @@
     the applied page size is the server's own - which can legitimately differ from the size that
     was asked for.
 
-    Rendered unconditionally. The pager decides for itself whether it has anything to offer, and
-    a wrapper condition here would be a second opinion about that.
+    The pager decides for itself what it has to offer - the range summary alone when everything
+    fits on one page, the summary plus the steps when it does not - so no wrapper condition here
+    is a second opinion about THAT. The one guard below is narrower than that decision: it keeps
+    an empty custom element out of a zero-result document, where the table's own empty state
+    already says what happened in words.
   -->
-  <app-pagination
-    [page]="meta().pageIndex"
-    [pageSize]="meta().pageSize"
-    [totalCount]="meta().totalCount"
-    (pageChange)="onPageChange($event)"
-  />
+  @if (hasResults()) {
+    <app-pagination
+      [page]="meta().pageIndex"
+      [pageSize]="meta().pageSize"
+      [totalCount]="meta().totalCount"
+      [loading]="listLoading()"
+      (pageChange)="onPageChange($event)"
+    />
+  }
 </div>
 
 <!--
@@ -315,8 +374,16 @@
   everything else about its own appearance.
 -->
 @if (removalTarget() !== null) {
+  <!-- ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application
+       shows the SAME title, which the shared dialog declares as its default; binding one here is how
+       five different titles for one action came about - runtime testing found `Delete`,
+       `Confirm Delete`, `Delete Module`, `Delete Profile Property` and `Delete role group` across the
+       screens. The legacy had no title to preserve either: every in-scope delete confirmation was a
+       `window.confirm()` carrying the single shared string `DeleteItem`
+       (`Website/App_GlobalResources/SharedResources.resx` L120-L122), with no title at all. The
+       MESSAGE is still bound where a screen has its own legacy wording, because that wording is a
+       resource value this migration must preserve. -->
   <app-confirm-dialog
-    [title]="removeConfirmTitle"
     [message]="removeConfirmMessage"
     danger
     (confirm)="onConfirmDelete()"
@@ -346,17 +413,66 @@
   name, because the commands repeat down the column and "Edit" alone tells a screen-reader user
   nothing about which row they are on.
 
-  MIGRATION: THE EXPORT COMMAND IS NEVER GATED CLIENT-SIDE. The listing contract carries no
+  MIGRATION: THE EXPORT COMMAND IS NEVER GATED ON PORTABILITY. The listing contract carries no
   portability signal - the legacy flag was derived from a supported-features bitmask that the
-  contract does not expose - so the command is always offered and the server answers
-  authoritatively when a module cannot be exported. No bitwise expression exists anywhere in
-  this feature.
+  contract does not expose - so the command is offered whenever the column is offered at all and
+  the server answers authoritatively when a module cannot be exported. No bitwise expression
+  exists anywhere in this feature.
 -->
 <ng-template #rowCommands let-row>
+  <!--
+    THE GATE: `administration OR EDIT`, and BOTH arms are required.
+
+    ⚠ THE KEY ALONE WOULD HIDE WORKING CONTROLS FROM THE OPERATOR THIS SCREEN EXISTS FOR. All four
+    commands below are `ModuleEdit` on the API, so the persisted `EDIT` key is the vocabulary that
+    governs them and the shared permission directive is the right instrument for it. But the key
+    list this client holds is derived from GRANT ROWS ALONE: a portal administrator who has never
+    been named in a grant row holds no keys whatsoever, while every one of those API policies has an
+    administrator arm that admits them regardless. Measured rather than assumed - on the seeded
+    baseline the portal administrator holds the `Administrators` role and ZERO portal-level keys, so
+    a key-only gate would have removed all four affordances from that account.
+
+    The second arm is the directive, and it is what closes the other half: a caller granted `EDIT`
+    on a single module anywhere in the portal holds `EDIT` in the union the session carries, and so
+    keeps the commands without administering the tenant. The gate is deliberately coarser than the
+    server's per-record answer - it decides whether to OFFER the column, and the server decides each
+    request - which is why no row identifier and no per-row grant is consulted here.
+
+    ⚠ THE COMMAND MARKUP IS DECLARED EXACTLY ONCE, in `#rowCommandControls` below, and both arms
+    render it through `ngTemplateOutlet`. Duplicating it per branch was the alternative and it is
+    worse: four controls, their accessible names and their three route builders would exist twice
+    and would drift apart on the first edit.
+
+    The two structural directives sit on SEPARATE `ng-container` elements because Angular permits
+    only one per element; the outlet is nested INSIDE the permission container so that its view is
+    never created for a caller who fails the gate.
+
+    The row is forwarded as the outlet context's implicit value, so the inner template reads it with
+    the same `let-row` the shared table supplies here.
+  -->
+  @if (holdsAdministration()) {
+    <ng-container *ngTemplateOutlet="rowCommandControls; context: { $implicit: row }" />
+  } @else {
+    <ng-container *hasPermission="editPermissionKey">
+      <ng-container *ngTemplateOutlet="rowCommandControls; context: { $implicit: row }" />
+    </ng-container>
+  }
+</ng-template>
+
+<!--
+  THE FOUR ROW COMMANDS THEMSELVES: three links and a removal.
+
+  Declared once, at the top level, and rendered by `#rowCommands` above through `ngTemplateOutlet`
+  in whichever arm of the gate admits the caller. It is deliberately NOT captured by a view query
+  and is never handed to the shared table directly - the table is given `#rowCommands`, which is
+  the gate, so an ungated path to these controls does not exist.
+-->
+<ng-template #rowCommandControls let-row>
   <a
     class="module-list__row-command"
     [routerLink]="editLink(row)"
-    [attr.aria-label]="commandLabel.edit + ' ' + (row.moduleTitle ?? '')"
+    [attr.aria-label]="commandName(commandLabel.edit, row)"
+    [attr.title]="commandName(commandLabel.edit, row)"
   >
     {{ commandLabel.edit }}
   </a>
@@ -364,7 +480,8 @@
   <a
     class="module-list__row-command"
     [routerLink]="settingsLink(row)"
-    [attr.aria-label]="commandLabel.settings + ' ' + (row.moduleTitle ?? '')"
+    [attr.aria-label]="commandName(commandLabel.settings, row)"
+    [attr.title]="commandName(commandLabel.settings, row)"
   >
     {{ commandLabel.settings }}
   </a>
@@ -372,7 +489,8 @@
   <a
     class="module-list__row-command"
     [routerLink]="exportLink(row)"
-    [attr.aria-label]="commandLabel.export + ' ' + (row.moduleTitle ?? '')"
+    [attr.aria-label]="commandName(commandLabel.export, row)"
+    [attr.title]="commandName(commandLabel.export, row)"
   >
     {{ commandLabel.export }}
   </a>
@@ -389,7 +507,8 @@
   <button
     class="module-list__row-command module-list__row-command--danger"
     type="button"
-    [attr.aria-label]="commandLabel.remove + ' ' + (row.moduleTitle ?? '')"
+    [attr.aria-label]="commandName(commandLabel.remove, row)"
+    [attr.title]="commandName(commandLabel.remove, row)"
     (click)="onRequestDelete(row)"
   >
     {{ commandLabel.remove }}
@@ -407,6 +526,56 @@
   MIGRATION: the legacy grids drew such a flag as a PAIR of mutually exclusive images with no
   alternative text, so the state was drawn but never announced. It is words now.
 -->
+<!--
+  The instance title, with its ABSENCE stated rather than left blank.
+
+  Measured before this template existed: for the module that stores the empty string the cell's whole
+  content was two literal U+0020 characters in a single text node, with no element children and no
+  pseudo-element, and Chrome's accessibility tree reported the cell as unnamed. A blank cell cannot be
+  told apart from a cell that failed to render, and an operator deciding whether to delete a row has
+  no way to know which they are looking at.
+
+  The pairing is the one this application uses wherever a value is absent rather than empty - the em
+  dash painted for sighted readers with `aria-hidden`, and a clipped phrase carrying the meaning for
+  assistive technology - so the roles listing's period and fee columns, the portals listing's tally
+  columns and this cell all speak with one voice. The mark is NOT a substitute title: the definition's
+  friendly name is already shown in the very next column, so repeating it here would state the same
+  fact twice while implying a title exists. The substitution belongs in the COMMAND NAMES, where it
+  identifies what the command acts on, and that is where `describeModule` applies it.
+-->
+<!--
+  THE HEADING IS CLAMPED, AND THE ROW HEIGHT IS WHY.
+
+  MEASURED, at 1280 x 900 on the module storing a 256-character heading: its row rendered 349.250 px
+  against 136.750 px for every other row on the page - 2.554x, and 212.5 px of it was one cell. At 320 and
+  768 the same row rendered 593.000 px, 4.337x an ordinary row, and both narrow widths measure identically
+  because the grid clamps to its own minimum inline size and the height then tracks the TABLE width rather
+  than the viewport.
+
+  The cause is not the value's length on its own. The shared grid lays out with a fixed algorithm across
+  equal columns, so at 1280 this cell is 102 px wide and a 256-character heading has to wrap to twenty-one
+  line boxes; the arithmetic closes exactly, 21 x 16.25 + 8 = 349.25. Widening this one column would move
+  the problem to whichever column gave up the space, and changing the grid's layout algorithm would change
+  every listing in the application for the sake of one value.
+
+  So the DISPLAY is bounded while the DATA is not. The cell shows the first few lines and the full heading
+  stays reachable two ways that need no pointer: the `title` attribute, and the row's own command names,
+  which `describeModule` already builds from the complete heading. Nothing is truncated in the model, on
+  the wire, or on the way back out.
+
+  The clamp is deliberately NOT applied to the absent-heading branch: that branch renders one mark and one
+  clipped phrase, so it can never be tall enough to need bounding, and wrapping it in a clamped element
+  would put a line-clamping context around text a screen reader is meant to read whole.
+-->
+<ng-template #titleCell let-row>
+  @if (isTitleAbsent(row)) {
+    <span aria-hidden="true">{{ absentTitleMark }}</span>
+    <span class="module-list__absent-value">{{ absentTitleDescription }}</span>
+  } @else {
+    <span class="module-list__title" [attr.title]="row.moduleTitle">{{ row.moduleTitle }}</span>
+  }
+</ng-template>
+
 <ng-template #allTabsCell let-row>{{ row.allTabs | yesNo }}</ng-template>
 
 <!--

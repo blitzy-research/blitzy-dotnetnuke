@@ -173,11 +173,18 @@
         overwrote it with the resource value at run time, so an operator never saw it. The corrected label is
         the behaviour that always applied.
 
-        Disabled only while a request is in flight, and while this address names no module. Neither is a
-        portability judgement: the attempt is deliberately always allowed for a module that may not support
-        exporting, because the server owns that answer and says so in words.
+        Disabled while a request is in flight, and while there is no module in hand to export - which
+        covers a malformed address, a read still in flight, a module that does not exist, and a read the
+        server REFUSED. Neither condition is a portability judgement: the attempt is deliberately always
+        allowed for a module that was read but may not support exporting, because the server owns that
+        answer and says so in words.
+
+        The refusal case is the one this gate was widened for. Left enabled, a press cleared the store
+        failure and so erased the banner that was accurately reporting the refusal, replacing it with a
+        sentence about the address; see `hasModuleToExport`.
       -->
-      <button type="submit" [disabled]="exporting() || !addressesModule">{{ exportLabel }}</button>
+      <button type="submit" [disabled]="exporting() || !hasModuleToExport"
+          [attr.aria-busy]="exporting() ? 'true' : null">{{ exportLabel }}</button>
 
       <!--
         MIGRATION: `type="button"` is the faithful translation of `causesvalidation="False"` on

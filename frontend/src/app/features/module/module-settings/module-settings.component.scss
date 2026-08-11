@@ -374,13 +374,38 @@
 // rather than design values and so have no token to resolve to. Alignment to the
 // start keeps a tall control — a multi-line field, a permissions grid — from
 // dragging its label down to its own centre.
+// ⚠ THE LABEL TRACK IS CAPPED, AND `auto` ALONE WAS A MEASURED CRITICAL DEFECT. The rule
+// above reasons about a long VALUE forcing the control track wider than its share, and
+// `minmax(0, 1fr)` guards that direction correctly. The failure was the OPPOSITE
+// direction, which nothing guarded: `auto` has no upper bound, the help sentence lives
+// INSIDE the `<label>`, and so a 519.81px sentence sized the label track and starved the
+// control beside it. Measured at exactly 768: `input#module-settings-moduleTitle` rendered
+// **18.00 × 25 px** with its right edge at 770 against a client width of 768 — a two-pixel
+// overflow, and the only overflow on any form screen in the application. The help box was
+// 28.88× the width of the control it was explaining. Knife-edge in both directions: clean
+// at 767 and clean at 1023, so nothing but a measurement at the exact step would find it.
+//
+// `minmax(0, $label-measure)` keeps the intrinsic behaviour that the comment above argues
+// for — a short label still takes only the room it needs — while refusing to let the track
+// grow past a bound. The help sentence then wraps inside the label instead of pushing the
+// control out of the row, which is what a sentence should do.
+//
+// THE BOUND IS MEASURED, NOT CHOSEN. The comment above records the legacy label widths
+// this screen's ancestor declared: one hundred and fifty on five cells, two hundred on
+// thirteen, two hundred and twenty-five on three. Two hundred is what the legacy used on
+// the clear majority of its label cells, so the cap is that value expressed in the root
+// unit. It is a MAXIMUM rather than a fixed width, so the objection the comment above
+// raises against the legacy literals — three inconsistent fixed widths for one role — does
+// not apply: nothing is pinned to it, and a label narrower than the bound is unaffected.
+$label-measure: 12.5rem;
+
 .module-settings__field {
   display: grid;
   gap: var(--space-1);
   grid-template-columns: var(--grid-track-fluid);
 
   @include mx.respond-above('md') {
-    grid-template-columns: auto var(--grid-track-fluid);
+    grid-template-columns: minmax(0, $label-measure) var(--grid-track-fluid);
     gap: var(--space-2) var(--space-4);
     align-items: start;
   }
@@ -460,6 +485,42 @@
   color: var(--color-primary);
 }
 
+// -----------------------------------------------------------------------------
+//  THE DECLARED-PERMISSION ADVISORY
+// -----------------------------------------------------------------------------
+//  The read-only list of keys the module's definition declares, rendered beneath
+//  the inherit switch. Presented at the same scale and in the same muted ink as
+//  the hint text directly above it, because it is advisory in exactly the same
+//  sense: it explains the field rather than participating in it, and giving it
+//  label weight would advertise a control that does not exist.
+//
+//  MIGRATION: the legacy screen carried this vocabulary as the column heads of an
+//  embedded permission grid. No grid is styled here - the grids of this
+//  application belong to the shared grid component - so the keys are laid out as
+//  a wrapping row of chips. The chip fill is the same selected-row token the
+//  legacy grid used for its own highlighted state, which keeps the borrowed
+//  vocabulary visually related to the grid it came from without reproducing one.
+.module-settings__declared-permissions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  margin-block: var(--space-1) 0;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-muted);
+}
+
+.module-settings__declared-permissions-label {
+  font-weight: var(--font-weight-bold);
+}
+
+.module-settings__declared-permission {
+  padding-inline: var(--space-1);
+  background-color: var(--color-selected);
+  color: var(--color-primary);
+}
+
 // MIGRATION: the surviving visibility choice group rendered horizontally in the
 // legacy screen and still does, but as a wrapping flex row rather than as a single
 // non-wrapping line. The row gap is the tighter step and the column gap the looser
@@ -491,6 +552,87 @@
 //  separation survives the collapsing of repeated spaces and the row wraps
 //  cleanly instead of overflowing. The buttons themselves are styled by the
 //  global form layer.
+//
+//  MIGRATION: the row stays at the END of the document, after every section, and
+//  is deliberately NOT pinned to the viewport. A review finding recorded this
+//  screen at 1835px tall with its commands at y1746-1769.75 and asked for them to
+//  be brought within reach. Of the two things that measurement describes, one was
+//  a real defect and is fixed; the placement is faithful parity and is kept.
+//
+//   - The 23.75px command height was the real defect. The shared target-size floor
+//     now gives each command an explicit 44px box: measured height 44.000 for all
+//     three of Update, Cancel and Delete, at every viewport height from 900 to
+//     1200.
+//   - The 1835px document is now 1003px on arrival, because the regions the legacy
+//     declared `isexpanded="False"` start closed here too. The component states
+//     that mapping and cites its source; this file only has to avoid undoing it.
+//     Configured, four of the seven regions start closed. Only three of them are
+//     in the arrival DOM - `security`, `pageSettings`, `specificSettings` - because
+//     a closed region renders its toggle and nothing else, so `other`, which nests
+//     inside a closed region, does not exist yet. Measured on arrival: five
+//     toggles, three reading `aria-expanded="false"`.
+//   - The placement itself reproduces the legacy screen exactly.
+//     `modulesettings.ascx` is 225 lines and declares cmdUpdate, cmdCancel and
+//     cmdDelete on lines 222, 223 and 224 - the last three content lines of the
+//     file, after all forty-one of its layout rows. This row is likewise the last
+//     child of the form. Placing it anywhere else would invent a convention the
+//     legacy portal never had, which Minimal Change Clause item 4 forbids.
+//
+//  Stated plainly, because the argument is weaker if it pretends otherwise: at
+//  1280x900 the row genuinely IS below the fold. Its bottom edge sits at 932.500,
+//  so 32.500px of a 44px control is clipped - 73.864% hidden, and a hit test at the
+//  button's own centre returns null. What makes that acceptable is not that it is
+//  invisible but that it is trivially reachable: the entire page holds 103px of
+//  scroll, one wheel notch, after which the whole row is on screen with 70.500px of
+//  headroom and an intersection ratio of 1. Clicking it there saves normally - a
+//  200 carrying an unaltered title.
+//
+//  A `position: sticky` command bar was considered and rejected on three grounds.
+//  It exists nowhere else in this workspace - the only sticky rule is the data
+//  table's own column head - so applying it here would make the longest form in the
+//  application behave unlike every other form in it. It would not generalise from
+//  one screen either: the same arrival-below-the-fold geometry is present on the
+//  user create form, so a pinned-command convention belongs to the cross-cutting
+//  responsive pass that can apply it to all of them at once and judge it against
+//  the shell. And the amount clipped is a property of the measuring viewport rather
+//  than of this layout: the bottom edge measured a constant 932.500 across all
+//  eleven heights tested from 900 to 1200, so the layout never reflows and the
+//  smallest viewport showing the control whole is exactly ceil(932.500) = 933. That
+//  is a hairline boundary, not comfort - it is offered as evidence that nothing here
+//  is height-dependent, not as a claim that the control is generally above the fold.
+//
+//  ⚠ THE CROSS-CUTTING PASS THIS NOTE DEFERRED TO HAS NOW RUN, AND IT DECLINES THE
+//  CONVENTION. Three measurements settled it, and two of them weaken the case above
+//  rather than strengthening it, which is why they are recorded here in full.
+//
+//  First, there is no convention to join. A scan of every screen in the application
+//  found `position: sticky` on ZERO elements and `position: fixed` on exactly one - the
+//  notification list, an empty container measuring 448 x 0 - so a pinned command bar
+//  would not be extending a pattern, it would be introducing one.
+//
+//  Second, and against the argument above: the "one wheel notch" holds only while this
+//  screen's three collapsed sections stay shut. Expand them - which is what an operator
+//  editing advanced settings does - and the same button measures 100% clipped, 1,896px
+//  below the fold at 1280x900, needing a viewport 2,796px tall to show it whole. So the
+//  73.864% figure is the BEST case, not the typical one, and scroll is not a formality
+//  here. That is the strongest available argument FOR pinning, and it is stated plainly.
+//
+//  Third, what pinning would cost, which is why it still loses. A pinned row takes its
+//  own height plus its spacing out of every viewport on every form screen, permanently,
+//  and it takes it worst exactly where the least is available: at 320x900 the shell's
+//  stacked header and navigation already consume 640.5px - 71.17% of the first viewport
+//  - before any content at all. Trading a permanent reduction on thirteen screens for
+//  the removal of a scroll on two is not a trade this pass is willing to make on its own
+//  authority, and neither the Agent Action Plan nor the legacy portal names such a
+//  convention: the legacy commands sat at the end of the form, which is where these sit.
+//
+//  So the decision is DECLINED for both screens together, not just this one. The user
+//  create form is the other member of the family and measures the same way - its submit
+//  100% clipped with its bottom edge at 1,332 against a 900px viewport, 432px past the
+//  fold - and it carries the same note. Both controls are reachable by ordinary
+//  scrolling and both are fully visible at the page bottom, verified at 1280x900 and
+//  1920x1080. Should a future pass adopt a pinned-command convention it must apply to
+//  both, and to the other eleven form screens with them.
 .module-settings__actions {
   display: flex;
   flex-wrap: wrap;
@@ -564,3 +706,93 @@
 // this screen has none, and its permissions region is a shared component that
 // owns its own appearance.
 // =============================================================================
+
+// -----------------------------------------------------------------------------
+//  THE SECTION HEADINGS
+// -----------------------------------------------------------------------------
+//  Each disclosure toggle is wrapped in a real heading so this screen's seven
+//  sections appear in the document outline. Before this, the screen exposed exactly
+//  ONE heading inside the main region - the page title - so a reader navigating by
+//  heading could reach the page and then nothing, and had to walk every control of
+//  every section to move between them. The toggle's own identifier was already
+//  named for a heading, which is what the markup had always intended.
+//
+//  LEVELS FOLLOW THE NESTING, not the reading order: the three outer sections are
+//  level two and the four sections nested inside them are level three, so no level
+//  is skipped and a child is never announced as its parent's sibling.
+//
+//  ⚠ THIS RULE IS WHAT MAKES THE CHANGE INVISIBLE, and it is the whole reason the
+//  class exists. A heading element carries a UA font size, a bold weight and a block
+//  margin, none of which these toggles were painted with; the wrapper collapses all
+//  three so the button renders exactly where and how it did before. The heading is
+//  added for the outline, never for the appearance - the button below keeps every
+//  one of its own visual states, including the pressed tint and the focus ring.
+.module-settings__section-heading {
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+}
+
+//  THE STORED-SETTINGS DISCLOSURE
+// A definition list, because that is exactly what the data is: a name paired with
+// the value recorded against it. A table would claim a second axis this data does
+// not have, and a list of paragraphs would lose the pairing.
+// The VALUE measure is the load-bearing declaration here. The column admits 2000
+// characters and a real module in the measured data stores 750 of them, so the
+// value must wrap and must break inside an unbroken token: a setting value is
+// arbitrary text and is frequently a path, an identifier or serialised content
+// with no spaces in it at all. Without `anywhere` a single long token would push
+// the panel wider than its container and scroll the screen sideways - the same
+// defect, and the same remedy, as the alias cell on the portals listing.
+// `anywhere` rather than `break-word` deliberately: only `anywhere` reduces the
+// element's min-content contribution, which is what actually stops an unbroken
+// token from widening the ancestor. `break-word` breaks the line but leaves the
+// intrinsic width unchanged, so it would look correct until the container had to
+// shrink.
+.module-settings__stored {
+  margin: var(--space-2) 0 0;
+}
+.module-settings__stored-name {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+  overflow-wrap: anywhere;
+}
+// The scope reads as an aside to the name it follows, so it is not emphasised and
+// not coloured as a value. It carries the one fact that decides whether an
+// operator should care: whether the value follows the module everywhere or belongs
+// to this placement alone.
+.module-settings__stored-scope {
+  font-weight: var(--font-weight-normal);
+  font-style: italic;
+}
+.module-settings__stored-value {
+  margin: 0 0 var(--space-2);
+  max-inline-size: mx.breakpoint('md');
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-base);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+// The explicit "none recorded" statement. Muted, because it reports an absence
+// rather than a problem, and the vocabulary measures this ink above the text
+// contrast threshold on the page background.
+.module-settings__stored-empty {
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-muted);
+  line-height: var(--line-height-base);
+}
+// The blank-heading disclosure. Muted ink and the dense supporting step, because it
+// is a STATEMENT about an accepted value and not a refusal - the danger ink would
+// tell the operator their entry was rejected when it is perfectly valid and will be
+// saved. Deliberately outside the message container, which is where refusals live.
+.module-settings__notice {
+  margin: var(--space-1) 0 0;
+  max-inline-size: mx.breakpoint('md');
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-base);
+  overflow-wrap: anywhere;
+}

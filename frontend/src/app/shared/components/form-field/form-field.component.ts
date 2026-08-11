@@ -33,7 +33,10 @@
 //   L11 </asp:panel>
 //
 // Five structural facts are carried across. A REAL `<label>` gives native
-// association, so the legacy `ControlName` attribute becomes `for` here. The help
+// association, so the legacy `ControlName` attribute becomes `for` here - and
+// where the legacy declared no `ControlName`, the caption is rendered as a `span`
+// instead, because a `<label>` that names nothing and wraps nothing is an element
+// misuse rather than an association. See {@link FormFieldComponent.for}. The help
 // affordance TOGGLES A BLOCK that sits below the label in normal flow - the
 // literal `<br />` on L8 is the proof, and `default.css:L424-L439` styles
 // `.Help` as a bordered, background-filled box rather than a tool tip, so it is a
@@ -90,6 +93,7 @@ import {
   type AfterContentChecked,
   type Signal,
 } from '@angular/core';
+import { NgTemplateOutlet } from '@angular/common';
 
 import { stripLegacyBreakTags } from '../../../core/utils/form-errors.util';
 
@@ -162,6 +166,32 @@ const ID_PREFIX = 'app-form-field';
  * The query is deliberately scoped to the projection wrapper before it is used,
  * so it never reaches the help disclosure button that this component owns.
  */
+/**
+ * The projected controls that may carry this field's DESCRIPTION.
+ *
+ * Narrower than {@link PROJECTED_CONTROL_SELECTOR} on purpose, and the difference is the point.
+ * The naming pass has to reach every interactive thing a caller projects, including the edit and
+ * delete affordances a legacy composite field placed beside its control, because an unnamed
+ * command is a defect wherever it sits. A DESCRIPTION is different: it states what is wrong with
+ * a VALUE, so attaching it to a command would tell an operator that the button is invalid. Only
+ * value-bearing controls are described - the native ones, plus the ARIA roles that stand in for
+ * them - and buttons, submits, resets, image inputs and links are deliberately excluded.
+ */
+const DESCRIBABLE_CONTROL_SELECTOR = [
+  'input:not([type="hidden"],[type="button"],[type="submit"],[type="reset"],[type="image"])',
+  'select',
+  'textarea',
+  '[contenteditable="true"]',
+  '[role="checkbox"]',
+  '[role="combobox"]',
+  '[role="listbox"]',
+  '[role="radio"]',
+  '[role="slider"]',
+  '[role="spinbutton"]',
+  '[role="switch"]',
+  '[role="textbox"]',
+].join(',');
+
 const PROJECTED_CONTROL_SELECTOR = [
   'a[href]',
   'button',
@@ -179,6 +209,28 @@ const PROJECTED_CONTROL_SELECTOR = [
   '[role="switch"]',
   '[role="textbox"]',
 ].join(',');
+
+/** The value `aria-invalid` takes while a field is reporting a failure. */
+const INVALID_STATE = 'true';
+
+/**
+ * Splits a space-separated reference list into its individual identifiers.
+ *
+ * ARIA reference lists are whitespace-separated with no ordering or uniqueness guarantee, and a
+ * consumer may legitimately write one with any run of spaces or a leading or trailing space. Splitting
+ * on runs and discarding empties is what lets this component ADD its own references to a consumer's
+ * without ever corrupting theirs.
+ *
+ * @param value The attribute value, or null when the attribute is absent.
+ * @returns The identifiers it names, in order, with no empty entries.
+ */
+function referenceTokens(value: string | null): readonly string[] {
+  if (value === null) {
+    return [];
+  }
+
+  return value.split(/\s+/).filter((token) => token.length > 0);
+}
 
 /** A labelable element's browser-provided list of associated labels. */
 type LabelableElement = HTMLElement & {
@@ -416,7 +468,9 @@ function normaliseMessages(
  * rather than above it - 28 `asp:CheckBox` declarations, only 5 of which carry
  * their own `Text`, so 23 depend entirely on the adjacent label.
  *
- * PERMISSION-GATED FIELDS. The shared `*appHasPermission` directive must be
+ * PERMISSION-GATED FIELDS. The shared `*hasPermission` directive - that is its
+ * exact selector, with no `app` prefix, because AAP §0.3.2 names the member
+ * `hasPermission` and the microsyntax binds to the input of that name - must be
  * applied to the `<app-form-field>` ELEMENT, never to the control inside it. The
  * directive removes its subject from the DOM; applied to the inner control it
  * would leave this component rendering a label whose `for` points at an element
@@ -438,10 +492,20 @@ function normaliseMessages(
 @Component({
   selector: 'app-form-field',
   standalone: true,
-  imports: [],
+  // `NgTemplateOutlet` stamps the caption into whichever of the two elements the field
+  // needs - see the template's caption note for why there are two and why the content is
+  // declared once. It is the only import this component takes; the built-in control-flow
+  // blocks need none.
+  imports: [NgTemplateOutlet],
   templateUrl: './form-field.component.html',
   styleUrl: './form-field.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  // The unavailable state is published as a host class so the stylesheet's existing
+  // `:host(.form-field--disabled)` rule can finally apply. Nothing set this class before, which is
+  // why a disabled field was visually identical to an enabled one.
+  host: {
+    '[class.form-field--disabled]': 'projectedControlDisabled()',
+  },
 })
 export class FormFieldComponent implements AfterContentChecked {
   // -------------------------------------------------------------------------
@@ -461,6 +525,14 @@ export class FormFieldComponent implements AfterContentChecked {
   /** The projected control's `id` exactly as supplied, trimmed. */
   private readonly controlIdValue = signal('');
 
+  /**
+   * Whether every projected control is unavailable, read from the DOM on each content check.
+   *
+   * Drives the host's unavailable modifier. Protected rather than private because a host binding in
+   * the decorator is an expression evaluated against the instance.
+   */
+  protected readonly projectedControlDisabled = signal(false);
+
   /** The help text exactly as supplied, before break markup is resolved. */
   private readonly helpValue = signal('');
 
@@ -479,6 +551,46 @@ export class FormFieldComponent implements AfterContentChecked {
    * supplies a more specific name.
    */
   private readonly automaticallyLabelledControls = new WeakMap<HTMLElement, string>();
+
+  /**
+   * Controls whose `aria-describedby` references this component contributed, and which ones.
+   *
+   * ⚠ THE STORED VALUE IS WHAT MAKES THE WIRING NON-DESTRUCTIVE. A consumer is free to describe its
+   * own control - a character counter, a format hint - and this component must add the help and error
+   * regions ALONGSIDE that rather than over it. Remembering exactly which identifiers were
+   * contributed is the only way to withdraw them later without also withdrawing the consumer's.
+   */
+  private readonly contributedDescriptions = new WeakMap<HTMLElement, readonly string[]>();
+
+  /**
+   * Controls whose `aria-invalid` state this component set.
+   *
+   * A consumer that states invalidity itself owns it, and its value is never overwritten or removed;
+   * membership here distinguishes the two cases without writing a marker attribute into the DOM.
+   */
+  private readonly contributedInvalidity = new WeakSet<HTMLElement>();
+
+  /**
+   * Controls whose `aria-errormessage` reference this component wrote.
+   *
+   * ⚠ THIS SET EXISTS BECAUSE WITHDRAWAL USED TO BE UNCONDITIONAL, AND THAT DESTROYED A CONSUMER'S
+   * OWN REFERENCE. Runtime measurement on the account creation screen: both password boxes bind
+   * `[attr.aria-errormessage]` to a GROUP error the component itself renders, because the rule spans
+   * two inputs and so belongs to neither field. Each field's own error is empty in that state, this
+   * component therefore reconciled with `invalid` false, and the unconditional
+   * `removeAttribute('aria-errormessage')` below stripped the attribute Angular had just written -
+   * measured as `hasAttribute('aria-errormessage') === false` on both inputs, with zero occurrences
+   * of `errormessage` anywhere in the accessibility tree, while the consumer's `aria-invalid`
+   * survived because that branch already checked ownership. A declarative binding does not repair
+   * itself: Angular rewrites an attribute only when the bound value changes, so one removal is
+   * permanent for as long as the message stands.
+   *
+   * The reference is still withdrawn when the region it names leaves the document - a dangling
+   * reference is worse than no reference - but only for references this component wrote. Ownership is
+   * decided exactly as it is for `aria-invalid`: an attribute present on a control this set does not
+   * name was put there by the consumer, whose lifetime for it is its own business.
+   */
+  private readonly contributedErrorReferences = new WeakSet<HTMLElement>();
 
   /**
    * Whether the help disclosure is open.
@@ -537,12 +649,28 @@ export class FormFieldComponent implements AfterContentChecked {
    * The `id` of the control the caller projects, used as the label's `for`.
    *
    * MAY BE EMPTY, and that is a measured requirement rather than a courtesy: 5 of
-   * the 186 legacy labels declare no `controlname` at all. An empty value renders
-   * NO `for` attribute, because `for=""` is a dangling reference that names
-   * nothing and reports as an error to any auditing tool. When it is empty,
-   * unnamed projected controls are still associated directly through the
-   * field-label fallback applied by {@link ensureProjectedControlsAreNamed}, while
-   * callers remain free to provide a more specific accessible name.
+   * the 186 legacy labels declare no `controlname` at all, and every composite
+   * field - a radio group above all - has no single element to point at.
+   *
+   * ⚠ THE CAPTION'S ELEMENT FOLLOWS THIS INPUT. Supplied, the caption is a real
+   * `<label>` carrying `for`. Empty, the caption is a `<span>` with the same class
+   * and the same `id`. Both are deliberate and the reasoning is one sentence: an
+   * element associates a caption with a control through `for` or by wrapping the
+   * control, this component projects controls into a sibling element rather than
+   * inside the caption, so with no `for` a `<label>` would associate with nothing
+   * at all. It named nothing, focused nothing and forwarded no click, and every
+   * auditing tool reports it - Chrome as "No label associated with a form field".
+   * Rendering `for=""` instead would be worse still, a reference resolving to
+   * nothing, so neither branch can emit it.
+   *
+   * Naming is unaffected either way, and that is what makes the swap safe: unnamed
+   * projected controls are associated directly through the field-caption fallback
+   * applied by {@link ensureProjectedControlsAreNamed}, the projection group is
+   * named through `aria-labelledby`, and callers remain free to provide a more
+   * specific accessible name. Visually the two forms are identical, because the
+   * stylesheet selects the class and never the element; the only inherited
+   * property the `span` drops is the global pointer cursor, which a caption with
+   * nothing to focus should not have shown.
    *
    * Trimmed on the way in, because a value with surrounding whitespace cannot
    * match an element's `id` and would produce exactly the dangling reference this
@@ -676,6 +804,20 @@ export class FormFieldComponent implements AfterContentChecked {
   public readonly errorId: Signal<string> = computed(() => `${this.idBase()}-error`);
 
   /**
+   * The identifier for one message inside the error region.
+   *
+   * Derived from the region's own identifier and the message's position, so it is stable for as
+   * long as the message list is, and unique across fields because the base is. Exposed because
+   * the template binds it and a specification asserts on it.
+   *
+   * @param index The message's position in the rendered list, counted from nought.
+   * @returns The identifier for that message's paragraph.
+   */
+  public errorMessageId(index: number): string {
+    return `${this.errorId()}-${index}`;
+  }
+
+  /**
    * The `id` of the help button's own text, used to compose the button's name.
    *
    * Internal to the template: a caller has no use for it, so it is not part of the
@@ -697,20 +839,24 @@ export class FormFieldComponent implements AfterContentChecked {
   /**
    * Whether there is label text to name anything with.
    *
-   * Guards the naming references rather than the label element itself. The element
-   * is always rendered, exactly as `labelcontrol.ascx:L2` rendered it
-   * unconditionally, so the field's shape does not change when a caller supplies
-   * no label; but an empty element is not a name, so nothing is pointed at it.
+   * Guards the naming references rather than the caption element itself. A caption
+   * is always rendered - a `<label>` or a `<span>` depending on {@link labelFor} -
+   * exactly as `labelcontrol.ascx:L2` rendered its label unconditionally, so the
+   * field's shape does not change when a caller supplies no wording; but an empty
+   * element is not a name, so nothing is pointed at it.
    */
   protected readonly hasLabel: Signal<boolean> = computed(() => this.labelText().length > 0);
 
   /**
-   * The value for the label's `for` attribute, or null to omit it entirely.
+   * The value for the caption's `for` attribute, or null when there is no control
+   * to point at.
    *
-   * Null rather than the empty string, because a null attribute binding removes
-   * the attribute while an empty one renders `for=""` - a reference that resolves
-   * to nothing. This is the mechanism that makes the 5 legacy labels with no
-   * control association safe to port unchanged.
+   * Null rather than the empty string, because `for=""` is a reference that
+   * resolves to nothing. Null additionally SELECTS THE CAPTION'S ELEMENT: the
+   * template renders a `<label for>` when this is a value and a `<span>` when it
+   * is null, so a caption that cannot associate with a control is never expressed
+   * as a `<label>`. This is the mechanism that makes the 5 legacy labels with no
+   * control association, and every composite field, safe to port unchanged.
    */
   protected readonly labelFor: Signal<string | null> = computed(() => {
     const controlId = this.controlIdValue();
@@ -863,6 +1009,58 @@ export class FormFieldComponent implements AfterContentChecked {
    */
   public ngAfterContentChecked(): void {
     this.ensureProjectedControlsAreNamed();
+    this.ensureProjectedControlsAreDescribed();
+    this.reflectProjectedDisabledState();
+  }
+
+  /**
+   * Publishes whether the projected control is unavailable, so the host can be styled for it.
+   *
+   * ⚠ THE STYLING FOR THIS STATE ALREADY EXISTED AND WAS UNREACHABLE. The stylesheet declares a
+   * `:host(.form-field--disabled)` rule that mutes the label and shows a not-allowed cursor, but
+   * NOTHING EVER SET THAT CLASS - the component contained no reference to a disabled state at all.
+   * So a disabled field was measured rendering its label at the ordinary brand ink, at bold weight,
+   * with `cursor: pointer`, indistinguishable from an enabled one; the only signal was the user
+   * agent's own 13x13 checkbox glyph, whose fill against the surface measures about 1.38:1.
+   *
+   * ⚠ READ FROM THE DOM RATHER THAN TAKEN AS AN INPUT, and that is deliberate. A caller disables a
+   * control through the forms API (`disable()`, or a disabled state in a typed form), never by
+   * telling this component about it, so an input would have to be kept in step by hand at every call
+   * site and would silently disagree the moment one forgot. The projected element's own `disabled`
+   * property is the single fact that is always true.
+   *
+   * ⚠ AND IT USES THE SAME SEAM AS THE TWO SIBLINGS ABOVE for the same reason they do: content may be
+   * added or removed by built-in control flow, and a control can be enabled or disabled at any time
+   * after projection, so the state has to be re-read on each content check rather than once. The
+   * signal is written only when the value CHANGES, so this stays idempotent and cannot loop.
+   */
+  private reflectProjectedDisabledState(): void {
+    const projection = this.hostElement.nativeElement.querySelector<HTMLElement>(
+      '.form-field__control',
+    );
+
+    if (projection === null) {
+      return;
+    }
+
+    const controls = Array.from(
+      projection.querySelectorAll<HTMLElement>(PROJECTED_CONTROL_SELECTOR),
+    );
+
+    // EVERY control, not the first: a field may project a related pair, and it is only unavailable
+    // as a whole when none of them can be operated. A field projecting no control at all - a
+    // read-only value, which several screens use this component for - is not disabled.
+    const unavailable: boolean =
+      controls.length > 0 &&
+      controls.every(
+        (control) =>
+          (control as HTMLElement & { disabled?: boolean }).disabled === true ||
+          control.getAttribute('aria-disabled') === 'true',
+      );
+
+    if (this.projectedControlDisabled() !== unavailable) {
+      this.projectedControlDisabled.set(unavailable);
+    }
   }
 
   /**
@@ -919,6 +1117,153 @@ export class FormFieldComponent implements AfterContentChecked {
       control.setAttribute('aria-labelledby', labelReference);
       this.automaticallyLabelledControls.set(control, labelReference);
     }
+  }
+
+  /**
+   * Points each projected control at the help and error regions, and states its validity.
+   *
+   * ⚠ THIS IS NOT A DUPLICATE OF THE GROUP'S OWN `aria-describedby`. ARIA descriptions are NOT
+   * inherited: a description on the composite group is announced when the group is entered and is not
+   * announced when the control itself is reached, which is the moment a person needs to be told what is
+   * wrong with it. Runtime testing measured the consequence on real screens - `aria-describedby`,
+   * `aria-errormessage` and `aria-invalid` were ALL null on every invalid control on the account and
+   * profile forms, so the form was silently unsubmittable: the error text was on screen, and nothing
+   * connected it to the box a person was sitting in. The group reference is kept as well, because it
+   * carries the composite context for a field holding several controls.
+   *
+   * Both `aria-describedby` and `aria-errormessage` are written, deliberately. Support for
+   * `aria-errormessage` is uneven across assistive technology, and where it is honoured it is the
+   * precise statement - "this is the message about the failure" rather than "this describes the
+   * control" - so the specific attribute is written for the readers that use it and the well-supported
+   * one for the readers that do not. `aria-invalid` is what makes the error message reachable at all
+   * for the former, which is why all three move together.
+   *
+   * NOTHING A CONSUMER WROTE IS OVERWRITTEN. Contributed references are appended to whatever the
+   * consumer declared and withdrawn again when their target stops being rendered; a consumer that
+   * states `aria-invalid` itself keeps its own value forever. Only regions that are actually in the
+   * document are ever referenced, so a reference cannot dangle.
+   *
+   * Runs after every content check because the field's error and help state changes at runtime and
+   * because control flow may add or remove projected controls. It is idempotent: a control already
+   * carrying exactly the right references and state is not written to.
+   */
+  private ensureProjectedControlsAreDescribed(): void {
+    const projection = this.hostElement.nativeElement.querySelector<HTMLElement>(
+      '.form-field__control',
+    );
+
+    if (projection === null) {
+      return;
+    }
+
+    const invalid = this.hasError();
+    const contributions: string[] = [];
+
+    if (this.helpExpanded()) {
+      contributions.push(this.helpId());
+    }
+
+    if (invalid) {
+      contributions.push(this.errorId());
+    }
+
+    const controls = Array.from(
+      projection.querySelectorAll<HTMLElement>(DESCRIBABLE_CONTROL_SELECTOR),
+    );
+
+    for (const control of controls) {
+      this.reconcileDescription(control, contributions);
+      this.reconcileInvalidity(control, invalid);
+    }
+  }
+
+  /**
+   * Adds this field's description references to one control without disturbing the consumer's.
+   *
+   * @param control The projected control.
+   * @param contributions The identifiers this field currently has rendered.
+   */
+  private reconcileDescription(control: HTMLElement, contributions: readonly string[]): void {
+    const previous = this.contributedDescriptions.get(control) ?? [];
+    const declared = referenceTokens(control.getAttribute('aria-describedby')).filter(
+      (token) => !previous.includes(token),
+    );
+    const next = [...declared, ...contributions];
+    const value = next.join(' ');
+
+    if (value.length === 0) {
+      // Removing rather than writing an empty string: an empty reference list is read by some
+      // assistive technology as a description that exists and says nothing.
+      if (control.hasAttribute('aria-describedby')) {
+        control.removeAttribute('aria-describedby');
+      }
+    } else if (control.getAttribute('aria-describedby') !== value) {
+      control.setAttribute('aria-describedby', value);
+    }
+
+    if (contributions.length === 0) {
+      this.contributedDescriptions.delete(control);
+    } else {
+      this.contributedDescriptions.set(control, [...contributions]);
+    }
+  }
+
+  /**
+   * States or withdraws the validity of one control, leaving a consumer's own statement alone.
+   *
+   * @param control The projected control.
+   * @param invalid Whether this field is currently reporting a failure.
+   */
+  private reconcileInvalidity(control: HTMLElement, invalid: boolean): void {
+    const contributed = this.contributedInvalidity.has(control);
+
+    if (invalid) {
+      // ⚠ `aria-invalid` AND `aria-errormessage` ARE OWNED SEPARATELY, and conflating them loses the
+      // message. Seventy consumer templates in this application bind `aria-invalid` on their own
+      // control - a habit from before this wiring existed - and none binds `aria-errormessage`. So
+      // the state is left to a consumer that states it, while the reference to the message is always
+      // contributed: skipping the reference whenever a consumer had set the state would silently
+      // withhold the message on exactly the fields whose authors were most careful.
+      const consumerOwnsState = !contributed && control.hasAttribute('aria-invalid');
+
+      if (!consumerOwnsState) {
+        if (control.getAttribute('aria-invalid') !== INVALID_STATE) {
+          control.setAttribute('aria-invalid', INVALID_STATE);
+        }
+
+        this.contributedInvalidity.add(control);
+      }
+
+      const errorReference = this.errorId();
+      const consumerOwnsReference =
+        !this.contributedErrorReferences.has(control) &&
+        control.hasAttribute('aria-errormessage');
+
+      if (!consumerOwnsReference) {
+        if (control.getAttribute('aria-errormessage') !== errorReference) {
+          control.setAttribute('aria-errormessage', errorReference);
+        }
+
+        this.contributedErrorReferences.add(control);
+      }
+
+      return;
+    }
+
+    // The reference is withdrawn whenever the region it names has left the document, whoever owns
+    // the STATE, because a dangling reference is worse than no reference at all - but only for a
+    // reference this component wrote. See `contributedErrorReferences`.
+    if (this.contributedErrorReferences.has(control)) {
+      control.removeAttribute('aria-errormessage');
+      this.contributedErrorReferences.delete(control);
+    }
+
+    if (!contributed) {
+      return;
+    }
+
+    control.removeAttribute('aria-invalid');
+    this.contributedInvalidity.delete(control);
   }
 
   /**

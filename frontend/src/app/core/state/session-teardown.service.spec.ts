@@ -30,10 +30,12 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
 
+import { NotificationService } from '../services/notification.service';
+
 import { ModuleStore } from './module.store';
 import { PortalStore } from './portal.store';
 import { RoleStore } from './role.store';
-import { SessionTeardownService } from './session-teardown.service';
+import { SESSION_ENDED_MESSAGE, SessionTeardownService } from './session-teardown.service';
 import { UserStore } from './user.store';
 
 import { ModuleVisibility } from '../models/module.model';
@@ -356,6 +358,132 @@ describe('SessionTeardownService', () => {
     expect(navigate)
       .withContext('the interceptor and the shell each choose their own destination')
       .not.toHaveBeenCalled();
+  });
+
+  // =========================================================================
+  // EXPLAINING AN ENDING NOBODY ASKED FOR
+  //
+  // ⚠ THE MEASUREMENT THAT PUT THESE CASES HERE. Driven in a real browser: a session whose renewal
+  // credential had been revoked was torn down PERFECTLY — credential cleared, every domain slice
+  // emptied, the operator returned to the sign-in screen with no residue in storage or cookies — and
+  // both live regions were EMPTY. Somebody mid-task therefore reached a sign-in form with no account,
+  // no work and no explanation, and a non-visual operator had nothing at all to go on.
+  //
+  // ⚠ AND WHY THE SENTENCE IS RAISED HERE RATHER THAN BY THE CALLERS. Two paths end a session without
+  // the operator asking, and a browser found the second one only after the first had been fixed: the
+  // bearer interceptor's terminal path, when a refused request cannot be recovered, and the
+  // authentication store's discard, when the renewal a NAVIGATION GATE asked for is refused. The
+  // second reached the operator with the renewal's own problem document instead — "Unauthorized" over
+  // "The refresh token is not valid." over a bare correlation identifier — which is an account of a
+  // credential they never knew existed. One sentence raised from two files could not have covered
+  // both and would have drifted; raised from the point both already pass through, it covers any
+  // future third path by construction.
+  // =========================================================================
+  describe('explaining an ending nobody asked for', () => {
+    let notifications: NotificationService;
+
+    beforeEach(() => {
+      notifications = TestBed.inject(NotificationService);
+    });
+
+    it('tells the operator the session has ended when a renewal was refused', () => {
+      teardown.purge('renewalRefused');
+
+      const queued = notifications.notifications();
+
+      expect(queued.length).withContext('one ending, one notice').toBe(1);
+      expect(queued[0]?.message).toBe(SESSION_ENDED_MESSAGE);
+      // A warning and not an error: nothing failed on the operator's part, they were simply away
+      // longer than a credential lives. The severity also carries the longer on-screen lifetime a
+      // message read on ARRIVAL at another screen needs.
+      expect(queued[0]?.severity).toBe('warning');
+    });
+
+    it('words the ending for a person, naming no token, status or identifier', () => {
+      // The regression this guards is a specific one: passing the renewal's own problem document
+      // through to the sign-in screen, which is what an operator was shown before the sentence
+      // existed. Every word of that document was true and none of it was usable.
+      teardown.purge('renewalRefused');
+
+      const message = notifications.notifications()[0]?.message ?? '';
+
+      expect(message.toLowerCase()).not.toContain('token');
+      expect(message.toLowerCase()).not.toContain('unauthorized');
+      expect(message).not.toMatch(/\b40\d\b/);
+      expect(message)
+        .withContext('and it says what happened and what to do about it')
+        .toBe(SESSION_ENDED_MESSAGE);
+    });
+
+    it('exempts the notice from the navigation sweep it is raised alongside', () => {
+      // ⚠ WITHOUT THIS THE MESSAGE WOULD BE RAISED AND NEVER SEEN. The shell clears transient
+      // notices on a completed navigation, and this notice exists precisely to accompany the
+      // navigation to the sign-in screen — so it has to outlive the very sweep that navigation
+      // triggers.
+      teardown.purge('renewalRefused');
+
+      notifications.clearOnNavigation();
+
+      expect(notifications.notifications().map((entry) => entry.message))
+        .withContext('it survives arriving at the screen it explains')
+        .toEqual([SESSION_ENDED_MESSAGE]);
+    });
+
+    it('raises it AFTER emptying the queue, so the clearing cannot erase it', () => {
+      // ⚠ THE ORDER IS THE WHOLE MECHANISM. Clearing empties the queue AND the exemption set, so a
+      // notice raised before it is destroyed by it — which is exactly what happened to the wording
+      // the authentication store raises from inside the renewal, and the reason the sentence could
+      // not simply be added there.
+      notifications.success('A record you will never see again was saved.');
+      notifications.error('And a fault belonging to the session that is ending.');
+
+      expect(notifications.notifications().length).toBe(2);
+
+      teardown.purge('renewalRefused');
+
+      expect(notifications.notifications().map((entry) => entry.message))
+        .withContext("the previous operator's notices go, and only the ending is left")
+        .toEqual([SESSION_ENDED_MESSAGE]);
+    });
+
+    it('says nothing for an ending the operator asked for, or chose', () => {
+      // The negative half, and the reason the reason is consulted at all. Announcing any of these
+      // would tell somebody something they had just done.
+      for (const reason of ['signedOut', 'signedIn', 'tenantChanged'] as const) {
+        notifications.clear();
+
+        teardown.purge(reason);
+
+        expect(notifications.notifications())
+          .withContext(`${reason} is a boundary the operator crossed deliberately`)
+          .toEqual([]);
+      }
+    });
+
+    it('still discards exactly the same footprint whichever reason it is given', () => {
+      // ⚠ THE INVARIANT THE ANNOUNCEMENT MUST NOT HAVE WEAKENED. The reason decides whether the
+      // operator is TOLD; it must never decide what is discarded, because a partial discard is a
+      // per-caller judgement about which of somebody else's rows are acceptable to leave on screen.
+      const generations: number[] = [];
+
+      for (const reason of ['signedOut', 'renewalRefused', 'signedIn', 'tenantChanged'] as const) {
+        generations.push(teardown.purge(reason));
+
+        expect(moduleStore.modules()).toEqual([]);
+        expect(portalStore.portals()).toEqual([]);
+        expect(teardown.lastReason()).toBe(reason);
+      }
+
+      // And the generation advances by exactly one per crossing, whatever was said about it — an
+      // announcement must not cost a generation, and a silence must not save one. Asserted as
+      // successive DIFFERENCES rather than absolute values, because the starting value belongs to
+      // whatever this suite did beforehand and is not this case's business.
+      const steps: number[] = generations
+        .slice(1)
+        .map((value, index) => value - (generations[index] ?? 0));
+
+      expect(steps).toEqual([1, 1, 1]);
+    });
   });
 
   it('survives being called before any store has read anything', () => {

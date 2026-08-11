@@ -128,6 +128,7 @@ import { By } from '@angular/platform-browser';
 import { Router, provideRouter } from '@angular/router';
 
 import { BannerAdvertisingMode, UserRegistrationMode } from '../../../core/models/portal.model';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
@@ -454,7 +455,13 @@ describe('PortalSettingsComponent', () => {
   let http: HttpTestingController;
   let notifications: NotificationService;
   let router: Router;
-  let navigate: jasmine.Spy<(url: string) => Promise<boolean>>;
+  /*
+   * Typed with the OPTIONAL second argument the router actually accepts, because this screen now uses
+   * it: the post-delete departure replaces the address rather than pushing it, since the portal the
+   * screen described no longer exists. The cancel departure still passes one argument, and the case
+   * that pins it asserts exactly that.
+   */
+  let navigate: jasmine.Spy<(url: string, extras?: { replaceUrl?: boolean }) => Promise<boolean>>;
 
   /** Whether the caller holds the host account, under test control. */
   let holdsHostAccount: WritableSignal<boolean>;
@@ -751,11 +758,36 @@ describe('PortalSettingsComponent', () => {
     http.expectOne(administratorsUrl(portalId)).flush(envelope(candidates));
   }
 
-  /** The portal listing re-read the store performs after every successful write. */
+  /**
+   * Answers the portal-listing re-read that the portal WRITE commands perform.
+   *
+   * Still needed, and the distinction from {@link expectNoListingRefresh} is the point: creating,
+   * replacing or REMOVING a portal refreshes the listing unconditionally, because those are
+   * host-account operations and a host may read it. Saving a portal's SETTINGS does not, because
+   * this screen is also reachable by a portal administrator who may not. The two helpers keep that
+   * distinction visible in every case that saves or deletes.
+   */
   function answerListingRefresh(): void {
     http
       .expectOne((candidate) => candidate.url === PORTALS_URL)
       .flush(emptyPortalPage());
+  }
+
+  /**
+   * Asserts that a successful write issued NO portal-listing read.
+   *
+   * ⚠ THIS HELPER USED TO ANSWER SUCH A READ, AND THE READ WAS A DEFECT. The store re-read the
+   * listing after every settings write, which is right when a listing is on screen and wrong
+   * here: THIS screen never reads the listing, and a portal administrator - who is exactly who
+   * reaches it - is not permitted to. Measured against the running API, every save therefore
+   * produced `GET /api/v1/portals` → 403, a console error, and a globally-raised warning
+   * notification complaining about a listing the operator never asked for, on whatever screen
+   * they had navigated to by the time the response landed, immediately after a save that had
+   * SUCCEEDED. The store now refreshes only a listing it has actually read, so the correct
+   * assertion here is the absence of the request rather than an answer to it.
+   */
+  function expectNoListingRefresh(): void {
+    http.expectNone((candidate) => candidate.url === PORTALS_URL);
   }
 
   /**
@@ -795,10 +827,16 @@ describe('PortalSettingsComponent', () => {
     return body[name];
   }
 
-  /** Completes a captured write and answers the listing re-read the store performs after it. */
+  /**
+   * Completes a captured write.
+   *
+   * No listing read is answered afterwards, because none is issued: see
+   * {@link expectNoListingRefresh}. The absence is asserted rather than merely tolerated, so a
+   * re-introduced unconditional refresh fails every case that saves.
+   */
   function completeSave(write: TestRequest, stored: PortalSettings = settingsBody()): void {
     write.flush(envelope(stored));
-    answerListingRefresh();
+    expectNoListingRefresh();
     fixture.detectChanges();
   }
 
@@ -1834,9 +1872,21 @@ describe('PortalSettingsComponent', () => {
       expect(messagesFor('Page Quota:')).toContain('Enter a whole number.');
     });
 
-    it('declares NO presence rule on ANY control, matching a screen with no required validators', () => {
-      // Every control is emptied at once and the form must still be submittable. A single
-      // required rule anywhere would fail this.
+    // ⚠ #24 — THIS SPECIFICATION WAS REWRITTEN, AND THE REWRITE IS THE FIX.
+    //
+    // It previously asserted that NO control declares a presence rule, on the authority of
+    // `Website/admin/Portal/sitesettings.ascx`, which really does declare no
+    // `RequiredFieldValidator` anywhere on its 568 lines. That authority is sound for nine of the
+    // ten controls and WRONG for the tenth, because the modern SERVER declares
+    // `NotEmpty()` on the site title - `UpdatePortalRequestValidator.cs:L386`, message
+    // `"Site Title is required."` at L349 - so the title IS required and the screen was merely
+    // silent about it. Runtime testing measured the consequence: clearing the title and
+    // submitting produced a 400 with no indication of which field or why.
+    //
+    // Aligning the specification to the server rather than preserving a screen that disagreed with
+    // it is what Rule T5 asks for: the accepted input set is unchanged - the server refused an
+    // empty title before this change and refuses it now - and only the moment of refusal moves.
+    it('declares a presence rule on the site title ALONE, mirroring the server that requires it', () => {
       const controls = form().controls;
 
       controls.portalName.setValue('');
@@ -1851,7 +1901,64 @@ describe('PortalSettingsComponent', () => {
       controls.userQuota.setValue('');
       fixture.detectChanges();
 
+      // The title is the ONLY reason the form is rejected.
+      expect(controls.portalName.valid).toBeFalse();
+      expect(controls.portalName.errors?.['required']).toBeTruthy();
+      expect(form().valid).toBeFalse();
+
+      // Every other control is still submittable while empty, exactly as the legacy screen was:
+      // nine emptied controls, nine valid.
+      expect(controls.description.valid).toBeTrue();
+      expect(controls.keyWords.valid).toBeTrue();
+      expect(controls.footerText.valid).toBeTrue();
+      expect(controls.timeZoneOffset.valid).toBeTrue();
+      expect(controls.expiryDate.valid).toBeTrue();
+      expect(controls.hostFee.valid).toBeTrue();
+      expect(controls.hostSpace.valid).toBeTrue();
+      expect(controls.pageQuota.valid).toBeTrue();
+      expect(controls.userQuota.valid).toBeTrue();
+
+      // Restoring the title alone makes the whole form submittable, which proves no other control
+      // gained a rule alongside it.
+      controls.portalName.setValue('A Title');
+      fixture.detectChanges();
+
       expect(form().valid).toBeTrue();
+    });
+
+    it('reports the required title with the server\'s own wording, so both authorities say one thing', () => {
+      // The site title lives on the BASIC tab and this block's setup shows the advanced one, so the
+      // tab is switched back before the field is read. A field on an inactive panel is not rendered
+      // at all, which is a real property of this screen rather than a testing artefact.
+      invoke<void>('selectTab', 'basic');
+      fixture.detectChanges();
+
+      const control = form().controls.portalName;
+
+      control.setValue('');
+      control.markAsTouched();
+      fixture.detectChanges();
+
+      expect(messagesFor('Title:')).toEqual(['Site Title is required.']);
+    });
+
+    it('treats a whitespace-only title as empty, because the server does', () => {
+      // FluentValidation's NotEmpty counts a whitespace-only string as empty and Angular's
+      // Validators.required does not, so the submit path normalises the value first. Without that
+      // the client would pass a title of three spaces to a server that refuses it.
+      const control = form().controls.portalName;
+
+      control.setValue('   ');
+      fixture.detectChanges();
+
+      expect(control.valid).toBeTrue();
+
+      submit();
+      fixture.detectChanges();
+
+      expect(control.value).toBe('');
+      expect(control.valid).toBeFalse();
+      expect(control.errors?.['required']).toBeTruthy();
     });
 
     it('reports the data-type semantics rather than mere presence: blank passes, malformed fails', () => {
@@ -2060,6 +2167,55 @@ describe('PortalSettingsComponent', () => {
       ).toBe(2);
     });
 
+    // The expectation above is the CAUSE of the next two. A closed group has no body in the
+    // document, and the global layer paints every `fieldset` with a border and padding, so the
+    // grouping boundary was being drawn around nothing at all — a bordered box holding a legend
+    // and a block of empty space. Two of them sat side by side on the advanced tab, both closed
+    // by default, so the tab opened on two empty frames. The legacy screen drew no box here: its
+    // section head was a sibling of the table it toggled, so a closed group showed its head and
+    // its rule and nothing more.
+    it('drops the grouping boundary from a closed group, and keeps it on an open one', () => {
+      showAdvanced();
+
+      const closed = required(sectionFieldset('Other Settings'), 'the closed other-settings group');
+      expect(closed.classList).toContain('portal-settings__section--collapsed');
+
+      ensureSectionOpen('other');
+
+      const opened = required(sectionFieldset('Other Settings'), 'the open other-settings group');
+      expect(opened.classList).not.toContain('portal-settings__section--collapsed');
+    });
+
+    // Stated as an INVARIANT over every group rather than as a list of the six that exist today.
+    // A list would pass unchanged if a seventh group were added without the binding, and the
+    // defect would be back on that group alone; this cannot.
+    it('marks a group collapsed exactly when it has no body, for every group on both tabs', () => {
+      const check = (where: string): void => {
+        const groups = queryAll<HTMLElement>('.portal-settings__section');
+
+        expect(groups.length).toBeGreaterThan(0);
+
+        for (const group of groups) {
+          const caption = text(group.querySelector('.portal-settings__toggle'));
+          const marked = group.classList.contains('portal-settings__section--collapsed');
+          const empty = group.querySelector('.portal-settings__grid') === null;
+
+          expect(marked)
+            .withContext(`${where}: "${caption}" marked=${marked} bodyMissing=${empty}`)
+            .toBe(empty);
+        }
+      };
+
+      check('basic tab');
+
+      showAdvanced();
+      check('advanced tab, as first shown');
+
+      ensureSectionOpen('other');
+      ensureSectionOpen('host');
+      check('advanced tab, everything opened');
+    });
+
     it('renders EXACTLY ONE field in Site Marketing: the banner choice', () => {
       const group = required(sectionFieldset('Site Marketing'), 'the marketing group');
 
@@ -2067,7 +2223,12 @@ describe('PortalSettingsComponent', () => {
       // The shared wrapper NORMALISES the caption's trailing colon away on display, which is what
       // keeps the inconsistent legacy colon handling from reaching the screen. The supplied
       // caption still carries it, and section J asserts that side.
-      expect(text(group.querySelector('label'))).toBe('Banners');
+      //
+      // Selected by CLASS and not by tag: this field is a radio GROUP, so the shared wrapper
+      // captions it with a `span` rather than a `label` — a label with no control to name raises a
+      // form-label diagnostic. The class is on both of the wrapper's caption branches, so it finds
+      // the caption whichever one applies. The tag itself is asserted where that decision belongs.
+      expect(text(group.querySelector('.form-field__label'))).toBe('Banners');
       expect(required(fieldLabelled('Banners:'), 'the banners field').label).toBe('Banners:');
     });
 
@@ -2076,8 +2237,10 @@ describe('PortalSettingsComponent', () => {
       ensureSectionOpen('other');
 
       const group = required(sectionFieldset('Other Settings'), 'the other-settings group');
+      // By class rather than by tag, so the read is independent of whether a given field captions
+      // itself with a `label` or — for a group with no single control to name — with a `span`.
       const captions = Array.from(group.querySelectorAll('app-form-field')).map((field) =>
-        text(field.querySelector('label')),
+        text(field.querySelector('.form-field__label')),
       );
 
       expect(group.querySelectorAll('app-form-field').length).toBe(2);
@@ -2299,6 +2462,77 @@ describe('PortalSettingsComponent', () => {
   //
   // The gate is ADVISORY in any case: the server applies the same rule and answers a refusal,
   // which section M asserts is presented rather than pre-empted.
+
+  // =========================================================================
+  // K2. THE LINK TO THIS PORTAL'S HOST NAMES
+  // =========================================================================
+  //
+  // ⚠ THE ONLY ONE IN THE APPLICATION. Every anchor the console renders was enumerated and none
+  // addressed `:portalId/aliases`, while the listing's single row command targets THIS screen -
+  // so a portal's host names could be managed only by typing an address, even though every
+  // action of the alias resource grants a tenant administrator that right.
+  //
+  // MIGRATION: `SiteSettings.ascx.vb:L484-L489` inspects the referring address specifically to
+  // recognise arrival FROM the Portal Aliases module, which is direct evidence that the legacy
+  // console had operators moving between these two destinations. It reached them through an
+  // administration menu; this console's rail carries collection entries only, so the movement
+  // lives in the screens themselves.
+
+  describe('K2. reaching the host names', () => {
+    /** Every anchor projected into the shared header. */
+    function headerLinks(): readonly HTMLAnchorElement[] {
+      return queryAll<HTMLAnchorElement>('app-page-header a');
+    }
+
+    it('links to the alias screen of the portal in the address', () => {
+      holdsHostAccount.set(true);
+      arrive(0);
+
+      const links = headerLinks();
+
+      expect(links).toHaveSize(1);
+      expect(required(links[0], 'the alias link').getAttribute('href')).toBe('/portals/0/aliases');
+      expect(text(links[0])).toBe('Portal Aliases');
+    });
+
+    it('composes that address for the two sentinel identifiers', () => {
+      // 0 is the first real tenant and -1 is both a real tenant and the legacy absent-marker, so
+      // a falsy or magnitude test in the composition would drop one and the link would resolve to
+      // the wildcard route instead of failing visibly.
+      holdsHostAccount.set(true);
+      arrive(-1, {
+        settings: settingsBody({ portalId: -1 }),
+        detail: detailBody({ portalId: -1 }),
+      });
+
+      expect(required(headerLinks()[0], 'the alias link').getAttribute('href')).toBe(
+        '/portals/-1/aliases',
+      );
+    });
+
+    it('offers it to a tenant administrator, who is refused the listing but not the aliases', () => {
+      // The account that most needs this link is the one that cannot reach the portal listing at
+      // all. Gating the link on the host account would withhold it from exactly that caller.
+      holdsHostAccount.set(false);
+      arrive(0);
+
+      expect(headerLinks()).toHaveSize(1);
+      expect(required(headerLinks()[0], 'the alias link').getAttribute('href')).toBe(
+        '/portals/0/aliases',
+      );
+    });
+
+    it('keeps it AFTER the delete command, so it cannot displace what an operator reached for', () => {
+      holdsHostAccount.set(true);
+      arrive(0);
+
+      const projected = Array.from(
+        required(query('app-page-header'), 'the page header').querySelectorAll('button, a'),
+      );
+
+      expect(projected.map((node) => text(node))).toEqual(['Delete', 'Portal Aliases']);
+    });
+  });
 
   describe('L. the host-settings gate', () => {
     it('hides the host group from an account without the host role', () => {
@@ -2579,17 +2813,64 @@ describe('PortalSettingsComponent', () => {
       expect(form().untouched).toBeTrue();
     });
 
-    it('re-reads the portal listing after a successful write, because four of its columns changed', () => {
+    it('issues NO portal-listing read after a successful write, because this screen never read one', () => {
+      // ⚠ THE INVERSION OF AN EARLIER EXPECTATION, AND THE REASON IS A MEASURED DEFECT. This case
+      // used to assert that the save re-read the listing, on the reasoning that four of the
+      // projection's members are also listing columns. That reasoning is sound where a listing is
+      // ON SCREEN and unsound here: this screen never reads the listing, and the account that
+      // reaches it - a portal administrator - is not permitted to read it. Against the running API
+      // every save therefore produced `GET /api/v1/portals` → 403, a console error, and a warning
+      // notification about a listing nobody asked for, raised globally so it followed the operator
+      // to whatever screen they had moved on to, immediately after a save that had SUCCEEDED.
+      //
+      // Coherence is still maintained for a listing that HAS been read - the store's own
+      // specification covers that case both ways - so nothing is lost by refusing to ask for one
+      // that has not.
       submit();
       takeSave(0).flush(envelope(settingsBody()));
-
-      const refresh = http.expectOne((candidate) => candidate.url === PORTALS_URL);
-
-      expect(refresh.request.method).toBe('GET');
-      refresh.flush(emptyPortalPage());
       fixture.detectChanges();
+
+      // Counted rather than merely asserted through the testing backend: `expectNone` raises on a
+      // match but registers no expectation, which leaves the case passing vacuously if its subject
+      // ever stops being reachable. `match` returns what it found, so the size IS the assertion.
+      expect(http.match((candidate) => candidate.url === PORTALS_URL))
+        .withContext('a screen that never read the listing does not re-read it')
+        .toHaveSize(0);
     });
 
+    it('refreshes the heading beside the title from the stored name, without re-entering the route', () => {
+      // ⚠ THE MEASURED DEFECT. The name shown beside the page title is read from the DETAIL slice,
+      // and a settings save updated only the settings slice — so renaming a portal produced
+      // "The site settings were saved." beside a heading still announcing the OLD name, and it
+      // stayed wrong until the route was entered again. The write succeeded and the screen said so
+      // twice, once correctly and once not.
+      //
+      // Asserted on the RENDERED heading rather than on the store, because the store's own
+      // specification already covers the reconciliation and its guards. What is proved here is that
+      // the screen reads the slice that gets reconciled.
+      expect(text(query('app-page-header'))).toContain('Baseline Portal');
+
+      form().controls.portalName.setValue('Renamed By The Operator');
+      fixture.detectChanges();
+      submit();
+      completeSave(takeSave(0), settingsBody({ portalName: 'Renamed By The Operator' }));
+
+      expect(text(query('app-page-header'))).toContain('Renamed By The Operator');
+      expect(text(query('app-page-header')))
+        .withContext('and the pre-save name is gone rather than shown beside it')
+        .not.toContain('Baseline Portal');
+    });
+
+    /**
+     * ⚠ THIS ALSO CARRIES WHAT A REMOVED CASE USED TO PROVE. A case beside this one submitted a BLANK
+     * title in order to watch the server refuse it, and it pinned the absence of a client-side presence
+     * rule on the way past. That rule is now declared, deliberately, mirroring the `NotEmpty()` the
+     * server has always applied - see 'declares a presence rule on the site title ALONE' - so a blank
+     * title no longer reaches the wire at all and the case could not do what it was written to do. The
+     * half that mattered is here and is stronger for it: a field-keyed refusal reaches the operator
+     * against the control it names, proven for two fields at once and with the key lower-cased exactly
+     * as the reader presents it.
+     */
     it('surfaces the per-field messages of a 400, read by index access', () => {
       submit();
 
@@ -2795,9 +3076,35 @@ describe('PortalSettingsComponent', () => {
 
       const message = text(query('.confirm-dialog__message'));
 
-      expect(message).toBe('Are You Sure You Wish To Delete This Portal ?');
-      expect(message).not.toBe('Are You Sure You Wish To Delete This Item?');
-      expect(message.endsWith(' ?')).toBeTrue();
+      // The measured wording, verbatim, INCLUDING the space before its question mark - which is
+      // the tell that distinguishes this screen's own local resource value from the global
+      // item-deletion sentence the listing uses.
+      expect(message).toContain('Are You Sure You Wish To Delete This Portal ?');
+      expect(message).not.toContain('Are You Sure You Wish To Delete This Item?');
+
+      // ⚠ AND THEN THE NAME, WHICH THE PROMPT USED TO OMIT. The question names a TYPE; the dialog
+      // is modal and covers the heading that was the only thing on the page saying which tenant is
+      // open. So at the one irreversible action in this feature, the prompt hid the very fact it
+      // was asking about.
+      expect(message).toBe('Are You Sure You Wish To Delete This Portal ? Baseline Portal');
+    });
+
+    it('omits the name rather than showing a dangling separator when it is not known', () => {
+      // The shared header suppresses a blank name, and the prompt follows it. Rendering
+      // "…Delete This Portal ? " or the word "undefined" inside a destructive confirmation is worse
+      // than rendering the question alone.
+      holdsHostAccount.set(true);
+      browsingPortalId.set(7);
+      arrive(0, {
+        settings: settingsBody({ portalName: '   ' }),
+        detail: detailBody({ portalName: '   ' }),
+      });
+      required(deleteButton(), 'the delete action').click();
+      fixture.detectChanges();
+
+      expect(text(query('.confirm-dialog__message'))).toBe(
+        'Are You Sure You Wish To Delete This Portal ?',
+      );
     });
 
     it('deletes at the relative portal path, handles 204, announces success and leaves', () => {
@@ -2818,7 +3125,59 @@ describe('PortalSettingsComponent', () => {
 
       expect(required(latestNotification(), 'a notification').severity).toBe('success');
       expect(required(latestNotification(), 'a notification').message).toContain('deleted');
-      expect(navigate).toHaveBeenCalledWith('/portals');
+      // ⚠ THE ADDRESS IS REPLACED RATHER THAN PUSHED, so the browser's Back button cannot return to a
+      // settings form for a record that has been destroyed.
+      expect(navigate).toHaveBeenCalledWith('/portals', { replaceUrl: true });
+
+      // ⚠ AND THE CONFIRMATION SURVIVES THE NAVIGATION IT IS RAISED WITH. The shell retires
+      // notifications on a completed navigation, so a confirmation announced in the same task as the
+      // departure was swept before it could be painted - the portal was deleted and the operator was
+      // returned to the listing with nothing said, which is indistinguishable from a delete that
+      // silently failed. The deleted portal's own settings screen cannot carry the message, because the
+      // record it described is gone. Running the real sweep is what proves the retention.
+      notifications.clearOnNavigation();
+
+      expect(notifications.notifications().map((entry) => entry.message))
+        .withContext('the listing is the only place this can be read')
+        .toHaveSize(1);
+
+      notifications.clearOnNavigation();
+
+      expect(notifications.notifications())
+        .withContext('one navigation deep, not forever')
+        .toHaveSize(0);
+    });
+
+    it('asks nothing about edits to a portal it has just deleted', () => {
+      // ⚠ A DELETE IS NOT A SAVE, WHICH IS WHY THE GUARD NEEDED TELLING. The unsaved-entry probe reads
+      // `dirty && saving() === false`, and deleting does not put the form into its saving state - so an
+      // operator who typed something and then deleted the portal was offered the chance to 'discard' work
+      // belonging to a record that no longer exists. Something dirty is essential here: a pristine form
+      // would make the final assertion pass while proving nothing.
+      holdsHostAccount.set(true);
+      browsingPortalId.set(7);
+      arrive(0);
+
+      form().controls.description.setValue('An edit that is about to become meaningless.');
+      form().controls.description.markAsDirty();
+      fixture.detectChanges();
+
+      const tracker = TestBed.inject(UnsavedChangesTracker);
+
+      expect(tracker.isDirty()).withContext('the edit is unsaved entry').toBeTrue();
+
+      required(deleteButton(), 'the delete action').click();
+      fixture.detectChanges();
+      required(confirmButton(), 'the confirm action').click();
+      fixture.detectChanges();
+
+      http.expectOne(`${API}/portals/0`).flush(null, { status: 204, statusText: 'No Content' });
+      answerListingRefresh();
+      fixture.detectChanges();
+
+      expect(tracker.isDirty())
+        .withContext('there is no longer a record for those edits to belong to')
+        .toBeFalse();
     });
 
     it('surfaces the last-remaining-portal refusal with the shared legacy wording', () => {
@@ -3533,7 +3892,7 @@ describe('PortalSettingsComponent', () => {
       }
     });
 
-    it('names a radio GROUP from its caption, the group having no single control to point at', () => {
+    it('names a radio GROUP from its caption, the caption being a span rather than a label because it has no single control to point at', () => {
       // Measured requirement rather than an omission: 5 of the 186 legacy labels declare no
       // control association at all, and a group of radios is exactly that case — a `for` naming
       // one member would label that member instead of the group. The wrapper leaves the attribute
@@ -3543,11 +3902,20 @@ describe('PortalSettingsComponent', () => {
       expect(banners.for).toBe('');
 
       const element = required(fieldElementLabelled('Banners:'), 'the banners field element');
-      const caption = required(element.querySelector('label'), 'the banners caption');
+      const caption = required(element.querySelector('.form-field__label'), 'the banners caption');
       const slot = required(
         element.querySelector('.form-field__control'),
         'the banners control group',
       );
+
+      // ⚠ THE CAPTION IS A `span`, NOT A `label`, AND THAT IS THE POINT. A `label` associates with a
+      // control through `for` or by wrapping it, and this field can do neither — so a `label` here
+      // would name nothing, which Chrome reports as "No label associated with a form field". The
+      // association is carried by the group's `aria-labelledby` instead, asserted below.
+      expect(caption.tagName.toLowerCase()).toBe('span');
+      expect(element.querySelector('label.form-field__label'))
+        .withContext('no caption-level label element may survive on a field that names no control')
+        .toBeNull();
 
       // No dangling reference: the caption is not pointed at a control, and the GROUP is pointed
       // at the caption instead.
@@ -3556,7 +3924,47 @@ describe('PortalSettingsComponent', () => {
       expect(caption.id.length).toBeGreaterThan(0);
       expect(query(`#${caption.id}`)).not.toBeNull();
 
+      // AND the caption is not a `label` element at all. `LabelControl.vb:L292-L295` attached `for`
+      // only when it had a control name, so the legacy rendered a `label` captioning nothing here;
+      // reproducing that made this one of six fields raising the application's only form-label
+      // diagnostic. A `span` carries the same id and the same accessible name and raises nothing.
+      // Asserted by tag name rather than by `instanceof`, so a `label` would fail this outright
+      // rather than passing on a shared base type.
+      expect(caption.tagName).toBe('SPAN');
+
+      // Scoped to the CAPTION ROW, not to the whole field. The field legitimately contains one
+      // `label` per radio choice — each wrapping its own input — and those are what make the radios
+      // individually named. Asserting zero labels anywhere in the field would have been wrong, and
+      // measuring it proved it: the Banners field holds three. So the contract is that the caption
+      // row holds none, and the control slot holds exactly one per radio.
+      const captionRow = required(
+        element.querySelector('.form-field__label-row'),
+        'the banners caption row',
+      );
+      const radios = slot.querySelectorAll('input[type="radio"]');
+
+      expect(captionRow.querySelectorAll('label').length).toBe(0);
+      expect(radios.length).toBeGreaterThan(1);
+      expect(slot.querySelectorAll('label').length).toBe(radios.length);
+
+      // The counterpart, so this test discriminates rather than merely passing: a field that DOES
+      // name one control still RENDERS a real `label` with a real `for`, which is what preserves
+      // click-to-focus on the other 112 fields in the application.
+      const namedField = required(
+        fieldElementLabelled('Description:'),
+        'the description field element',
+      );
+      const namedCaption = required(
+        namedField.querySelector('.form-field__label'),
+        'the description caption',
+      );
+
+      expect(namedCaption.tagName).toBe('LABEL');
+      expect(namedCaption.getAttribute('for')).toBe('portal-settings-description');
+
       // The same wiring names the four page selectors' groups, which DO also name their control.
+      // Read from the component's own input record rather than from the DOM, so both sides of the
+      // boundary are covered: what the screen ASKED for, and what the wrapper RENDERED.
       const withControl = required(fieldLabelled('Description:'), 'the description field');
 
       expect(withControl.for).toBe('portal-settings-description');

@@ -43,7 +43,7 @@ import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angula
 import { Router } from '@angular/router';
 
 import type { Signal } from '@angular/core';
-import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
+import type { ValidationErrors } from '@angular/forms';
 
 import { problemDetailsFieldErrors } from '../../../core/models/problem-details.model';
 import type {
@@ -54,10 +54,14 @@ import type { CreateRoleGroupRequest } from '../../../core/models/role.model';
 import { NotificationService } from '../../../core/services/notification.service';
 import { RoleStore } from '../../../core/state/role.store';
 import type { RoleStoreFailure } from '../../../core/state/role.store';
+import { requiredText } from '../../../core/utils/required-text.validator';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
 import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
+import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
+import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 
 // Wording. Exported constants rather than inline literals, so that the template and the
 // specification read the same string instead of two copies that can drift apart. Each is
@@ -218,6 +222,16 @@ export const ROLES_PATH = '/roles';
  */
 const SERVER_ERROR_KEY = 'server';
 
+/**
+ * The error key Angular's own length validator reports under.
+ *
+ * Named here rather than written inline for the same reason the two keys around it are: this
+ * workspace enables `noPropertyAccessFromIndexSignature`, so every read out of a
+ * `ValidationErrors` bag is an indexed read and a bare string literal at the read site is how a
+ * key comes to be misspelled with nothing to catch it.
+ */
+const MAX_LENGTH_ERROR_KEY = 'maxlength';
+
 const REQUIRED_ERROR_KEY = 'required';
 
 /** The shared empty result, so an unchanged derivation keeps a stable identity. */
@@ -270,44 +284,33 @@ export interface RoleGroupFormModel {
 }
 
 /**
- * Reports a required value that is present but blank once trimmed.
- *
- * MIGRATION: this closes a behavioural gap between the two frameworks rather than adding a
- * rule. `Validators.required` rejects only the empty string, so a value of three spaces
- * passes it, whereas the legacy required-field validator compared the trimmed value against
- * its initial value and refused it. Without this the migrated screen would accept a name the
- * legacy screen refused.
- *
- * It reports under the framework's own `required` key on purpose: the two rules describe one
- * condition, so sharing the key means exactly one message is ever outstanding and the
- * template needs no second branch. The value itself is never rewritten - trimming what is
- * stored would silently edit what the operator typed, which the legacy did not do either.
- *
- * @param control The control to inspect.
- * @returns The `required` error when the value is blank once trimmed, otherwise null.
- */
-export const requiredAfterTrim: ValidatorFn = (
-  control: AbstractControl,
-): ValidationErrors | null => {
-  // Widened at the boundary rather than trusted. A validator is reachable from any
-  // control, and this one must not throw when handed a value that is not a string.
-  const value: unknown = control.value;
-
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  return value.trim().length === 0 ? { [REQUIRED_ERROR_KEY]: true } : null;
-};
-
-/**
  * Builds the creation form in its initial state.
  *
  * A free function rather than inline construction, so the same shape can be built by a
  * specification without reaching into the component. The validator sets are the legacy's
- * exactly: the name carries the required rule and its length bound, and the description
+ * exactly: the name carries the presence rule and its length bound, and the description
  * carries its length bound alone. Nothing else is added - no pattern, no minimum length, no
  * required rule on the description - because the legacy markup declares nothing else.
+ *
+ * ⚠ NO PATTERN RULE, AND THAT IS MEASURED RATHER THAN OVERLOOKED. `EditGroups.ascx:L12` declares
+ * ONE validator on this field, a `RequiredFieldValidator`, and no in-scope administration screen
+ * declares a pattern-matching validator of any kind. Adding a character restriction here would
+ * refuse names the legacy accepted and that may already be stored, and it would disagree with
+ * `CreateRoleGroupRequestValidator`, which declares presence and a length bound and nothing else.
+ * Markup-bearing text is safe by a different mechanism: every value this application renders goes
+ * through Angular interpolation, which escapes it, so a name containing angle brackets is
+ * displayed as text and never parsed as markup.
+ *
+ * ⚠ THE PRESENCE RULE IS THE SHARED TRIM-AWARE ONE. `Validators.required` rejects only the empty
+ * string, so three spaces satisfy it - whereas an ASP.NET `RequiredFieldValidator` trimmed the
+ * value before comparing it to its initial value and refused exactly that, and the API's
+ * `NotEmpty` treats a whitespace-only string as empty. It reports under the framework's own
+ * `required` key, so exactly one message is outstanding and the template needs no second branch,
+ * and `Validators.required` is NOT declared alongside it: the shared rule refuses everything the
+ * framework rule refuses and more, so a second rule would only ever duplicate the same key.
+ *
+ * It is the SAME rule the sibling role form carries, which is the point - the two screens refuse a
+ * whitespace-only name at the same moment and in the same words.
  *
  * @returns A form group whose controls both hold the empty string.
  */
@@ -315,11 +318,7 @@ export function createRoleGroupForm(): FormGroup<RoleGroupFormModel> {
   return new FormGroup<RoleGroupFormModel>({
     roleGroupName: new FormControl<string>('', {
       nonNullable: true,
-      validators: [
-        Validators.required,
-        requiredAfterTrim,
-        Validators.maxLength(ROLE_GROUP_NAME_MAX_LENGTH),
-      ],
+      validators: [requiredText, Validators.maxLength(ROLE_GROUP_NAME_MAX_LENGTH)],
     }),
     description: new FormControl<string>('', {
       nonNullable: true,
@@ -430,6 +429,35 @@ function controlMessages(
     messages.push(requiredMessage);
   }
 
+  // THE LENGTH BOUND, WHICH THIS FUNCTION USED TO IGNORE ENTIRELY. Both controls on this screen
+  // carry `Validators.maxLength`, and neither reported it: an over-length value therefore made the
+  // control `ng-invalid` while this function returned NO messages, so the field rendered no error
+  // text, its error container was never created, `aria-invalid` stayed absent - the template derives
+  // it from this array being non-empty - the border kept its ordinary colour, and pressing Update
+  // did nothing at all because the form was invalid with nothing on screen saying so. A silent dead
+  // end, and it was reported as one. The sibling role form has always reported the same violation.
+  //
+  // Reported unconditionally rather than only once touched, which is deliberate and differs from the
+  // required rule above. A required message before the person has typed anything would scold them
+  // for a field they have not reached yet; a length message can only exist because they have ALREADY
+  // typed too much, so withholding it until blur hides the explanation at exactly the moment it is
+  // needed. This also matches the sibling form, which gates on neither touch nor submission.
+  //
+  // The number comes from what the framework REPORTS rather than from a constant looked up here, so
+  // the sentence and the rule can never name different bounds. Narrowed rather than trusted: a shape
+  // change must put no `undefined` into a sentence shown to a person.
+  const overlong: unknown = errors[MAX_LENGTH_ERROR_KEY];
+
+  if (typeof overlong === 'object' && overlong !== null) {
+    const bound: unknown = (overlong as { requiredLength?: unknown }).requiredLength;
+
+    if (typeof bound === 'number') {
+      // Wording identical to the sibling role form's, so one violation reads the same way on both
+      // screens of this feature rather than being described two ways.
+      messages.push(`Enter at most ${String(bound)} characters.`);
+    }
+  }
+
   return messages.length === 0 ? NO_MESSAGES : messages;
 }
 
@@ -464,17 +492,40 @@ function controlMessages(
   // No confirmation dialogue is imported, because this screen has no destructive action to
   // confirm.
   imports: [
+    FocusFirstInvalidDirective,
+    SubmitGuardDirective,
     ReactiveFormsModule,
     PageHeaderComponent,
     FormFieldComponent,
     ErrorBannerComponent,
     LoadingSpinnerComponent,
+    FocusFirstInvalidDirective,
   ],
   templateUrl: './role-group-form.component.html',
   styleUrl: './role-group-form.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class RoleGroupFormComponent {
+
+  /**
+   * Registers this screen's unsaved-entry probe with the application's tracker.
+   *
+   * ⚠ WHY A REGISTRATION RATHER THAN A ROUTE-LEVEL READ. Leaving a screen happens two ways and
+   * only one of them is a router navigation: Cancel, an in-application link and the browser's Back
+   * button are navigations a route guard can refuse, while closing or reloading the tab is not, and
+   * only the browser's own unload prompt covers that - which needs the dirty state at an arbitrary
+   * moment rather than at a navigation. One tracker holding probes answers both, and the probe is
+   * released automatically when this screen is destroyed, so a screen that has gone can never hold
+   * a navigation up. Measured before this existed: a dirty form was discarded in silence by all
+   * four exits, with instrumented `confirm`, `alert` and `beforeunload` recording nothing at all.
+   *
+   * A form that is being SAVED is not dirty in the sense that matters here - the entry is on its
+   * way to the server, and prompting about it would ask the operator to confirm discarding work
+   * they have already committed.
+   */
+  private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
+    () => this.form.dirty && this.store.saving() === false,
+  );
   /**
    * The shared role state, and the only route to the API from this screen.
    *
@@ -673,6 +724,32 @@ export class RoleGroupFormComponent {
       return;
     }
 
+    // ⚠ THE NAME IS TIDIED INTO ITS OWN CONTROL, NOT ON THE WAY INTO THE REQUEST, so the value
+    // that was validated and the value that is sent are the same string, and the operator is never
+    // left looking at an entry that differs from the one that was accepted.
+    //
+    // Only padding can reach here. The presence rule on the control trims before judging, so a
+    // whitespace-only name was already refused by the check above and the tidy cannot change
+    // whether the value is acceptable - only what is stored.
+    //
+    // MIGRATION: trimming the padding is a deliberate divergence, and it reverses an earlier
+    // decision recorded on this screen that the value should never be rewritten. The legacy stored
+    // what was posted, padding and all. It is trimmed because THE NAME CANNOT BE CORRECTED
+    // AFTERWARDS: the closed route set carries no role-group edit screen, so a group created with
+    // invisible leading spaces would keep them for good, sorting ahead of every other group in the
+    // scope filter this form exists to populate. The sibling role form applies the same rule for
+    // the same reason, which is what makes the two screens agree.
+    this.normaliseRoleGroupName();
+
+    // Defence in depth rather than a live branch. Trimming can only shorten, so the length bound
+    // cannot be newly breached, and emptiness was settled above by a rule that already trimmed.
+    // It stays because that argument rests entirely on the presence rule remaining trim-aware.
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+
+      return;
+    }
+
     this.creationOutstanding.set(true);
     this._problem.set(null);
 
@@ -681,11 +758,16 @@ export class RoleGroupFormComponent {
     // legacy read it from too - and the identifier is not sent either, because the server
     // assigns it.
     //
-    // The values are forwarded exactly as typed. An empty description travels as the EMPTY
-    // STRING and is neither coalesced to null nor omitted: the API serialises with its
-    // null-omission condition set to never, so a member is always present, and the legacy null
-    // contract made the empty string - not nothing - the absent-string marker. Turning `''`
-    // into `null` here would change what is stored.
+    // The description is forwarded exactly as typed. An empty one travels as the EMPTY STRING and
+    // is neither coalesced to null nor omitted: the API serialises with its null-omission
+    // condition set to never, so a member is always present, and the legacy null contract made the
+    // empty string - not nothing - the absent-string marker. Turning `''` into `null` here would
+    // change what is stored. IT IS NOT TRIMMED EITHER, and the asymmetry with the name above is
+    // deliberate: a description is free text whose leading indentation may be intended, and it can
+    // be nothing at all, whereas the name is an identifier the operator can never correct.
+    //
+    // The name is read from the control AFTER the tidy above, so what is sent is what the control
+    // now shows.
     const request: CreateRoleGroupRequest = {
       roleGroupName: this.form.controls.roleGroupName.value,
       description: this.form.controls.description.value,
@@ -695,6 +777,30 @@ export class RoleGroupFormComponent {
     // store's own creation action re-reads the group listing the destination needs. The
     // outcome arrives through the bridge in the constructor, not through a subscription here.
     this.store.createRoleGroup(request);
+  }
+
+  /**
+   * Trims the padding off the group name, in its own control.
+   *
+   * `emitEvent: false` because this is a DISPLAY CORRECTION rather than an operator edit, so it
+   * must not start a cascade through any listener on this form. `setValue` re-runs the control's
+   * validators regardless of that flag, which is what lets the caller re-read validity immediately
+   * afterwards and find it reflecting the tidied value.
+   *
+   * A control whose value is already trimmed is left completely alone, so an unnecessary write
+   * cannot mark a pristine form dirty.
+   *
+   * ⚠ ONLY THE NAME. The description keeps what was typed; see the note at the request above.
+   */
+  private normaliseRoleGroupName(): void {
+    const control = this.form.controls.roleGroupName;
+    const trimmed: string = control.value.trim();
+
+    if (trimmed === control.value) {
+      return;
+    }
+
+    control.setValue(trimmed, { emitEvent: false });
   }
 
   /**
@@ -722,8 +828,24 @@ export class RoleGroupFormComponent {
     // when the write succeeds, so asking again would issue a second identical request and race
     // the first: whichever answered last would decide what the roles list showed. Reached only
     // from the outcome bridge, so it cannot run before the creation has actually succeeded.
-    this.notifications.notify('success', ROLE_GROUP_CREATED_MESSAGE);
-    this.goToRoles();
+    // ⚠ THE FORM IS SETTLED BEFORE LEAVING, OR THE UNSAVED-ENTRY GUARD ASKS ABOUT WORK THAT IS
+    // ALREADY SAVED. The probe registered above reads `dirty && saving() === false`, and by the time
+    // this method runs the write has SETTLED - so `saving()` has already returned to false while the
+    // controls are still dirty from the operator's typing. Measured in a real browser: creating a
+    // group succeeded, the confirmation painted at the listing, and the operator was then asked
+    // 'You have unsaved changes on this page. Leave without saving and discard them?' about the very
+    // entry that had just been stored. Marking the form settled is the honest statement of what
+    // happened, and it is what the role form does on the same path; the guard is left exactly as it
+    // is, because it is right about every case except a completed save.
+    this.form.markAsPristine();
+    this.form.markAsUntouched();
+
+    // ⚠ EXEMPTED FROM THE NAVIGATION SWEEP, WITHOUT WHICH THIS CONFIRMATION IS NEVER SEEN. The
+    // shell retires notifications on a completed navigation, and this one is raised in the same task
+    // as the navigation on the next line, so it was swept before it could be painted. The legacy
+    // announced and then redirected too, so the destination is where this message belongs.
+    this.notifications.notify('success', ROLE_GROUP_CREATED_MESSAGE, null, true);
+    this.goToRoles(true);
   }
 
   /**
@@ -836,12 +958,50 @@ export class RoleGroupFormComponent {
   /**
    * Navigates to the roles list.
    *
+   * ⚠ THE ROLES LIST IS THE LEGACY DESTINATION FOR BOTH OUTCOMES, and it is not a stand-in for a
+   * role-group listing that this application declines to build. `EditGroups.ascx.vb:L163-L169` is
+   * the whole of `cmdCancel_Click`: when `RoleGroupID = -1` - which is the creation state, and the
+   * only state this screen has, since the closed route set carries no group edit route - it
+   * redirects to `NavigateURL(TabId, "")`, the same tab with no control key. That tab is the
+   * Security Roles page. THERE WAS NEVER A ROLE-GROUP LISTING TO RETURN TO: groups appear in the
+   * roles page's own scope filter (`Roles.ascx.vb:L127-L129` hides that filter outright when no
+   * group exists), which is exactly why the legacy sent the operator there and why the successful
+   * case lands in the same place - the group just created is immediately selectable.
+   *
    * The rejection is absorbed rather than left unhandled. A navigation settles to false when a
    * guard refuses it and rejects only when a guard or resolver throws; neither is something
    * this screen can recover from, and an unhandled rejection would surface as console noise
    * instead of anywhere an operator could act on it.
    */
-  private goToRoles(): void {
-    void this.router.navigate([ROLES_PATH]).catch(() => false);
+  private goToRoles(replace = false): void {
+    /*
+     * ⚠ THE TWO CALLERS WANT DIFFERENT HISTORY BEHAVIOUR, so the choice is a parameter rather
+     * than a fixed option. {@link cancel} PUSHES: an operator who changed their mind may change
+     * it back, and Back returning them to the form they abandoned is the useful answer.
+     * {@link onCreated} REPLACES: the group exists now, so Back onto its creation form would
+     * offer to create it a second time.
+     *
+     * The distinction is also read by `core/guards/unsaved-changes.guard.ts`, which treats a
+     * replacing departure as application-initiated and lets it through unchallenged. That is why
+     * the successful path must replace: a form still dirty from the values that were just saved
+     * would otherwise be met with a prompt offering to discard them.
+     *
+     * Cancel being a push is what lets the gate challenge it, which is correct — Cancel sits one
+     * click from Update, and silently discarding a filled-in form was the measured defect.
+     *
+     * @param replace Whether to overwrite the current history entry instead of adding one.
+     */
+    /*
+     * ⚠ THE PUSHED CALL CARRIES NO OPTIONS AT ALL, rather than `{ replaceUrl: false }`. The two
+     * are identical to the router, but not to a reader or to a specification: passing an explicit
+     * `false` would rewrite the call every cancel path makes, so a diff of this change would
+     * claim to have touched the cancel behaviour when it did not. Only the departure that
+     * actually changed says anything new.
+     */
+    const departure = replace
+      ? this.router.navigate([ROLES_PATH], { replaceUrl: true })
+      : this.router.navigate([ROLES_PATH]);
+
+    void departure.catch(() => false);
   }
 }

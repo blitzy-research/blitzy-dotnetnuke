@@ -96,7 +96,7 @@
   it navigates and changes nothing.
 -->
 <app-page-header [title]="text.title" [subtitle]="text.subtitle">
-  <a class="membership-settings__header-action" [routerLink]="profileDefinitionsPath">
+  <a class="page-action membership-settings__header-action" [routerLink]="profileDefinitionsPath">
     Manage Profile Properties
   </a>
 </app-page-header>
@@ -146,6 +146,49 @@
   <p class="membership-settings__transport-failure" role="alert">{{ message }}</p>
 }
 
+<!--
+  The tenant stores no account policy, so there is nothing to read and nowhere to write.
+
+  ⚠ THIS REPLACES A BANNER THAT SAID THE WRONG THING. This state previously arrived as a recorded
+  failure and rendered through the banner above as "Not Found / The requested resource does not
+  exist. / Reference: <correlation guid>" with a retry affordance - alarming, unactionable, and
+  wrong on all three counts: nothing is missing that was asked for, nothing can be retried into
+  existence, and the reference invites a support conversation about a correctly functioning tenant.
+
+  ⚠ NOT AN ERROR ROLE, DELIBERATELY. It is a stable, expected configuration state rather than
+  something that went wrong, so it is a plain note. It carries no live region either: it is present
+  on arrival rather than appearing in response to an action, so the heading and this note are read
+  in document order by a reader arriving at the screen.
+
+  MIGRATION: NET-NEW WORDING, with no legacy counterpart, and the absence of one is explained by
+  the legacy topology rather than by an omission. The legacy screen read its settings from the
+  "User Accounts" module instance on the admin page - `UserSettings.ascx.vb:L106` through
+  `UserController.GetUserSettings` - and that instance was installed with the portal, so the screen
+  could assume it and never needed to describe its absence. It DID tolerate absence silently
+  (`UserController.vb:L656-L671` returns Nothing and the consumers fell back to defaults), which is
+  exactly what the account listing now does; only this screen, which must WRITE, has to say so. The
+  sentence names the module by the same name the server's own refusal names, so an operator reading
+  either arrives at the same remedy.
+-->
+  THE PROVENANCE DISCLOSURE — #6.
+  Says whether the values below are a policy this site STORED or the platform defaults it falls
+  back to. Every control renders a value either way and a rendered value looks identical either
+  way, so without this sentence an operator cannot tell somebody's decision from nobody's, and
+  cannot tell whether pressing Update will CHANGE a policy or CREATE one.
+  ⚠ NOT AN ALERT, AND NOT A LIVE REGION. This is steady-state information about what is on screen,
+  not the outcome of anything the reader just did, so announcing it would interrupt for no event.
+  It is a plain paragraph placed immediately before the form it describes, which is where a reader
+  moving through the document in order meets it before the first control. The two announcement
+  regions on this screen — the shared banner and the transport-failure paragraph above — stay the
+  only ones this file emits.
+  The state is also carried as a data attribute so the paired stylesheet can distinguish the two
+  without matching on wording, and so a specification can assert which of the two is showing
+  without reading English.
+@if (provenanceNotice(); as notice) {
+  <p class="membership-settings__provenance" [attr.data-provenance]="valueProvenance()">
+    {{ notice }}
+  </p>
+}
 @if (loading()) {
   <!--
     The policy is being read. The label is what makes the indicator announce
@@ -153,6 +196,22 @@
     label text - and the wording comes from the paired class.
   -->
   <app-loading-spinner [label]="text.loadingLabel" />
+} @else if (unconfigured()) {
+  <!--
+    Ordered BEFORE the form and in place of it, which is the whole reason this is a branch of the
+    same chain rather than a note sitting above one: a form of twenty-three controls that provably
+    cannot be saved is a trap, and a note beside it would contradict itself by showing settings
+    while saying there are none to show. The two facts - explain the state, withhold the form - are
+    one decision and are expressed in one construct so they cannot drift apart.
+
+    The paired class refuses the command for this same state, so the button is unreachable by any
+    route even if this branch were ever reordered.
+  -->
+  <p class="membership-settings__unconfigured">
+    This site has no “User Accounts” module, which is where account settings are stored, so there
+    are no settings to show and none can be saved. Add a “User Accounts” module to this site to
+    manage these settings. Until then the account listing uses the default settings.
+  </p>
 } @else {
   <!--
     The form replaces the indicator rather than sitting beside it, so the seated
@@ -293,7 +352,16 @@
           added.
         -->
         <fieldset class="membership-settings__columns">
-          <legend class="membership-settings__columns-legend">{{ text.columnsHeading }}</legend>
+          <!--
+            LEVEL THREE, NOT TWO, AND THE NESTING IS WHY. This field set sits INSIDE the accounts
+            section whose summary already carries the level-two heading, so a second `<h2>` here
+            would flatten a parent and its child onto the same level and tell a reader navigating
+            by heading that the two are siblings. The outline is page `<h1>`, section `<h2>`, this
+            `<h3>`, with no level skipped in either direction. The shared rule in `_forms.scss`
+            styles a legend heading at any level identically, so the level is chosen for the
+            outline alone and costs nothing visually.
+          -->
+          <legend class="membership-settings__columns-legend"><h3>{{ text.columnsHeading }}</h3></legend>
 
           @for (field of columnFields; track field) {
             <app-form-field
@@ -839,6 +907,7 @@
         class="membership-settings__action membership-settings__action--primary"
         type="submit"
         [disabled]="canSubmit() === false"
+          [attr.aria-busy]="saving() ? 'true' : null"
       >
         {{ text.submitLabel }}
       </button>

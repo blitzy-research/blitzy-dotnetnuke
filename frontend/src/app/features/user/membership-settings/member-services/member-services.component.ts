@@ -28,6 +28,8 @@ import { ErrorBannerComponent } from '../../../../shared/components/error-banner
 import { FormFieldComponent } from '../../../../shared/components/form-field/form-field.component';
 import { PageHeaderComponent } from '../../../../shared/components/page-header/page-header.component';
 import { DateDisplayPipe } from '../../../../shared/pipes/date-display.pipe';
+import { FocusFirstInvalidDirective } from '../../../../shared/directives/focus-first-invalid.directive';
+import { SubmitGuardDirective } from '../../../../shared/directives/submit-guard.directive';
 
 // ---------------------------------------------------------------------------
 // WHAT THIS SCREEN IS
@@ -140,12 +142,19 @@ const CODE_SUCCESS =
 /**
  * The wording for a code field left empty.
  *
- * Reads the way the API's own validator reads - "An invitation code is required." - because
- * the same situation should not be described two different ways depending on which side
- * noticed it. The legacy screen had no message for this case at all: it silently ignored an
- * empty submission, which is the behaviour the API deliberately does not reproduce.
+ * Reads the way the API's own validator reads - `RedeemServiceCodeRequestValidator`'s
+ * `CodeRequiredMessage` - because the same situation should not be described two different ways
+ * depending on which side noticed it. The legacy screen had no message for this case at all: it
+ * silently ignored an empty submission, which is the behaviour the API deliberately does not
+ * reproduce.
+ *
+ * MIGRATION: the sentence NAMES THE FIELD THE WAY THE FIELD IS LABELLED. Both this message and the
+ * server's read "An invitation code is required." while the control immediately above them read
+ * "Enter RSVP Code:", so one value carried two names and an operator had to infer that the refusal
+ * was even about the box they had just filled in. Nothing in the legacy forced either wording - its
+ * guard was silent - so the field's own label is the only authority, and both sides now follow it.
  */
-const CODE_REQUIRED_MESSAGE = 'An invitation code is required.';
+const CODE_REQUIRED_MESSAGE = 'An RSVP Code is required.';
 
 /**
  * The maximum length of an invitation code.
@@ -264,12 +273,15 @@ interface CodeFormModel {
   // flash an empty state before the first response. The delegation is a compile-time fact
   // rather than a convention, because a component not listed here cannot be rendered.
   imports: [
+    FocusFirstInvalidDirective,
+    SubmitGuardDirective,
     ReactiveFormsModule,
     PageHeaderComponent,
     FormFieldComponent,
     ErrorBannerComponent,
     DataTableComponent,
     DateDisplayPipe,
+    FocusFirstInvalidDirective,
   ],
   templateUrl: './member-services.component.html',
   styleUrl: './member-services.component.scss',
@@ -430,6 +442,24 @@ export class MemberServicesComponent implements OnInit {
   });
 
   /** The services offered to the account, as the store holds them. */
+  /**
+   * How a row identifies itself to the shared grid, so a re-read of the rows already shown reuses their
+   * row elements instead of rebuilding them.
+   *
+   * ⚠ THE RECORD'S OWN KEY, NOT THE ARRAY POSITION AND NOT THE OBJECT. The grid's fallback is the row
+   * OBJECT, which is a correct key only while the same objects stay in play; every read from the server
+   * decodes fresh objects, so without this a refetch presents entirely new keys and the whole body is
+   * rebuilt to display records that never changed. `roleId` is unique by definition, being the
+   * record's own identifier, which is what `@for` requires - a repeated key is an error there.
+   *
+   * Declared as a bound field rather than an inline arrow so the reference is stable across change
+   * detection; a new function each redraw would set the grid's input every time and defeat its purpose.
+   *
+   * @param row The row about to be rendered.
+   * @returns The record's identifier.
+   */
+  protected readonly serviceRowKey = (row: MemberService): number => row.roleId;
+
   protected readonly services: Signal<readonly MemberService[]> = computed(() => {
     // Guarded on the account the store's catalogue BELONGS TO, so a catalogue read for a
     // previous address can never be rendered under this one. The store publishes the account
@@ -683,7 +713,7 @@ export class MemberServicesComponent implements OnInit {
     }
 
     if (control.hasError('maxlength')) {
-      return `An invitation code may not exceed ${CODE_MAX_LENGTH} characters.`;
+      return `An RSVP Code may not exceed ${String(CODE_MAX_LENGTH)} characters.`;
     }
 
     return null;
@@ -729,6 +759,12 @@ export class MemberServicesComponent implements OnInit {
       },
       {
         key: 'roleName',
+        // The row's NAME. Emitted as `<th scope="row">` so a screen reader announces which record
+        // each cell belongs to - without it, traversing a row gives the column name and the value
+        // and never the record's identity. This column is the one a person would read aloud to say
+        // which row they mean. No visual change: the shared stylesheet restores a body row
+        // header's normal weight.
+        rowHeader: true,
         label: NAME_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',

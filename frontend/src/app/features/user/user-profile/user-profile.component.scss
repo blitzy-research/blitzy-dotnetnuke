@@ -320,6 +320,48 @@
   grid-template-columns: var(--grid-track-fluid);
   row-gap: var(--space-3);
 
+  // ⚠ U-M7 — THE LABEL MEASURE IS NOT RAISED HERE, IT IS REMOVED FROM THE DECISION. This screen's
+  // property fields carry `form-field--stacked`, so the label takes the whole content width at every
+  // viewport and no track applies to it at all. The reasoning below is retained because it is what
+  // established that this is the one screen where the 150-unit measure has no authority behind it, and
+  // because it records two measurements that would otherwise be repeated.
+  //
+  // ⚠ RAISING THE TRACK WAS TRIED FIRST AND MEASURED INSUFFICIENT. With the track at 240 units the
+  // fifty-character property name still resolved to 240 × 42 — TWO lines — at 1280 against ONE line at
+  // 767, so the inversion U-M7 reported survived at a smaller size. A controlled experiment on the live
+  // screen, applied inline and then reverted, confirmed the direction was right and the magnitude could
+  // not be: at the app-wide 150 the same label took THREE lines and a second label degraded to two, and
+  // at 240 the count was two. The name needs 429 units. No track that also leaves a usable control can
+  // offer them — at 768 the whole content column is 484 units, so a 432-unit label would leave 36 for the
+  // field. The variant on the shared component carries the full reasoning.
+  //
+  // ⚠ AND IF ANYONE REACHES FOR THE TRACK AGAIN: OVERRIDE THE TRACK, NEVER THE WIDTH TOKEN.
+  // `--grid-track-label` is declared on the root AS `minmax(0, var(--field-label-inline-size))`, and a
+  // custom property whose value contains `var()` has that reference substituted at computed-value time ON
+  // THE ELEMENT WHERE IT IS DECLARED — so the track inherits down with the width already resolved, and
+  // re-declaring the WIDTH further down the tree changes nothing at all. Proven in a real browser: with
+  // the width overridden to 240 units on an ancestor the grid still resolved its first track to 100
+  // units; with the TRACK overridden instead it resolved to 240. The tidier-looking width override is
+  // dead code.
+  //
+  // The token's provenance is a markup attribute: `<td class="SubHead" width="150">` beside a label
+  // control, 229 of the 240 occurrences of that width across the admin surface. Every one of those
+  // occurrences labels a FIXED field whose wording is a measured resource string, and every such string
+  // fits. The properties on THIS screen are different in kind — their names are authored by the tenant,
+  // are unbounded in length, and were rendered by the excluded property-editor registry rather than by
+  // any measured table row. So there is no 150-unit measurement for this screen to preserve.
+  //
+  // Measured consequence of applying it anyway: a fifty-character property name wrapped onto THREE lines
+  // at every width from 768 upward while fitting on ONE below 767 — worst on the widest viewports, which
+  // is the opposite of what a reader expects and is an artefact of a 150-unit maximum meeting a name
+  // nobody sized for it. The narrow case fits because the field stacks there and the label gets the whole
+  // width.
+  //
+  // ⚠ THE LABELS STILL ALIGN WITH ONE ANOTHER, WHICH IS WHAT THE LEGACY TABLE COLUMN WAS FOR. Stacked,
+  // every label starts at the same left edge as every other and as every control — one edge instead of
+  // two. What is lost is the control column's shared left edge, and that edge only ever existed because
+  // the labels were measured to fit beside it.
+
   // The shared form field carries its own trailing margin so it stacks correctly
   // wherever it is used unaided. Inside this grid that margin would be ADDED to the
   // row gap and every field would sit at two spacings instead of one, so it is
@@ -446,4 +488,15 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+}
+
+// The statement shown when the address names no readable account.
+//
+// Matched to `.role-form__notice`, which carries the equivalent sentence on the role
+// screens, so the same class of statement reads the same way wherever it appears. Muted
+// rather than danger-coloured: following a stale link is an ordinary thing to do and
+// nothing has failed, which is also why this is prose on the page and not an error banner.
+.user-profile__notice {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
 }

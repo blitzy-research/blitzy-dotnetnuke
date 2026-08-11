@@ -131,15 +131,36 @@ internal sealed class PortalRepository : IPortalRepository
 
         if (!string.IsNullOrWhiteSpace(nameFilter))
         {
-            // MIGRATION: the legacy grid matched a fragment of the site name anywhere in the value,
-            // but it did so by handing the caller's string straight to `PortalName LIKE @NameToMatch`
-            // with the wildcards supplied by the caller. The fragment is translated to a relational
-            // containment test here, so the caller's text is data and can no longer act as a pattern:
-            // a value holding % or _ matches those characters literally instead of widening the
-            // search. Case is folded on both sides so the answer does not depend on the collation the
+            // MIGRATION: the legacy grid matched a PREFIX of the site name, and this member matches a
+            // prefix. The pattern was assembled at the call site rather than in the procedure:
+            // Website/admin/Portal/Portals.ascx.vb line 142 reads
+            // `GetPortalsByName(Filter + "%", CurrentPage - 1, PageSize, TotalRecords)` - a single
+            // TRAILING wildcard and no leading one - and the surviving procedure applies it unchanged
+            // with `WHERE PortalName LIKE @NameToMatch`
+            // (Website/Providers/DataProviders/SqlDataProvider/04.04.00.SqlDataProvider lines 245-269).
+            // `LIKE 'j%'` is a prefix test, so a mid-string fragment matched nothing in the legacy grid.
+            //
+            // ⚠ DO NOT WIDEN THIS TO A CONTAINMENT TEST. An earlier revision used Contains, reasoning
+            // that a widening loses no legacy result. It loses something else: the FILTER STRIP'S
+            // MEANING. That strip is an A-to-Z index - twenty-six single letters read from
+            // `Filter.Text`, named "Filter portals by first letter" - and against a containment test
+            // pressing "A" returns every title with an "a" anywhere in it, which on a real
+            // installation is very nearly all of them. Runtime testing measured exactly that. The
+            // strip and the free-text box share one filter parameter, so the predicate cannot be
+            // prefix for one and containment for the other; prefix is the one the legacy screen had
+            // and the one the strip's own label promises. Rule T5 (identical inputs, identical
+            // outcomes) settles it: equivalence is achievable here, so it is achieved rather than
+            // documented away. The account listing's letter filter already matches by prefix, so both
+            // listings now answer the same way.
+            //
+            // The WILDCARD HARDENING is kept, and it is a separate concern from the predicate's shape.
+            // The legacy pattern was string concatenation, so a caller's own `%` or `_` acted as a
+            // pattern and a single per cent sign matched every portal in the installation. Expressed
+            // as a relational StartsWith the caller's text is DATA: those characters match themselves.
+            // Case is folded on both sides so the answer does not depend on the collation the
             // installation happens to carry, which is what the integration suite asserts.
             string wanted = nameFilter.Trim().ToLowerInvariant();
-            query = query.Where(p => p.PortalName.ToLower().Contains(wanted));
+            query = query.Where(p => p.PortalName.ToLower().StartsWith(wanted));
         }
 
         query = ApplyOrder(query, sortBy, descending);

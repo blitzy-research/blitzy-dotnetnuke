@@ -226,6 +226,10 @@ const UPDATE_ROLE_REQUEST: UpdateRoleRequest = {
   trialFrequency: 'D',
   rsvpCode: '',
   iconFile: null,
+  // The marker of the revision this replacement was composed against. Declared because the contract
+  // declares it: an update that omits it asks the server to write unconditionally, and a fixture that
+  // could not express the member could not assert it reaches the wire.
+  concurrencyToken: 'token-read-before-edit',
 };
 
 /**
@@ -307,6 +311,9 @@ const ROLE: Role = {
   autoAssignment: false,
   rsvpCode: null,
   iconFile: null,
+  // Served with every role detail. Opaque by contract, so the value here is a placeholder in the
+  // shape a caller must carry through untouched rather than anything the decoder inspects.
+  concurrencyToken: 'role-revision-token',
 };
 
 /**

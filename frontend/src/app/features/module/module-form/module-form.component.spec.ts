@@ -47,6 +47,7 @@ import type { ComponentFixture } from '@angular/core/testing';
 import type { TestRequest } from '@angular/common/http/testing';
 
 import { ModuleVisibility } from '../../../core/models/module.model';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { ModuleStore } from '../../../core/state/module.store';
 import { ModuleFormComponent } from './module-form.component';
@@ -1108,6 +1109,89 @@ describe('ModuleFormComponent', () => {
     });
   });
 
+  describe('an address whose module the server refuses to disclose', () => {
+    /**
+     * A REFUSAL IS NOT AN ABSENCE, and this screen used to say it was.
+     *
+     * The server answers `GET /api/v1/modules/{id}` with 403 when the caller may not see the module and
+     * with 404 when there is none. Both leave the screen holding no module, so the derivation that
+     * reports "could not be found" could not tell them apart - and it therefore stated something untrue
+     * DIRECTLY BENEATH the banner's accurate sentence, on the same screen, at the same moment.
+     *
+     * The presentation of a refusal is now the banner and nothing else, which is what the legacy
+     * access-denied page did: a heading and one `YellowWarning` module message
+     * (`Website/admin/Security/AccessDenied.ascx.vb:L41-L45`), which is also the severity
+     * `core/utils/form-errors.util.ts` resolves 403 to. The sibling settings and export screens present
+     * the same status the same way.
+     */
+    it('presents the refusal in the banner alone, and never as a missing module', () => {
+      create('0');
+      answerDefinitions();
+
+      expectRequest('GET', MODULE_ZERO_URL).flush(
+        problem('authorization.forbidden', 403, 'You are not permitted to view this module.'),
+        { status: 403, statusText: 'Forbidden' },
+      );
+      fixture.detectChanges();
+
+      const banner = query('.error-banner');
+
+      expect(banner).not.toBeNull();
+      expect(banner?.getAttribute('data-severity'))
+        .withContext('the legacy YellowWarning severity, resolved by the shared utility')
+        .toBe('warning');
+      expect(banner?.textContent ?? '').toContain('You are not permitted to view this module.');
+
+      // The two statements that must NOT accompany it.
+      expect(query('.module-form__notice'))
+        .withContext('a refusal is not an absence, so the not-found sentence is withheld')
+        .toBeNull();
+      expect(fixture.nativeElement.textContent as string).not.toContain(NOT_FOUND_MESSAGE);
+    });
+
+    it('offers no save, because a save could only ever be refused as well', () => {
+      create('0');
+      answerDefinitions();
+
+      expectRequest('GET', MODULE_ZERO_URL).flush(
+        problem('authorization.forbidden', 403, 'You are not permitted to view this module.'),
+        { status: 403, statusText: 'Forbidden' },
+      );
+      fixture.detectChanges();
+
+      expect(query('.module-form__action--primary')).toBeNull();
+      expect(query('#module-form-title'))
+        .withContext('no form is seeded from a module that was never read')
+        .toBeNull();
+    });
+
+    /**
+     * The narrowing matters as much as the predicate: the store holds ONE failure slot shared by every
+     * module command, so a refused SAVE must leave the form exactly where it is. Without the narrowing
+     * the form would vanish at the moment the operator most needs it - with their unsaved edits in it.
+     */
+    it('keeps the form when it is a SAVE that is refused rather than the read', () => {
+      arriveInEditMode();
+
+      commandByClass('module-form__action--primary').click();
+      fixture.detectChanges();
+
+      const write = httpMock.expectOne(
+        (candidate) => candidate.method === 'PUT' && candidate.url.startsWith('/api/v1/modules/'),
+      );
+
+      write.flush(problem('authorization.forbidden', 403, 'You may not change this module.'), {
+        status: 403,
+        statusText: 'Forbidden',
+      });
+      fixture.detectChanges();
+
+      expect(query('.error-banner')).not.toBeNull();
+      expect(query('#module-form-title')).withContext('the edits are still on screen').not.toBeNull();
+      expect(query('.module-form__action--primary')).not.toBeNull();
+    });
+  });
+
   // ---------------------------------------------------------------------------------------------------
   // PROOF 3 — THE FORM'S OWN RULES
   // ---------------------------------------------------------------------------------------------------
@@ -1178,7 +1262,7 @@ describe('ModuleFormComponent', () => {
       fixture.detectChanges();
     });
 
-    it('refuses to save when no page has been chosen', () => {
+    it('refuses to save when no page has been chosen, and says so BESIDE the control', () => {
       arriveInEditMode();
 
       // An EXISTENCE test, never a bound: `dbo.Tabs.TabID` is `IDENTITY(0, 1)`, so page zero is an
@@ -1187,7 +1271,15 @@ describe('ModuleFormComponent', () => {
       choose('module-form-tab', 'Not Specified');
       save();
 
-      expect(notifySpy).toHaveBeenCalledWith('warning', PAGE_REQUIRED_MESSAGE);
+      // ⚠ WHERE THE SENTENCE APPEARS IS THE CORRECTION. The rule was enforced imperatively, so
+      // `form.invalid` was FALSE with a required choice unmade: the refusal arrived as a page-level
+      // warning naming the page, no control carried `aria-invalid`, and not one of the thirteen fields
+      // showed a message. The rule is now declared on the control, so the screen's own machinery
+      // reports it where the operator is looking - and the page-level sentence becomes the SUMMARY
+      // that every other invalid field on this form already produced.
+      expect(messagesBeside('module-form-tab')).toContain(PAGE_REQUIRED_MESSAGE);
+      expect(requiredControl('module-form-tab').getAttribute('aria-invalid')).toBe('true');
+      expect(notifySpy).toHaveBeenCalledWith('warning', FORM_INVALID_MESSAGE);
       httpMock.expectNone(() => true);
     });
 
@@ -1209,7 +1301,66 @@ describe('ModuleFormComponent', () => {
       choose('module-form-tab', 'Home');
       save();
 
-      expect(notifySpy).toHaveBeenCalledWith('warning', DEFINITION_REQUIRED_MESSAGE);
+      // ⚠ AND THIS REQUIREMENT USED TO BE UNREPORTABLE. Its test sat inside `createModule`, downstream
+      // of the form check, the page check and the cache-time check, so an empty submission reported the
+      // PAGE and never mentioned the module at all - the operator fixed one requirement to be told
+      // about the next. Declared on the control, both are reported at once and each beside its own
+      // choice.
+      expect(messagesBeside('module-form-module-def')).toContain(DEFINITION_REQUIRED_MESSAGE);
+      expect(requiredControl('module-form-module-def').getAttribute('aria-invalid')).toBe('true');
+      expect(notifySpy).toHaveBeenCalledWith('warning', FORM_INVALID_MESSAGE);
+      httpMock.expectNone(() => true);
+    });
+
+    it('reports BOTH unmade choices at once from a single empty submission', () => {
+      // ⚠ THE CASE THE OLD ORDERING MADE IMPOSSIBLE TO WRITE. The sibling case above had to choose a
+      // page first, purely because the two requirements were reported one at a time in a fixed order.
+      // Nothing has to be chosen here: an empty submission names both, each against its own control,
+      // and the summary is raised once rather than once per requirement.
+      create();
+      answerDefinitions();
+
+      const store = TestBed.inject(ModuleStore);
+
+      store.loadTabs(-1);
+      expectRequest('GET', TABS_URL).flush(envelope([tabRow()]));
+      fixture.detectChanges();
+
+      save();
+
+      expect(messagesBeside('module-form-module-def')).toContain(DEFINITION_REQUIRED_MESSAGE);
+      expect(messagesBeside('module-form-tab')).toContain(PAGE_REQUIRED_MESSAGE);
+      expect(requiredControl('module-form-module-def').getAttribute('aria-invalid')).toBe('true');
+      expect(requiredControl('module-form-tab').getAttribute('aria-invalid')).toBe('true');
+
+      const summaries = notifySpy.calls
+        .allArgs()
+        .filter((args) => String(args[1]) === FORM_INVALID_MESSAGE);
+
+      expect(summaries.length).withContext('one summary, not one per broken rule').toBe(1);
+      httpMock.expectNone(() => true);
+    });
+
+    it('clears the invalid state from a control once its choice is made', () => {
+      // The other half of the contract: a declared rule has to stop reporting as well as start. Without
+      // this, a screen that marked a control invalid and never released it would be worse than one that
+      // never marked it at all.
+      create();
+      answerDefinitions();
+
+      const store = TestBed.inject(ModuleStore);
+
+      store.loadTabs(-1);
+      expectRequest('GET', TABS_URL).flush(envelope([tabRow()]));
+      fixture.detectChanges();
+
+      save();
+      expect(requiredControl('module-form-tab').getAttribute('aria-invalid')).toBe('true');
+
+      choose('module-form-tab', 'Home');
+
+      expect(messagesBeside('module-form-tab')).toEqual([]);
+      expect(requiredControl('module-form-tab').getAttribute('aria-invalid')).toBe('false');
       httpMock.expectNone(() => true);
     });
 
@@ -1308,7 +1459,7 @@ describe('ModuleFormComponent', () => {
       call.flush(envelope(detail({ moduleTitle: null })));
       fixture.detectChanges();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', UPDATED_MESSAGE);
+      expect(notifySpy).toHaveBeenCalledWith('success', UPDATED_MESSAGE, null, true);
     });
 
     it('accepts an end date BEFORE its start date, because no ordering rule ever existed', () => {
@@ -1337,7 +1488,160 @@ describe('ModuleFormComponent', () => {
       call.flush(envelope(detail({ startDate: '2024-06-30T00:00:00', endDate: '2024-01-01T00:00:00' })));
       fixture.detectChanges();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', UPDATED_MESSAGE);
+      expect(notifySpy).toHaveBeenCalledWith('success', UPDATED_MESSAGE, null, true);
+    });
+
+    // THE VISIBLE HALF OF THE SAME DECISION. The pair above is stored exactly as entered, which is correct
+    // and is the minimal-change discipline applied to a validation rule nobody wrote. It is also invisible:
+    // a module that can never appear looks identical to one that appears all year. So the screen SAYS so,
+    // and the two specs below pin both properties of that notice - that it appears, and that it is not a
+    // refusal. It is deliberately NOT rendered through either date field's error channel, because that
+    // channel means "this value was rejected" and carries the danger treatment with it.
+    // ---------------------------------------------------------------------------------------------------
+    // THE ICON REFERENCE MUST STAY INSIDE THE PORTAL'S OWN FOLDER
+    // ---------------------------------------------------------------------------------------------------
+    // Measured before the rule existed: `POST /api/v1/modules` with an `iconFile` of
+    // `../../../etc/passwd` answered 201 and stored the value VERBATIM, and `PUT` answered 200 and stored
+    // it verbatim for `../../bad`, `..\..\bad` and `/etc/passwd` — while the role and page contracts
+    // refused every one of them through the very same shared rule. The module paths were the one place the
+    // rule had not been applied.
+    //
+    // MIGRATION: the rule PRESERVES the legacy outcome rather than narrowing it. `modulesettings.ascx`
+    // line 116 declared this field as `<portal:url id="ctlIcon" showurls="False" ...>`, a picker over the
+    // portal's own files, so a rooted or upward-traversing path was unreachable by construction and there
+    // was nothing to validate. This screen offers a text box, so the constraint the picker enforced
+    // structurally is enforced by a rule — refusing only values the legacy could never have produced.
+    it('refuses an icon reference that escapes the portal folder and issues no request', () => {
+      arriveInEditMode();
+
+      type('module-form-icon-file', '../../../etc/passwd');
+      save();
+
+      expect(messagesBeside('module-form-icon-file')).toEqual([
+        "Icon File must be a relative path within the portal's own folder.",
+      ]);
+
+      // Nothing left the browser. `verify()` in this file's teardown would fail the spec on an outstanding
+      // request, but the absence is asserted directly so the reason cannot be mistaken.
+      httpMock.expectNone((candidate) => candidate.method === 'PUT');
+    });
+
+    it('accepts an ordinary relative icon reference and sends it unchanged', () => {
+      arriveInEditMode();
+
+      type('module-form-icon-file', 'sub/dir/valid.gif');
+      save();
+
+      const call = expectRequest('PUT', MODULE_ZERO_URL, 'a save carrying a contained reference');
+
+      expect(textField(call.request.body, 'iconFile')).toBe('sub/dir/valid.gif');
+      expect(messagesBeside('module-form-icon-file')).toEqual([]);
+
+      call.flush(envelope(detail({ iconFile: 'sub/dir/valid.gif' })));
+      fixture.detectChanges();
+    });
+
+    // ---------------------------------------------------------------------------------------------------
+    // A BLANK HEADING IS ACCEPTED, AND ITS CONSEQUENCE IS STATED
+    // ---------------------------------------------------------------------------------------------------
+    // The heading is optional on every tier and stays optional: the legacy markup declares no presence
+    // validator on `txtTitle`, both server validators gate their only title rule on the value being
+    // non-empty, and the column is nullable. A module in the measured data stores the empty string, so a
+    // required rule would make an existing record unsavable for an operator who came to change something
+    // else. What was missing is that the choice has a consequence — `ControlPanelBase.vb:192-196` listed
+    // such a module under its definition's name on finding `title = ""` — and nothing said so.
+    it('states what a module with no heading will be listed as, and still allows the save', () => {
+      arriveInEditMode();
+
+      type('module-form-title', '');
+
+      const notice = query('.module-form__schedule-notice');
+
+      expect(notice).withContext('the consequence of a blank heading is stated').not.toBeNull();
+      expect(notice?.getAttribute('aria-live')).toBe('polite');
+      expect(notice?.textContent).toContain('listed as');
+
+      // A statement, not a refusal: no message beside the field, and the save goes out.
+      expect(messagesBeside('module-form-title')).toEqual([]);
+
+      save();
+
+      const call = expectRequest('PUT', MODULE_ZERO_URL, 'a save with no heading');
+
+      expect(textField(call.request.body, 'moduleTitle')).toBeNull();
+
+      call.flush(envelope(detail({ moduleTitle: null })));
+      fixture.detectChanges();
+    });
+
+    it('says nothing about the heading while one is entered', () => {
+      arriveInEditMode();
+
+      type('module-form-title', 'Renamed');
+
+      expect(query('.module-form__schedule-notice')).toBeNull();
+    });
+
+    it('remarks on an end date that precedes its start, without refusing it', () => {
+      arriveInEditMode();
+
+      expect(query('.module-form__schedule-notice'))
+        .withContext('nothing is said about an ordinary schedule')
+        .toBeNull();
+
+      type('module-form-start-date', '2024-06-30');
+      type('module-form-end-date', '2024-01-01');
+
+      const notice = query('.module-form__schedule-notice');
+
+      expect(notice).withContext('the reversed schedule is remarked on').not.toBeNull();
+      expect(notice?.getAttribute('aria-live'))
+        .withContext('announced politely, because it interrupts nothing')
+        .toBe('polite');
+      expect(notice?.textContent).toContain('will not be shown');
+
+      // The decisive assertion: a notice, not a refusal. Neither field carries a message, and the form is
+      // still submittable - which is what keeps this faithful to a legacy screen that stored the pair.
+      expect(messagesBeside('module-form-start-date')).toEqual([]);
+      expect(messagesBeside('module-form-end-date')).toEqual([]);
+      expect(commandByClass('module-form__action--primary').disabled)
+        .withContext('the pair is accepted, so saving is still offered')
+        .toBeFalse();
+
+      // And it really does save. Asserting the request goes out is a stronger proof than reading a validity
+      // flag, because it exercises the whole path a refusal would have blocked.
+      save();
+      expectRequest('PUT', MODULE_ZERO_URL, 'a save carrying the reversed pair').flush(
+        envelope(detail({ startDate: '2024-06-30T00:00:00', endDate: '2024-01-01T00:00:00' })),
+      );
+    });
+
+    it('withdraws the remark once the schedule reads forwards again', () => {
+      arriveInEditMode();
+
+      type('module-form-start-date', '2024-06-30');
+      type('module-form-end-date', '2024-01-01');
+      expect(query('.module-form__schedule-notice')).not.toBeNull();
+
+      type('module-form-end-date', '2024-12-31');
+
+      expect(query('.module-form__schedule-notice'))
+        .withContext('the condition it described no longer holds')
+        .toBeNull();
+    });
+
+    it('says nothing when only one bound is given, because an open-ended schedule is ordinary', () => {
+      arriveInEditMode();
+
+      type('module-form-start-date', '2024-06-30');
+      type('module-form-end-date', '');
+
+      expect(query('.module-form__schedule-notice')).toBeNull();
+
+      type('module-form-start-date', '');
+      type('module-form-end-date', '2024-01-01');
+
+      expect(query('.module-form__schedule-notice')).toBeNull();
     });
   });
 
@@ -1411,8 +1715,8 @@ describe('ModuleFormComponent', () => {
       expectRequest('GET', MODULES_URL, 'the listing re-read').flush(pagedBody([listRow()]));
       fixture.detectChanges();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', CREATED_MESSAGE);
-      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH);
+      expect(notifySpy).toHaveBeenCalledWith('success', CREATED_MESSAGE, null, true);
+      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH, { replaceUrl: true });
     });
 
     it('accepts the 201 the endpoint answers with, and reports the placement', () => {
@@ -1456,8 +1760,8 @@ describe('ModuleFormComponent', () => {
       // The measured legacy severity vocabulary had exactly three levels - `RedError` 27 times,
       // `YellowWarning` 21 and `GreenSuccess` 12 across the administration screens - and a completed
       // operation used the affirmative one.
-      expect(notifySpy).toHaveBeenCalledWith('success', CREATED_MESSAGE);
-      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH);
+      expect(notifySpy).toHaveBeenCalledWith('success', CREATED_MESSAGE, null, true);
+      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH, { replaceUrl: true });
     });
 
     it('treats PAGE ZERO as a page, because the page identity seeds at zero', () => {
@@ -1542,7 +1846,7 @@ describe('ModuleFormComponent', () => {
   // ---------------------------------------------------------------------------------------------------
 
   describe('replacing a module', () => {
-    it('puts all sixteen members, round-tripping the two the operator does not choose', () => {
+    it('puts all seventeen members, round-tripping the two the operator does not choose', () => {
       arriveInEditMode();
 
       type('module-form-title', 'Renamed');
@@ -1560,8 +1864,13 @@ describe('ModuleFormComponent', () => {
       //
       // ⚠ NO DEFINITION MEMBER. The contract carries none - a module's definition is fixed at
       // creation - and the control it would come from is disabled while a module is loaded.
+      //
+      // ⚠ THE RELOCATION MEMBER IS PRESENT AND NULL. The picker was not touched, so nothing is being
+      // moved - and the destination is null rather than a repeat of the page above, because a request
+      // naming its own page as a destination asks for a move to where the module already is.
       expect(call.request.body).toEqual({
         tabId: 0,
+        moveToTabId: null,
         moduleTitle: 'Renamed',
         allTabs: false,
         header: null,
@@ -1582,8 +1891,31 @@ describe('ModuleFormComponent', () => {
       call.flush(envelope(detail({ moduleTitle: 'Renamed' })));
       fixture.detectChanges();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', UPDATED_MESSAGE);
-      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH);
+      expect(notifySpy).toHaveBeenCalledWith('success', UPDATED_MESSAGE, null, true);
+      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH, { replaceUrl: true });
+    });
+
+    // THE MOVE-TO-PAGE CONTRACT ON THE EDIT PATH. The page control serves both modes of this screen, and its
+    // meaning differs between them: creating a module, the chosen page is where the new placement goes;
+    // replacing one, it is where the operator wants the module moved TO, while the placement being replaced
+    // is still the page the module was loaded from. Sending the choice as `tabId` conflated the two, and the
+    // server selects the placement by that member - so choosing any other page asked it to update a row that
+    // does not exist, which it refused with `module.placement_not_found`, and the module never moved.
+    it('sends no relocation when the page control is left on the module\'s own page', () => {
+      arriveInEditMode();
+
+      // Chosen explicitly, so this proves the comparison rather than merely the seeded default.
+      choose('module-form-tab', 'Home');
+      save();
+
+      const call = expectRequest('PUT', MODULE_ZERO_URL, 'an ordinary save');
+
+      expect(call.request.body).toEqual(
+        jasmine.objectContaining({
+          tabId: 0,
+          moveToTabId: null,
+        }),
+      );
     });
 
     it('round-trips the stored cache period even when the cache row is not offered', () => {
@@ -1609,7 +1941,7 @@ describe('ModuleFormComponent', () => {
       fixture.detectChanges();
     });
 
-    it('sends the page the operator chose, which is what selects the placement being replaced', () => {
+    it('sends the page the operator chose as a relocation, keeping the loaded page as the selector', () => {
       arriveInEditMode();
 
       choose('module-form-tab', 'About');
@@ -1617,10 +1949,18 @@ describe('ModuleFormComponent', () => {
 
       const call = expectRequest('PUT', MODULE_ZERO_URL);
 
-      // The legacy caption was a MOVE affordance. The value now selects the placement the update
-      // addresses as well, because the body carries exactly one page identifier - a move would need
-      // two - and the server refuses when the module is not placed on the page named.
-      expect(numberField(call.request.body, 'tabId')).toBe(1);
+      // The legacy caption is a MOVE affordance, and it now behaves like one. The body carries TWO page
+      // identifiers, which is what a move requires: `tabId` selects the placement the update addresses, and
+      // `moveToTabId` names where it is going. An earlier revision carried only one, so the chosen page had
+      // to serve as the selector - and the server, finding no placement of this module on a page it does not
+      // occupy, refused the save with `module.placement_not_found` and moved nothing. Asserting `tabId` is 1
+      // here would therefore be asserting that defect.
+      expect(numberField(call.request.body, 'tabId'))
+        .withContext('the placement being replaced is the page the module was loaded from')
+        .toBe(0);
+      expect(numberField(call.request.body, 'moveToTabId'))
+        .withContext('the chosen page is the destination')
+        .toBe(1);
 
       call.flush(envelope(detail({ tabId: 1 })));
       fixture.detectChanges();
@@ -1642,7 +1982,7 @@ describe('ModuleFormComponent', () => {
       );
       fixture.detectChanges();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', UPDATED_MESSAGE);
+      expect(notifySpy).toHaveBeenCalledWith('success', UPDATED_MESSAGE, null, true);
     });
   });
 
@@ -1661,7 +2001,14 @@ describe('ModuleFormComponent', () => {
       const dialog = query('app-confirm-dialog');
 
       expect(dialog).not.toBeNull();
-      expect((query('.confirm-dialog__title')?.textContent ?? '').trim()).toBe('Delete Module');
+
+      // THE SHARED DIALOG'S OWN TITLE, not a screen-specific one. Runtime testing found five different
+      // titles for this one action across the screens - `Delete`, `Confirm Delete`, `Delete Module`,
+      // `Delete Profile Property` and `Delete role group` - and the legacy had none of them to preserve:
+      // every in-scope delete confirmation was a `window.confirm()` carrying the single shared
+      // `DeleteItem` string with no title at all. So the title is declared once, by the shared dialog,
+      // and this screen binds none.
+      expect((query('.confirm-dialog__title')?.textContent ?? '').trim()).toBe('Confirm Delete');
 
       // ⚠ THE MESSAGE IS THE EXACT STRING THE LEGACY SCREEN RESOLVED, PUNCTUATION AND CAPITALS
       // INCLUDED. `ModuleSettings.ascx.vb:L205` called
@@ -1675,6 +2022,50 @@ describe('ModuleFormComponent', () => {
         .toBe(DELETE_CONFIRM_MESSAGE);
 
       httpMock.expectNone(() => true);
+    });
+
+    it('leaves the form settled at the instant a removal navigates, because deleted entry can no longer be saved', () => {
+      const tracker = TestBed.inject(UnsavedChangesTracker);
+
+      arriveInEditMode();
+      type('module-form-title', 'Typed, then deleted');
+
+      // THE CONTROL. Without it a later `false` would be indistinguishable from a probe that was never
+      // registered, or from a form that was never dirty. `isDirty()` is the guard's own public surface, so
+      // this is asserted through the very call the guard makes.
+      expect(tracker.isDirty())
+        .withContext('a dirty form with no command in flight is what the guard exists to catch')
+        .toBeTrue();
+
+      // ⚠ SAMPLED AT THE INSTANT OF NAVIGATION, NOT AFTERWARDS, and on the REMOVAL rather than the save.
+      // The distinction was established by experiment, not assumed: with the fix deliberately disabled a
+      // save-path version of this case still passed, because a successful replacement re-seeds the form
+      // from the response and that hydration already ends in `markAsPristine`. A removal re-seeds nothing -
+      // the placement is gone - so this is the path on which the settling has to be done explicitly, and
+      // an operator who typed something and then deleted the placement was being asked to confirm
+      // discarding edits to a placement that no longer existed.
+      let dirtyAtNavigation: boolean | null = null;
+      navigateSpy.and.callFake(() => {
+        dirtyAtNavigation = tracker.isDirty();
+
+        return Promise.resolve(true);
+      });
+
+      requestRemoval();
+      confirmRemoval();
+      expectRequest('DELETE', MODULE_ZERO_URL, 'the removal').flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+
+      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH, { replaceUrl: true });
+      expect(dirtyAtNavigation)
+        .withContext('there is nothing left to save once the placement is gone')
+        .toBeFalse();
+
+      // The store re-reads the listing after a successful removal, because the removal is soft and
+      // two-tiered so only the listing endpoint knows whether the row still belongs. Answered here so the
+      // suite's outstanding-request check has nothing left to report.
+      expectRequest('GET', MODULES_URL, 'the listing re-read').flush(pagedBody([]));
+      fixture.detectChanges();
     });
 
     it('stays reachable on an INVALID form and removes without validating anything', () => {
@@ -1722,8 +2113,8 @@ describe('ModuleFormComponent', () => {
       expectRequest('GET', MODULES_URL, 'the mandatory listing re-read').flush(pagedBody([]));
       fixture.detectChanges();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', DELETED_MESSAGE);
-      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH);
+      expect(notifySpy).toHaveBeenCalledWith('success', DELETED_MESSAGE, null, true);
+      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH, { replaceUrl: true });
     });
 
     it('removes nothing when the confirmation is dismissed', () => {
@@ -1759,8 +2150,8 @@ describe('ModuleFormComponent', () => {
       expectRequest('GET', MODULES_URL, 'the listing re-read').flush(pagedBody([]));
       fixture.detectChanges();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', DELETED_MESSAGE);
-      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH);
+      expect(notifySpy).toHaveBeenCalledWith('success', DELETED_MESSAGE, null, true);
+      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH, { replaceUrl: true });
     });
 
     it('offers no reversal, because no endpoint reverses it', () => {
@@ -1798,7 +2189,7 @@ describe('ModuleFormComponent', () => {
       call.flush(envelope(detail()));
       fixture.detectChanges();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', UPDATED_MESSAGE);
+      expect(notifySpy).toHaveBeenCalledWith('success', UPDATED_MESSAGE, null, true);
       expect(navigateSpy).toHaveBeenCalledTimes(1);
     });
 

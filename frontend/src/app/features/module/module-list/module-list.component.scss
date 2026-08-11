@@ -37,6 +37,22 @@
 // browser falls back to its own serif default for every heading, cell and command.
 .module-list {
   display: grid;
+
+  // THE EXPLICIT FLUID TRACK. See the note on the same declaration in
+  // `portal-list.component.scss` for the measured failure: an implicit single-column track
+  // takes an automatic `min-content` minimum, the shared grid's `min-inline-size: 40rem`
+  // therefore sets the track, and this region inflates past the column its parent offered so
+  // the table container's `overflow-x: auto` has nothing to clip. On THIS screen the
+  // consequence was sharper than a clipped table, because the screen is usually empty: the
+  // shared empty-state panel centres itself on the 640px table rather than on the viewport, so
+  // at 320px its icon, its "Nothing to Display" heading and its message all painted at x≈337 —
+  // the only content the screen had to offer was entirely off screen. The Search submit and
+  // both date sort controls went with it, and "Import Module" was clipped at 768px.
+  //
+  // The token's zero floor lets the track yield completely, so the overflow returns to the
+  // element that causes it and the container's scroll affordance works again.
+  grid-template-columns: var(--grid-track-fluid);
+
   gap: var(--space-4);
   font-family: var(--font-family-base);
   font-size: var(--font-size-md);
@@ -93,19 +109,32 @@
 // cover - which is what the sibling portal listing does too, so the two screens indicate focus
 // identically.
 //
-// ⚠ `inline-block` IS THE DECLARED INTENT AND IS CURRENTLY BLOCKIFIED AT RUN TIME - measured in a
-// real browser, not assumed. All three affordances carrying this class are flex items today: the
+// ⚠ `inline-flex` IS THE DECLARED INTENT AND IS BLOCKIFIED TO `flex` AT RUN TIME - measured in a
+// real browser, not assumed. All four affordances carrying this class are flex items today: the
 // two page-level links are projected into the shared page header's action row, which is a flex
-// container, and the failure dismissal sits inside this screen's own status row, which is a flex
-// container declared below. CSS blockifies a flex item, so the computed value observed is `block`
-// and the horizontal separation actually comes from those containers' own `gap`. The declaration
-// is kept rather than deleted because it states the correct intent for a compact text command and
-// becomes load-bearing the moment either parent returns to block flow, and because the sibling
-// portal listing declares it identically - dropping it here alone would make the two screens
-// diverge for no rendered benefit. It is recorded rather than left to mislead a reader into
-// expecting an inline-block box.
+// container, and the Retry and Dismiss commands sit inside this screen's own status row, which is a
+// flex container declared below. CSS blockifies a flex item, so the computed value observed is
+// `flex` rather than `inline-flex` and the horizontal separation actually comes from those
+// containers' own `gap`. The declaration is kept rather than deleted because it states the correct
+// intent for a compact text command and becomes load-bearing the moment either parent returns to
+// block flow, and because the sibling portal listing declares it identically - dropping it here
+// alone would make the two screens diverge for no rendered benefit.
+//
+// ⚠ THE TARGET FLOOR IS RESTATED HERE BECAUSE THIS CLASS IS WORN BY BOTH AN ANCHOR AND A BUTTON.
+// "Add Module" and "Import Module" are ANCHORS; Retry and Dismiss are BUTTONS. The global form
+// partial states the comfortable floor through the bare `button` element selector, so the buttons
+// inherited it and the anchors did not - measured 44.00 px against 25.50 px, two affordances wearing
+// one class in one action row at two different sizes. A rule enforced by ELEMENT TYPE is not
+// enforced at all, so the floor belongs where the ROLE is declared.
+//
+// Centring rather than a bare minimum height: a minimum height on a non-flex box leaves the text at
+// the top and the remainder is dead space, so the control would MEASURE 44 px and still LOOK 25 px.
 .module-list__action {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
   padding-block: var(--space-1);
   padding-inline: var(--space-2);
   border: none;
@@ -113,12 +142,33 @@
   background-color: transparent;
   color: var(--color-primary);
   font: inherit;
+
+  // Pinned here as well as on the shared `page-action` rule. The `font` shorthand above sets
+  // line-height too, and at class + attribute weight it outranks the shared rule - so without
+  // this line the shared pin is silently defeated on this screen and the height falls back to
+  // whatever the wrapper happens to declare. Today that is the same tight value, so THIS
+  // DECLARATION CHANGES NO MEASURED VALUE: the actions measure 24.00px either way. It exists so
+  // the shared rule's guarantee is a guarantee rather than a coincidence, and so the standalone
+  // commands wearing this class - the failure region's, which carry no `page-action` - get the
+  // same line box.
+  line-height: var(--line-height-tight);
+
   text-decoration: none;
   cursor: pointer;
 
   @include mx.focus-ring;
 
-  @include mx.hover {
+  // ⚠ UNGATED, for the reason recorded at length on the equivalent rule in
+  // `portal-list.component.scss`. In short: this rule outranks the shared `.page-action:hover`,
+  // and the resting block above re-declares `color` and `text-decoration` at a weight that TIES
+  // the shared hover rule and wins on document order - so gating this one did not fall back to
+  // the shared treatment, it removed the treatment entirely. Measured in a browser reporting
+  // `(hover: hover) and (pointer: fine)` as false: "Add Module" and "Import Module" stayed
+  // `text-decoration-line: none` and `rgb(0, 51, 102)` while hovered, against `underline` and
+  // `rgb(37, 86, 154)` on /users and /roles. Both selectors here are anchors or buttons that
+  // the global `a:hover` and `button:hover` already reach unguarded, so ungating introduces no
+  // state that was not already reachable.
+  &:hover {
     // The primary-hover token rather than the legacy hover colour for this affordance: that
     // legacy value is the very colour the token vocabulary assigns to the danger role and uses
     // for error text, so reusing it would paint an ordinary action in the colour that means
@@ -126,6 +176,19 @@
     color: var(--color-primary-hover);
     text-decoration: underline;
   }
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and
+  // suppression without replacement is what leaves a control with no visible response at
+  // all. `background-color: transparent` above weighs (0,1,0) while the global
+  // `button:active { background-color: var(--color-selected) }` weighs (0,1,1) — one class
+  // outranks one type selector, so the shared press tint was already losing before a
+  // pointer arrived. Measured: this control was BYTE-IDENTICAL in its pressed and resting
+  // states, and where the control is a link rather than a button there was no global rule
+  // to lose in the first place. The value is the shared selection tint, so the press reads
+  // the same here as on every other control in the console; nothing new is invented.
+  &:active {
+    background-color: var(--color-selected);
+  }
+
 }
 
 // -----------------------------------------------------------------------------
@@ -162,8 +225,30 @@
 // recorded here rather than reproduced, and it is NOT presented as a fix - the Minimal Change
 // Clause forbids opportunistically correcting a legacy defect, and normalising onto a design-system
 // ramp is a consequence of adopting the ramp at all.
+//
+// ⚠ THE TARGET FLOOR IS DECLARED HERE, AND THIS SCREEN IS WHERE ITS ABSENCE BIT HARDEST. The
+// global form partial applies `--target-size-min` through the bare `button` element selector, so
+// the floor was being enforced by ELEMENT TYPE rather than by ROLE: of the four commands in this
+// row only "Delete" is a `<button>`, so only "Delete" inherited it. Runtime measurement found
+// Edit at 38.41 x 24.25 — short on BOTH axes — with Settings at 62.98 x 24.25 and Export at
+// 53.58 x 24.25, against Delete's compliant 53.58 x 44. Thirty of this grid's forty commands
+// missed a floor the token vocabulary names for row actions specifically.
+//
+// `inline-flex` rather than `inline-block`, because a minimum height on an inline-block box
+// leaves its text at the top: the control would measure 44px and still LOOK 24px. Centring on
+// both axes puts the label in the middle of the target. The box stays INLINE-level so the shared
+// grid's column alignment keeps positioning the group.
+//
+// The minimum WIDTH matters here and not on the portal grid, because Edit is the one command in
+// the application whose label is short enough to fall under the floor horizontally as well.
+//
+// No row grows: the destructive sibling already held every actions cell at 44px.
 .module-list__row-command {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
   padding-block: var(--space-1);
   padding-inline: var(--space-2);
   border: none;
@@ -182,6 +267,18 @@
     color: var(--color-primary-hover);
     text-decoration: underline;
   }
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and
+  // suppression without replacement is what leaves a control with no visible response at
+  // all. `background-color: transparent` above weighs (0,1,0) while the global
+  // `button:active { background-color: var(--color-selected) }` weighs (0,1,1) — one class
+  // outranks one type selector, so the shared press tint was already losing before a
+  // pointer arrived. Measured: this control was BYTE-IDENTICAL in its pressed and resting
+  // states. The value is the shared selection tint, so the press reads the same here as on
+  // every other control in the console; nothing new is invented.
+  &:active {
+    background-color: var(--color-selected);
+  }
+
 }
 
 // The destructive command. ⚠ COLOUR IS A REINFORCEMENT AND NEVER THE ONLY SIGNAL: the command
@@ -217,10 +314,10 @@
 // danger colour - it would hand the destructive command the ordinary action's blue on hover.
 // Naming it makes the intent true rather than merely stated.
 .module-list__row-command--danger {
-  color: var(--color-danger);
+  color: var(--color-danger-text);
 
   @include mx.hover {
-    color: var(--color-danger);
+    color: var(--color-danger-text);
     text-decoration: underline;
   }
 }
@@ -306,3 +403,47 @@
 // No elevation is introduced either: the legacy design is flat - `box-shadow` occurs zero times
 // across every stylesheet under `Website/` - and nothing on this screen needs to read as raised.
 // =============================================================================
+
+// -----------------------------------------------------------------------------
+//  THE ABSENT-VALUE EXPLANATION
+// -----------------------------------------------------------------------------
+//
+// Clipped rather than removed, because the em dash beside it is `aria-hidden` and
+// something has to carry the meaning for a reader who cannot see the glyph. The
+// shared mixin keeps the element in the accessibility tree, which neither
+// `display: none` nor `visibility: hidden` would do.
+//
+// The same pairing, with the same class-name suffix, carries the absent mark on the
+// roles listing's period and fee columns and on the portals listing's tally columns,
+// so one convention answers for all three.
+.module-list__absent-value {
+  @include mx.visually-hidden;
+}
+
+// -----------------------------------------------------------------------------
+//  THE HEADING CELL — A BOUNDED DISPLAY OVER AN UNBOUNDED VALUE
+// -----------------------------------------------------------------------------
+// The column admits 256 characters and a real module in the measured data uses all
+// of them. Because the shared grid lays out with a fixed algorithm across equal
+// columns, that value has nowhere to go but downwards: measured at 1280 the row was
+// 349.250px against 136.750px for its neighbours, and at 320 and 768 it was
+// 593.000px, over four times an ordinary row.
+//
+// `line-clamp` bounds the DISPLAY at four lines. Four rather than one or two
+// deliberately: an ordinary heading in a 102px column already wraps to about three
+// lines, so a tighter clamp would start truncating headings that are not long at
+// all, and the point is to bound the outlier rather than to reformat the column.
+//
+// The full value remains available from the cell's own `title` attribute and from
+// the row's command names, so nothing is hidden - only bounded.
+//
+// `overflow-wrap: anywhere` stays because a heading may be one unbroken token; the
+// clamp bounds the number of lines, not what may start a new one.
+.module-list__title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}

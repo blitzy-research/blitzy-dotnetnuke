@@ -94,6 +94,19 @@ public sealed class ModuleService : IModuleService
 
     private const string TabNotFoundCode = "module.tab_not_found";
 
+    /// <summary>
+    /// Reported when a relocation names a destination this portal cannot move a module onto - a page that
+    /// does not exist here, is deleted, is administrative, or is asked for while the module is set to appear
+    /// on every page and so has no single page to be moved off.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="PlacementNotFoundCode"/> on purpose. That reason answers "the page you named
+    /// does not hold this module", which is a statement about the placement being SELECTED; this one answers
+    /// "the page you named cannot receive this module", which is a statement about the DESTINATION. Reporting
+    /// both through one code is what made the previous behaviour unreadable to a caller.
+    /// </remarks>
+    private const string MoveDestinationInvalidCode = "module.move_destination_invalid";
+
     private const string SettingInvalidCode = "module.setting_invalid";
 
     /// <summary>
@@ -753,9 +766,18 @@ public sealed class ModuleService : IModuleService
         // on one page could therefore move a module to a page they do not administer, fan it out across
         // every page of the portal, name it as the portal's default, or rewrite the appearance of every
         // module on every content page - four portal-wide effects from a page-scoped grant.
+        // A RELOCATION JOINS THIS GATE, and belongs in it for the same reason the other four do: the legacy
+        // screen disabled cboTab alongside chkAllTabs, chkDefault and chkAllModules for any caller outside
+        // the portal administrator role, under the comment that tab administrators can only manage their own
+        // tab. Moving a module off a page the caller administers and onto one they do not is precisely the
+        // page-scoped-grant escalation this gate exists to refuse.
+        bool relocationRequested = request.MoveToTabId is int requestedDestination
+            && requestedDestination != placement.TabId;
+
         if (request.AllTabs != module.AllTabs
             || request.SetAsDefaultSettings
-            || request.ApplyToAllModules)
+            || request.ApplyToAllModules
+            || relocationRequested)
         {
             if (await EnsureAdministersPortalAsync(portalId, cancellationToken).ConfigureAwait(false)
                 is ResultReason forbidden)
@@ -783,12 +805,70 @@ public sealed class ModuleService : IModuleService
             return Result<ModuleDetailDto?>.Failure(pageForbidden);
         }
 
+        // SEC: A RELOCATION ALSO NEEDS THE GRANT ON THE DESTINATION, and the reason the check above does not
+        // already cover it is that the two pages are now different values again. The legacy page picker only
+        // ever offered pages the caller could edit, so the grant on the destination was enforced by the list
+        // never containing anything else; a JSON contract has no such list, so the check is made explicitly.
+        // Resolved and validated here, BEFORE the projection, so every refusal on this path leaves the
+        // tracked entities untouched exactly as the two gates above do.
+        Tab? destinationTab = null;
+
+        if (relocationRequested)
+        {
+            int destinationTabId = request.MoveToTabId!.Value;
+
+            // EXISTENCE IS SETTLED BEFORE PERMISSION, and the order is deliberate rather than incidental.
+            // Asked to move a module onto a page that is not there, the page-grant check answers "the caller
+            // may not place a module on page 99999" - which reads as a permission problem and sends the
+            // reader looking for a role to grant, when the real answer is that the page does not exist. That
+            // is the same misdirection this report raised against reading an unknown module as forbidden, and
+            // it is corrected here for the same reason.
+            //
+            // The destination must be a page this portal actually shows content on. Reading it from the same
+            // content-page set the propagation paths use is deliberate: it excludes the administration page
+            // and its children, which is the set the legacy picker was built from, so a caller cannot reach
+            // a page through this member that the picker would never have offered.
+            //
+            // Nothing is disclosed by answering in this order. A relocation has already passed the portal
+            // administrator gate above, so by this line the caller administers the very portal whose pages
+            // are being named, and the set is scoped to that portal alone.
+            destinationTab = (await ReadContentTabsAsync(portalId, cancellationToken).ConfigureAwait(false))
+                .FirstOrDefault(candidate => candidate.TabId == destinationTabId);
+
+            if (destinationTab is null)
+            {
+                return Result<ModuleDetailDto?>.Failure(
+                    MoveDestinationInvalidCode,
+                    FormattableString.Invariant(
+                        $"Page {destinationTabId} is not a content page of portal {portalId}, so a module cannot be moved onto it."));
+            }
+
+            if (await EnsureMayEditPageAsync(portalId, destinationTabId, cancellationToken).ConfigureAwait(false)
+                is ResultReason destinationForbidden)
+            {
+                return Result<ModuleDetailDto?>.Failure(destinationForbidden);
+            }
+
+            // A module shown on EVERY page has no single page to be moved off, so the instruction has no
+            // meaning here. The legacy screen expressed the same rule by skipping the move outright whenever
+            // chkAllTabs was checked; this refuses instead of skipping, because silently discarding an
+            // explicit instruction leaves the caller believing a relocation happened that did not.
+            if (request.AllTabs)
+            {
+                return Result<ModuleDetailDto?>.Failure(
+                    MoveDestinationInvalidCode,
+                    "A module set to appear on all pages cannot also be moved to one page. "
+                        + "Clear the all-pages setting first, or save the move on its own.");
+            }
+        }
+
         ModuleMappings.ApplyUpdate(module, placement, request);
 
-        // NO MOVE IS DERIVED HERE, AND NONE CAN BE. The submitted page SELECTS the placement above, so by
-        // the time control reaches this line the placement's page and the submitted page are the same value
-        // by construction - a request naming a page the module does not occupy was already refused with the
-        // placement-not-found reason.
+        // NO MOVE IS DERIVED FROM THE SUBMITTED PAGE, and none can be: that member SELECTS the placement
+        // above, so by the time control reaches this line the placement's page and the submitted page are
+        // the same value by construction - a request naming a page the module does not occupy was already
+        // refused with the placement-not-found reason. A relocation is carried by its own member and is
+        // applied further down, after every other effect, for the ordering reason recorded there.
         //
         // The projection above assigned the submitted position verbatim, which may be the append
         // instruction, so it is resolved against the page the placement sits on.
@@ -860,6 +940,35 @@ public sealed class ModuleService : IModuleService
             effects.Add(FormattableString.Invariant($"appearance copied to {copied} placement(s) on content pages"));
         }
 
+        // THE RELOCATION IS LAST, AND THE ORDER IS THE LEGACY'S OWN INSTRUCTION rather than a preference:
+        // "These Module Copy/Move statements must be at the end of the Update as the Controller code assumes
+        // all the Updates to the Module have been carried out" (ModuleSettings.ascx.vb). Every effect above
+        // reads or writes through the placement being edited, so moving it first would leave those effects
+        // acting on a row that no longer describes where the module sits.
+        //
+        // The response placement is rebound because the move REPLACES the row rather than editing it. Left
+        // unbound, this method would answer with the page the module has just been moved off - the one fact
+        // the caller is least able to detect and most likely to act on.
+        TabModule responsePlacement = placement;
+
+        if (destinationTab is not null)
+        {
+            // Captured BEFORE the call. The relocation stages a delete of the row this variable describes,
+            // so reading its page afterwards to build the message would be reading a fact that is on its way
+            // out of the database.
+            int vacatedTabId = placement.TabId;
+
+            responsePlacement = await RelocatePlacementAsync(
+                module,
+                placement,
+                destinationTab,
+                affectedTabIds,
+                cancellationToken).ConfigureAwait(false);
+
+            effects.Add(FormattableString.Invariant(
+                $"moved from page {vacatedTabId} to page {destinationTab.TabId}"));
+        }
+
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         InvalidatePlacements(affectedTabIds);
 
@@ -881,8 +990,12 @@ public sealed class ModuleService : IModuleService
                 new Dictionary<string, string?>(StringComparer.Ordinal)
                 {
                     ["Operation"] = "Update",
-                    ["TabModuleId"] = placement.TabModuleId.ToString(CultureInfo.InvariantCulture),
-                    ["TabId"] = placement.TabId.ToString(CultureInfo.InvariantCulture),
+                    // The LIVE placement, which after a relocation is the newly created row rather than the
+                    // vacated one. Both identities change on a move, and a trail naming the row that was
+                    // just deleted would describe a placement no reader could go and look at. Where the
+                    // module came from is carried in the effect text alongside where it went.
+                    ["TabModuleId"] = responsePlacement.TabModuleId.ToString(CultureInfo.InvariantCulture),
+                    ["TabId"] = responsePlacement.TabId.ToString(CultureInfo.InvariantCulture),
                     ["SetAsDefaultSettings"] = request.SetAsDefaultSettings.ToString(),
                     ["ApplyToAllModules"] = request.ApplyToAllModules.ToString(),
                     ["AffectedTabCount"] = affectedTabIds.Count.ToString(CultureInfo.InvariantCulture),
@@ -894,7 +1007,7 @@ public sealed class ModuleService : IModuleService
             await ReadCatalogueFactsAsync(portalId, wantedDefinitionIds: null, cancellationToken).ConfigureAwait(false);
 
         ModuleDetailDto detail =
-            ModuleMappings.ToDetail(module, placement, ResolveCatalogue(module, catalogue));
+            ModuleMappings.ToDetail(module, responsePlacement, ResolveCatalogue(module, catalogue));
 
         return effects.Count == 0
             ? Result<ModuleDetailDto?>.Success(detail)
@@ -2558,6 +2671,118 @@ public sealed class ModuleService : IModuleService
         }
 
         return added;
+    }
+
+    /// <summary>Moves one placement of a module from the page it occupies onto another page.</summary>
+    /// <param name="module">The module being relocated.</param>
+    /// <param name="source">The placement being vacated.</param>
+    /// <param name="destination">The content page the module is moving onto.</param>
+    /// <param name="affectedTabIds">Set collecting the pages whose caches must be dropped.</param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns>
+    /// The placement the module occupies once the move is staged - the newly created row, or the row that
+    /// already existed on the destination.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: this reproduces <c>ModuleController.MoveModule</c>, which was deliberately NOT a page
+    /// reassignment. It called <c>CopyModule(moduleId, fromTabId, toTabId, "", includeSettings:=True)</c> and
+    /// then <c>DeleteTabModule(fromTabId, moduleId)</c>, and the copy carried the placement's presentation
+    /// columns and its placement-scoped settings onto the new page. Rewriting the page key in place would be
+    /// fewer statements and would look equivalent, but it is not: the settings rows hang off the placement
+    /// key, so preserving them is the whole reason the legacy went the long way round.
+    /// </para>
+    /// <para>
+    /// The pane and position follow the legacy copy exactly. An empty destination pane meant "the same pane
+    /// the module is already in" - <c>If toPaneName = "" Then toPaneName = objModule.PaneName</c> - and the
+    /// new row went to the bottom of it, under the comment "Add a copy of the module to the bottom of the
+    /// Pane for the new Tab". The append instruction is resolved against the destination rather than stored
+    /// raw, which is the discovered legacy defect already recorded on the copy-to-content-pages path: the
+    /// legacy copy passed the sentinel straight into the insert and left it in the row.
+    /// </para>
+    /// <para>
+    /// A module already placed on the destination is not duplicated. The legacy copy wrapped its insert in a
+    /// bare <c>Try ... Catch</c> whose comment read "module already in the page, ignore error", and then
+    /// deleted the source regardless - so the observable legacy outcome was exactly this: one placement, on
+    /// the destination. The difference here is that the case is tested for rather than discovered by letting
+    /// a unique-key violation escape, because a swallowed exception cannot tell "already there" apart from
+    /// any other write failure.
+    /// </para>
+    /// <para>
+    /// Nothing is committed here. The move is staged on the tracked graph and travels in the SAME
+    /// transaction as the rest of the update, so a module cannot end up on both pages, or on neither, if a
+    /// later step fails. The legacy ran the copy and the delete as two unrelated statements after the update
+    /// had already committed, which left all three of those outcomes reachable.
+    /// </para>
+    /// </remarks>
+    private async Task<TabModule> RelocatePlacementAsync(
+        Module module,
+        TabModule source,
+        Tab destination,
+        ISet<int> affectedTabIds,
+        CancellationToken cancellationToken)
+    {
+        affectedTabIds.Add(source.TabId);
+        affectedTabIds.Add(destination.TabId);
+
+        TabModule? existing = await ReadPlacementOnPageAsync(module, destination.TabId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (existing is not null)
+        {
+            // Already there. The source row still goes, so the caller's instruction - "this module should be
+            // on that page, not this one" - is honoured, and no duplicate placement is created.
+            await RemovePlacementAsync(source, cancellationToken).ConfigureAwait(false);
+            return existing;
+        }
+
+        // Read BEFORE the source row is staged for deletion. The settings are keyed by the placement, and a
+        // cascade configured on that key is entitled to take them with it.
+        IReadOnlyList<TabModuleSetting> carried = await _modules
+            .GetTabModuleSettingsAsync(source.TabModuleId, cancellationToken)
+            .ConfigureAwait(false);
+
+        int position = await ResolvePositionAsync(
+            destination.TabId,
+            source.PaneName,
+            AppendPositionSentinel,
+            cancellationToken).ConfigureAwait(false);
+
+        var moved = new TabModule
+        {
+            TabId = destination.TabId,
+            ModuleId = module.ModuleId,
+            PaneName = source.PaneName,
+            ModuleOrder = position,
+            CacheTime = source.CacheTime,
+            Alignment = source.Alignment,
+            Color = source.Color,
+            Border = source.Border,
+            IconFile = source.IconFile,
+            Visibility = source.Visibility,
+            ContainerSrc = source.ContainerSrc,
+            DisplayTitle = source.DisplayTitle,
+            DisplayPrint = source.DisplayPrint,
+            DisplaySyndicate = source.DisplaySyndicate,
+        };
+
+        // Attached through the navigation rather than by copying the placement key, because the destination
+        // row has no key yet - it is generated on insert. The relationship is configured with this collection
+        // as its inverse end, so the generated identifier reaches these rows without a second round trip and
+        // without an intermediate commit that would make the move non-atomic.
+        foreach (TabModuleSetting setting in carried)
+        {
+            moved.Settings.Add(new TabModuleSetting
+            {
+                SettingName = setting.SettingName,
+                SettingValue = setting.SettingValue,
+            });
+        }
+
+        await _modules.AddTabModuleAsync(moved, cancellationToken).ConfigureAwait(false);
+        await RemovePlacementAsync(source, cancellationToken).ConfigureAwait(false);
+
+        return moved;
     }
 
     /// <summary>Removes every placement of a module other than the one being kept.</summary>

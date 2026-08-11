@@ -146,6 +146,7 @@
 import type { Routes } from '@angular/router';
 
 import { permissionGuard } from '../../core/guards/permission.guard';
+import { unsavedChangesGuard } from '../../core/guards/unsaved-changes.guard';
 
 /**
  * The six child routes mounted beneath `/users`.
@@ -209,6 +210,12 @@ export const USER_ROUTES: Routes = [
      * title in create mode.
      */
     path: 'new',
+    // ⚠ LEAVING THIS SCREEN IS GUARDED, because it mounts an editing form. Measured before this
+    // existed: Cancel, any in-application link and the browser's Back button all discarded a
+    // dirty form in silence, with instrumented `confirm`, `alert` and `beforeunload` recording
+    // nothing. The guard asks only when the mounted screen reports unsaved entry, so a clean
+    // form still leaves without a word.
+    canDeactivate: [unsavedChangesGuard],
     title: 'Add New User',
     canActivate: [permissionGuard],
     data: { permission: 'PortalAdministrator' },
@@ -227,8 +234,34 @@ export const USER_ROUTES: Routes = [
      * sentinel discipline in the file header forbids reading any numeric value as absence.
      *
      * Titled from `ControlTitle_edit.Text` = "Edit User Accounts".
+     *
+     * MIGRATION: THE PLURAL IS THE LEGACY'S OWN AND IS DELIBERATELY NOT CORRECTED, and neither is
+     * the fact that this document title differs from the heading the screen renders. Both were
+     * reported as defects and both are faithful. Every title in this application is the measured
+     * `ControlTitle` value of the screen it replaces, and those values are plural for a single
+     * record throughout because DotNetNuke named its administration tabs for the collection they
+     * administered and prefixed "Edit " to the editing view of one member:
+     *
+     *   ManageUsers.ascx.resx  ControlTitle_edit.Text       = 'Edit User Accounts'
+     *   SiteSettings.ascx.resx ControlTitle_edit.Text       = 'Edit Portals'
+     *   EditRoles.ascx.resx    ControlTitle_edit.Text       = 'Edit Security Roles'
+     *   SecurityRoles.ascx.resx ControlTitle_user roles.Text = 'User Roles'
+     *
+     * Rewriting them to the singular would replace the wording an existing operator recognises
+     * with wording that appears in no source, on aesthetic grounds - which is the change the
+     * migration discipline forbids. The divergence from the heading is not a fault either: a route
+     * title is resolved BEFORE the record is fetched, so it cannot name a record, while the heading
+     * is rendered by the screen and does name one - deliberately, and that identification was added
+     * as its own fix. A stable title in the tab and browser history plus a specific heading on the
+     * page is the correct arrangement, not two views of one string that have drifted.
      */
     path: ':userId',
+    // ⚠ LEAVING THIS SCREEN IS GUARDED, because it mounts an editing form. Measured before this
+    // existed: Cancel, any in-application link and the browser's Back button all discarded a
+    // dirty form in silence, with instrumented `confirm`, `alert` and `beforeunload` recording
+    // nothing. The guard asks only when the mounted screen reports unsaved entry, so a clean
+    // form still leaves without a word.
+    canDeactivate: [unsavedChangesGuard],
     title: 'Edit User Accounts',
     canActivate: [permissionGuard],
     data: { permission: 'PortalAdministrator' },
@@ -257,6 +290,12 @@ export const USER_ROUTES: Routes = [
      * `cmdProfile.Text` tab label.
      */
     path: ':userId/profile',
+    // ⚠ LEAVING THIS SCREEN IS GUARDED, because it mounts an editing form. Measured before this
+    // existed: Cancel, any in-application link and the browser's Back button all discarded a
+    // dirty form in silence, with instrumented `confirm`, `alert` and `beforeunload` recording
+    // nothing. The guard asks only when the mounted screen reports unsaved entry, so a clean
+    // form still leaves without a word.
+    canDeactivate: [unsavedChangesGuard],
     title: 'Manage Profile',
     canActivate: [permissionGuard],
     data: { permission: 'AccountOwnerOrPortalAdministrator' },
@@ -305,6 +344,7 @@ export const USER_ROUTES: Routes = [
      * and inventing replacement wording would be worse than reusing the tab label the screen was reached by.
      */
     path: ':userId/password',
+    canDeactivate: [unsavedChangesGuard],
     title: 'Manage Password',
     canActivate: [permissionGuard],
     data: { permission: 'AccountOwnerOrPortalAdministrator' },
@@ -338,6 +378,7 @@ export const USER_ROUTES: Routes = [
      * supplied one.
      */
     path: ':userId/services',
+    canDeactivate: [unsavedChangesGuard],
     title: 'Manage Services',
     canActivate: [permissionGuard],
     data: { permission: 'AccountOwner' },

@@ -96,6 +96,27 @@
            that is a command. It is rendered only when an address was supplied AND a session is
            present, so it can never navigate to the current page or name an account that is not
            signed in. -->
+      <!-- MIGRATION: three account-scoped destinations, not one. The legacy account command bar
+           declared five commands (`ManageUsers.ascx.resx`) and this band had ported only "Manage
+           Services", which left a signed-in member with no link to either screen they are
+           entitled to operate on their own behalf - the navigation rail is administrator-only, so
+           their own profile and their own password were reachable only by typing a URL containing
+           their numeric account key. `ManageUsers.ascx.vb:L439-L456` shows the legacy offered
+           both to an account viewing itself: `cmdPassword` is hidden only when the viewer is
+           neither an administrator nor the holder, and `cmdProfile` is never hidden at all. Order
+           follows that command bar: profile, password, then services. Each is rendered only when
+           its address was supplied AND a session is present, so none can name an account that is
+           not signed in. -->
+      @if (hasAccountProfileLink) {
+        <a class="app-header__account-link" [routerLink]="accountProfileLink">{{
+          accountProfileLabel
+        }}</a>
+      }
+      @if (hasAccountPasswordLink) {
+        <a class="app-header__account-link" [routerLink]="accountPasswordLink">{{
+          accountPasswordLabel
+        }}</a>
+      }
       @if (hasAccountServicesLink) {
         <a class="app-header__account-link" [routerLink]="accountServicesLink">{{
           accountServicesLabel

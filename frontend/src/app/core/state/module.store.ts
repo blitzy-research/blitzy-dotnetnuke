@@ -206,7 +206,7 @@ import { isProblemDetails } from '../models/problem-details.model';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, emptyPagedResult } from '../models/paged-result.model';
 import { ModuleService } from '../services/module.service';
 import { TabService } from '../services/tab.service';
-import { failureCode, summarizeProblem } from '../utils/form-errors.util';
+import { failureCode, summarizeProblem, transportProblem } from '../utils/form-errors.util';
 import { OperationGeneration } from '../utils/operation-generation.util';
 
 import type {
@@ -526,10 +526,20 @@ function readMember(source: unknown, key: string): unknown {
 function problemFromCause(cause: unknown): ProblemDetails | null {
   const status: unknown = readMember(cause, 'status');
 
-  // The unreachable-server case, answered from the status alone and never from the body. Only the
-  // status is published, which is exactly the truth available: nothing was received to describe.
+  // The unreachable-server case, composed through the SHARED transport helper rather than published
+  // as a bare status.
+  //
+  // ⚠ IT USED TO RETURN `{ status: 0 }`, AND THAT LEFT THE BANNER WITHOUT A TITLE. Measured on the
+  // module listing with the network unreachable: the banner rendered its severity word and its
+  // message, but `.error-banner__title` matched NOTHING — an unfilled Angular anchor sat where the
+  // title belongs — because a document carrying only a status has no title to render. The portal
+  // store already composed this case through `transportProblem`, so the same offline failure was
+  // presented as `Error / Network error / The server could not be reached…` on one screen and with the
+  // title silently missing on another. One helper for one condition removes the divergence, and it
+  // invents nothing: every string it returns is derived from the status, which is what the transport
+  // reported.
   if (status === 0) {
-    return { status: 0 };
+    return transportProblem(0);
   }
 
   const body: unknown = readMember(cause, 'error');
@@ -1942,6 +1952,30 @@ export class ModuleStore implements OnDestroy {
       this.moduleService.deleteModule(moduleId, this.resolvePlacement(tabModuleId)).subscribe({
         next: () => {
           this._saving.set(false);
+
+          // ⚠ THE CACHED RECORD OF THE MODULE JUST REMOVED IS DISCARDED, AND OMITTING THIS WAS A
+          // MEASURED CRITICAL DEFECT. This store is `providedIn: 'root'`, so the settings bag read for
+          // one screen outlives that screen. Measured: remove a placement, then reach `/modules/{id}`
+          // for the same identifier IN THE SAME SESSION, and the editor rendered the DELETED module's
+          // data in a fully populated form with Update, Cancel and Delete all ENABLED — beneath an
+          // inline Not-Found alert saying the record could not be read. It was the only surface in the
+          // application that permitted a second, doomed removal of something already gone, which
+          // answered 404. On a COLD navigation the same address correctly rendered no controls at all,
+          // which is what made the defect state-dependent and easy to miss: the request fails
+          // identically either way, and what differed was whether this signal still held an answer for
+          // the form to hydrate from.
+          //
+          // Scoped by identifier rather than cleared outright, deliberately. A bag belonging to some
+          // OTHER module is still a truthful answer about that module and there is no reason to make
+          // the next screen read it again; only the record that has just stopped existing is discarded.
+          // The comparison is on the identifier and never on truthiness, because `Modules.ModuleID` is
+          // `IDENTITY(0, 1)` and nought is a legitimate module.
+          const cached: ModuleSettingsBag | null = this._settings();
+
+          if (cached !== null && cached.moduleId === moduleId) {
+            this._settings.set(null);
+          }
+
           // The mandatory re-read. See the note above: the row is not gone, and only the listing knows
           // whether it should still be shown.
           this.loadModules();

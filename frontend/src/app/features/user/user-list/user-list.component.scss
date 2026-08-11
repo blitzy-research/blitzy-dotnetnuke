@@ -171,7 +171,17 @@
 //  beside an add glyph and the row commands were image buttons. Exactly one static
 //  binary is in scope for this workspace, so every glyph on this screen is inline
 //  vector art authored in the template and no rule here references an external asset.
-.user-list__page-action,
+// ⚠ THE PAGE ACTION WAS REMOVED FROM THIS GROUP, AND THE UNDERLINE IS WHY. Measured across the six
+// screens that render a page action: this rule and its counterpart on the role listing re-added a
+// PERMANENT underline at class weight, so those two screens showed underlined actions at rest while the
+// other four showed none - one affordance rendering two ways. Worse, the shared `page-action` rule
+// reserves the underline for `:hover`, so on these two screens hovering could no longer be perceived as
+// a state change at all: the underline was already there. The shared affordance now governs the action
+// completely and this rule keeps only the member it was always right for.
+//
+// THE EMAIL LINK KEEPS ITS UNDERLINE, and that is not an inconsistency. It sits inside a data cell
+// surrounded by plain text, where the underline is the only cue that distinguishes a link from the
+// values beside it; a page action sits in a row of actions where position and colour already carry it.
 .user-list__email {
   color: var(--color-primary);
   text-decoration: underline;
@@ -207,7 +217,17 @@
 .user-list__failure {
   display: grid;
   gap: var(--space-2);
-  justify-items: start;
+
+  // ⚠ THE BANNER STRETCHES; ONLY THE COMMAND IS HELD TO ITS CONTENT WIDTH. This region
+  // used to declare `justify-items: start`, which achieved the second of those and broke
+  // the first: a start-aligned grid item is sized to its content, so the shared error
+  // banner shrank to the width of its longest line - measured at 228px against the 1072px
+  // the identical component occupies on a screen that renders it outside a grid. One
+  // component was therefore rendering at two widths for no reason a reader could see, and
+  // a framed surface that stops short of the content it belongs to reads as a stray box
+  // rather than as the screen's error state. Alignment now belongs to the ONE item that
+  // needed it and is declared on that item, so another item added to this region cannot
+  // silently inherit a width constraint that was never meant for it.
 }
 
 //  The no-query notice, shown only while the tenant's opening-view policy has issued no
@@ -223,6 +243,67 @@
   margin: 0;
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);
+}
+
+//  The policy degradation disclosure - #5. Says the tenant's page size and column selection could
+//  not be read, so the listing is on its fallbacks.
+//
+//  ⚠ EMPHASISED, UNLIKE THE NOTICE ABOVE, AND NOT MUTED. This one reports that a preference the
+//  tenant expressed is NOT being honoured, which an operator has to notice to act on; the notice
+//  above merely explains an intentionally empty grid. It still takes no danger token, because the
+//  accounts are unaffected and calling it an error would repeat the very over-statement being
+//  fixed. The measure is capped on the same terms as every other sentence in this console.
+.user-list__policy-notice {
+  margin: 0;
+  max-inline-size: mx.breakpoint('md');
+  color: var(--color-primary);
+  font-weight: var(--font-weight-bold);
+}
+
+//  The filter-in-force disclosure - U-M12. Names the filter the listing is applying whenever the
+//  alphabet strip above cannot announce it. Muted and small, on the same two tokens as the
+//  no-query notice above: it is guidance about the state of the listing, not a fault, and it sits
+//  directly beneath the strip whose silence it explains.
+.user-list__filter-disclosure {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+//  THE ROW ANOMALY MARKS - U-M1 and U-M2.
+//
+//  Two painted marks and one shared hidden explanation. The painted pair is hidden from assistive
+//  technology and the explanation is hidden from sight, so each reader meets exactly one of the two
+//  and never both - which is what keeps a grid cell short without leaving the short form ambiguous.
+//
+//  The lock-out qualifier takes the accessible danger ink and bold weight: it is the one mark here
+//  that reports a state an operator has to act on, and it must not be conveyed by colour alone. It
+//  does NOT take the raw legacy error hue, which does not clear the contrast floor for normal text
+//  against either surface this cell can present. It is separated from the approval word beside it by
+//  the smallest gap on the scale rather than by punctuation, so nothing is added to the announced
+//  text.
+//
+//  ⚠ NO `white-space: nowrap` ON EITHER MARK, and that is a measured decision carried over from the
+//  portal listing's negative-fee mark: an unwrappable nine-character word inside a fixed-layout
+//  column overran its cell by thirty-three units and overprinted the column beside it. A word that
+//  wraps mid-word reads as a different word, so the mark is kept SHORT instead of being pinned to
+//  one line.
+.user-list__row-mark {
+  margin-inline-start: var(--space-1);
+  color: var(--color-danger-text);
+  font-weight: var(--font-weight-bold);
+}
+
+//  The absent-value mark. Muted, because absence is not a fault - it says nobody recorded a value,
+//  which is an ordinary state for a free-text profile answer.
+.user-list__absent-value {
+  color: var(--color-text-muted);
+}
+
+//  The explanation both marks share. Clipped from the painted page and present in the accessibility
+//  tree, through the one mixin in the workspace that expresses that.
+.user-list__row-mark-description {
+  @include mx.visually-hidden;
 }
 
 // -----------------------------------------------------------------------------
@@ -259,8 +340,19 @@
 //  placeholder cannot set the width of the whole row, and the explicit zero minimum is
 //  what actually permits a flex item to shrink below its intrinsic content width. Its
 //  own upper bound is the shared control's business and is not restated here.
+//
+//  ⚠ THE BASIS IS WHAT MAKES THE ROW REFLOW, AND A ZERO BASIS IS WHY IT DID NOT. Runtime
+//  measurement at a 320-unit viewport: this item and the axis field beside it both took a
+//  fluid share from a zero basis, a zero basis can never exceed the line, so the row's
+//  `flex-wrap` never engaged and the pair simply halved the 271 units available. This item's
+//  half was 135, its own submit control took 80 of them, and the free-text box was left about
+//  40 units wide — one visible character of a typed term. Substituting the measured basis
+//  makes the pair too wide to share a narrow line, so each takes a line of its own and the
+//  box gets the full width. The zero minimum stays exactly as it was: a basis governs the
+//  wrap decision only, and shrinking below intrinsic width must remain permitted or a long
+//  option label can scroll the document sideways.
 .user-list__search {
-  flex: var(--flex-fill-from-zero);
+  flex: 1 1 var(--filter-control-basis);
   min-inline-size: 0;
 }
 
@@ -278,8 +370,11 @@
 //  above the search input's inside an end-aligned row, and add that step again beneath
 //  the row on top of the stack's own gap. Neutralising it here is what keeps the two
 //  controls level and the rhythm single-sourced.
+//  It takes the SAME measured basis as the free-text control beside it, and equal bases are
+//  deliberate: an asymmetric pair starves whichever member has the smaller one as soon as the
+//  row is tight, which is the defect being fixed rather than a different arrangement of it.
 .user-list__search-field {
-  flex: var(--flex-fill-from-zero);
+  flex: 1 1 var(--filter-control-basis);
   min-inline-size: 0;
   margin-block-end: 0;
 
@@ -383,6 +478,23 @@
   border: none;
   padding: 0;
 
+  //  ⚠ U-M4 — THE COMFORTABLE TARGET, RESTATED FOR THE SAME REASON THE FOCUS RING BELOW IS. The
+  //  form vocabulary already floors every button on both axes, and this element is a real button,
+  //  so the floor reaches it; it is restated at this site because the three declarations directly
+  //  above collapse the border box onto the glyph, and a later reader removing chrome here needs to
+  //  see that the target is NOT part of the chrome being removed. A single upper-case character has
+  //  almost no intrinsic width, so the inline floor is what carries this one — measured at three
+  //  units wide for the letter I before any floor existed.
+  //
+  //  It costs no visual change to the entry: the glyph, its ink, its underline and its type step
+  //  are untouched, and the centring below keeps the character where it was inside the larger box.
+  //  The strip's density does change, which is a deliberate and documented consequence rather than
+  //  an oversight — twenty-seven comfortable targets wrap onto more lines than twenty-seven glyphs
+  //  do, and reachability outranks density where the two conflict.
+  min-block-size: var(--target-size-min);
+  min-inline-size: var(--target-size-min);
+  justify-content: center;
+
   @include mx.hover {
     color: var(--color-primary-hover);
   }
@@ -421,6 +533,19 @@
     font-weight: var(--font-weight-bold);
     background-color: var(--color-selected);
   }
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and
+  // suppression without replacement is what leaves a control with no visible response at
+  // all. `background-color: transparent` above weighs (0,1,0) while the global
+  // `button:active { background-color: var(--color-selected) }` weighs (0,1,1) — one class
+  // outranks one type selector, so the shared press tint was already losing before a
+  // pointer arrived. Measured: this control was BYTE-IDENTICAL in its pressed and resting
+  // states, and where the control is a link rather than a button there was no global rule
+  // to lose in the first place. The value is the shared selection tint, so the press reads
+  // the same here as on every other control in the console; nothing new is invented.
+  &:active {
+    background-color: var(--color-selected);
+  }
+
 }
 
 // -----------------------------------------------------------------------------
@@ -445,9 +570,37 @@
 //  not.
 .user-list__row-action,
 .user-list__failure-retry {
+  // Held to its content width inside the stretching failure region above.
+  justify-self: start;
+
   display: inline-flex;
   gap: var(--space-1);
   align-items: center;
+}
+
+//  ⚠ U-M4 — THE COMFORTABLE TARGET, RESTATED HERE BECAUSE TWO OF THE THREE COMMANDS ARE ANCHORS
+//  AND AN ANCHOR RECEIVES NO FLOOR FROM THE FORM VOCABULARY. That vocabulary floors `button` on
+//  both axes, so the destructive command has been at the comfortable target since the shared
+//  sweep; the edit and manage-roles commands beside it are `<a>` elements and were not reached by
+//  it. Each carries an icon and no visible text, so its intrinsic box is the sixteen-unit glyph
+//  and nothing more, which is what measured thirteen units tall across every row of the listing —
+//  the smallest pointer targets in the console. The floor is applied to the shared class rather
+//  than to the two anchors, so the three commands in one row stay the same size as each other and
+//  a fourth added later inherits the floor whichever element it turns out to be.
+//
+//  ⚠ IT COSTS NO VISUAL CHANGE TO THE GLYPH, which is what makes it compatible with the measured
+//  legacy appearance the surrounding rules go to such lengths to preserve. The box grows; the
+//  sixteen-unit glyph inside it does not, and the centring declared above keeps it optically
+//  where it was. No fill, no boundary and no padding is reintroduced, so the commands still read
+//  as the bare image columns the legacy grid rendered — they are merely reachable by a finger.
+//
+//  The inline floor matters as much as the block one, and for the same reason the form vocabulary
+//  gives: a single-glyph command has almost no intrinsic width. Each of the three sits in its own
+//  command column carrying exactly one command, so nothing is competing for the width.
+.user-list__row-action {
+  min-block-size: var(--target-size-min);
+  min-inline-size: var(--target-size-min);
+  justify-content: center;
 }
 
 // MIGRATION: THE ROW COMMANDS CARRY NO SURFACE, WHICH IS THE MEASURED LEGACY
@@ -501,6 +654,19 @@
   //  the form vocabulary already applies to the button or the reset applies to the
   //  anchors — it makes the indicator's survival of the surface removal explicit.
   @include mx.focus-ring;
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and
+  // suppression without replacement is what leaves a control with no visible response at
+  // all. `background-color: transparent` above weighs (0,1,0) while the global
+  // `button:active { background-color: var(--color-selected) }` weighs (0,1,1) — one class
+  // outranks one type selector, so the shared press tint was already losing before a
+  // pointer arrived. Measured: this control was BYTE-IDENTICAL in its pressed and resting
+  // states, and where the control is a link rather than a button there was no global rule
+  // to lose in the first place. The value is the shared selection tint, so the press reads
+  // the same here as on every other control in the console; nothing new is invented.
+  &:active {
+    background-color: var(--color-selected);
+  }
+
 }
 
 //  The ink is declared on the group above rather than left to the element type on
@@ -516,10 +682,10 @@
 //  is what stops the group rule above reaching this element — and the affordance is not
 //  lost, because the anchors' underline and the reset's own hover treatment carry it.
 .user-list__row-action--danger {
-  color: var(--color-danger);
+  color: var(--color-danger-text);
 
   @include mx.hover {
-    color: var(--color-danger);
+    color: var(--color-danger-text);
   }
 }
 
@@ -591,4 +757,20 @@
   @include mx.respond-below('md') {
     @include mx.visually-hidden;
   }
+}
+
+// The 24px floor for the page actions, stated as its OWN rule rather than added to the
+// shared `.user-list__page-action, .user-list__email` block above. Two reasons, both load-bearing:
+//   • `.user-list__email` is reached by the global `td a` floor already and measured
+//     compliant, so it needs nothing; changing its `display` would alter its layout inside
+//     a table cell for no benefit.
+//   • the group is shared, so a `display` change there would reach the email link too.
+// `min-block-size` HAS NO EFFECT on a non-replaced INLINE element, so `display` is changed
+// alongside it — declaring the floor alone would have been inert. Measured before this rule:
+// the three header actions reported h=16.50 (70.92, 66.03 and 127.19 wide), short of the minimum. These are standalone action affordances
+// in an action bar, not links inside a sentence, so SC 2.5.8's inline exception does not apply.
+.user-list__page-action {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--target-size-min);
 }

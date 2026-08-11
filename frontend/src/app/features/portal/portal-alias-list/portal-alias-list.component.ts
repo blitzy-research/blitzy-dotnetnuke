@@ -36,7 +36,6 @@
 //  drifted class name match nothing rather than error:
 //
 //      .portal-alias-list             the component root
-//      .portal-alias-list__header     wraps the shared page header
 //      .portal-alias-list__status     the failure surface and the wait indicator
 //      .portal-alias-list__edit       the inline create / edit form
 //      .portal-alias-list__commands   the form's command row
@@ -70,13 +69,12 @@
 //  follow verbatim:
 //
 //      <div class="portal-alias-list">
-//        <div class="portal-alias-list__header">
-//          <app-page-header [title]="heading">
-//            <button type="button" (click)="startCreate()">
-//              {{ addActionLabel }}
-//            </button>
-//          </app-page-header>
-//        </div>
+//        <app-page-header [title]="heading">
+//          <button type="button" (click)="startCreate()">
+//            {{ addActionLabel }}
+//          </button>
+//          <a [routerLink]="settingsLink()">{{ settingsLinkLabel }}</a>
+//        </app-page-header>
 //
 //        <div class="portal-alias-list__status">
 //          @if (bannerProblem() !== null) {
@@ -262,11 +260,14 @@
 //      untrusted markup and the measured value carries five upper-case `<BR>`
 //      tags. Developed at ALIAS_HELP.
 //
-//   8. MIGRATION: the two legacy normalisation paths differ and THIS screen's is
-//      authoritative - protocol prefix then share prefix
-//      (`EditPortalAlias.ascx.vb:L210-L215`) versus protocol prefix alone
-//      (`Website/admin/Portal/SiteSettings.ascx.vb:L824`). Developed at
-//      `normaliseHttpAlias` and at ALIAS_ENTRY_MAX_LENGTH.
+//   8. MIGRATION: NEITHER legacy normalisation path is reproduced any more, and the
+//      deviation is deliberate. The legacy screens stripped a protocol prefix and a
+//      share prefix before saving (`EditPortalAlias.ascx.vb:L210-L215`; the
+//      site-settings helper at `SiteSettings.ascx.vb:L824` stripped only the first),
+//      but the target server refuses both with `400` - measured, not inferred - so
+//      stripping concealed a refusal and submitted a value the operator had not
+//      entered on a host-binding field. The entry is now judged and sent verbatim.
+//      Developed at `httpAliasValidator` and at ALIAS_ENTRY_MAX_LENGTH.
 //
 //   9. MIGRATION: the help affordance is KEYBOARD REACHABLE, reversing the legacy
 //      `tabindex="-1"` carried by both help controls
@@ -300,9 +301,12 @@
 //      `EditPortalAlias.ascx.vb:L242` and immediately followed by
 //      `Response.Redirect` at L243. Developed at `onSaved`.
 //
-//  16. MIGRATION: VB `"\\"` is a TWO-character literal - VB string literals have
-//      no escape sequences and the legacy `+ 2` offset proves it
-//      (`EditPortalAlias.ascx.vb:L213-L215`). Developed at SHARE_PREFIX.
+//  16. MIGRATION: the legacy share-prefix strip is NOT reproduced. Its literal `"\\"`
+//      is TWO characters - VB string literals have no escape sequences and the legacy
+//      `+ 2` offset proves it (`EditPortalAlias.ascx.vb:L213-L215`) - and getting that
+//      reading wrong would have shifted the strip by one position. The strip itself is
+//      now gone: the backslash is among the characters the shape rule refuses, so such
+//      an entry is reported rather than silently rewritten. Developed at annotation 8.
 //
 //  17. MIGRATION: the legacy `IsNotCurrent` rule is RESTORED, and it now withholds
 //      the DELETE command as well as the edit one. `PortalAlias.ascx.vb:L51-L60`
@@ -367,9 +371,12 @@ import {
   ChangeDetectionStrategy,
   Component,
   DestroyRef,
+  ElementRef,
+  Injector,
   Input,
   TemplateRef,
   ViewChild,
+  afterNextRender,
   computed,
   effect,
   inject,
@@ -377,6 +384,7 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { RouterLink } from '@angular/router';
 
 import type { OnInit } from '@angular/core';
 import type { AbstractControl, ValidationErrors } from '@angular/forms';
@@ -393,7 +401,9 @@ import { DataTableComponent } from '../../../shared/components/data-table/data-t
 import { EmptyStateComponent } from '../../../shared/components/empty-state/empty-state.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
-import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
+import {
+  LoadingSpinnerComponent,
+} from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 
 import type {
@@ -404,10 +414,12 @@ import type {
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { PortalFailure } from '../../../core/state/portal.store';
 import { isRouteId, parseRouteId } from '../../../core/utils/route-id.util';
+import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
 import type {
   DataTableCellContext,
   DataTableColumn,
 } from '../../../shared/components/data-table/data-table.component';
+import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
 
 // -----------------------------------------------------------------------------
 //  MEASURED WORDING
@@ -429,6 +441,14 @@ import type {
  * wording was lost.
  */
 const HEADING = 'Portal Aliases';
+
+/**
+ * The wording of the link back to this portal's configuration screen.
+ *
+ * `ControlTitle_.Text` in `SiteSettings.ascx.resx`, which is also the title that route declares,
+ * so the link and its destination are named with one word.
+ */
+const SETTINGS_LINK_LABEL = 'Site Settings';
 
 /**
  * The create affordance.
@@ -471,6 +491,60 @@ const ALIAS_LABEL = 'HTTP Alias';
  * accessible name, and it is honoured rather than re-authored.
  */
 const EDIT_LABEL = 'Edit';
+
+/**
+ * How the row command's ACCESSIBLE name is qualified with the row it acts on.
+ *
+ * MIGRATION: the visible text stays the bare resource value and only the accessible name grows, which is
+ * the same treatment the portal listing's own row commands received and for the same measured reason. The
+ * legacy affordance was an unlabelled image whose only name was the global edit key
+ * (`Website/admin/Portal/portalalias.ascx:L8-L11`), so every row's command reached assistive technology
+ * with the identical context-free name `Edit` - runtime testing measured fifteen of them on one screen -
+ * and on a row whose host name is absent there was nothing at all to distinguish it by. Qualifying the
+ * name costs nothing visually and is what lets a screen-reader user moving between rows tell which host
+ * name each command acts on.
+ *
+ * @param alias The host name as stored, or the absent-host wording when it holds none.
+ * @returns The accessible name.
+ */
+function editCommandName(alias: string): string {
+  return `${EDIT_LABEL} ${alias}`;
+}
+
+/**
+ * What a host-name cell paints when the stored value is absent or empty.
+ *
+ * MIGRATION: the legacy cell painted NOTHING for both states and the two were indistinguishable.
+ * `PortalAliasController.vb` hydrated the column with `Convert.ToString(dr("HTTPAlias")).ToLower`, and
+ * `Convert.ToString` of `DBNull` yields the empty string, so a row holding no host name and a row holding
+ * an empty one both rendered as an empty cell - which reads as a rendering failure rather than as data.
+ * Runtime testing measured exactly that: two rows whose entire text content was two spaces.
+ *
+ * The MARK is a display-layer answer only, in the same discipline Rule T7 asks for and the same one the
+ * portal listing's tally columns and expiry column already apply: the contract still distinguishes null
+ * from the empty string, and only the cell stops painting both as nothing. No value is rewritten, and the
+ * row is not filtered out - a row that exists is shown, because an operator cannot delete a row they
+ * cannot see.
+ */
+const ABSENT_HOST_NAME_MARK = '\u2014';
+
+/**
+ * The words behind {@link ABSENT_HOST_NAME_MARK}, announced but not painted.
+ */
+const ABSENT_HOST_NAME_DESCRIPTION = 'no host name recorded';
+
+/**
+ * Shown in the command cell of the row this request arrived through.
+ *
+ * MIGRATION: the ABSENCE of a command on that row is the legacy behaviour and is preserved -
+ * `portalalias.ascx:L8` bound the hyperlink's `Visible` property and an invisible server control emits
+ * nothing. What is added is the REASON, in words. Runtime testing measured that row as the only one of
+ * sixteen with no control at all and no explanation for it, and 11px shorter than its neighbours because
+ * an entirely empty cell collapses the row - so the one row an operator most needs explained read as a
+ * rendering fault. This wording has no resource provenance; it is authored, and it is deliberately short
+ * because the full explanation is already announced when the row itself is pressed.
+ */
+const CURRENT_ALIAS_ROW_NOTE = 'In use';
 
 /**
  * The submit command's label in EDIT mode.
@@ -719,13 +793,17 @@ const ALIAS_INVALID_MESSAGE =
 const ALIAS_ENTRY_MAX_LENGTH = 255;
 
 /**
- * The authoritative maximum, applied to the NORMALISED value.
+ * The authoritative maximum, applied to THE ENTRY AS TYPED.
  *
  * 200, which is simultaneously the storage column's width (see above) and the
- * server's own `MaximumLength` (`PortalAliasRules.cs:L62`). Measured on the
- * normalised value rather than the raw entry because normalisation is what
- * decides how many characters are transmitted: an entry of `https://` plus 195
- * characters sends 195 and must be accepted.
+ * server's own `MaximumLength` (`PortalAliasRules.cs:L62`).
+ *
+ * It used to be measured against a normalised value, on the reasoning that an entry of `https://`
+ * plus 195 characters transmits 195 and must be accepted. That reasoning was correct only while a
+ * prefix was stripped before transmission, and it no longer is: the entry is now sent verbatim, so
+ * the raw entry IS the transmitted string and is the one the bound applies to. Measuring anything
+ * else would accept a request the server answers with `400`. The scheme-bearing entry the old
+ * reasoning protected is refused outright now, by the shape rule, which is the point of the change.
  */
 const ALIAS_MAX_LENGTH = 200;
 
@@ -812,73 +890,25 @@ function aliasText(alias: PortalAlias): string {
 }
 
 // -----------------------------------------------------------------------------
-//  NORMALISATION
+//  NORMALISATION - DELIBERATELY ABSENT
 // -----------------------------------------------------------------------------
-
-/**
- * The protocol separator the legacy handler stripped through.
- *
- * `EditPortalAlias.ascx.vb:L210-L212` tested `strAlias.IndexOf("://") <> -1` and
- * then removed `IndexOf("://") + 3` characters from the front. Its length is that
- * `+ 3`, which is why the offset below is derived from the constant rather than
- * written as a number.
- */
-const SCHEME_SEPARATOR = '://';
-
-/**
- * The share prefix the legacy handler stripped through.
- *
- * MIGRATION 16, AND THE SINGLE MOST DANGEROUS LINE IN THIS PORT. The legacy
- * literal at `EditPortalAlias.ascx.vb:L213-L215` is written `"\\"`, and VB string
- * literals have NO ESCAPE SEQUENCES, so that literal is TWO characters - a
- * backslash followed by a backslash. The legacy `+ 2` offset is the proof: a
- * one-character literal would have been removed with `+ 1`. TypeScript DOES have
- * escape sequences, so the equivalent literal must be written with four
- * backslashes; writing two would yield ONE character, would silently shift the
- * strip by one position, and would compile without complaint.
- */
-const SHARE_PREFIX = '\\\\';
-
-/**
- * Reproduces the legacy handler's two-step prefix strip, in its order.
- *
- * MIGRATION 8: THIS SCREEN'S BEHAVIOUR, NOT ITS SIBLING'S. The legacy code base
- * normalises host names two different ways: this screen strips a protocol prefix
- * and THEN a share prefix (`EditPortalAlias.ascx.vb:L210-L215`), while the
- * sibling site-settings helper strips only the protocol prefix
- * (`Website/admin/Portal/SiteSettings.ascx.vb:L824`). The screen being ported is
- * the authority, so both steps are reproduced and the order is preserved.
- *
- * This is NORMALISATION AND NOT VALIDATION, and the distinction is load-bearing.
- * It runs BEFORE the value is judged, so `https://example.com` is accepted and
- * stored as `example.com` exactly as it was before; and its result is written back
- * into the control so the operator sees what will be saved rather than what they
- * typed.
- *
- * Nothing is trimmed. The legacy handler trimmed nothing either, and trimming
- * would silently alter an entry rather than report it; surrounding whitespace is
- * refused by the shape rule below instead, which is what the server does.
- *
- * @param entry The raw entry, exactly as typed.
- * @returns The value that will be transmitted.
- */
-export function normaliseHttpAlias(entry: string): string {
-  let alias = entry;
-
-  const scheme = alias.indexOf(SCHEME_SEPARATOR);
-
-  if (scheme !== -1) {
-    alias = alias.slice(scheme + SCHEME_SEPARATOR.length);
-  }
-
-  const share = alias.indexOf(SHARE_PREFIX);
-
-  if (share !== -1) {
-    alias = alias.slice(share + SHARE_PREFIX.length);
-  }
-
-  return alias;
-}
+//
+// ⚠ THIS SECTION HELD A `normaliseHttpAlias` HELPER AND THE TWO PREFIX CONSTANTS IT STRIPPED
+// THROUGH, AND ALL THREE ARE REMOVED RATHER THAN LEFT UNUSED. The helper was a faithful port of
+// `EditPortalAlias.ascx.vb:L209-L215`, which removed a `://` prefix and then a `\\` prefix before
+// saving. It ran before validation and its result was written back into the control and transmitted.
+//
+// It is gone because the target's server refuses both prefixes. Measured against the running API:
+// `POST /api/v1/portals/-1/aliases` with `http://blitzy-p4-scheme.example.com` answered `400` with
+// `HttpAlias` set to the same sentence this screen renders for a shape failure; a `\\`-prefixed
+// value answered `400` with that sentence too; a plain host answered `201`. So stripping did not
+// preserve legacy behaviour - it concealed a server refusal and submitted a value the operator had
+// not entered, on the field that binds a host name to a tenant. See {@link httpAliasValidator} for
+// the full reasoning and the AAP clause that licenses the deviation.
+//
+// Nothing replaces it. The raw entry is judged by the shape rule below and transmitted verbatim, so
+// a prefix is now refused with the message the screen already promised - and no code path remains
+// that can alter an operator's entry on its way to the server.
 
 // -----------------------------------------------------------------------------
 //  SHAPE RULE
@@ -893,6 +923,16 @@ export function normaliseHttpAlias(entry: string): string {
 // arrives as a per-field message and is shown alongside these.
 //
 // The rule is evaluated against the NORMALISED value, which is what will be sent.
+
+/**
+ * The protocol separator, which the server refuses anywhere in an alias.
+ *
+ * Retained after the normalisation helper that also used it was removed, because the SHAPE RULE has
+ * an independent need for it: `ContainsOnlyPermittedCharacters` refuses any entry containing it. Its
+ * role has changed from "the prefix we strip through" to "the sequence we refuse", which is the whole
+ * of this screen's correction - see {@link httpAliasValidator}.
+ */
+const SCHEME_SEPARATOR = '://';
 
 /** Characters the server refuses outright, beyond whitespace and control codes. */
 const FORBIDDEN_ALIAS_CHARACTERS: readonly string[] = Object.freeze([
@@ -956,11 +996,13 @@ function isAsciiAlphanumeric(character: string): boolean {
  * Whether the value carries only characters the server permits.
  *
  * Ports `ContainsOnlyPermittedCharacters` (`PortalAliasRules.cs:L170-L197`),
- * including its final check that no protocol separator survives - which, after
- * {@link normaliseHttpAlias} has run, can only fail for an entry carrying a second
- * separator.
+ * including its final check that no protocol separator is present. That check is now REACHABLE FOR
+ * ITS OWN SAKE: while a normalisation step stripped the prefix before this ran, the only entry that
+ * could still fail it was one carrying a second separator, so the ordinary `http://x` case never
+ * reached it. The entry is judged verbatim now, so this is what refuses a protocol prefix and
+ * produces the message the screen shows.
  *
- * @param alias The normalised value.
+ * @param alias The entry, exactly as the operator typed it.
  * @returns True when every character is permitted.
  */
 function containsOnlyPermittedCharacters(alias: string): boolean {
@@ -1254,15 +1296,38 @@ export interface PortalAliasFormModel {
 }
 
 /**
- * Judges one entry, against its NORMALISED form.
+ * Judges one entry EXACTLY AS TYPED, because that is exactly what will be sent.
  *
- * Reads the raw entry, normalises it exactly as submission will, and applies the
- * server's own rules to the result. Judging the raw entry instead would refuse
- * `https://example.com` - which the legacy screen accepted and stored as
- * `example.com` - and would measure the length of characters that are never sent.
+ * ⚠ THE ENTRY IS NO LONGER NORMALISED BEFORE JUDGEMENT, AND THE PREFIX STRIP IS GONE. This
+ * validator used to strip a protocol prefix and a share prefix first - a faithful port of
+ * `EditPortalAlias.ascx.vb:L209-L215` - and submission then wrote the stripped value back into the
+ * control and transmitted it. The consequence was measured and is not acceptable on this field: an
+ * operator who entered `http://x` saw a control that stayed valid with `aria-invalid="false"` and no
+ * message, while the outbound body carried `{"httpAlias":"x"}`. A DIFFERENT VALUE FROM THE ONE THEY
+ * ENTERED was submitted, silently, on the field that binds a host name to a tenant.
  *
- * The empty entry returns no error of its own: the framework's required rule owns
- * emptiness, and reporting it twice would show the same message twice.
+ * WHY THE LEGACY PORT IS NOT THE AUTHORITY HERE. The target's server rejects both prefixes outright.
+ * Verified against the running API rather than inferred from the rules: `POST` with
+ * `http://blitzy-p4-scheme.example.com` answered `400` with `HttpAlias` = the very sentence
+ * {@link ALIAS_INVALID_MESSAGE} carries, a `\\`-prefixed value answered `400` with the same sentence,
+ * and a plain host answered `201`. So the accepted input set had already changed on the server, and
+ * the client strip was not preserving legacy behaviour - it was CONCEALING a server refusal, which is
+ * the one thing the shape rules in this file are documented never to do ("where the two could ever
+ * disagree, the SERVER decides"). It also made this screen state one contract and honour another: the
+ * message the operator is shown says an alias "must not include a protocol prefix".
+ *
+ * AAP §0.9.1 Minimal Change Clause item 1 permits exactly this deviation and gives this exact class of
+ * reason as its own worked example - the substring alias match, changed because leaving it would carry
+ * a multi-tenant mis-resolution into new code. Silent value rewriting on a host-binding field is the
+ * same hazard. The divergence is recorded in `MIGRATION_NOTES.md` rather than absorbed.
+ *
+ * NOTHING AN OPERATOR COULD PREVIOUSLY STORE IS REFUSED NOW: the server already refused these entries,
+ * so the only change is where the refusal appears - as a field message before the request, instead of
+ * a rewritten value after it. Length is measured on the raw entry for the same reason: the raw entry
+ * is what is transmitted, so it is the string the bound applies to.
+ *
+ * The empty entry returns no error of its own: the framework's required rule owns emptiness, and
+ * reporting it twice would show the same message twice.
  *
  * @param control The alias control.
  * @returns The failures found, or null when the entry is acceptable.
@@ -1274,17 +1339,15 @@ export function httpAliasValidator(control: AbstractControl<string, string>): Va
     return null;
   }
 
-  const normalised = normaliseHttpAlias(entry);
-
-  if (normalised.trim().length === 0) {
+  if (entry.trim().length === 0) {
     return { [ALIAS_BLANK_ERROR]: true };
   }
 
-  if (normalised.length > ALIAS_MAX_LENGTH) {
+  if (entry.length > ALIAS_MAX_LENGTH) {
     return { [ALIAS_TOO_LONG_ERROR]: true };
   }
 
-  if (isAcceptableHttpAlias(normalised) === false) {
+  if (isAcceptableHttpAlias(entry) === false) {
     return { [ALIAS_INVALID_ERROR]: true };
   }
 
@@ -1371,7 +1434,10 @@ type PendingOperation = 'none' | 'list' | 'create' | 'update' | 'delete';
   selector: 'app-portal-alias-list',
   standalone: true,
   imports: [
+    FocusFirstInvalidDirective,
+    SubmitGuardDirective,
     ReactiveFormsModule,
+    RouterLink,
     ConfirmDialogComponent,
     DataTableComponent,
     EmptyStateComponent,
@@ -1379,6 +1445,7 @@ type PendingOperation = 'none' | 'list' | 'create' | 'update' | 'delete';
     FormFieldComponent,
     LoadingSpinnerComponent,
     PageHeaderComponent,
+    FocusFirstInvalidDirective,
   ],
   templateUrl: './portal-alias-list.component.html',
   styleUrl: './portal-alias-list.component.scss',
@@ -1420,6 +1487,15 @@ export class PortalAliasListComponent implements OnInit {
    * event handlers, where no ambient injection context exists.
    */
   private readonly destroyRef = inject(DestroyRef);
+
+  // Held solely so `afterNextRender` can be reached from outside the constructor. Its only
+  // consumers are `focusEntry` and `restoreInvokerFocus`, both of which must run AFTER the
+  // conditional form block has been created or destroyed - which is a render, not a signal write.
+  private readonly injector = inject(Injector);
+
+  // The screen's own root element. Used only to resolve the create action as a focus fallback -
+  // see `restoreInvokerFocus` - so the lookup is scoped to this screen rather than the document.
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
 
   // ---------------------------------------------------------------------------
   //  ROUTE INPUT
@@ -1486,6 +1562,45 @@ export class PortalAliasListComponent implements OnInit {
    */
   @ViewChild('aliasCommands', { static: true })
   protected commandCell?: TemplateRef<DataTableCellContext<PortalAlias>>;
+
+  /**
+   * The entry box inside the inline form.
+   *
+   * NOT static: the form is inside a conditional block, so the query cannot resolve before the
+   * block is created. It is read only from an `afterNextRender` callback, which runs after the
+   * creation that resolves it.
+   */
+  @ViewChild('entryBox')
+  private entryBox?: ElementRef<HTMLInputElement>;
+
+  /**
+   * The control that opened the form, so focus can be handed back to it.
+   *
+   * ⚠ CAPTURED FROM THE LIVE FOCUS RATHER THAN PASSED IN. The form is opened from three places -
+   * the page-level create action, a row's Edit command, and a press on the row itself - and the
+   * row press arrives through the shared grid's own output, which carries the ROW and not the
+   * element that was pressed. Reading the active element at the moment the command runs covers
+   * all three without any of them having to know it is being remembered.
+   *
+   * Held as a plain field and not a signal: nothing renders from it, and a signal write here
+   * would schedule a change-detection pass for a value no template reads.
+   */
+  private formInvoker: HTMLElement | null = null;
+
+  /**
+   * The host-name cell's template.
+   *
+   * Pf-M1: the column was a plain field column, so a row holding no host name - or an
+   * empty one - painted a cell whose entire content was whitespace, indistinguishable
+   * from a rendering failure and offering nothing to press or read. Rendering the cell
+   * through a template is what lets the absent state carry a visible mark and an
+   * announced description without rewriting the value the contract published.
+   *
+   * Resolved statically for the same reason as {@link commandCell}, and requires
+   * `<ng-template #aliasHostName>` at the template's TOP LEVEL.
+   */
+  @ViewChild('aliasHostName', { static: true })
+  protected hostNameCell?: TemplateRef<DataTableCellContext<PortalAlias>>;
 
   // ---------------------------------------------------------------------------
   //  PRESENTATION STATE
@@ -1585,8 +1700,33 @@ export class PortalAliasListComponent implements OnInit {
   /** @see EDIT_LABEL */
   protected readonly editLabel = EDIT_LABEL;
 
-  /** @see DELETE_CONFIRM_MESSAGE */
-  protected readonly deleteConfirmMessage = DELETE_CONFIRM_MESSAGE;
+  /**
+   * The confirmation body: the platform's question, then the host name it means.
+   *
+   * ⚠ THE MEASURED DEFECT, AND THIS SCREEN IS WHERE IT BITES HARDEST. The body was the bare
+   * sentence "Are You Sure You Wish To Delete This Item?" and named nothing, while the dialog is
+   * a real modal that covers the table it was raised from - measured obscuring four alias rows,
+   * including the row being destroyed. A portal here holds ten host names differing by a port or
+   * a digit: `localhost:4200`, `localhost:4203`, `127.0.0.1:4203`. Confirming which of those is
+   * about to be unbound was impossible from the prompt, and unbinding the wrong one takes an
+   * address out of service.
+   *
+   * MIGRATION: the question is the measured global `DeleteItem.Text` value, unchanged. Only the
+   * identity is added, and it is added because the legacy screen asked NOTHING at all before
+   * deleting - so there is no legacy prompt whose wording this could be diverging from. The
+   * confirmation is itself an addition of this migration; naming its target is part of making
+   * that addition worth having.
+   *
+   * Falls back to the bare question when no row is pending, which the template makes unreachable
+   * - the dialog renders only while a removal is pending.
+   */
+  protected readonly deleteConfirmMessage = computed<string>(() => {
+    const target = this.selectedAlias();
+
+    return target === null
+      ? DELETE_CONFIRM_MESSAGE
+      : `${DELETE_CONFIRM_MESSAGE} ${target.httpAlias}`;
+  });
 
   /** @see EMPTY_MESSAGE */
   protected readonly emptyMessage = EMPTY_MESSAGE;
@@ -1600,6 +1740,12 @@ export class PortalAliasListComponent implements OnInit {
   /** @see ALIAS_CONTROL_ELEMENT_ID */
   protected readonly aliasControlId = ALIAS_CONTROL_ELEMENT_ID;
 
+  /** @see ABSENT_HOST_NAME_DESCRIPTION */
+  protected readonly absentHostNameDescription = ABSENT_HOST_NAME_DESCRIPTION;
+
+  /** @see CURRENT_ALIAS_ROW_NOTE */
+  protected readonly currentAliasRowNote = CURRENT_ALIAS_ROW_NOTE;
+
 
   // ---------------------------------------------------------------------------
   //  DERIVED VIEWS
@@ -1609,6 +1755,33 @@ export class PortalAliasListComponent implements OnInit {
   protected readonly routeUsable = computed<boolean>(
     () => Number.isNaN(this.portalIdValue()) === false,
   );
+
+  /**
+   * The address of this portal's configuration screen, or `null` when the route named no portal.
+   *
+   * ⚠ THE WAY BACK, AND IT DID NOT EXIST. This screen was reachable by typing an address and by
+   * nothing else, and it offered no route onwards or back either — so an operator who arrived
+   * here left the portal feature entirely and came in again through the listing. The settings
+   * screen now links here and this links there, which makes the pair navigable in both
+   * directions from one place.
+   *
+   * MIGRATION: `SiteSettings.ascx.vb:L484-L489` inspects the referring address specifically to
+   * recognise arrival FROM the Portal Aliases module, which is direct evidence that the legacy
+   * console had operators moving between these two destinations. It reached them through its
+   * administration menu; this console's rail carries collection entries only, so the movement
+   * lives in the screens.
+   *
+   * An array rather than an interpolated string, so the router composes the segments: `0` and
+   * `-1` are both real tenants.
+   */
+  protected readonly settingsLink = computed<(string | number)[] | null>(() => {
+    const target = this.portalIdValue();
+
+    return Number.isNaN(target) ? null : ['/portals', target, 'settings'];
+  });
+
+  /** The wording of that link: `ControlTitle_.Text` in `SiteSettings.ascx.resx`. */
+  protected readonly settingsLinkLabel: string = SETTINGS_LINK_LABEL;
 
   /**
    * The rows to render: the store's collection, but ONLY when it belongs to the
@@ -1686,12 +1859,33 @@ export class PortalAliasListComponent implements OnInit {
     // `Localization.LocalizeDataGrid` (`PortalAlias.ascx.vb:L69`) replaced the
     // attribute at run time. The key is distinct from the label, so the grid's
     // per-column identity is not the text an operator reads.
-    const aliasColumn: DataTableColumn<PortalAlias> = {
-      key: ALIAS_CONTROL_NAME,
-      label: ALIAS_COLUMN_HEADING,
-      field: 'httpAlias',
-      sortable: false,
-    };
+    //
+    // Pf-M1: rendered through a TEMPLATE rather than bound straight to the field, so an
+    // absent or empty host name reaches the operator as a mark and a description instead
+    // of as an empty cell. The field form is kept as the fallback for the one frame in
+    // which the view query has not resolved, so the column never disappears and the
+    // grid never renders a single column - which is the failure mode a missing template
+    // would otherwise produce silently.
+    //
+    const hostNameTemplate = this.hostNameCell;
+
+    const aliasColumn: DataTableColumn<PortalAlias> =
+      hostNameTemplate === undefined
+        ? {
+            key: ALIAS_CONTROL_NAME,
+            rowHeader: true,
+            label: ALIAS_COLUMN_HEADING,
+            field: 'httpAlias',
+            sortable: false,
+          }
+        : {
+            key: ALIAS_CONTROL_NAME,
+            rowHeader: true,
+            label: ALIAS_COLUMN_HEADING,
+            kind: 'template',
+            cellTemplate: hostNameTemplate,
+            sortable: false,
+          };
 
     const commands = this.commandColumn();
 
@@ -1880,32 +2074,43 @@ export class PortalAliasListComponent implements OnInit {
   });
 
   /**
-   * The problem document to render in the banner, or null when there is nothing to
-   * show there.
+   * The problem document to render in the banner, or null when there is no failure.
    *
-   * A failure already reported beside the control is NOT repeated here. The legacy
-   * screen showed exactly one message per outcome, and a field-attributable refusal
-   * belongs next to the field that caused it; anything else - a lost connection, a
-   * permission refusal, a missing portal - has no field to sit beside and belongs in
-   * the banner.
+   * ⚠ EVERY FAILURE REACHES THE BANNER, AND AN EARLIER REVISION SUPPRESSED SOME OF
+   * THEM. That revision withheld the banner whenever the failure had already produced
+   * a message beside the alias control - the duplicate host name and the active-alias
+   * refusal - on the grounds that the legacy screen showed exactly one message per
+   * outcome. The consequence was measured rather than theoretical: on a real duplicate
+   * rejection the screen showed its own short sentence and DISCARDED both the server's
+   * `detail` and its correlation identifier, so the one refusal an operator is most
+   * likely to hit was also the only one they could not report. The server's sentence
+   * for that case is more specific than this screen's wording, naming the host name it
+   * refused, and the reference is the handle a support conversation is conducted
+   * through.
+   *
+   * THE TWO SURFACES ARE COMPLEMENTARY, NOT CONTRADICTORY, which is the distinction
+   * the earlier reasoning missed. The field message attributes the refusal to the
+   * control the operator must change; the banner states the occurrence and carries the
+   * reference. They never disagree, because both are derived from the same failure -
+   * and they do not repeat each other either, since the field carries this screen's own
+   * resource wording while the banner carries the server's sentence. This is also what
+   * every other screen in the application already does: each renders its banner from
+   * `failure.problem` unconditionally and renders field messages beside its controls at
+   * the same time, so the suppression made this ONE screen the outlier.
+   *
+   * The legacy precedent supports the banner rather than opposing it: the legacy
+   * duplicate-alias message was announced through the module message renderer - a
+   * banner - and had no field-level surface at all, because the accessibility contract
+   * that puts a message beside a control is net-new here. Rendering both keeps the
+   * legacy surface AND the added one.
    *
    * The banner classifies severity from the status itself, so a permission refusal is
    * presented as a warning rather than as danger without this screen deciding
    * anything. See MIGRATION 3.
    */
-  protected readonly bannerProblem = computed<ProblemDetails | null>(() => {
-    const failure = this.store.aliasFailure();
-
-    if (failure === null) {
-      return null;
-    }
-
-    if (this.formVisible() && this.serverAliasMessage() !== null) {
-      return null;
-    }
-
-    return failure.problem;
-  });
+  protected readonly bannerProblem = computed<ProblemDetails | null>(
+    () => this.store.aliasFailure()?.problem ?? null,
+  );
 
 
   // ---------------------------------------------------------------------------
@@ -2010,6 +2215,7 @@ export class PortalAliasListComponent implements OnInit {
     this.store.clearFailures();
     this.resetEntry('');
     this.formVisible.set(true);
+    this.focusEntry();
   }
 
   /**
@@ -2037,6 +2243,55 @@ export class PortalAliasListComponent implements OnInit {
    */
   protected rowEditable(alias: PortalAlias): boolean {
     return alias.isCurrent === false;
+  }
+
+  /**
+   * Whether one row's stored host name is absent or empty.
+   *
+   * Pf-M1: the two states are DELIBERATELY answered together, because the display answer
+   * for both is the same and the contract still distinguishes them. `null` is a stored
+   * SQL null and `''` is a stored empty string; the legacy reader collapsed the first
+   * into the second before it ever reached the grid (`PortalAliasController.vb`, through
+   * `Convert.ToString`), so no legacy screen ever told them apart either.
+   *
+   * @param alias One row of the listing.
+   * @returns True when there is no host name to paint.
+   */
+  protected isHostNameAbsent(alias: PortalAlias): boolean {
+    return aliasText(alias).length === 0;
+  }
+
+  /**
+   * The text of one row's host-name cell.
+   *
+   * Answers the stored value verbatim when there is one - no folding, no trimming, no
+   * normalisation, because the operator must see what is stored in order to correct it -
+   * and the absent mark when there is not.
+   *
+   * @param alias One row of the listing.
+   * @returns What the cell paints.
+   */
+  protected hostNameText(alias: PortalAlias): string {
+    const held = aliasText(alias);
+
+    return held.length === 0 ? ABSENT_HOST_NAME_MARK : held;
+  }
+
+  /**
+   * The ACCESSIBLE name of one row's edit command.
+   *
+   * Pf-M3: qualified with the row, so fifteen commands on one screen no longer reach
+   * assistive technology under one indistinguishable name. On a row with no host name
+   * the qualifier is the absent-host wording rather than an empty string, which is the
+   * only way the two blank rows measured at runtime can be told apart at all.
+   *
+   * @param alias The row the command acts on.
+   * @returns The accessible name.
+   */
+  protected editCommandLabel(alias: PortalAlias): string {
+    const held = aliasText(alias);
+
+    return editCommandName(held.length === 0 ? ABSENT_HOST_NAME_DESCRIPTION : held);
   }
 
   /**
@@ -2068,6 +2323,7 @@ export class PortalAliasListComponent implements OnInit {
     this.store.selectAlias(alias.portalAliasId);
     this.resetEntry(aliasText(alias));
     this.formVisible.set(true);
+    this.focusEntry();
   }
 
   /**
@@ -2112,15 +2368,13 @@ export class PortalAliasListComponent implements OnInit {
 
     const control = this.form.controls.httpAlias;
     const entry = control.value;
-    const normalised = normaliseHttpAlias(entry);
 
-    if (normalised !== entry) {
-      // Reflected back so the operator sees the value that will be stored. Setting the
-      // value re-runs the rules synchronously, so the judgement below reads the
-      // normalised state.
-      control.setValue(normalised);
-    }
-
+    // ⚠ THE ENTRY IS TRANSMITTED VERBATIM. There is no write-back step here any more: this used to
+    // strip a protocol or share prefix, set the stripped value into the control and send that. See
+    // {@link httpAliasValidator} for the measurement that removed it - the server refuses both
+    // prefixes with `400`, so stripping concealed a refusal and submitted a value the operator had
+    // not entered on a field that binds a host to a tenant. What the operator sees is now what is
+    // judged and what is sent, and a prefix is refused with the message this screen already shows.
     control.markAsTouched();
     this.refreshAliasMessages();
 
@@ -2135,7 +2389,7 @@ export class PortalAliasListComponent implements OnInit {
     if (chosen === undefined) {
       this.pending = 'create';
 
-      const request: CreatePortalAliasRequest = { httpAlias: normalised };
+      const request: CreatePortalAliasRequest = { httpAlias: entry };
 
       this.store
         .createAlias(target, request)
@@ -2149,7 +2403,7 @@ export class PortalAliasListComponent implements OnInit {
 
     this.pending = 'update';
 
-    const request: UpdatePortalAliasRequest = { httpAlias: normalised };
+    const request: UpdatePortalAliasRequest = { httpAlias: entry };
 
     this.store
       .updateAlias(target, chosen, request)
@@ -2289,13 +2543,56 @@ export class PortalAliasListComponent implements OnInit {
    * is answered with no body and the stored value must not be guessed from the request.
    */
   private onSaved(): void {
+    // ⚠ THE FAILURE SURFACE IS CLEARED HERE BECAUSE SUCCESS AND FAILURE FOR ONE ACTION ARE
+    // MUTUALLY EXCLUSIVE, and this screen was observed asserting both at once. A double press
+    // produced two writes whose answers disagreed — `409` on the first arm, `201` on the
+    // second — and because this method only ADDED a success notification, the operator was
+    // left facing a green "the Portal Alias has been saved" notice and a red Conflict banner
+    // describing the same single action, with nothing on screen to say which had prevailed.
+    //
+    // The double press itself is stopped upstream by `SubmitGuardDirective`, so the two-arm
+    // race that exposed this is gone. This line is NOT therefore redundant: it makes the two
+    // surfaces exclusive BY CONSTRUCTION rather than by the absence of concurrency, so no
+    // future overlap — a retry, a second screen, a slow arm answering late — can reinstate a
+    // contradiction. `submit` already clears failures on the way IN; this closes the pair on
+    // the way out.
+    this.store.clearFailures();
+
     this.notifications.success(SAVED_MESSAGE);
+
+    // ⚠ THE REMEMBERED INVOKER IS DISCARDED ON THIS PATH, AND THAT IS THE POINT. A save re-reads
+    // the collection, so the row that was edited is re-rendered and the element that opened the
+    // form is replaced. Focusing it would appear to work at the moment the form closes and then be
+    // undone by the response that arrives afterwards - measured, focus ended on `document.body`,
+    // which is exactly the outcome the restoration exists to prevent. The guard has to be anchored
+    // to what CAUSES the loss, and on this path the cause is known in advance: the row is going to
+    // be replaced, so the invoker is not a valid target and the header's create action is.
+    this.discardFormInvoker();
     this.closeForm();
   }
 
-  /** Completes a successful delete. @see DELETED_MESSAGE */
+  /**
+   * Completes a successful delete. @see DELETED_MESSAGE
+   *
+   * ⚠ ANNOUNCED AS A SUCCESS, NOT AS INFORMATION, AND THE CHANGE IS FOR CONSISTENCY.
+   * This was the ONLY completed mutation in the console announced at the informational
+   * severity. Every other one - including the two other deletions, the portal deletion on
+   * the listing screen and the settings deletion - uses the success severity, and this
+   * screen's own save does too. One operation dressed differently from its siblings reads
+   * as a different KIND of outcome: the informational band is the quiet band, reserved for
+   * something that is neither a completed action nor a refusal, and a removal the operator
+   * asked for and the server performed is neither of those. It is a completed action.
+   *
+   * The severity is not cosmetic - it selects the band, and the bands differ in surface as
+   * well as in the word they state - so leaving this one at the quiet band made a successful
+   * deletion look less conclusive than a successful save of the same record.
+   */
   private onDeleted(): void {
-    this.notifications.info(DELETED_MESSAGE);
+    this.notifications.success(DELETED_MESSAGE);
+
+    // The row the operator was standing on no longer exists, so there is nothing to hand focus back
+    // to. See `discardFormInvoker`.
+    this.discardFormInvoker();
     this.closeForm();
   }
 
@@ -2311,6 +2608,105 @@ export class PortalAliasListComponent implements OnInit {
     this.store.clearAliasSelection();
     this.resetEntry('');
     this.pending = 'none';
+    this.restoreInvokerFocus();
+  }
+
+  /**
+   * Remembers what is focused now, then moves focus into the form's entry box.
+   *
+   * ⚠ TWO MEASURED DEFECTS, ONE CAUSE: NOTHING MANAGED FOCUS ACROSS THIS FORM AT ALL. Opening the
+   * editor left focus on the control that opened it, so a keyboard operator pressed Edit, was
+   * shown a form, and then had to tab forwards through the REST OF THE TABLE to reach it -
+   * measured at twenty-two stops, because the form renders after the whole grid. On closing, focus
+   * was dropped to `document.body`, so the next Tab restarted from the top of the document and the
+   * operator lost their place in the listing entirely.
+   *
+   * The deferral is unavoidable rather than stylistic. The form lives in a conditional block, so
+   * the box does not exist in the document at the moment the command that opens it runs; the view
+   * query resolves during the render that creates it. `afterNextRender` is the point at which the
+   * element is both present and laid out.
+   *
+   * `preventScroll` is deliberately NOT passed here. Unlike a dismissal - where the page must not
+   * jump under a reader who has just closed something - the point of this move is to bring the
+   * operator to a control they are about to type into, so scrolling it into view is the correct
+   * behaviour rather than a side effect.
+   */
+  private focusEntry(): void {
+    this.formInvoker =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+    afterNextRender(
+      () => {
+        // Re-read rather than captured: the query resolves during the render this callback follows,
+        // and a form closed again before the callback ran would leave it unresolved. A presence
+        // test, never a truthiness test on a node, and no non-null assertion.
+        const box: ElementRef<HTMLInputElement> | undefined = this.entryBox;
+
+        if (box === undefined || !box.nativeElement.isConnected) {
+          return;
+        }
+
+        box.nativeElement.focus();
+      },
+      { injector: this.injector },
+    );
+  }
+
+  /**
+   * Hands focus back to whatever opened the form, if it is still there to take it.
+   *
+   * ⚠ THE INVOKER IS NOT ALWAYS STILL THERE, and that is why this is not a bare `focus()` call.
+   * Cancelling leaves the listing untouched, so the row's Edit command is still connected and
+   * receives focus back - the ordinary case. A SAVE re-reads the collection, so the row that was
+   * edited is replaced by a new element and the remembered one is detached: focusing a detached
+   * element is a silent no-op that leaves focus on `body`, which is the very outcome this exists
+   * to prevent. A REMOVAL destroys the row outright.
+   *
+   * So the fallback is the create action in the page header, which is present on every state of
+   * this screen and sits immediately before the listing in the tab order - close to where the
+   * operator was, and never detached. Resolved by query rather than held as a second view child,
+   * because it lives in projected content.
+   *
+   * Deferred for the same reason as {@link focusEntry}: the invoker's fate is decided by the
+   * render that follows the close, not by the signal write that requests it.
+   *
+   * `preventScroll` IS passed here. A dismissal must not move the page under the reader - measured
+   * on the notification surface at a seventeen-pixel jump before it was passed there - and the
+   * element being restored is one the operator was already at.
+   */
+  /**
+   * Forgets the control that opened the form, so the close falls back rather than restoring.
+   *
+   * Used on the paths that DESTROY or REPLACE the invoker - a save, which re-reads the collection,
+   * and a removal, which drops the row outright. See {@link restoreInvokerFocus} for why focusing a
+   * detached element is worse than not trying: it is a silent no-op that leaves focus on the
+   * document body.
+   */
+  private discardFormInvoker(): void {
+    this.formInvoker = null;
+  }
+
+  private restoreInvokerFocus(): void {
+    const remembered: HTMLElement | null = this.formInvoker;
+
+    this.formInvoker = null;
+
+    afterNextRender(
+      () => {
+        if (remembered !== null && remembered.isConnected) {
+          remembered.focus({ preventScroll: true });
+
+          return;
+        }
+
+        const fallback: HTMLElement | null = this.host.nativeElement.querySelector<HTMLElement>(
+          'app-page-header button',
+        );
+
+        fallback?.focus({ preventScroll: true });
+      },
+      { injector: this.injector },
+    );
   }
 
   /**
@@ -2342,6 +2738,27 @@ export class PortalAliasListComponent implements OnInit {
    */
   private refreshAliasMessages(): void {
     const control = this.form.controls.httpAlias;
+
+    // ⚠ `causesvalidation="False"`, STATED AS A RULE BECAUSE IT STOPPED BEING FREE. The legacy
+    // delete command declared it (`editportalalias.ascx:L13`), so a removal neither judges nor
+    // reports the entry - the value is about to cease to exist. That used to hold by accident:
+    // nothing ever focused the entry box, so no blur reached this method and the control stayed
+    // untouched.
+    //
+    // Focusing the box on open changed that, and the guard has to be anchored to what CAUSES the
+    // report rather than to the command that leads to it. Pressing Delete only opens the prompt;
+    // the blur arrives one render later, when the confirmation opens MODALLY and the platform moves
+    // focus onto its Cancel button. The reactive-forms accessor marks the control touched from that
+    // blur and the gate below opens - so an operator asking to destroy a row was told the box they
+    // had never typed in was required. Clearing inside the command was measured and was too early
+    // for exactly this reason.
+    //
+    // While a removal is pending, this screen reports nothing about the entry.
+    if (this.deletePrompt()) {
+      this.clientAliasMessages.set(NO_MESSAGES);
+
+      return;
+    }
 
     if (this.submitAttempted() === false && control.touched === false) {
       this.clientAliasMessages.set(NO_MESSAGES);
@@ -2418,4 +2835,22 @@ export class PortalAliasListComponent implements OnInit {
         break;
     }
   }
+  /**
+   * How a row identifies itself to the shared grid, so a re-read of the page already shown reuses its row
+   * elements instead of rebuilding them.
+   *
+   * ⚠ THE DATABASE KEY, NOT THE ARRAY POSITION AND NOT THE OBJECT. The grid's own fallback is the row
+   * OBJECT, which is a correct key only while the same objects stay in play; every read from the server
+   * decodes fresh objects, so without this a refetch of the same page presents entirely new keys and the
+   * whole body is rebuilt to display records that never changed. `portalAliasId` is unique by definition, being
+   * the record's own identifier, which is what `@for` requires - a repeated key is an error there.
+   *
+   * Declared as a bound field rather than an inline arrow so the reference is stable across change
+   * detection; a new function each redraw would set the grid's input every time and defeat its purpose.
+   *
+   * @param row The row about to be rendered.
+   * @returns The record's identifier.
+   */
+  protected readonly aliasRowKey = (row: PortalAlias): number => row.portalAliasId;
+
 }

@@ -4,6 +4,7 @@ import type { RedirectFunction, Routes } from '@angular/router';
 import { SIGN_IN_ROUTE } from './core/config/app-routes.config';
 import { authGuard } from './core/guards/auth.guard';
 import { permissionGuard } from './core/guards/permission.guard';
+import { unsavedChangesGuard } from './core/guards/unsaved-changes.guard';
 import { AuthStore } from './core/state/auth.store';
 
 /**
@@ -477,6 +478,12 @@ export const APP_ROUTES: Routes = [
      * `new` with `AddContent.Action`.
      */
     path: 'role-groups/new',
+    // ⚠ LEAVING THIS SCREEN IS GUARDED, because it mounts an editing form. Measured before this
+    // existed: Cancel, any in-application link and the browser's Back button all discarded a
+    // dirty form in silence, with instrumented `confirm`, `alert` and `beforeunload` recording
+    // nothing. The guard asks only when the mounted screen reports unsaved entry, so a clean
+    // form still leaves without a word.
+    canDeactivate: [unsavedChangesGuard],
     title: 'Add New Role Group',
     canActivate: [authGuard, permissionGuard],
     data: { permission: 'PortalAdministrator' },
@@ -504,6 +511,12 @@ export const APP_ROUTES: Routes = [
      * `Users.ascx.resx` and `Website/admin/Security/App_LocalResources/Roles.ascx.resx`.
      */
     path: 'settings/membership',
+    // ⚠ LEAVING THIS SCREEN IS GUARDED, because it mounts an editing form. Measured before this
+    // existed: Cancel, any in-application link and the browser's Back button all discarded a
+    // dirty form in silence, with instrumented `confirm`, `alert` and `beforeunload` recording
+    // nothing. The guard asks only when the mounted screen reports unsaved entry, so a clean
+    // form still leaves without a word.
+    canDeactivate: [unsavedChangesGuard],
     title: 'User Settings',
     canActivate: [authGuard, permissionGuard],
     data: { permission: 'PortalAdministrator' },
@@ -533,6 +546,7 @@ export const APP_ROUTES: Routes = [
      * the legacy listing used on the link that reached this screen.
      */
     path: 'settings/profile-definitions',
+    canDeactivate: [unsavedChangesGuard],
     title: 'Manage Profile Properties',
     canActivate: [authGuard, permissionGuard],
     data: { permission: 'PortalAdministrator' },
@@ -585,9 +599,7 @@ export const APP_ROUTES: Routes = [
      * operator unable to tell a mistyped address from a missing feature.
      */
     loadComponent: () =>
-      import('./shared/components/empty-state/empty-state.component').then(
-        (m) => m.EmptyStateComponent,
-      ),
+      import('./features/not-found/not-found.component').then((m) => m.NotFoundComponent),
 
     /**
      * Bound to the component's `message` input by `withComponentInputBinding()`,
@@ -599,18 +611,22 @@ export const APP_ROUTES: Routes = [
      * situation: the component's default describes an empty result set, which is a
      * different thing from an address that resolves to no screen.
      *
-     * `message` IS THE ONLY KEY HERE, AND THAT IS A CONSTRAINT RATHER THAN A CHOICE.
-     * `message` is the component's single declared input, and its own note records
-     * that the binder "reports an unknown property" for a data key matching no input
-     * and then does nothing — so an extra key would buy a console error and no
-     * behaviour. The consequence, confirmed by rendering this route in a browser, is
-     * that the view keeps the component's own hardcoded heading above this sentence.
-     * That heading reads acceptably for an unmatched address and changing it would
-     * mean editing a shared component that eight other screens rely on, which is a
-     * design decision about the component rather than a routing one. The reuse
-     * mandated above is therefore accepted WITH that heading, not in spite of it.
+     * TWO KEYS, AND BOTH MATCH A DECLARED INPUT. That constraint is real - the binder
+     * "reports an unknown property" for a data key matching no input and then does
+     * nothing, so a misspelled key buys a console error and no behaviour - which is
+     * why each key here must stay spelled exactly as its input is.
+     *
+     * MIGRATION: this note previously recorded `message` as the ONLY possible key, and
+     * concluded that the view had to keep the shared component's own heading because
+     * changing it "would mean editing a shared component that eight other screens rely
+     * on". The premise was right and the conclusion was avoidable. A review then
+     * measured the consequence precisely: this screen rendered NO level-one heading at
+     * all, because the shared component's heading is a level two - correct for the eight
+     * screens that pair it with a page header, and a broken outline for the one screen
+     * that is nothing else. The component now takes `standalone` to say which of those
+     * two it is, so the eight are untouched and this one is correct.
      */
-    data: { message: NO_ROUTED_VIEW_MESSAGE },
+    data: { message: NO_ROUTED_VIEW_MESSAGE, standalone: true },
 
     /**
      * Rendered in the browser tab and announced by screen readers on navigation.

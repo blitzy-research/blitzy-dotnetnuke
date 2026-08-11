@@ -503,6 +503,14 @@ export function problemMessage(
   problem: ProblemDetails | null | undefined,
   fallback: string,
 ): string {
+  // ⚠ DO NOT REINTRODUCE A "SYNTHESISED DOCUMENT" TEST HERE. A caller whose own wording should
+  // outrank a composed document must say so at its own call site - `PortalFormComponent` passes
+  // `null` in place of the document when `PortalFailure.synthesised` is set - because this
+  // function cannot tell the two apart. The tempting test, `type === 'about:blank'`, is wrong:
+  // RFC 7807 §4.2 designates that value for a problem with "no additional semantics beyond the
+  // status code", and this API's own error handler legitimately publishes it on real refusals,
+  // so the test discards server-authored wording. Runtime testing measured the cost - a 409 on
+  // a profile-property replace lost the server's sentence and showed a generic one instead.
   const detail = stripLegacyBreakTags(problem?.detail);
 
   if (detail.length > 0) {
@@ -851,6 +859,13 @@ export function statusMessage(status: number | null | undefined): string {
   }
 
   switch (status) {
+    // ZERO IS NOT A STATUS THE SERVER SENT. The framework reports it when no response arrived
+    // at all - offline, DNS failure, a blocked cross-origin call, a cancelled navigation - so
+    // the sentence has to point at the connection rather than at the request, which is the one
+    // thing the operator can act on. It fell through to the generic "could not be completed"
+    // before, which described a refusal that never happened.
+    case 0:
+      return NETWORK_UNREACHABLE;
     case 401:
       return NOT_AUTHENTICATED;
     case 403:
@@ -871,6 +886,73 @@ export function statusMessage(status: number | null | undefined): string {
 // ---------------------------------------------------------------------------
 // SUMMARY
 // ---------------------------------------------------------------------------
+
+/**
+ * The sentence shown for a failure that never reached the server at all.
+ *
+ * @remarks
+ * A request with no status is either a network failure, a cancelled navigation or a blocked
+ * cross-origin call; none of those is a server refusal, and the operator's only useful action
+ * is to check their connection and retry.
+ */
+export const NETWORK_UNREACHABLE =
+  'The server could not be reached. Check your connection and try again.';
+
+/**
+ * The title shown for a failure that carried no problem document.
+ *
+ * @remarks
+ * A title is required rather than optional: the shared banner renders its severity, title and
+ * detail as three distinct lines, and a failure with no title collapses into an unlabelled
+ * sentence that reads like body copy.
+ */
+export const TRANSPORT_FAILURE_TITLE = 'Request failed';
+
+/**
+ * The title shown for a failure that could not be reached at all.
+ */
+export const NETWORK_FAILURE_TITLE = 'Network error';
+
+/**
+ * Builds a well-formed problem document for a failure that carried none.
+ *
+ * @param status - The transport status, `0` or `null` when the request never completed.
+ * @param supportReference - The correlation identifier, when one is known.
+ * @returns A document with the same shape the server publishes.
+ *
+ * @remarks
+ * ⚠ THIS EXISTS SO THAT NO SURFACE HAS A SECOND, POORER PRESENTATION FOR A FAILURE. Two
+ * failure modes carry no RFC 7807 body: a response whose body is not a problem document
+ * (a proxy error page, a truncated payload, an HTML 502) and a request that never
+ * completed (offline, DNS failure, a blocked call). Runtime testing measured what a
+ * missing document cost: both modes fell through to an unstyled `<p role="status">`
+ * carrying one sentence - no severity word, no title, no detail, no support reference and
+ * no retry - and the two were byte-identical to each other, so an operator could not tell
+ * "the server refused this" from "the request never left the browser".
+ *
+ * Synthesising the document here rather than branching in each template means every
+ * consumer keeps ONE presentation, the shared banner, and gains the severity word and the
+ * title for free. `type` is `about:blank`, which RFC 7807 §4.2 designates for a problem
+ * with no further semantics - it is a truthful statement that this document was composed
+ * from the status alone rather than published by the server.
+ */
+export function transportProblem(
+  status: number | null | undefined,
+  supportReference: string | null = null,
+): ProblemDetails {
+  const unreachable: boolean = status === null || status === undefined || status === 0;
+
+  const document: ProblemDetails = {
+    type: 'about:blank',
+    title: unreachable ? NETWORK_FAILURE_TITLE : TRANSPORT_FAILURE_TITLE,
+    status: unreachable ? 0 : (status ?? 0),
+    detail: unreachable ? NETWORK_UNREACHABLE : statusMessage(status),
+  };
+
+  return supportReference === null
+    ? document
+    : { ...document, correlationId: supportReference };
+}
 
 /**
  * Resolves everything the presentation layer needs about one failure.
@@ -1839,3 +1921,85 @@ const DATE_PLACEHOLDER = '{0}';
 //   Login.ascx.vb:L163 is LOGIN_FAILURE, a fail-closed default, and the lockout
 //   defect is only visible once one knows that the locked-out outcome is 3 while the
 //   failure outcome is 0. Both values are unchanged by the rename.
+
+// ---------------------------------------------------------------------------
+// FOCUS PLACEMENT AFTER A REFUSED SUBMISSION
+// ---------------------------------------------------------------------------
+
+/**
+ * The controls that may be moved to after a submission is refused, in document order.
+ *
+ * Value-bearing controls only. A submit button is never a sensible landing place - it is where
+ * the operator already is - and neither is a command that merely navigates.
+ */
+const CORRECTABLE_CONTROL_SELECTOR = [
+  'input:not([type="hidden"],[type="button"],[type="submit"],[type="reset"],[type="image"])',
+  'select',
+  'textarea',
+  '[contenteditable="true"]',
+  '[role="checkbox"]',
+  '[role="combobox"]',
+  '[role="listbox"]',
+  '[role="radio"]',
+  '[role="spinbutton"]',
+  '[role="switch"]',
+  '[role="textbox"]',
+].join(',');
+
+/**
+ * Moves keyboard focus to the first control a refused submission has flagged.
+ *
+ * ⚠ WHY THIS EXISTS AT ALL, stated as the measurement rather than as a principle. Across the
+ * seven forms in the administration console, focus was left on the submit control after every
+ * refused submission - so an operator driving the application by keyboard was told, assertively,
+ * that something was wrong, and then left standing at the bottom of a form with no indication of
+ * WHERE. On the longest form the first rejected field was seven stops away and above the fold.
+ * Moving focus to the field that needs correcting is the behaviour WCAG 3.3.1 and 3.3.3 are
+ * written around, and it is the one remedy that also serves a sighted pointer user, because
+ * focusing a control scrolls it into view.
+ *
+ * ⚠ IT READS THE RENDERED STATE RATHER THAN THE FORM MODEL, and that is deliberate. `aria-invalid`
+ * is what the operator's assistive technology is being told, so landing on the first control
+ * carrying it guarantees the announcement and the focus agree. Where a form has not set that
+ * attribute the framework's own invalid class is used as a fallback, so a caller that flags
+ * invalidity only through the framework is still served. Document order is what "first" means -
+ * the order the fields are read in - not the order a validator happened to run.
+ *
+ * ⚠ AND IT NEVER STEALS FOCUS FROM SOMEWHERE ELSE. If focus already sits on a control inside the
+ * form that is itself flagged, it stays put: the operator has already navigated to a problem and
+ * moving them to a different one would be worse than doing nothing.
+ *
+ * @param root The element containing the form's controls, usually the form itself.
+ * @returns The control focused, or null when the form has nothing flagged.
+ */
+export function focusFirstInvalidControl(root: HTMLElement | null | undefined): HTMLElement | null {
+  if (root === null || root === undefined) {
+    return null;
+  }
+
+  const candidates = Array.from(root.querySelectorAll<HTMLElement>(CORRECTABLE_CONTROL_SELECTOR));
+
+  const flagged = candidates.filter(
+    (control) =>
+      control.getAttribute('aria-invalid') === 'true' || control.classList.contains('ng-invalid'),
+  );
+
+  if (flagged.length === 0) {
+    return null;
+  }
+
+  const active = root.ownerDocument.activeElement;
+
+  if (active instanceof HTMLElement && flagged.includes(active)) {
+    return active;
+  }
+
+  const target = flagged[0];
+
+  // `preventScroll` is deliberately NOT passed. Bringing the field into view is half the point
+  // of moving focus, and a form that has just grown by an error message is frequently taller
+  // than the viewport.
+  target.focus();
+
+  return target;
+}

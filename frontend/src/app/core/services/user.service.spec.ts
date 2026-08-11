@@ -284,6 +284,7 @@ const USER_DETAIL: UserDetail = {
   lastLockoutDate: null,
   lastPasswordChangeDate: null,
   roles: ['Administrators'],
+  canDelete: true,
 };
 
 /**
@@ -393,6 +394,9 @@ const RESET_PASSWORD_REQUEST: ChangePasswordRequest = {
  * coalesced - is asserted through the numeric members that do exist.
  */
 const ACCOUNT_POLICY_BODY: MembershipSettings = {
+  // ⚠ #5/#6 — the flag that distinguishes a stored policy from the defaults that stand in for
+  // one. True here because this fixture stands for a policy a tenant really saved.
+  isStored: true,
   columnFirstName: false,
   columnLastName: false,
   columnDisplayName: true,
@@ -1433,9 +1437,15 @@ describe('UserService', () => {
       const body: unknown = request.request.body;
 
       expect(body)
-        .withContext('nineteen of the twenty-three members are falsy and all must survive')
+        .withContext('nineteen of the twenty-four members are falsy and all must survive')
         .toEqual(ACCOUNT_POLICY_BODY);
-      expect(Object.keys(ACCOUNT_POLICY_BODY).length).toBe(23);
+      // ⚠ #5/#6 — TWENTY-FOUR, not twenty-three. `isStored` joined the contract so a tenant with
+      // no stored policy can be answered 200 with the legacy defaults instead of 404, and it is
+      // ACCEPTED BACK on the write because the API binds request bodies with unmapped-member
+      // handling set to disallow - a member present on the read and absent from the write would
+      // make every save 400. The count is asserted rather than left implicit precisely so that a
+      // member joining or leaving the contract has to be acknowledged here.
+      expect(Object.keys(ACCOUNT_POLICY_BODY).length).toBe(24);
       expectNoInterceptorHeaders(request);
 
       request.flush(ACCOUNT_POLICY_UPDATE_ENVELOPE);
@@ -2022,7 +2032,7 @@ describe('UserService', () => {
           'user.service.code-required',
           400,
           'Bad Request',
-          'An invitation code is required.',
+          'An RSVP Code is required.',
         ),
         { status: 400, statusText: 'Bad Request' },
       );
@@ -2278,7 +2288,14 @@ describe('UserService', () => {
       // Stated as an ABSENCE as well as a presence. Asserting only that the POST exists would pass
       // even if the service also issued the old GET, which is the shape a half-applied fix takes.
       httpMock.expectNone((request) => request.method === 'GET' && request.url === USERS);
-      expectSearch().flush(USER_PAGE);
+
+      const request = expectSearch();
+
+      // The presence half, counted: the identifying value is in the BODY, which is the whole point of
+      // moving the search off the target. `expectNone` above states the absence half and asserts by
+      // throwing, so it records no expectation of its own - this is the one the runner counts.
+      expect(searchBody(request)).toEqual({ pageIndex: 0, pageSize: 25, userName: 'ada' });
+      request.flush(USER_PAGE);
     });
 
     it('leaves a listing that names nobody on the cacheable GET', () => {
@@ -2287,7 +2304,16 @@ describe('UserService', () => {
       observe(service.list({ pageIndex: 2, pageSize: 25, sortBy: 'Username', sortDir: 'Ascending' }));
 
       httpMock.expectNone((request) => request.method === 'POST' && request.url === USERS_SEARCH);
-      expectRequest('GET', USERS).flush(USER_PAGE);
+
+      const request = expectRequest('GET', USERS);
+
+      // Counted, and it states the positive claim rather than only the absence: the coordinates and the
+      // ordering rode on the TARGET, where a cache can see them.
+      expect(request.request.params.get('pageIndex')).toBe('2');
+      expect(request.request.params.get('pageSize')).toBe('25');
+      expect(request.request.params.get('sortBy')).toBe('Username');
+      expect(request.request.params.get('sortDir')).toBe('Ascending');
+      request.flush(USER_PAGE);
     });
 
     // ⚠ THE FIFTH IDENTIFYING MEMBER, AND THE ONE THAT WAS MISSING. `query` belongs to the PAGING
@@ -2321,7 +2347,16 @@ describe('UserService', () => {
         observe(service.list({ pageIndex: 0, pageSize: 25, query: blank }));
 
         httpMock.expectNone((request) => request.method === 'POST' && request.url === USERS_SEARCH);
-        expectRequest('GET', USERS).flush(USER_PAGE);
+
+        const request = expectRequest('GET', USERS);
+
+        // Counted, one expectation per blank form so a failure names WHICH form regressed. A GET carries
+        // no body at all, which is the shape that proves the value did not migrate into one.
+        expect(request.request.body)
+          .withContext(`a blank filter (${JSON.stringify(blank)}) stays on the target`)
+          .toBeNull();
+        expect(request.request.params.get('pageSize')).toBe('25');
+        request.flush(USER_PAGE);
       }
     });
 

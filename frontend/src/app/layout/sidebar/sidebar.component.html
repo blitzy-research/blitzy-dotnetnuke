@@ -293,7 +293,31 @@
       @for (group of visibleNavigation(); track group.id) {
         @let groupHeadingId = navigationRegionId + '-' + group.id;
 
-        <h2 class="app-sidebar__group" [id]="groupHeadingId">{{ group.label }}</h2>
+        <!--
+          ⚠ A `<p>` AND NOT AN `<h2>`, AND THE ELEMENT CHOICE IS THE WHOLE POINT OF THIS NOTE.
+          These labels were `<h2>` elements, and because the rail precedes `<main>` in document
+          order that put FOUR level-two headings AHEAD of every screen's `<h1>`. The document
+          outline therefore opened at level two and each page's real heading arrived fifth, at
+          the same level as a navigation group — so a reader navigating by heading met the
+          furniture before the content and could not tell the two apart by level.
+
+          Nothing is lost by the change, because the group's accessible name never came from the
+          element being a heading: it comes from `aria-labelledby` on the list below, which
+          resolves against ANY element with an id. The list is still an announced, named
+          navigation group; it simply no longer competes with the page heading.
+
+          There is also NO VISUAL CHANGE. `.app-sidebar__group` already declares `margin: 0`
+          together with the colour, size, weight and line height, so the only properties a
+          heading element would have contributed were the default margins the class had already
+          zeroed and a font size the class had already overridden.
+
+          Retaining a heading and demoting it to `<h3>` was considered and rejected: it would
+          have kept the furniture in the outline and still placed it before the `<h1>`, which is
+          the actual defect. Moving the rail after `<main>` in the DOM was rejected too — it
+          would fix the outline by breaking the tab order, sending a keyboard reader through the
+          entire page content before reaching the navigation.
+        -->
+        <p class="app-sidebar__group" [id]="groupHeadingId">{{ group.label }}</p>
 
         <ul class="app-sidebar__list" [attr.aria-labelledby]="groupHeadingId">
           @for (item of group.items; track item.path) {
@@ -320,12 +344,20 @@
                 resolves to nothing at all when the entry is not current: binding a null
                 removes the attribute outright instead of leaving a stale claim behind. Colour
                 is therefore never the only carrier of which entry is current.
+
+                ⚠ THE ANNOUNCEMENT HAS TWO STRENGTHS AND THE CLASS HAS ONE. Marking a parent
+                while the operator is on a descendant is deliberate, but `aria-current="page"`
+                would then claim the link IS the page being viewed - on a portal's settings
+                screen, following the marked link arrives somewhere else. So the exact address
+                announces `page` and an ancestor announces `true`, while both take the active
+                class: the visual state is unchanged, and only the strength of the spoken claim
+                differs. See `ariaCurrent`.
               -->
               <a
                 class="app-sidebar__link"
                 [routerLink]="item.path"
                 [class.app-sidebar__link--active]="isCurrent(item)"
-                [attr.aria-current]="isCurrent(item) ? 'page' : null"
+                [attr.aria-current]="ariaCurrent(item)"
                 >{{ item.label }}</a
               >
             </li>

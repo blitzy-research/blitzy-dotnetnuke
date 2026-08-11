@@ -13,6 +13,11 @@
   vocabulary:
 
       .user-list__page-action
+      .user-list__policy-notice
+      .user-list__filter-disclosure
+      .user-list__row-mark
+      .user-list__row-mark-description
+      .user-list__absent-value
       .user-list__failure
       .user-list__failure-retry
       .user-list__filters
@@ -117,13 +122,13 @@
     authority. The gate reads `false` while the identity is unresolved, which fails closed.
   -->
   @if (administersPortal()) {
-    <a class="user-list__page-action" [routerLink]="addUserLink">{{ addUserLabel }}</a>
+    <a class="page-action user-list__page-action" [routerLink]="addUserLink">{{ addUserLabel }}</a>
 
-    <a class="user-list__page-action" [routerLink]="membershipSettingsLink">{{
+    <a class="page-action user-list__page-action" [routerLink]="membershipSettingsLink">{{
       membershipSettingsLabel
     }}</a>
 
-    <a class="user-list__page-action" [routerLink]="profileDefinitionsLink">{{
+    <a class="page-action user-list__page-action" [routerLink]="profileDefinitionsLink">{{
       profileDefinitionsLabel
     }}</a>
   }
@@ -159,6 +164,27 @@
   it. It is disabled while a request is already in flight so a second cannot be queued behind the
   first.
 -->
+<!--
+  THE POLICY DEGRADATION DISCLOSURE — #5.
+
+  The tenant's account policy decides two things on this screen: how many accounts a page holds and
+  which of the nine optional columns are shown. Both have a documented fallback on the paired class,
+  so a policy that cannot be read costs a preference rather than a listing — which is why it is NOT
+  reported through the failure surface below. That surface used to carry it, and the result was an
+  assertive "Not Found" banner with a retry command sitting above two hundred and fifty-one
+  perfectly healthy accounts, reporting a failure of the listing that had not happened.
+
+  ⚠ NOT AN ALERT AND NOT A LIVE REGION, for the same reason it is not a banner. This is a statement
+  about what is on screen, not the outcome of anything the reader did, and it is not a fault they can
+  act on from here. It is a plain paragraph placed between the header and the search bar, where a
+  reader moving through the document in order meets it before the controls whose behaviour it
+  qualifies. It is deliberately NOT silent: a listing quietly showing ten rows a page when the
+  tenant asked for fifty is the same defect in a quieter voice.
+-->
+@if (policyDegraded()) {
+  <p class="user-list__policy-notice">{{ policyDegradedNotice }}</p>
+}
+
 @if (hasReadFailure()) {
   <div class="user-list__failure">
     <!--
@@ -205,6 +231,17 @@
   index (`Website/controls/labelcontrol.ascx` L3-L4, defect D11); nothing here is withdrawn.
 -->
 <div class="user-list__filters">
+    <!--
+      ⚠ THE SECTION HEADING, CLIPPED FROM THE PAINTED PAGE. Measured before it existed: `<main>`
+      exposed exactly ONE heading on this screen - the page title - so a reader navigating by
+      heading could not move between the controls that narrow the list and the list itself. This
+      names the first of those two regions. It is clipped rather than shown because the region is
+      already obvious to anyone who can see it and a visible heading would add furniture the
+      legacy screen never had; the records region needs no counterpart because the grid carries
+      its own accessible name in a real `<caption>`.
+    -->
+    <h2 data-visually-hidden>Filter Accounts</h2>
+
   <!--
     The free-text filter. A shared component rather than a bare input, so the control keeps its
     label association and owns its own debounce and its own emission funnel.
@@ -264,16 +301,29 @@
       its own name rather than rejected. The value is transmitted verbatim — never validated,
       never case-folded, never checked against a fixed list.
 
-      ⚠ TRACKED BY THE OPTION OBJECT, NOT BY ITS VALUE, AND THE DISTINCTION IS LOAD-BEARING. A
-      tenant that declares a profile property literally named `Username` or `Email` produces a
-      DUPLICATE entry whose value collides with one of the two account fields, and the paired
-      component preserves that legacy quirk rather than de-duplicating it — the legacy switch
-      tested the account field first, so the account field wins. `track option.value` would
-      therefore raise a duplicated-key error on exactly the tenant configuration the component
-      goes out of its way to keep working. Object identity is unique per entry and stable across
-      change detection because the derived view is memoised, so it is the correct tracking
-      expression here. `track $index` is not used: it is the wrong answer wherever a stable key
-      exists, and one does.
+      ⚠ TRACKED BY THE ENTRY'S OWN COMPOSITE KEY, AND EACH OF THE THREE REJECTED ALTERNATIVES IS
+      REJECTED FOR A DIFFERENT MEASURED REASON.
+
+      `track option.value` would raise a DUPLICATED-KEY error on a real tenant configuration: a
+      profile property declared literally as `Username` or `Email` collides with one of the two
+      account fields, and the paired component preserves that legacy quirk rather than
+      de-duplicating it — the legacy switch tested the account field first, so the account field
+      wins.
+
+      `track option` — object identity — was what this template used, and it was WRONG in a way
+      only the console showed. The entries come from a `computed()` over a derived store slice, so
+      a fresh array of fresh objects is produced whenever the declared properties are re-read;
+      identity therefore changes without the list changing, and Angular re-created the entire
+      collection and reported NG0956. Measured before the change: 6 occurrences over collections
+      of 4, 4 and 2 entries.
+
+      `track $index` would be stable but would reuse a row for a DIFFERENT axis whenever the
+      declarations change, which is exactly the reuse `track` exists to prevent.
+
+      The key the component carries is the entry's ordinal joined to its value with the unit
+      separator, so it is unique even under the duplicate-name configuration and unchanged across
+      recomputation. It is composed in the component rather than concatenated here, because a
+      template expression that builds a key runs on every change-detection pass.
 
       The value is a string because the DOM requires one. Selection is bound by EQUALITY against
       the axis the component actually holds, so the control and the query cannot disagree.
@@ -284,7 +334,7 @@
       never disabled at any point in its lifecycle. Withholding it would be invented behaviour.
     -->
     <select [id]="searchFieldControlId" (change)="onSearchFieldChange($event)">
-      @for (option of searchFieldOptions(); track option) {
+      @for (option of searchFieldOptions(); track option.trackKey) {
         <option [value]="option.value" [selected]="option.value === searchField()">
           {{ option.label }}
         </option>
@@ -356,16 +406,17 @@
   operator who cannot distinguish the two colours still has a cue. Both are token-driven; no
   colour value appears in this markup.
 
-  ⚠ BLITZY [A11Y]: each entry's pointer target is smaller than the 44-by-44 recommendation, and it
-  is implemented per the measured design source rather than silently enlarged. The legacy
-  affordance is a bare inline text link: `default.css` L442-L447 declares `.CommandButton` with
-  nothing but a font family, an 11-pixel size and a normal weight — no padding, no dimension and
-  no minimum — and the entries were separated by a pair of non-breaking spaces and nothing more.
-  Nothing in this template constrains the size; enlarging the target further is a stylesheet
-  decision that would also change the strip's density and wrapping, so the deferral is flagged
-  here for designer review. Keyboard operation is unaffected: every entry is a real button in
-  ordinary document order with a visible focus ring, so the shortfall is a pointer-target concern
-  only.
+  ⚠ U-M4 — THE POINTER TARGET WAS THE SMALLEST IN THE CONSOLE AND IS NOW AT THE COMFORTABLE
+  MINIMUM. This note used to DEFER the shortfall for designer review, on the grounds that the
+  measured legacy affordance was a bare inline text link — `default.css` L442-L447 declares
+  `.CommandButton` with nothing but a font family, an eleven-pixel size and a normal weight, no
+  padding, no dimension and no minimum — and that enlarging the target would change the strip's
+  density and wrapping. The measurement that closed the deferral was the size itself: the entry for
+  the letter I was THREE units wide by fourteen tall, which is not a density trade-off but an
+  affordance a finger cannot land on. The floor is applied in the paired stylesheet, the density
+  consequence is accepted and documented there, and the entry's glyph, ink, underline and type step
+  are all unchanged — so the legacy APPEARANCE the surrounding rules preserve is preserved. Nothing
+  in this template constrains the size; the size is a stylesheet concern and is settled there.
 -->
 <div class="user-list__letters" role="group" [attr.aria-label]="filterStripLabel">
   <!--
@@ -388,6 +439,29 @@
     </button>
   }
 </div>
+
+<!--
+  THE FILTER-IN-FORCE DISCLOSURE — U-M12, and the half of #7 nothing else could close.
+
+  The strip above announces the entry in force through `aria-pressed`, and it truthfully announces
+  NONE while a free-text term, an electronic-mail prefix or a profile-property prefix is filtering
+  the listing — no entry on the strip is what is in force. Truthful silence still leaves an operator
+  unable to distinguish a filtered listing from an unfiltered one, because both show nothing pressed.
+
+  It also names the axis THE LISTING IS FILTERED ON, which is not necessarily the axis showing in the
+  selector: changing the selector applies nothing until a search is run, faithfully to a legacy
+  drop-down that declared no auto-post-back. So an operator who has just changed it sees this still
+  naming the previous axis, and can tell their selection is not yet in force — a fact that had no
+  surface on this screen at all.
+
+  ⚠ NOT A LIVE REGION AND NOT AN ALERT. Every state it describes is the direct result of a query the
+  reader themselves ran, and the grid below is already announced by the shared table; announcing this
+  as well would read the same event twice. The paired class resolves it to null for every state the
+  strip already announces, so the two surfaces never state one fact between them.
+-->
+@if (filterDisclosure(); as disclosure) {
+  <p class="user-list__filter-disclosure">{{ disclosure }}</p>
+}
 
 <!--
   THE GRID — `asp:datagrid` named `grdUsers` (`users.ascx` L22-L81).
@@ -469,7 +543,21 @@
   <p class="user-list__notice" role="status" aria-live="polite">{{ noQueryNotice }}</p>
 }
 
-<app-data-table [columns]="columns()" [rows]="rows()" [loading]="loading()">
+<!--
+  `[sortBy]` is handed a COLUMN KEY, not the endpoint's field name: the grid compares it against a column
+  key to decide which heading announces itself sorted, and the component projects the store's field name
+  back through its own map to produce it. Both inputs are read from the store, so a heading can never
+  announce an order whose request failed.
+-->
+<app-data-table
+  [columns]="columns()"
+  [rows]="rows()"
+  [rowKey]="userRowKey"
+  [loading]="loading()"
+  [sortBy]="sortBy()"
+  [sortDir]="sortDir()"
+  (sortChange)="onSortChange($event)"
+>
   <span dataTableCaption>{{ pageTitle }}</span>
 </app-data-table>
 
@@ -492,19 +580,31 @@
   for the same reason and is never a constant here: `Users.ascx.vb` L114-L119 read it from the
   tenant's records-per-page setting, so it was never a constant in the legacy screen either.
 
-  The guard expresses the TENANT'S PREFERENCE and nothing more. It reproduces `Users.ascx.vb`
-  L278-L280, which narrowed the pager's visibility to the case where the page size was smaller
-  than the total, and only when the tenant had asked for suppression. Whether a pager RENDERS
-  remains the shared component's own decision — it declines for a genuinely unpaged resource on
-  its own terms — so the rule is expressed once, here, and applied twice by two owners that
-  cannot disagree.
+  ⚠ MOUNTED UNCONDITIONALLY, AND THE TENANT'S PREFERENCE IS NO LONGER A GATE ON IT. The shared
+  component decides its own shape - the range summary alone when everything fits on one page, the
+  summary plus the steps when it does not - and a wrapper condition here could only ever remove
+  the summary, which is the one on-screen confirmation of how many accounts a filter matched.
+  Runtime testing measured that loss on every list screen.
+
+  MIGRATION: this restores the legacy USERS behaviour exactly, which the previous guard had
+  broken. `Users.ascx.vb` L278-L280 narrowed the pager's visibility to `PageSize < TotalRecords`
+  ONLY when the tenant had asked for suppression, and the genuine `Display_SuppressPager` setting
+  defaults to `False` (`Library/Components/Users/UserModuleBase.vb` L131-L133) - so on a default
+  tenant the legacy guard NEVER RAN and the legacy pager, status cell and all
+  (`Library/Controls/PagingControl.vb` L153-L161), stayed on screen for a single page. The store
+  still publishes `pagerWarranted` for the tenant that does set the flag; see the note there.
+
+  ⚠ MOUNTED WHENEVER THERE IS A COUNT TO STATE, not whenever there is a page to step to. The shared
+  control decides its own shape and the guard here only keeps an empty custom element out of a
+  zero-result document, where the empty state already says what happened in words.
 -->
-@if (pagerWarranted()) {
+@if (hasResults()) {
   <app-pagination
     [page]="pageIndex()"
     [pageSize]="pageSize()"
     [totalCount]="totalCount()"
-    (pageChange)="onPageChange($event)"
+    [loading]="loading()"
+      (pageChange)="onPageChange($event)"
   />
 }
 
@@ -875,4 +975,92 @@
 -->
 <ng-template #approvedCell let-row>
   {{ row.isApproved | yesNo }}
+  <!--
+    ⚠ U-M1 — THE LOCK-OUT QUALIFIER. The approval word above answers a different question from
+    lock-out, and both are true facts, but an operator reads this column to decide whether an account
+    can be used — and for a locked-out account the honest answer is no while the word above says
+    `Yes`. Measured on this tenant: eleven of two hundred and fifty-three accounts are locked out and
+    every one rendered an unqualified `Yes`, so only the thirty-four UNAPPROVED accounts were
+    findable at all.
+
+    The approval word is untouched and no column is added, so the tenant's `Column_Authorized` gate
+    still governs both facts together. Lock-out was legacy-visible on the per-account panel only
+    (`Website/admin/Users/Membership.ascx`, hosted beside the editor at `manageusers.ascx` L59-L63,
+    which carried the unlock command) — so the capability is legacy and only its discoverability here
+    is new.
+
+    ⚠ TWO ELEMENTS AND NOT ONE, for the same reason every other anomaly mark in this console uses
+    two: the short word is what fits a grid cell, and the sentence beside it is what makes the short
+    word unambiguous to a reader who meets it without the column heading. The sentence is clipped
+    from the painted page by the shared table stylesheet and is present in the accessibility tree.
+
+    ⚠ `isLockedOut` IS COMPARED AGAINST `true` EXPLICITLY, never read for truthiness. `false` is data
+    on this contract, and the legacy absent-boolean marker was itself `False`
+    (`Library/Components/Shared/Null.vb` L76-L80) — so a truthiness test here would be the same
+    ambiguity the approval cell above documents at length.
+
+    THE TWO SIBLING FLAGS ON THIS CONTRACT ARE DELIBERATELY NOT RENDERED, AND THE REASONS ARE
+    MEASURED RATHER THAN ASSUMED.
+      * `isSuperUser` is `false` on ALL two hundred and fifty-three rows, and structurally must be: a
+        host account is not portal-scoped, so a PORTAL listing can never contain one. The one host
+        account on this installation does not appear here. A mark for it would be presentation that
+        can never paint, and the fact is already load-bearing where it matters — the removal command
+        consults it per row.
+      * `isOnline` is `false` on all two hundred and fifty-three rows as well, and it cannot be
+        trusted even when it is not: the tracking it derives from is swept by a scheduled purge job
+        that this migration intentionally omits
+        (`Library/Components/Users/Users Online/PurgeUsersOnline.vb` L44, recorded as an intentional
+        omission in the plan's exclusion analysis). A presence indicator that can go stale and never
+        be corrected is worse than no indicator, because an operator would act on it.
+  -->
+  @if (row.isLockedOut === true) {
+    <span class="user-list__row-mark" aria-hidden="true">{{ lockedOutQualifier }}</span>
+    <span class="user-list__row-mark-description">{{ lockedOutDescription }}</span>
+  }
+</ng-template>
+
+<!--
+  THE POSTAL ADDRESS CELL — U-M2. `users.ascx` L44-L49, `Profile.Street`.
+
+  ⚠ WHY THIS IS A TEMPLATE COLUMN NOW AND WAS A FORMATTED-TEXT ONE BEFORE. A formatted-text column
+  emits one string; an absent value has to emit a painted mark AND a hidden explanation of it, which
+  is two elements. The change of kind is the whole mechanism of the fix — the formatter it replaced
+  is still on the paired class and still used for the present case.
+
+  ⚠ THE ABSENCE IS REAL AND WAS MEASURED BEFORE BEING PRESENTED. Across all two hundred and
+  fifty-three accounts `address` is null — on the DETAIL endpoint as well as on the listing — so
+  nothing is being dropped in projection and there is no value to recover: the profile answers were
+  simply never recorded. An empty cell is therefore truthful. What it is not is DISTINGUISHABLE from a
+  cell that failed to render, and two of the nine columns rendering nothing on every row is exactly
+  what a broken grid looks like.
+
+  The mark is an em dash rather than a word, because no address can be spelled that way whereas
+  "None" or "N/A" are both things a person could type into a free-text profile field.
+-->
+<ng-template #addressCell let-row>
+  @if (isAddressAbsent(row)) {
+    <span class="user-list__absent-value" aria-hidden="true">{{ absentProfileValueMark }}</span>
+    <span class="user-list__row-mark-description">{{ absentProfileValueDescription }}</span>
+  } @else {
+    {{ row.address }}
+  }
+</ng-template>
+
+<!--
+  THE TELEPHONE CELL — U-M2. `users.ascx` L50-L55, `Profile.Telephone`. Measured absent on every one
+  of the two hundred and fifty-three accounts, exactly as the address is, and marked on the same
+  terms.
+
+  MIGRATION — the legacy defect this cell corrects is recorded on the paired class rather than
+  repeated here: the legacy markup applied the electronic-mail formatter to the telephone number, so a
+  number containing an "@" would have been wrapped in a `mailto:` link. The value is rendered as plain
+  text here, which is a deliberate divergence rather than a silent fix.
+-->
+<ng-template #telephoneCell let-row>
+  @if (isTelephoneAbsent(row)) {
+    <span class="user-list__absent-value" aria-hidden="true">{{ absentProfileValueMark }}</span>
+    <span class="user-list__row-mark-description">{{ absentProfileValueDescription }}</span>
+  } @else {
+    {{ row.telephone }}
+  }
 </ng-template>

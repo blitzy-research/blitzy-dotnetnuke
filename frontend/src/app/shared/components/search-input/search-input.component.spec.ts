@@ -1,4 +1,9 @@
-import { ChangeDetectionStrategy, type ChangeDetectorRef, Component } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  type ChangeDetectorRef,
+  Component,
+  signal,
+} from '@angular/core';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed, fakeAsync, tick } from '@angular/core/testing';
@@ -35,6 +40,17 @@ const EMPTY_TERM = '';
 const MARKUP_BEARING_PLACEHOLDER = '<b>x</b>';
 
 const LABEL_SELECTOR = 'label.search-input__label';
+const ANY_LABEL_SELECTOR = 'label';
+
+/**
+ * The caption a consuming screen paints when it labels the control itself.
+ *
+ * The wording is the legacy `plUsers.Text` entry the role membership screen carries, which is the
+ * real reason this mode exists: that screen's caption, not this component's generic one, is the one
+ * a user reads beside the box.
+ */
+const EXTERNAL_LABEL_TEXT = 'User Name';
+const EXTERNAL_LABEL_SELECTOR = 'label.consumer-owned-label';
 const ROW_SELECTOR = 'div.search-input__row';
 const FIELD_SELECTOR = 'input.search-input__field';
 const SUBMIT_SELECTOR = 'button.search-input__submit';
@@ -224,6 +240,45 @@ class SearchInputHostComponent {
   public record(payload: unknown): void {
     this.received.push(payload);
   }
+}
+
+/**
+ * A consuming host that labels the control ITSELF, which is the shape the role membership screen
+ * uses: the shared field wrapper paints the legacy caption and points it at the lookup's own
+ * published field identifier.
+ *
+ * It exists as a real template because the point at issue is an association BETWEEN two components,
+ * and a directly created fixture cannot render the outside half of it. The label is placed before
+ * the control, matching the consumer's rendered order, so the expectations see the same DOM a user
+ * would.
+ */
+@Component({
+  selector: 'app-search-input-labelled-host',
+  standalone: true,
+  imports: [SearchInputComponent],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    @if (labelHere()) {
+      <label class="consumer-owned-label" [attr.for]="lookup.fieldId">{{ caption }}</label>
+    }
+    <app-search-input #lookup [labelledExternally]="labelHere()" />
+  `,
+})
+class SearchInputExternallyLabelledHostComponent {
+  public readonly caption = EXTERNAL_LABEL_TEXT;
+
+  /**
+   * Whether this host is labelling the control itself.
+   *
+   * A signal rather than a plain field, because this host is `OnPush` exactly as the real consumer
+   * is: a plain field written mid-life leaves the view clean and nothing re-renders, so the
+   * expectation below would read a stale DOM and pass or fail for the wrong reason. A signal write
+   * marks the view, which is the same mechanism every screen in this application relies on.
+   *
+   * Both halves move together, as they must at a consumer: a host that stopped painting its label
+   * while still claiming to have one would leave the control unnamed.
+   */
+  public readonly labelHere = signal(true);
 }
 
 describe('SearchInputComponent', () => {
@@ -813,7 +868,12 @@ describe('SearchInputComponent', () => {
     }));
   });
 
-  describe('duplicate suppression', () => {
+  // The guard exists for ONE path. Typing produces a stream of intermediate values, and a stream that
+  // re-arrives at a value it has already emitted - by backspacing to it, or by a paste that replays it -
+  // should not re-query. An EXPLICIT submit is the opposite case: it carries no intermediate values and
+  // means only one thing, so it is never a duplicate however recently the same term went out. Applying one
+  // rule to both paths is what killed the Search affordance, and the expectations below hold the two apart.
+  describe('duplicate suppression and explicit re-query', () => {
     it('does not re-emit an unchanged term on the debounced path', fakeAsync(() => {
       component.debounceMs = SHORT_DEBOUNCE_MS;
       fixture.detectChanges();
@@ -827,7 +887,7 @@ describe('SearchInputComponent', () => {
       expect(emitted.length).toBe(1);
     }));
 
-    it('does not re-emit when Enter repeats a term the debounced path already emitted', fakeAsync(() => {
+    it('re-emits when Enter repeats a term the debounced path already emitted', fakeAsync(() => {
       component.debounceMs = SHORT_DEBOUNCE_MS;
       fixture.detectChanges();
 
@@ -837,13 +897,24 @@ describe('SearchInputComponent', () => {
 
       pressEnter(field());
 
-      // The mirror of the case above: here the debounced emission landed first and the keystroke is the
-      // duplicate, so the guard must hold in both directions.
-      expect(emitted).toEqual([PLAIN_TERM]);
-      expect(emitted.length).toBe(1);
+      // ⚠ #7 — THIS ASSERTION IS THE REVERSE OF WHAT IT USED TO BE, AND THE REVERSAL IS THE FIX. It
+      // previously required the keystroke to be swallowed as a duplicate of the debounced emission. The
+      // measured consequence on a real screen: an operator types a term, the delay elapses and the query
+      // runs, and pressing Enter or the Search control then issues NOTHING — zero requests. On the account
+      // listing that made a control inert, because the search-AXIS selector beside the box is applied only
+      // when a search runs (`users.ascx` L8 declares the drop-down with no auto-post-back and
+      // `Users.ascx.vb` L586 reads the selection at query time), so switching from account name to
+      // electronic-mail address and pressing Search could never take effect.
+      //
+      // An explicit submit is a COMMAND, and a command asked for twice was asked for twice. This component
+      // cannot see what else changed between the two and must not assume nothing did. Duplicate
+      // suppression is retained for the DEBOUNCED path alone, which is where it is genuinely the same
+      // query asked for once — see the specification above this one.
+      expect(emitted).toEqual([PLAIN_TERM, PLAIN_TERM]);
+      expect(emitted.length).toBe(2);
     }));
 
-    it('does not re-emit when the submit control repeats an already emitted term', fakeAsync(() => {
+    it('re-emits every time the submit control is pressed, even on an unchanged term', fakeAsync(() => {
       component.debounceMs = SHORT_DEBOUNCE_MS;
       fixture.detectChanges();
       const submit = requireElement<HTMLButtonElement>(fixture.nativeElement, SUBMIT_SELECTOR);
@@ -853,10 +924,15 @@ describe('SearchInputComponent', () => {
       submit.click();
       submit.click();
 
-      expect(emitted).toEqual([PLAIN_TERM]);
+      // ⚠ #7 — THE SUBMIT CONTROL IS THE AFFORDANCE THAT WAS MEASURED INERT, so this is the assertion
+      // that most directly encodes the fix. Three emissions: one from the delay elapsing, then one per
+      // press. A consumer that wants at-most-one query per term still has the debounced path; a consumer
+      // whose query depends on state this component cannot see — a search axis, a date range, a scope
+      // selector — needs the press to be honoured, and only the press can be trusted to mean "now".
+      expect(emitted).toEqual([PLAIN_TERM, PLAIN_TERM, PLAIN_TERM]);
     }));
 
-    it('does not re-emit when Enter is pressed repeatedly on an unchanged term', fakeAsync(() => {
+    it('re-emits once per Enter press, and the debounced tail is still absorbed', fakeAsync(() => {
       component.debounceMs = SHORT_DEBOUNCE_MS;
       fixture.detectChanges();
       const control = field();
@@ -866,24 +942,36 @@ describe('SearchInputComponent', () => {
       pressEnter(control);
       pressEnter(control);
 
-      expect(emitted).toEqual([PLAIN_TERM]);
-      expect(emitted.length).toBe(1);
+      // ⚠ #7 — one emission per explicit press. See the two specifications above for why an explicit
+      // submit is never treated as a duplicate.
+      expect(emitted).toEqual([PLAIN_TERM, PLAIN_TERM, PLAIN_TERM]);
+      expect(emitted.length).toBe(3);
 
-      // Drain the in-flight debounced emission. Typing scheduled one, and leaving it undrained would
-      // schedule a REAL timer that outlives the test; the whole suite keeps time virtual so that nothing can
-      // flake under load.
+      // ⚠ AND THIS IS THE HALF THAT PROVES THE DOCUMENTED DEBOUNCE BYPASS STILL WORKS. Typing scheduled a
+      // delayed emission; the presses above superseded it. Draining the delay must add NOTHING, because an
+      // immediate submit still WRITES the duplicate memory even though it no longer reads it — which is
+      // exactly what absorbs the tail. Were that assignment ever removed, this assertion would see a
+      // fourth emission carrying the same term.
+      //
+      // Draining also matters mechanically: leaving the delay undrained would schedule a REAL timer that
+      // outlives the test, and the whole suite keeps time virtual so nothing can flake under load.
       tick(SHORT_DEBOUNCE_MS);
-      expect(emitted).toEqual([PLAIN_TERM]);
+      expect(emitted).toEqual([PLAIN_TERM, PLAIN_TERM, PLAIN_TERM]);
     }));
 
-    it('does not re-emit an empty term that was already emitted', () => {
+    it('re-emits an empty term on every explicit press, because a clear is a command too', () => {
       fixture.detectChanges();
 
       pressEnter(field());
       pressEnter(field());
 
-      expect(emitted).toEqual([EMPTY_TERM]);
-      expect(emitted.length).toBe(1);
+      // ⚠ #7 — THE EMPTY TERM IS THE CASE WHERE SWALLOWING A REPEAT WAS MOST DAMAGING, and the sibling
+      // portal listing reported it independently: an operator who clears the box and presses Search is
+      // asking for the unfiltered listing, and a guard that recognised the empty term as one already
+      // emitted refused to ask for it. The clear then appeared to do nothing at all. Pressing twice
+      // therefore emits twice.
+      expect(emitted).toEqual([EMPTY_TERM, EMPTY_TERM]);
+      expect(emitted.length).toBe(2);
     });
 
     it('emits again as soon as the term genuinely changes', fakeAsync(() => {
@@ -1251,6 +1339,53 @@ describe('SearchInputComponent', () => {
 
       expect(field().getAttribute('autocomplete')).toBe('off');
     });
+
+    it('withholds its own caption entirely when the consumer states it has labelled the control', () => {
+      component.labelledExternally = true;
+      fixture.detectChanges();
+      const host: HTMLElement = fixture.nativeElement;
+
+      // Not merely the classed label: ANY label rendered here would be a second one at the
+      // consumer, which is the whole defect this mode removes.
+      expect(host.querySelector(LABEL_SELECTOR)).toBeNull();
+      expect(host.querySelector(ANY_LABEL_SELECTOR)).toBeNull();
+      expect(Array.from(field().labels ?? []).length).toBe(0);
+    });
+
+    it('keeps publishing the field id when its own caption is withheld, so a consumer can name it', () => {
+      component.labelledExternally = true;
+      fixture.detectChanges();
+      const control = field();
+
+      // Withholding the caption must not withhold the hook the consumer needs; without the id
+      // the mode would trade a duplicated name for no name at all.
+      expect(control.id).toMatch(FIELD_ID_PATTERN);
+      expect(component.fieldId).toBe(control.id);
+    });
+
+    it('names itself by default, so a consumer that says nothing gets a labelled control', () => {
+      // The default is the safe direction, and it is the default that a consumer relies on
+      // implicitly: three of the four screens using this control declare nothing at all.
+      expect(component.labelledExternally).toBeFalse();
+
+      fixture.detectChanges();
+      const host: HTMLElement = fixture.nativeElement;
+      const label = requireElement<HTMLLabelElement>(host, LABEL_SELECTOR);
+
+      expect(textOf(label)).toBe(LABEL_TEXT);
+      expect(host.querySelectorAll(ANY_LABEL_SELECTOR).length).toBe(1);
+      expect(Array.from(field().labels ?? []).length).toBe(1);
+    });
+
+    it('names itself when external labelling is declared and then explicitly denied', () => {
+      component.labelledExternally = false;
+      fixture.detectChanges();
+
+      expect(textOf(requireElement<HTMLLabelElement>(fixture.nativeElement, LABEL_SELECTOR))).toBe(
+        LABEL_TEXT,
+      );
+      expect(Array.from(field().labels ?? []).length).toBe(1);
+    });
   });
 
   describe('data access', () => {
@@ -1266,9 +1401,15 @@ describe('SearchInputComponent', () => {
       tick(SHORT_DEBOUNCE_MS);
 
       // Asserts the absence positively rather than leaning on the teardown alone, at the one point where a
-      // term is typed, submitted and cleared in a single pass.
+      // term is typed, submitted and cleared in a single pass. This component performs no data access of
+      // its own under ANY sequence, which is the property being asserted; the emissions beside it are
+      // recorded so the sequence being exercised is visible rather than implied.
       expect(httpMock.match((): boolean => true).length).toBe(0);
-      expect(emitted).toEqual([PLAIN_TERM, EMPTY_TERM]);
+
+      // Three emissions, not two: the debounced arrival, then the explicit Enter re-querying the same term,
+      // then the cleared box. Every one of them is a request the CONSUMER will issue - and none of them is a
+      // request this component issues, which is the whole point of the expectation above.
+      expect(emitted).toEqual([PLAIN_TERM, PLAIN_TERM, EMPTY_TERM]);
     }));
   });
 
@@ -1658,7 +1799,13 @@ describe('SearchInputComponent within a consuming host', () => {
     pressEnter(hostField());
 
     expect(httpMock.match((): boolean => true).length).toBe(0);
-    expect(host.received).toEqual([PLAIN_TERM]);
+
+    // ⚠ #7 — TWO EMISSIONS REACH THE CONSUMER: the delay elapsing, then the explicit Enter press, which is
+    // a command and is never suppressed as a duplicate. Asserted from the CONSUMER's side as well as from
+    // the component's, because a consumer whose query depends on state this component cannot see — the
+    // account listing's search-axis selector being the measured case — is the reason the press has to be
+    // honoured at all.
+    expect(host.received).toEqual([PLAIN_TERM, PLAIN_TERM]);
   }));
 });
 
@@ -1822,5 +1969,87 @@ describe('SearchInputComponent within a consuming form', () => {
     pressEnterCancelable(formField());
 
     expect(httpMock.match((): boolean => true)).toEqual([]);
+  });
+});
+
+/**
+ * The mode the role membership screen uses. Its subject is the association BETWEEN the consumer's
+ * label and this component's field, so it needs the outside half of that association to be real
+ * markup rather than a property set on a bare fixture.
+ */
+describe('SearchInputComponent labelled by its consumer', () => {
+  let hostFixture: ComponentFixture<SearchInputExternallyLabelledHostComponent>;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [SearchInputComponent, SearchInputExternallyLabelledHostComponent],
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    }).compileComponents();
+
+    hostFixture = TestBed.createComponent(SearchInputExternallyLabelledHostComponent);
+    hostFixture.detectChanges();
+  });
+
+  function labelledHostField(): HTMLInputElement {
+    return requireElement<HTMLInputElement>(hostFixture.nativeElement, FIELD_SELECTOR);
+  }
+
+  it('leaves the control named exactly once, by the consumer', () => {
+    const host: HTMLElement = hostFixture.nativeElement;
+    const labels = Array.from(labelledHostField().labels ?? []);
+
+    // ONE is the whole point. Two labels give the control a composite accessible name in which
+    // the caption nearest the box is no longer the whole name, which is the SC 2.5.3 mismatch.
+    expect(labels.length).toBe(1);
+    expect(host.querySelectorAll(ANY_LABEL_SELECTOR).length).toBe(1);
+    expect(host.querySelector(LABEL_SELECTOR)).toBeNull();
+  });
+
+  it('is named by the consumer wording, which is the caption a reader sees beside the box', () => {
+    const label = requireElement<HTMLLabelElement>(
+      hostFixture.nativeElement,
+      EXTERNAL_LABEL_SELECTOR,
+    );
+
+    expect(textOf(label)).toBe(EXTERNAL_LABEL_TEXT);
+    expect(textOf(label)).not.toBe(LABEL_TEXT);
+    expect(label.getAttribute('for')).toBe(labelledHostField().id);
+    expect(label.control).toBe(labelledHostField());
+  });
+
+  it('paints the caption before the control it names', () => {
+    const host: HTMLElement = hostFixture.nativeElement;
+    const label = requireElement<HTMLLabelElement>(host, EXTERNAL_LABEL_SELECTOR);
+
+    // A user reads the nearest preceding caption as the field's name, so the order is part of
+    // the claim rather than incidental.
+    expect(
+      label.compareDocumentPosition(labelledHostField()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeGreaterThan(0);
+  });
+
+  it('keeps the field and its submit affordance fully operable in this mode', () => {
+    const submit = requireElement<HTMLButtonElement>(hostFixture.nativeElement, SUBMIT_SELECTOR);
+
+    expect(labelledHostField().type).toBe('search');
+    expect(labelledHostField().hasAttribute('disabled')).toBeFalse();
+    expect(submit.disabled).toBeFalse();
+    expect(textOf(submit)).toBe(SUBMIT_TEXT);
+  });
+
+  it('takes its own caption back when the consumer stops labelling it', () => {
+    hostFixture.componentInstance.labelHere.set(false);
+    hostFixture.detectChanges();
+    const host: HTMLElement = hostFixture.nativeElement;
+
+    // The control is never left nameless in either direction: the count stays at one across the
+    // change, and the surviving label is this component's own, re-associated with the same field.
+    expect(host.querySelector(EXTERNAL_LABEL_SELECTOR)).toBeNull();
+    expect(host.querySelectorAll(ANY_LABEL_SELECTOR).length).toBe(1);
+
+    const own = requireElement<HTMLLabelElement>(host, LABEL_SELECTOR);
+    expect(textOf(own)).toBe(LABEL_TEXT);
+    expect(own.getAttribute('for')).toBe(labelledHostField().id);
+    expect(Array.from(labelledHostField().labels ?? []).length).toBe(1);
   });
 });

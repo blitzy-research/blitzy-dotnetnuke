@@ -258,10 +258,41 @@ public static class UserMappings
             // nobody may hold either null or -1, and neither may be read as "matches this row". A null
             // administrator therefore protects nothing, which is the correct reading: there is no
             // designated administrator to protect.
-            CanDelete = !user.IsSuperUser
-                && (portalAdministratorId is not { } designated || designated != user.UserId),
+            CanDelete = CanBeDeleted(user, portalAdministratorId),
         };
     }
+
+    /// <summary>
+    /// Whether an account may be removed from a tenant.
+    /// </summary>
+    /// <param name="user">The account being judged.</param>
+    /// <param name="portalAdministratorId">
+    /// The account named by the tenant's <c>Portals.AdministratorId</c>, or <see langword="null"/> when the
+    /// tenant designates nobody.
+    /// </param>
+    /// <returns><see langword="true"/> when the removal operation would be permitted.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ SHARED BY THE LIST AND THE DETAIL PROJECTIONS, AND THAT IS THE WHOLE REASON IT EXISTS. The rule
+    /// was previously written out in the list projection only, and the detail contract published no
+    /// capability at all - so the client screen that edits one account had to approximate it, and
+    /// approximated it as "not a super user", omitting the administrator clause. The two surfaces then
+    /// disagreed about the same permission for the same account: the listing correctly withheld the
+    /// removal affordance for the tenant's designated administrator while the detail screen offered it,
+    /// where its only possible outcome was a refusal.
+    /// </para>
+    /// <para>
+    /// ⚠ THE ADMINISTRATOR COMPARISON IS AN EQUALITY AND MUST STAY ONE. <c>Users.UserID</c> seeds
+    /// <c>IDENTITY(1, 1)</c>, but <c>Portals.AdministratorId</c> is an ordinary nullable integer column and
+    /// the legacy null contract spells a missing integer as MINUS ONE - so a portal that designates nobody
+    /// may hold either null or -1, and neither may be read as "matches this row". A null administrator
+    /// therefore protects nothing, which is the correct reading: there is no designated administrator to
+    /// protect.
+    /// </para>
+    /// </remarks>
+    private static bool CanBeDeleted(UserEntity user, int? portalAdministratorId) =>
+        !user.IsSuperUser
+        && (portalAdministratorId is not { } designated || designated != user.UserId);
 
     /// <summary>
     /// Projects an account onto the full detail contract.
@@ -269,6 +300,11 @@ public static class UserMappings
     /// <param name="user">The account to project.</param>
     /// <param name="portalId">The tenant the account is being read within.</param>
     /// <param name="roles">The names of the roles the account currently holds in that tenant.</param>
+    /// <param name="portalAdministratorId">
+    /// The account named by the tenant's <c>Portals.AdministratorId</c>, or <see langword="null"/> when the
+    /// tenant designates nobody. Used only to compute <see cref="UserDetailDto.CanDelete"/>, by the same
+    /// member that computes it for the list projection.
+    /// </param>
     /// <returns>The detail contract.</returns>
     /// <remarks>
     /// <para>
@@ -284,7 +320,11 @@ public static class UserMappings
     /// is not, and must never become, a channel for the credential itself.
     /// </para>
     /// </remarks>
-    public static UserDetailDto ToDetail(UserEntity user, int portalId, IReadOnlyList<string> roles)
+    public static UserDetailDto ToDetail(
+        UserEntity user,
+        int portalId,
+        IReadOnlyList<string> roles,
+        int? portalAdministratorId)
     {
         ArgumentNullException.ThrowIfNull(user);
         ArgumentNullException.ThrowIfNull(roles);
@@ -320,6 +360,11 @@ public static class UserMappings
             LastPasswordChangeDate = user.LastPasswordChangeDate,
 
             Roles = roles,
+
+            // The SAME rule the list projection publishes, from the one member that owns it. Before this
+            // the detail contract carried no capability at all and the client screen approximated the
+            // rule, omitting the administrator clause - so the two surfaces disagreed for one account.
+            CanDelete = CanBeDeleted(user, portalAdministratorId),
         };
     }
 

@@ -18,8 +18,59 @@ import {
 } from '../../../core/models/module.model';
 import type { ValidationProblemDetails } from '../../../core/models/problem-details.model';
 import type { TabListItem } from '../../../core/models/tab.model';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
-import type { ModuleSettingsViewModel } from './module-settings.view-model';
+import { TokenStorageService } from '../../../core/services/token-storage.service';
+import type { AuthSession, CurrentUser } from '../../../core/models/auth.model';
+import type { ModuleSettingsSeed } from './module-settings.component';
+
+// =====================================================================================================
+// THE SESSION THE CATALOGUE READ IS CONDITIONED ON
+//
+// The advisory key list is requested only when the caller administers the tenant, because the catalogue
+// endpoint is declared under the administrator policy and would otherwise answer 403. Neither
+// `AuthStore.holdsPortalAdministration` nor `AuthStore.permissions` is writable — both are projections
+// over the stored session — so storing a real session is the only supported way to state that standing,
+// and it is the same instrument the shared permission directive's own specification reaches for.
+//
+// Every case OUTSIDE the advisory describe leaves the session absent, which is why none of them sees a
+// catalogue request: the read is withheld, and the suite's `httpMock.verify()` proves it stayed withheld
+// rather than merely going unasserted.
+// =====================================================================================================
+
+/** Builds a caller snapshot carrying exactly the standing each case needs. */
+function userWith(administersPortal: boolean): CurrentUser {
+  return {
+    userId: 3,
+    portalId: -1,
+    portalName: 'Runtime Portal',
+    username: 'runtime_operator',
+    displayName: 'Runtime Operator',
+    email: 'operator@runtime.test',
+    // Host standing is a separate fact and is deliberately not set: the condition reads the tenant
+    // determination, so leaving this false keeps each case honest about what admitted the read.
+    isSuperUser: false,
+    isPortalAdministrator: administersPortal,
+    roles: administersPortal ? ['Administrators'] : [],
+    // The keys the CALLER holds are irrelevant here and are deliberately empty: this screen reads the
+    // keys the DEFINITION declares, which is a different fact, and an administrator named in no grant
+    // row legitimately holds none.
+    permissions: [],
+  };
+}
+
+/** Wraps a caller snapshot in a session the storage service accepts. */
+function sessionWith(administersPortal: boolean): AuthSession {
+  return {
+    accessToken: 'access-token-placeholder',
+    expiresAtUtc: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    refreshToken: 'refresh-token-placeholder',
+    mustChangePassword: false,
+    mustUpdateProfile: false,
+    passwordExpiring: false,
+    user: userWith(administersPortal),
+  };
+}
 
 /**
  * The sixteen members the server's update contract declares, and the only members a submission may carry.
@@ -42,6 +93,9 @@ const UPDATE_CONTRACT_MEMBERS: readonly string[] = [
   'isDeleted',
   'moduleOrder',
   'moduleTitle',
+  // The relocation destination, distinct from 'tabId'. That member SELECTS the placement being edited; this
+  // one names the page it is moving to. Conflating them made the move-to-page control unusable.
+  'moveToTabId',
   'setAsDefaultSettings',
   'startDate',
   'tabId',
@@ -57,7 +111,7 @@ const UPDATE_CONTRACT_MEMBERS: readonly string[] = [
  * @param overrides The fields to replace.
  * @returns The module state.
  */
-function moduleOf(overrides: Partial<ModuleSettingsViewModel> = {}): ModuleSettingsViewModel {
+function moduleOf(overrides: Partial<ModuleSettingsSeed> = {}): ModuleSettingsSeed {
   return {
     moduleId: 0,
     tabModuleId: 31,
@@ -681,16 +735,38 @@ describe('ModuleSettingsComponent', () => {
       expect(qa('.module-settings__body[hidden]').length).toBe(0);
     });
 
-    it('reports its state through aria-expanded and offers no aria-controls', () => {
+    it('reports its state through aria-expanded and names its region only while that region exists', () => {
       const head = toggleFor('pageSettings')!;
       expect(head.getAttribute('aria-expanded')).toBe('false');
+
+      // CLOSED: no reference, because the region is removed from the document rather than hidden
+      // (proven by the preceding spec), so a constant attribute would leave a dangling IDREF.
+      expect(head.hasAttribute('aria-controls')).toBeFalse();
 
       head.click();
       fixture.detectChanges();
 
-      expect(toggleFor('pageSettings')?.getAttribute('aria-expanded')).toBe('true');
-      // aria-controls would point outside the document while the region is closed, which is worse than
-      // omitting it. aria-expanded alone is a complete disclosure pattern.
+      const opened = toggleFor('pageSettings')!;
+      expect(opened.getAttribute('aria-expanded')).toBe('true');
+
+      // OPEN: the reference is published, and it RESOLVES. This spec previously asserted that
+      // aria-controls was never offered at all, reasoning that it "would point outside the
+      // document while the region is closed". That was right about the closed state and wrong to
+      // conclude the attribute could never be declared: assistive technology could not identify
+      // the region the control governs even when the region was present. The binding is now
+      // conditional, so the closed state keeps the property the old assertion was protecting
+      // while the open state gains the association it was denying.
+      const governed: string | null = opened.getAttribute('aria-controls');
+      expect(governed).toBe('module-settings-body-pageSettings');
+      expect(q(`#${governed}`)).not.toBeNull();
+
+      // And the toggle does not point at itself - a control naming its own id tells AT nothing.
+      expect(governed).not.toBe(opened.getAttribute('id'));
+
+      opened.click();
+      fixture.detectChanges();
+
+      // CLOSED AGAIN: withdrawn with the region, so no dangling reference is ever left behind.
       expect(toggleFor('pageSettings')?.hasAttribute('aria-controls')).toBeFalse();
     });
 
@@ -1020,6 +1096,10 @@ describe('ModuleSettingsComponent', () => {
       expect(emitted.length).toBe(1);
       expect(emitted[0]).toEqual({
         tabId: 7,
+        // Untouched picker, so nothing is being relocated. The destination is explicitly null rather than a
+        // copy of the page above: a request that named its own page as a destination would ask the server to
+        // perform a move to where the module already is.
+        moveToTabId: null,
         moduleTitle: 'Latest News',
         allTabs: true,
         header: 'Header markup',
@@ -1036,6 +1116,48 @@ describe('ModuleSettingsComponent', () => {
         setAsDefaultSettings: false,
         applyToAllModules: false,
       });
+    });
+
+    // THE MOVE-TO-PAGE CONTRACT. These two specs exist because the screen previously sent the picker's value
+    // as `tabId`, the member the server uses to SELECT the placement being edited. Choosing any page other
+    // than the module's own therefore asked the server to update a placement on a page the module does not
+    // occupy, which it refused with `module.placement_not_found` - so the control was labelled with an action
+    // that could not succeed, and the module never moved. The page being edited and the page being moved to
+    // are two different answers and must travel as two different members.
+    it('sends the chosen page as a relocation and keeps the edited page as the selector', () => {
+      const emitted: UpdateModuleRequest[] = [];
+      component.save.subscribe((request) => emitted.push(request));
+
+      // 8 is 'About'; the module under test sits on 7, 'Home'.
+      component['form'].controls.tabId.setValue(8);
+      fixture.detectChanges();
+
+      submit();
+
+      expect(emitted.length).toBe(1);
+      expect(emitted[0].tabId)
+        .withContext('the placement being edited is still the page the module was loaded from')
+        .toBe(7);
+      expect(emitted[0].moveToTabId)
+        .withContext('the picker names where the module is going')
+        .toBe(8);
+    });
+
+    it('sends no relocation when the chosen page is the page it is already on', () => {
+      const emitted: UpdateModuleRequest[] = [];
+      component.save.subscribe((request) => emitted.push(request));
+
+      // Set explicitly to the value it already holds, so this proves the comparison rather than the default.
+      component['form'].controls.tabId.setValue(7);
+      fixture.detectChanges();
+
+      submit();
+
+      expect(emitted.length).toBe(1);
+      expect(emitted[0].tabId).toBe(7);
+      expect(emitted[0].moveToTabId)
+        .withContext('naming the current page is not a move, so no instruction is sent')
+        .toBeNull();
     });
 
     it('carries no member the server does not accept', () => {
@@ -1085,7 +1207,7 @@ describe('ModuleSettingsComponent', () => {
       //   alignment choice group, and it selected the group's fourth option to prove that operating a
       //   presentation-only control could not smuggle its value onto the wire. The screen no longer renders
       //   any of the six values - `paneName`, `alignment`, `color`, `border`, `displayPrint` and
-      //   `displaySyndicate` are absent from ModuleSettingsViewModel and from the template, because none of
+      //   `displaySyndicate` are absent from ModuleSettingsSeed and from the template, because none of
       //   them is projected onto Dtos/Module/UpdateModuleRequest.cs - so the interaction it performed is
       //   unreachable and `radios('alignment')` is empty. The obligation it asserted is stronger under the
       //   surviving shape and is asserted here in both halves: no control exists to operate, so no reachable
@@ -1153,10 +1275,26 @@ describe('ModuleSettingsComponent', () => {
       expect(emitted[0].applyToAllModules).toBeTrue();
     });
 
-    it('disables the submit affordance while a submission is in flight', () => {
+    it('reports an in-flight submission as disabled, busy AND relabelled, not merely disabled', () => {
+      // At rest the control carries the action verb, is enabled, and declares no busy state.
+      expect(actionButton('Update')?.disabled).toBeFalse();
+      expect(actionButton('Update')?.getAttribute('aria-busy')).toBeNull();
+
       setInput('saving', true);
 
-      expect(actionButton('Update')?.disabled).toBeTrue();
+      // ⚠ THE CONTROL IS NOW FOUND BY ITS BUSY CAPTION, AND THAT IS THE ASSERTION. This spec
+      // previously looked the button up as 'Update' and checked only `disabled`, which passed
+      // while the control was indistinguishable from one the form considered incomplete: same
+      // caption, same surface, no announced state. Disabled alone is silent to a screen reader
+      // and easy to miss with a pointer, and on a slow answer it reads as a press that never
+      // landed - which is what invites a second press.
+      expect(actionButton('Update')).withContext('the resting caption is withdrawn').toBeNull();
+
+      const busy = actionButton('Saving…');
+
+      expect(busy).withContext('the busy caption is offered instead').not.toBeNull();
+      expect(busy?.disabled).toBeTrue();
+      expect(busy?.getAttribute('aria-busy')).toBe('true');
     });
   });
 
@@ -1286,8 +1424,79 @@ describe('ModuleSettingsComponent', () => {
 
       expect(answer('PUT', '/api/v1/modules/0', ECHO)).toBe(1);
 
-      expect(notify).toHaveBeenCalledWith('success', jasmine.any(String));
-      expect(navigate).toHaveBeenCalledWith(['/modules']);
+      expect(notify).toHaveBeenCalledWith('success', jasmine.any(String), null, true);
+      expect(navigate).toHaveBeenCalledWith(['/modules'], { replaceUrl: true });
+
+      drain();
+    });
+
+    it('leaves the form settled at the instant it navigates, so the unsaved-entry guard cannot question a saved form', () => {
+      const tracker = TestBed.inject(UnsavedChangesTracker);
+
+      component['form'].controls.moduleTitle.setValue('Renamed by the operator');
+      component['form'].controls.moduleTitle.markAsDirty();
+      fixture.detectChanges();
+
+      // THE CONTROL. Without it a later `false` would be indistinguishable from a probe that was never
+      // registered, or from a form that was never dirty in the first place. `isDirty()` is the guard's own
+      // public surface, so this is asserted through the same call the guard makes rather than through the
+      // component's internals.
+      expect(tracker.isDirty())
+        .withContext('a dirty form with no write in flight is exactly what the guard exists to catch')
+        .toBeTrue();
+
+      // ⚠ SAMPLED AT THE INSTANT OF NAVIGATION, NOT AFTERWARDS. A later read cannot tell this fix from a
+      // re-seed that happened to clear the flag on its own, and it is the navigation the save itself
+      // triggers that the guard would have refused. `window.confirm` blocks the JavaScript thread, so that
+      // refusal also made the success notification's auto-dismiss timer become due while the dialog stood -
+      // measured in a real browser, the confirmation was emitted and then removed without being painted.
+      let dirtyAtNavigation: boolean | null = null;
+      navigate.and.callFake(() => {
+        dirtyAtNavigation = tracker.isDirty();
+
+        return Promise.resolve(true);
+      });
+
+      submit();
+      expect(answer('PUT', '/api/v1/modules/0', ECHO)).toBe(1);
+
+      expect(navigate).toHaveBeenCalledWith(['/modules'], { replaceUrl: true });
+      expect(dirtyAtNavigation)
+        .withContext('the guard must see a settled form on the navigation the save itself triggered')
+        .toBeFalse();
+
+      drain();
+    });
+
+    it('leaves the form settled at the instant a removal navigates, because deleted entry can no longer be saved', () => {
+      const tracker = TestBed.inject(UnsavedChangesTracker);
+
+      component['form'].controls.moduleTitle.setValue('Typed, then deleted');
+      component['form'].controls.moduleTitle.markAsDirty();
+      fixture.detectChanges();
+
+      expect(tracker.isDirty()).withContext('the control condition for this assertion').toBeTrue();
+
+      let dirtyAtNavigation: boolean | null = null;
+      navigate.and.callFake(() => {
+        dirtyAtNavigation = tracker.isDirty();
+
+        return Promise.resolve(true);
+      });
+
+      // The destructive command, taken through the shared dialog exactly as the screen offers it.
+      const deleteButton = actionButton('Delete');
+      expect(deleteButton).withContext('the removal affordance must be offered').not.toBeNull();
+      deleteButton?.click();
+      fixture.detectChanges();
+      confirmDialog();
+
+      expect(answer('DELETE', '/api/v1/modules/0', null)).toBe(1);
+
+      expect(navigate).toHaveBeenCalledWith(['/modules'], { replaceUrl: true });
+      expect(dirtyAtNavigation)
+        .withContext('there is nothing left to save once the placement is gone')
+        .toBeFalse();
 
       drain();
     });
@@ -1313,7 +1522,7 @@ describe('ModuleSettingsComponent', () => {
           (candidate) => candidate.method === 'PUT' && candidate.url === '/api/v1/modules/0/settings',
         ).length,
       ).toBe(0);
-      expect(navigate).toHaveBeenCalledWith(['/modules']);
+      expect(navigate).toHaveBeenCalledWith(['/modules'], { replaceUrl: true });
 
       drain();
     });
@@ -1334,7 +1543,7 @@ describe('ModuleSettingsComponent', () => {
       fixture.detectChanges();
 
       expect(navigate).not.toHaveBeenCalled();
-      expect(notify).not.toHaveBeenCalledWith('success', jasmine.any(String));
+      expect(notify).not.toHaveBeenCalledWith('success', jasmine.any(String), null, true);
 
       drain();
     });
@@ -1387,9 +1596,9 @@ describe('ModuleSettingsComponent', () => {
       removal.flush(null);
       fixture.detectChanges();
 
-      expect(notify).toHaveBeenCalledWith('success', jasmine.any(String));
+      expect(notify).toHaveBeenCalledWith('success', jasmine.any(String), null, true);
       expect(removed).withContext('the host component is told once the server has answered').toBe(1);
-      expect(navigate).toHaveBeenCalledWith(['/modules']);
+      expect(navigate).toHaveBeenCalledWith(['/modules'], { replaceUrl: true });
 
       drain();
     });
@@ -1416,7 +1625,7 @@ describe('ModuleSettingsComponent', () => {
 
       expect(notify)
         .withContext('a refusal is never reported as a removal')
-        .not.toHaveBeenCalledWith('success', jasmine.any(String));
+        .not.toHaveBeenCalledWith('success', jasmine.any(String), null, true);
       expect(removed).withContext('and the host component is not told a removal happened').toBe(0);
       expect(navigate)
         .withContext('the operator stays on the screen, where the reason is readable')
@@ -1952,13 +2161,14 @@ describe('ModuleSettingsComponent', () => {
       detail: ModuleDetail = moduleDetailOf(),
       definition: ModuleDefinition = definitionOf(),
       tabs: readonly TabListItem[] = [tabOf()],
+      bag: ModuleSettingsBag = settingsBagOf(),
     ): void {
       fixture.componentRef.setInput('pages', null);
       fixture.componentRef.setInput('moduleId', 0);
       fixture.detectChanges();
 
       httpMock.expectOne(MODULE_URL).flush({ data: detail });
-      httpMock.expectOne(SETTINGS_URL).flush({ data: settingsBagOf() });
+      httpMock.expectOne(SETTINGS_URL).flush({ data: bag });
       fixture.detectChanges();
 
       httpMock.expectOne(DEFINITION_URL).flush({ data: definition });
@@ -1981,6 +2191,139 @@ describe('ModuleSettingsComponent', () => {
 
     beforeEach(() => {
       notify = spyOn(TestBed.inject(NotificationService), 'notify').and.callThrough();
+    });
+
+    // ---------------------------------------------------------------------------------------------------
+    // THE DECLARED-PERMISSION ADVISORY
+    // ---------------------------------------------------------------------------------------------------
+    //
+    // The advisory names the permission vocabulary the module's DEFINITION declares, beside the inherit
+    // switch that chooses whether to use it. It is read-only and nothing on the form depends on it, which
+    // is exactly what the last two cases here pin down: a refusal and a fault each leave the screen
+    // working and silent rather than banner-ing over a form that saved perfectly well.
+    describe('the declared-permission advisory', () => {
+      /** The catalogue address. The filter travels as a query parameter and is asserted separately. */
+      const PERMISSIONS_URL = '/api/v1/permissions';
+
+      let tokenStorage: TokenStorageService;
+
+      beforeEach(() => {
+        tokenStorage = TestBed.inject(TokenStorageService);
+      });
+
+      /** The one outstanding catalogue read, asserted by verb and address. */
+      function expectCatalogue(): TestRequest {
+        return httpMock.expectOne(
+          (candidate) => candidate.method === 'GET' && candidate.url === PERMISSIONS_URL,
+          'the definition catalogue read',
+        );
+      }
+
+      /** Asserts that no catalogue read is outstanding. */
+      function expectNoCatalogue(): void {
+        httpMock.expectNone(
+          (candidate) => candidate.method === 'GET' && candidate.url === PERMISSIONS_URL,
+        );
+      }
+
+      /** The advisory element, or `null` when the screen renders none. */
+      function advisory(): HTMLElement | null {
+        return q<HTMLElement>('.module-settings__declared-permissions');
+      }
+
+      /** Every key the advisory names, in document order. */
+      function advisedKeys(): readonly string[] {
+        return qa<HTMLElement>('.module-settings__declared-permission').map((chip) =>
+          (chip.textContent ?? '').trim(),
+        );
+      }
+
+      it('reads the catalogue filtered by the DEFINITION and names the keys it answers', () => {
+        tokenStorage.store(sessionWith(true));
+        activate();
+
+        const request: TestRequest = expectCatalogue();
+
+        // ⚠ THE FILTER IS THE DEFINITION, NOT THE MODULE, and this is the assertion that pins it. The
+        // unfiltered listing answers from the API's closed key enumeration and touches no store at all,
+        // so it would report the same four keys for every module ever loaded and would say nothing about
+        // this one.
+        expect(request.request.params.get('moduleDefinitionId')).toBe('14');
+        expect(request.request.params.get('permissionCode'))
+          .withContext('no filter this screen did not intend')
+          .toBeNull();
+        expect(request.request.params.get('permissionKey')).toBeNull();
+
+        request.flush({ data: ['VIEW', 'EDIT'] });
+        fixture.detectChanges();
+
+        expect(advisory()).withContext('the advisory is rendered').not.toBeNull();
+        expect(advisedKeys()).toEqual(['VIEW', 'EDIT']);
+        expect((advisory()?.textContent ?? '')).toContain('Permissions defined for this module type:');
+      });
+
+      it('withholds the read entirely from a caller who does not administer the tenant', () => {
+        // ⚠ WITHHELD, NOT RECOVERED FROM. The endpoint is declared under the administrator policy, so
+        // asking anyway would write a 403 into the network log of an editor entitled to be on this
+        // screen. `httpMock.verify()` in the suite's teardown is what makes this assertion binding.
+        tokenStorage.store(sessionWith(false));
+        activate();
+
+        expectNoCatalogue();
+        expect(advisory()).withContext('nothing is claimed about the definition').toBeNull();
+      });
+
+      it('renders nothing when the definition declares no keys, without claiming it read none', () => {
+        tokenStorage.store(sessionWith(true));
+        activate();
+
+        expectCatalogue().flush({ data: [] });
+        fixture.detectChanges();
+
+        // An empty answer and an unavailable answer both render nothing, which is correct: in neither
+        // case does this client have anything to say. What must NOT happen is a line asserting that the
+        // definition declares no permissions, because that reads as a fact about the definition.
+        expect(advisory()).toBeNull();
+        expect(host().textContent ?? '').not.toContain('Permissions defined for this module type:');
+      });
+
+      it('leaves the screen working and silent when the catalogue read fails', () => {
+        tokenStorage.store(sessionWith(true));
+        activate();
+
+        expectCatalogue().flush(
+          { type: 'about:blank', title: 'Server Error', status: 500 },
+          { status: 500, statusText: 'Internal Server Error' },
+        );
+        fixture.detectChanges();
+
+        // Nothing on the form depends on the answer, so a fault costs the advisory and nothing else.
+        expect(advisory()).withContext('the region is simply absent').toBeNull();
+        expect(notify).withContext('an advisory failure raises no message').not.toHaveBeenCalled();
+        expect(field<HTMLInputElement>('moduleTitle')?.value)
+          .withContext('the form is still seeded and usable')
+          .toBe(moduleDetailOf().moduleTitle ?? '');
+
+        // And the screen still saves: the failed read is not allowed to block the submission.
+        expect(interceptSubmission().request.method).toBe('PUT');
+      });
+
+      it('issues the read once per definition rather than on every form change', () => {
+        tokenStorage.store(sessionWith(true));
+        activate();
+
+        expectCatalogue().flush({ data: ['EDIT'] });
+        fixture.detectChanges();
+
+        // An effect re-runs on every dependency change, so an unguarded fetch here would re-issue the
+        // request on each keystroke. Two edits, and no second read.
+        type('moduleTitle', 'Renamed once');
+        type('moduleTitle', 'Renamed twice');
+        fixture.detectChanges();
+
+        expectNoCatalogue();
+        expect(advisedKeys()).withContext('the answer already held is kept').toEqual(['EDIT']);
+      });
     });
 
     // ---------------------------------------------------------------------------------------------------
@@ -2012,9 +2355,97 @@ describe('ModuleSettingsComponent', () => {
         fixture.detectChanges();
 
         // Proven by the url alone: '/api/v1/modules/0' and not '/api/v1/modules/undefined' or NaN.
-        httpMock.expectOne(MODULE_URL).flush({ data: null });
+        //
+        // Counted, so the address is a recorded expectation rather than a consequence of how `expectOne`
+        // happens to fail: that member asserts by throwing and the runner therefore reports this spec as
+        // claiming nothing at all.
+        const detail = httpMock.expectOne(MODULE_URL);
+
+        expect(detail.request.url)
+          .withContext("the coerced parameter addresses module 0, not 'undefined' and not NaN")
+          .toBe(MODULE_URL);
+
+        detail.flush({ data: null });
         httpMock.expectOne(SETTINGS_URL).flush({ data: null });
         fixture.detectChanges();
+      });
+    });
+
+    // ---------------------------------------------------------------------------------------------------
+    // A REFUSED READ
+    // ---------------------------------------------------------------------------------------------------
+    describe('a read the server refuses', () => {
+      /**
+       * A REFUSAL IS NOT AN ABSENCE, and this screen used to present it as one - twice over.
+       *
+       * The server answers `GET /api/v1/modules/{id}` with 403 when the caller may not see the module and
+       * with 404 when there is none. Both leave the screen holding nothing, so the derivation behind the
+       * not-found affordance could not tell them apart. The refusal therefore arrived as a transient
+       * warning advisory with the problem document DISCARDED, while the page itself stated "the requested
+       * item could not be found" - one backend condition, two surfaces, one of them untrue.
+       *
+       * It is now the banner and nothing else, which is what the legacy access-denied page did: a heading
+       * and one `YellowWarning` module message (`Website/admin/Security/AccessDenied.ascx.vb:L41-L45`).
+       * The sibling module form and export screens present the same status the same way.
+       */
+      it('presents the refusal in the banner alone, with no empty state beside it', () => {
+        fixture.componentRef.setInput('pages', null);
+        fixture.componentRef.setInput('moduleId', 0);
+        fixture.detectChanges();
+
+        // BOTH reads are refused, because one authorization filter guards both endpoints - and both are
+        // answered with the document, because the store holds ONE failure slot and the later answer
+        // replaces the earlier one. A fixture that gave only the first read a document would prove
+        // nothing about what an operator sees: the second, bodiless refusal would overwrite it and the
+        // banner would fall back to the shared wording with no trace identifier at all.
+        const refusal = {
+          type: 'about:blank',
+          title: 'Forbidden',
+          status: 403,
+          detail: 'You are not permitted to view this module.',
+          traceId: '00-1a2b3c4d5e6f-01',
+        };
+
+        httpMock
+          .expectOne(MODULE_URL)
+          .flush(refusal, { status: 403, statusText: 'Forbidden' });
+        httpMock
+          .expectOne(SETTINGS_URL)
+          .flush(refusal, { status: 403, statusText: 'Forbidden' });
+        fixture.detectChanges();
+
+        const banner: HTMLElement | null = fixture.nativeElement.querySelector('.error-banner');
+
+        expect(banner).not.toBeNull();
+        expect(banner?.getAttribute('data-severity'))
+          .withContext('the legacy YellowWarning severity, resolved by the shared utility')
+          .toBe('warning');
+        expect(banner?.textContent ?? '').toContain('You are not permitted to view this module.');
+        expect(banner?.textContent ?? '')
+          .withContext('the trace identifier the discarded document used to cost')
+          .toContain('00-1a2b3c4d5e6f-01');
+
+        // Neither empty state accompanies it, and no form is seeded from a module that was never read.
+        expect(fixture.nativeElement.querySelector('app-empty-state')).toBeNull();
+        expect(fixture.nativeElement.querySelector('form.module-settings')).toBeNull();
+      });
+
+      /**
+       * The 404 path is deliberately UNCHANGED: that status does answer the question of existence, so the
+       * shared not-found sentence still describes it and the affordance still appears.
+       */
+      it('still reports a genuine absence through the not-found affordance', () => {
+        fixture.componentRef.setInput('pages', null);
+        fixture.componentRef.setInput('moduleId', 0);
+        fixture.detectChanges();
+
+        httpMock
+          .expectOne(MODULE_URL)
+          .flush(null, { status: 404, statusText: 'Not Found' });
+        httpMock.expectOne(SETTINGS_URL).flush(null, { status: 404, statusText: 'Not Found' });
+        fixture.detectChanges();
+
+        expect(fixture.nativeElement.querySelector('app-empty-state')).not.toBeNull();
       });
     });
 
@@ -2309,7 +2740,159 @@ describe('ModuleSettingsComponent', () => {
         ]);
       });
 
-      it('posts the chosen page as a member of the update rather than through a move endpoint', () => {
+      // ---------------------------------------------------------------------------------------------
+      // THE MODULE-SPECIFIC SECTION — STORED SETTINGS ARE DISCLOSED, NOT DISCARDED
+      // ---------------------------------------------------------------------------------------------
+      // Measured before these facts existed: the screen requested the settings bag on arrival, held the
+      // response, wrote both maps back on every save — and rendered NEITHER. A module carrying two
+      // module-scoped settings, one with a 750-character value, showed an empty panel. The request was
+      // made, the data was in hand, and the operator was shown nothing.
+      it('discloses the stored settings the module actually carries, in both scopes', () => {
+        activate(
+          moduleDetailOf(),
+          definitionOf(),
+          [tabOf()],
+          settingsBagOf({
+            moduleSettings: { zeta_setting: 'module value', alpha_setting: 'another' },
+            tabModuleSettings: { placement_setting: 'placement value' },
+          }),
+        );
+
+        openEverything();
+
+        const names = qa<HTMLElement>('.module-settings__stored-name').map((node) =>
+          (node.textContent ?? '').trim(),
+        );
+        const values = qa<HTMLElement>('.module-settings__stored-value').map((node) =>
+          (node.textContent ?? '').trim(),
+        );
+
+        // Sorted within each scope, module-scoped first, so the order cannot depend on the order the
+        // response happened to serialise its keys in.
+        expect(names.length).toBe(3);
+        expect(names[0]).toContain('alpha_setting');
+        expect(names[1]).toContain('zeta_setting');
+        expect(names[2]).toContain('placement_setting');
+
+        expect(values).toEqual(['another', 'module value', 'placement value']);
+
+        // Each name carries its scope, because the contract documents the two as genuinely different
+        // things and collapsing them would misreport which is which.
+        expect(names[0]).toContain('this module, on every page');
+        expect(names[2]).toContain('this placement only');
+
+        // And the "nothing recorded" statement is NOT shown when there is something recorded.
+        expect(q('.module-settings__stored-empty')).toBeNull();
+      });
+
+      it('says so explicitly when the module carries no stored settings of its own', () => {
+        activate(moduleDetailOf(), definitionOf(), [tabOf()], settingsBagOf());
+
+        openEverything();
+
+        // The section is still rendered. An operator being able to see that a module has no settings of
+        // its own is information the legacy placeholder could not convey — it either received a control
+        // or stayed silently empty, so "none" and "failed to load" looked identical.
+        const empty = q('.module-settings__stored-empty');
+
+        expect(empty).not.toBeNull();
+        expect((empty?.textContent ?? '').trim()).toBe('This module has no stored settings of its own.');
+        expect(qa('.module-settings__stored-name').length).toBe(0);
+      });
+
+      it('does not present a neighbouring module\'s settings under this module\'s address', () => {
+        // The store is provided at the root, so it may still hold the bag read for another module. The
+        // guard is an exact identity comparison and never a truth test — module 0 is a real module.
+        activate(
+          moduleDetailOf(),
+          definitionOf(),
+          [tabOf()],
+          settingsBagOf({ moduleId: 99, moduleSettings: { foreign: 'not ours' } }),
+        );
+
+        openEverything();
+
+        expect(qa('.module-settings__stored-name').length).toBe(0);
+        expect(q('.module-settings__stored-empty')).not.toBeNull();
+        expect(host().textContent).not.toContain('not ours');
+      });
+
+      // ---------------------------------------------------------------------------------------------
+      // A BLANK HEADING IS ACCEPTED, AND ITS CONSEQUENCE IS STATED
+      // ---------------------------------------------------------------------------------------------
+      it('states what a module with no heading will be listed as, without refusing the blank', () => {
+        activate(moduleDetailOf({ moduleTitle: '', friendlyName: 'Announcements' }));
+
+        openEverything();
+
+        const notice = q('.module-settings__notice');
+
+        expect(notice).not.toBeNull();
+        expect(notice?.getAttribute('aria-live')).toBe('polite');
+        expect(notice?.textContent).toContain('Announcements');
+        expect(notice?.textContent).toContain('listed as');
+
+        // A STATEMENT, NOT A REFUSAL. The heading is optional on every tier — the legacy markup declares
+        // no presence validator, both server validators gate their only title rule on the value being
+        // non-empty, and the column is nullable — and a module in the measured data stores the empty
+        // string, so a required rule here would make an existing record unsavable.
+        expect(component['form'].controls.moduleTitle.valid).toBeTrue();
+        expect(q('#module-settings-moduleTitle-messages')).toBeNull();
+      });
+
+      it('says nothing about the heading once one has been entered', () => {
+        activate(moduleDetailOf({ moduleTitle: 'Latest News', friendlyName: 'Announcements' }));
+
+        openEverything();
+
+        expect(q('.module-settings__notice')).toBeNull();
+      });
+
+      // ---------------------------------------------------------------------------------------------
+      // THE ICON REFERENCE MUST STAY INSIDE THE PORTAL'S OWN FOLDER
+      // ---------------------------------------------------------------------------------------------
+      // Measured before the rule existed: a traversal path submitted from this screen reached the API and
+      // was stored VERBATIM, because the module contracts were the one path still missing the shared
+      // containment rule that the role and page contracts already applied.
+      it('refuses an icon reference that escapes the portal folder, and issues no request', () => {
+        activate();
+        openEverything();
+
+        expect(field<HTMLInputElement>('iconFile')).not.toBeNull();
+
+        type('iconFile', '../../../etc/passwd');
+        component['form'].controls.iconFile.markAsTouched();
+        fixture.detectChanges();
+
+        expect(component['form'].controls.iconFile.valid).toBeFalse();
+        expect(host().textContent).toContain("Icon File must be a relative path within the portal's own folder.");
+
+        submit();
+
+        // The closed-contract guard in this file's teardown would fail the spec on an outstanding
+        // request, but the absence is asserted directly so the reason is unmistakable.
+        httpMock.expectNone((candidate) => candidate.method === 'PUT');
+      });
+
+      it('accepts an ordinary relative icon reference', () => {
+        activate();
+        openEverything();
+
+        type('iconFile', 'sub/dir/valid.gif');
+        component['form'].controls.iconFile.markAsTouched();
+        fixture.detectChanges();
+
+        expect(component['form'].controls.iconFile.valid).toBeTrue();
+      });
+
+      // TWO PROPERTIES IN ONE SPEC, BOTH LOAD-BEARING. The relocation travels on the update the operator
+      // already submits - there is no move endpoint to invent, and `verify()` in this file's teardown would
+      // fail the spec if one were called. AND it travels as its own member: an earlier revision sent the
+      // chosen page as `tabId`, which is the member the server uses to SELECT the placement being edited, so
+      // choosing any page other than the module's own asked it to update a placement that does not exist. The
+      // save was refused `module.placement_not_found` and the module stayed put, which is why asserting
+      // `tabId` is 1 here would be asserting the bug.
+      it('posts the chosen page as a relocation member of the update, not through a move endpoint', () => {
         activate(moduleDetailOf({ tabId: 0 }), definitionOf(), [
           tabOf({ tabId: 0, tabName: 'Home', parentId: -1 }),
           tabOf({ tabId: 1, tabName: 'About', parentId: 0, level: 1, tabPath: '//About' }),
@@ -2319,10 +2902,14 @@ describe('ModuleSettingsComponent', () => {
         fixture.detectChanges();
 
         const request = interceptSubmission();
+        const body = request.request.body as UpdateModuleRequest;
 
-        expect((request.request.body as UpdateModuleRequest).tabId)
-          .withContext('the relocation travels on the update the operator already submits')
+        expect(body.moveToTabId)
+          .withContext('the chosen page is the destination')
           .toBe(1);
+        expect(body.tabId)
+          .withContext('the placement being edited is still the page the module was loaded from')
+          .toBe(0);
 
         request.flush({ data: moduleDetailOf({ tabId: 1 }) });
         fixture.detectChanges();
@@ -2480,7 +3067,7 @@ describe('ModuleSettingsComponent', () => {
         request.flush(null, { status: 204, statusText: 'No Content' });
         fixture.detectChanges();
 
-        expect(notify).toHaveBeenCalledWith('success', jasmine.any(String));
+        expect(notify).toHaveBeenCalledWith('success', jasmine.any(String), null, true);
 
         // MIGRATION: THE DELETED MODULE IS NOT RE-READ, and this is the assertion that proves it. The
         // store does re-read the LISTING afterwards - the placement is detached rather than destroyed, so
@@ -2514,10 +3101,19 @@ describe('ModuleSettingsComponent', () => {
        * permission check of its own, and its `Page_Load` (L41-L47) has exactly two branches - one for a
        * supplied message and one for the default wording - BOTH of which raise
        * `ModuleMessage.ModuleMessageType.YellowWarning`. Neither raises `RedError`, though the vocabulary
-       * offered it and the tree uses it 27 times elsewhere. So a 403 is announced as a warning and is
-       * deliberately NOT dressed as a danger banner.
+       * offered it and the tree uses it 27 times elsewhere. So a 403 is presented as a warning and is
+       * deliberately NOT dressed as a danger.
+       *
+       * ⚠ THE SURFACE IS THE IN-PAGE BANNER, AND THAT IS A CORRECTION THIS SPEC USED TO PIN THE WRONG WAY
+       * ROUND. It asserted the notification queue, on the same YellowWarning evidence. The severity
+       * reading was right and the surface was wrong: `UI.Skins.Skin.AddModuleMessage` inserted the message
+       * INTO the page, and the shared banner is what ports that - it resolves 403 to the warning band
+       * through `core/utils/form-errors.util.ts`, so the legacy severity survives either way, while the
+       * document's trace identifier, its title and its permanence do not survive a transient advisory.
+       * The sibling module form and export screens present the same status through the same banner, which
+       * is what gives one backend condition one presentation across the feature.
        */
-      it('announces a refused write at warning severity, never as an error', () => {
+      it('presents a refused write in the banner at warning severity, never as an error', () => {
         activate();
 
         const request = interceptSubmission();
@@ -2528,14 +3124,50 @@ describe('ModuleSettingsComponent', () => {
             title: 'Forbidden',
             status: 403,
             detail: 'This module appears on every page and cannot be moved.',
+            traceId: '00-9f2c4d1b7a3e-01',
           },
           { status: 403, statusText: 'Forbidden' },
         );
         fixture.detectChanges();
 
-        expect(notify).toHaveBeenCalledWith('warning', jasmine.any(String));
+        // The band is the legacy severity, resolved by the shared utility rather than chosen here.
+        const banner: HTMLElement | null = fixture.nativeElement.querySelector('.error-banner');
+
+        expect(banner).not.toBeNull();
+        expect(banner?.getAttribute('data-severity')).toBe('warning');
+        expect(fixture.nativeElement.textContent).toContain(
+          'This module appears on every page and cannot be moved.',
+        );
+
+        // The three things the discarded document used to cost. The trace identifier above all: it is the
+        // only join key between what the operator saw and what the server logged.
+        expect(fixture.nativeElement.textContent).toContain('00-9f2c4d1b7a3e-01');
+        expect(fixture.nativeElement.textContent).toContain('Forbidden');
+
         expect(notify).not.toHaveBeenCalledWith('error', jasmine.any(String));
-        expect(notify).not.toHaveBeenCalledWith('success', jasmine.any(String));
+        expect(notify).not.toHaveBeenCalledWith('success', jasmine.any(String), null, true);
+      });
+
+      /**
+       * A REFUSAL WITH AN EMPTY BODY STILL REACHES THE BANNER, which is why the component needs no
+       * null-document fallback for this status. `problemFromCause` in `core/state/module.store.ts`
+       * synthesises `{ status: 403 }` from the status alone when neither a document nor a parsable text
+       * body is present, expressly so that severity and wording still resolve - so the band is still the
+       * legacy warning and the shared sentence for the status is still shown.
+       */
+      it('presents a refusal that carried no document at all, from its status alone', () => {
+        activate();
+
+        const request = interceptSubmission();
+
+        request.flush(null, { status: 403, statusText: 'Forbidden' });
+        fixture.detectChanges();
+
+        const banner: HTMLElement | null = fixture.nativeElement.querySelector('.error-banner');
+
+        expect(banner).not.toBeNull();
+        expect(banner?.getAttribute('data-severity')).toBe('warning');
+        expect(notify).not.toHaveBeenCalledWith('error', jasmine.any(String));
       });
 
       it('announces a settled write at success severity', () => {
@@ -2545,7 +3177,7 @@ describe('ModuleSettingsComponent', () => {
         request.flush({ data: moduleDetailOf() });
         fixture.detectChanges();
 
-        expect(notify).toHaveBeenCalledWith('success', jasmine.any(String));
+        expect(notify).toHaveBeenCalledWith('success', jasmine.any(String), null, true);
         drainListingReread();
       });
 

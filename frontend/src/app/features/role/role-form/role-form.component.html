@@ -102,7 +102,53 @@
   -->
   <app-error-banner [problem]="problem()" />
 
-  @if (loading()) {
+  @if (conflicted()) {
+    <!--
+      THE RECOVERY AFFORDANCE FOR A REFUSED SAVE.
+
+      The banner above already carries the server's own sentence, which names the role and states the
+      remedy. What it cannot carry is the MEANS: a refusal leaves this screen holding the same snapshot
+      it just sent, so every further Update repeats the same refused revision marker and the form is
+      permanently unsavable until the role is read again.
+
+      MIGRATION: NET-NEW, in both the situation and the affordance. The legacy update procedure carried
+      no revision marker, so a conflict could not be detected and was not reported - the later save
+      simply overwrote the earlier one in full. There is therefore no legacy wording to preserve here
+      and none is invented beyond the two sentences the component owns.
+
+      It sits OUTSIDE the form deliberately. It is not a field, it must not submit, and it must remain
+      reachable when the form itself is mid-edit; `type="button"` is stated explicitly because a button
+      inside a form defaults to submitting one.
+
+      No live region and no role. The banner beside it is already announced, and a second announcement
+      of one fault is the repetition the notification surface exists to avoid.
+    -->
+    <div class="role-form__conflict">
+      <p class="role-form__warning">{{ conflictRecoveryMessage }}</p>
+      <button
+        type="button"
+        class="role-form__conflict-reload"
+        (click)="onReloadAfterConflict()"
+        [disabled]="loading()"
+      >
+        {{ conflictReloadLabel }}
+      </button>
+    </div>
+  }
+
+  @if (addressUnreadable()) {
+    <!--
+      The address carries something that is not a role identifier.
+
+      ⚠ THIS BRANCH MUST COME FIRST, and it is emphatically NOT the same as treating the parameter
+      as absent. An unreadable identifier used to fall through to the create branch below, which
+      rendered the whole role form with every control enabled while the address said `abc` - so the
+      operator was offered a live create form under an address that named nothing, with the submit
+      command reading Update. Nothing is fetched in this state, so the failure surface above and the
+      conflict block are both empty and neither needs its own guard.
+    -->
+    <p class="role-form__notice">{{ unreadableAddressMessage }}</p>
+  } @else if (loading()) {
     <app-loading-spinner size="large" label="Loading role…" />
   } @else {
     <!--
@@ -110,7 +156,31 @@
       page. Only the update command submits it; see the action bar for the faithful reproduction
       of the three commands that declared no validation.
     -->
-    <form class="role-form__form" [formGroup]="form" (ngSubmit)="onSubmit()">
+    <!--
+      `aria-busy` while a save issued by THIS screen is in flight.
+
+      ⚠ THE DOUBLE-SUBMIT GUARD ITSELF IS IN `onSubmit`, WHICH RETURNS IMMEDIATELY WHILE
+      `saving()` HOLDS, and the commands below additionally carry `[disabled]="saving()"`. What was
+      missing was the STATEMENT of the state: runtime testing pressed Update five times inside a
+      single task and found `disabled: false` on every one of them, because no change-detection
+      pass had run between the presses - so a person using assistive technology, or watching a
+      slow request, had a spinner and nothing else. The attribute makes the busy state
+      programmatically determinable from the moment the first press is processed, on the region
+      that actually contains the commands.
+
+      Bound on the FORM rather than on each button, because the whole region is what is
+      unavailable: an `aria-busy` region tells a reader not to expect its contents to be current,
+      which is exactly true of every field on a form mid-save.
+
+      MIGRATION: a net addition. The legacy screen posted the whole page back, so the browser's own
+      navigation indicator served this purpose and the markup needed nothing.
+    -->
+    <form
+      class="role-form__form"
+      [formGroup]="form"
+      [attr.aria-busy]="saving() ? 'true' : null"
+      (ngSubmit)="onSubmit()"
+    >
       @if (readOnly()) {
         <!--
           The protected-role state. `EditRoles.ascx.vb:L174-L178` disabled eleven named controls
@@ -155,7 +225,7 @@
         real open state.
       -->
       <fieldset class="role-form__section">
-        <legend class="role-form__legend">Basic Settings</legend>
+        <legend class="role-form__legend"><h2>Basic Settings</h2></legend>
 
         <!--
           MIGRATION: a measured resource-key asymmetry, honoured rather than tidied. The label at
@@ -228,6 +298,24 @@
                   aria-required="true"
                   [attr.aria-invalid]="messageFor('roleName') ? 'true' : null"
                 />
+
+                <!--
+                  THE LENGTH NOTICE. `maxlength` above is faithful - `editroles.ascx:L31` declares
+                  `MaxLength="50"` - and a browser enforcing it discards the surplus characters
+                  with no indication whatsoever. Runtime testing pasted fifty-one characters,
+                  watched fifty arrive, and then received a duplicate-name refusal naming a role
+                  the operator had never typed, because the shortened name collided with a stored
+                  one. The refusal was accurate about a value that was not the value entered.
+
+                  Announced POLITELY, not as an error: the value is valid, and interrupting on
+                  every keystroke at the boundary would be worse than saying nothing. It sits
+                  inside the control slot rather than in the field's error region so that a real
+                  validation failure still has that region to itself and the two can never be
+                  mistaken for one another.
+                -->
+                @if (nameAtLimit()) {
+                  <p class="role-form__notice" aria-live="polite">{{ nameAtLimitNotice }}</p>
+                }
               </div>
             </app-form-field>
           }
@@ -439,6 +527,26 @@
             which returns nothing until its control is both invalid and either dirty or touched -
             so no message is ever rendered unconditionally, and no second gate is written here
             that could disagree with the first.
+
+            ⚠ ALL FOUR STAY `type="text"`, WITH NO `inputmode` AND NO NATIVE NUMERIC CONSTRAINT,
+            and that is a decision rather than an omission. Each of these fields legitimately
+            accepts a value no numeric input mode can produce and no numeric input type will keep:
+
+              * A THOUSANDS SEPARATOR. This screen writes `1,234.56` into the fee itself, because
+                the legacy loaded it with `Format(fee, "#,##0.00")`. `type="number"` treats a comma
+                as invalid and reports the control's value as the EMPTY STRING, so a freshly loaded
+                paid role would arrive with its fee silently blanked; and the decimal and numeric
+                input modes offer a keypad with no comma, so the value this screen itself writes
+                could not be retyped on a touch device.
+              * A LEADING SIGN. A negative amount must be TYPEABLE in order to be refused with the
+                sign sentence, which is a different sentence from the data-type one. A keypad
+                without a minus key would make one of the two refusals unreachable, so the screen
+                would appear to have only one rule.
+
+            `type="number"` additionally localises the decimal separator and adds spinner controls
+            the legacy never had. So the field accepts letters exactly as `txtServiceFee` did, and
+            the validator above answers them in the resource's own wording - which is the legacy
+            behaviour, not a gap in it.
           -->
 
           <!-- SERVICE FEE. `txtServiceFee` at L89-L90, a narrow box. Optional; see above. -->
@@ -457,6 +565,7 @@
                 maxlength="50"
                 autocomplete="off"
                 [attr.aria-invalid]="messageFor('serviceFee') ? 'true' : null"
+                (blur)="onNumericCommit('serviceFee')"
               />
             </div>
           </app-form-field>
@@ -493,7 +602,19 @@
             right; the money controls above and below take grouped, decimal text and keep the
             full keyboard so that no accepted value becomes harder to type than it was.
           -->
+          <!--
+            ⚠ EACH HALF OF THE PAIR IS NAMED DISTINCTLY, and the two clipped qualifiers below are
+            the whole mechanism. The shared field names every otherwise-unnamed projected control
+            from its own visible label, which is right for a lone control and leaves BOTH members of
+            a pair announcing one identical string - measured on this form as eight controls
+            resolving to six distinct names. Referencing the field's own `labelId` and appending a
+            qualifier keeps the visible label as a PREFIX of each name, so WCAG 2.5.3 Label in Name
+            holds, and changes nothing that is drawn. `labelId` is the shared component's documented
+            public member for exactly this - naming a composite from the same text rather than
+            authoring the wording twice.
+          -->
           <app-form-field
+            #billingPeriodField
             label="Billing Period (Every)"
             for="role-form-billing-period"
             help="These two fields are used in conjunction to enter a Billing Period. e.g 2 weeks, or 1 month"
@@ -501,6 +622,12 @@
             [class.form-field--disabled]="readOnly()"
           >
             <div class="role-form__control role-form__control--pair">
+              <span class="role-form__qualifier" id="role-form-billing-period-qualifier">{{
+                periodCountQualifier
+              }}</span>
+              <span class="role-form__qualifier" id="role-form-billing-frequency-qualifier">{{
+                periodUnitQualifier
+              }}</span>
               <input
                 id="role-form-billing-period"
                 class="role-form__period"
@@ -509,12 +636,20 @@
                 formControlName="billingPeriod"
                 maxlength="50"
                 autocomplete="off"
+                [attr.aria-labelledby]="
+                  billingPeriodField.labelId() + ' role-form-billing-period-qualifier'
+                "
                 [attr.aria-invalid]="messageFor('billingPeriod') ? 'true' : null"
+                (blur)="onNumericCommit('billingPeriod')"
               />
               <select
                 id="role-form-billing-frequency"
+                [attr.aria-label]="billingFrequencyAccessibleName"
                 class="role-form__frequency"
                 formControlName="billingFrequency"
+                [attr.aria-labelledby]="
+                  billingPeriodField.labelId() + ' role-form-billing-frequency-qualifier'
+                "
               >
                 @for (option of frequencyOptions; track option.value) {
                   <option [ngValue]="option.value">{{ option.label }}</option>
@@ -544,6 +679,7 @@
                 maxlength="50"
                 autocomplete="off"
                 [attr.aria-invalid]="messageFor('trialFee') ? 'true' : null"
+                (blur)="onNumericCommit('trialFee')"
               />
             </div>
           </app-form-field>
@@ -554,6 +690,7 @@
             same arrangement as the billing pair above and for the same measured reason.
           -->
           <app-form-field
+            #trialPeriodField
             label="Trial Period (Every)"
             for="role-form-trial-period"
             help="These two fields are used in conjunction to enter a Trial Period. e.g 2 weeks, or 1 month"
@@ -561,6 +698,13 @@
             [class.form-field--disabled]="readOnly()"
           >
             <div class="role-form__control role-form__control--pair">
+              <!-- The same distinct naming as the billing pair above; see the note there. -->
+              <span class="role-form__qualifier" id="role-form-trial-period-qualifier">{{
+                periodCountQualifier
+              }}</span>
+              <span class="role-form__qualifier" id="role-form-trial-frequency-qualifier">{{
+                periodUnitQualifier
+              }}</span>
               <input
                 id="role-form-trial-period"
                 class="role-form__period"
@@ -569,12 +713,20 @@
                 formControlName="trialPeriod"
                 maxlength="50"
                 autocomplete="off"
+                [attr.aria-labelledby]="
+                  trialPeriodField.labelId() + ' role-form-trial-period-qualifier'
+                "
                 [attr.aria-invalid]="messageFor('trialPeriod') ? 'true' : null"
+                (blur)="onNumericCommit('trialPeriod')"
               />
               <select
                 id="role-form-trial-frequency"
+                [attr.aria-label]="trialFrequencyAccessibleName"
                 class="role-form__frequency"
                 formControlName="trialFrequency"
+                [attr.aria-labelledby]="
+                  trialPeriodField.labelId() + ' role-form-trial-frequency-qualifier'
+                "
               >
                 @for (option of frequencyOptions; track option.value) {
                   <option [ngValue]="option.value">{{ option.label }}</option>
@@ -718,8 +870,33 @@
         is ever taken on a role's NAME.
       -->
       <div class="role-form__actions">
+        <!--
+          ⚠ "UPDATE" IS THE LABEL IN BOTH MODES, INCLUDING ON `/roles/new`, AND THAT IS DELIBERATE
+          LEGACY PARITY RATHER THAN AN OVERSIGHT. Runtime testing raised it as an inconsistency,
+          because the sibling create screens read `Create Portal` and `Create User`; the
+          inconsistency is real and it is the LEGACY's, reproduced faithfully.
+
+          Three independent readings of the legacy agree:
+            * `editroles.ascx:L179-L180` declares the control as
+              `<asp:LinkButton ID="cmdUpdate" resourcekey="cmdUpdate" ... Text="Update" />`, so
+              `Update` is the literal shipped label.
+            * `EditRoles.ascx.resx` carries NO `cmdUpdate.Text` entry at all — its only `cmd*`
+              value is `cmdManage.Text` — so the resource lookup falls back to that literal and
+              the label is `Update` in every mode.
+            * `EditRoles.ascx.vb` never assigns `cmdUpdate.Text`. It touches the control only to
+              hide it (L176 `cmdUpdate.Visible = False`), and its ONE click handler at L208 serves
+              both branches — reaching `AddRole` at L253 when creating.
+
+          The contrast is not an accident of this migration either: the portal screen uses the same
+          control name and OVERRIDES it, `Signup.ascx.resx` setting `cmdUpdate.Text` to
+          `Create Portal`. So one legacy screen renamed its submit for the create case and this one
+          did not. Relabelling here would be an unrequested divergence from the wording the
+          resource documents fix, which the plan makes authoritative for labels (§0.2.1.4), against
+          the parity requirement in §0.9.1. Recorded and declined rather than "improved".
+        -->
         @if (canSave()) {
-          <button type="submit" [disabled]="saving()">Update</button>
+          <button type="submit" [disabled]="saving()"
+          [attr.aria-busy]="saving() ? 'true' : null">Update</button>
         }
 
         <button type="button" [disabled]="saving()" (click)="onCancel()">Cancel</button>
@@ -764,8 +941,16 @@
     by the component so that no wording is authored twice.
   -->
   @if (confirmingDelete()) {
+    <!-- ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application
+       shows the SAME title, which the shared dialog declares as its default; binding one here is how
+       five different titles for one action came about - runtime testing found `Delete`,
+       `Confirm Delete`, `Delete Module`, `Delete Profile Property` and `Delete role group` across the
+       screens. The legacy had no title to preserve either: every in-scope delete confirmation was a
+       `window.confirm()` carrying the single shared string `DeleteItem`
+       (`Website/App_GlobalResources/SharedResources.resx` L120-L122), with no title at all. The
+       MESSAGE is still bound where a screen has its own legacy wording, because that wording is a
+       resource value this migration must preserve. -->
     <app-confirm-dialog
-      [title]="deleteConfirmLabel"
       [message]="deleteConfirmMessage"
       [confirmLabel]="deleteConfirmLabel"
       danger

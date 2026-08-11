@@ -375,6 +375,15 @@ function announce(notifications: NotificationService, error: HttpErrorResponse):
     summary.message,
     resolveReference(summary.supportReference, status),
   );
+
+  // ⚠ EXEMPTED FROM THE NAVIGATION SWEEP, because a failure announced here is frequently the
+  // reason a navigation is about to happen. An expired session, a refused destination and a
+  // read that fails during a route resolution all land on this line and are then followed by a
+  // redirect, and the shell discards stale notifications on a completed navigation — so without
+  // the exemption the operator would be moved with the explanation already swept away. It lasts
+  // for exactly one navigation, so a failure announced while the caller stays put is still
+  // retired the next time they genuinely go somewhere.
+  notifications.retainAcrossNavigation();
 }
 
 // ---------------------------------------------------------------------------

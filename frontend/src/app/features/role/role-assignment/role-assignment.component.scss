@@ -211,7 +211,7 @@
   margin: 0;
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-bold);
-  color: var(--color-danger);
+  color: var(--color-danger-text);
   overflow-wrap: break-word;
 }
 
@@ -531,3 +531,51 @@
 .role-assignment__user-link {
   overflow-wrap: break-word;
 }
+
+// The sentence that explains a withheld removal command — R-M24.
+//
+// Standing text about the listing below it, so it takes the muted ink and the small step of the
+// vocabulary's type ramp: it qualifies the grid rather than competing with it. Capped at a
+// comfortable measure for the same reason every other paragraph in this workspace is - a sentence
+// run across a desktop viewport is measurably harder to read than one that wraps - and the cap is
+// the shared breakpoint step, not a pixel count of its own.
+.role-assignment__notice {
+  max-inline-size: mx.breakpoint('md');
+  margin-block: 0 var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+// The lifecycle qualifier beside a date bound — R-M24.
+//
+// The WORD is the state and the colour is a second cue for a reader who can use it, never the only
+// one, which is what keeps this out of "colour alone" territory. The accessible danger token is used
+// rather than the accent one because this is TEXT: `--color-danger` measures 3.99:1 on white and
+// fails, while `--color-danger-text` measures 7.20:1. It is the same rule, the same tokens and the
+// same reasoning the portal listing applies to its own lapsed-term qualifier, deliberately - two
+// listings marking the same class of fact should not look like two different decisions.
+//
+// ⚠ `nowrap` IS SAFE HERE ONLY BECAUSE BOTH QUALIFIERS ARE SINGLE WORDS, and that is why both are.
+// A word broken mid-way reads as a different word, so it keeps the rule; a phrase held together by
+// the same rule cannot shrink at all and would overprint its neighbour in a cell the shared grid
+// sizes as a fraction of the container — which the portal listing measured at 32.86px of overlap
+// before it withdrew the rule from its own wide mark. The wording note on `ROLE_ASSIGNMENT_TEXT`
+// records the phrase that was rejected on exactly this ground. If a longer qualifier is ever added
+// here, this rule must be withdrawn from it rather than the cell widened to accommodate it.
+.role-assignment__lifecycle {
+  margin-inline-start: var(--space-1);
+  color: var(--color-danger-text);
+  font-weight: var(--font-weight-bold);
+  white-space: nowrap;
+}
+
+//  ⚠ NO ABSENT-VALUE RULE IS DECLARED FOR THE DATE CELLS, AND THAT IS A DECISION RATHER THAN AN OMISSION.
+//  Runtime measurement found all six date cells on the fixture entirely SILENT to a screen reader - no text,
+//  no mark, no clipped word - so an unrecorded bound and a value that failed to arrive read identically. A
+//  clipped "not recorded" span was written to close that, matching `role-list`'s absent-value treatment, and
+//  was then WITHDRAWN. `SecurityRoles.ascx.vb:L377-L383` returned an EMPTY STRING for the null-date sentinel,
+//  the cell templates document that contract with its citation, and six deliberate tests assert it - one of
+//  them specifically that a bound the cell renders as empty is never qualified. The review raised nothing
+//  against these cells. Under the standing precedence an accessibility heuristic does not override documented
+//  legacy parity absent a finding or an AAP rule, and rewriting six citation-backed tests to admit an
+//  unrequested change would be weakening them to fit the change. Recorded as an observation instead.

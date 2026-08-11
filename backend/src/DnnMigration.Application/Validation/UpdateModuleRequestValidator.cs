@@ -250,6 +250,33 @@ public class UpdateModuleRequestValidator : AbstractValidator<UpdateModuleReques
             .MaximumLength(IconFileMaximumLength)
             .When(request => !string.IsNullOrEmpty(request.IconFile));
 
+        // SEC: THE REFERENCE MUST STAY INSIDE THE PORTAL'S OWN FOLDER, and this is a PRESERVATION of the
+        //   legacy constraint rather than a new rule imposed on top of it. The legacy screen did not
+        //   validate this value because it did not need to: `modulesettings.ascx` line 116 declared the
+        //   field as `<portal:url id="ctlIcon" showurls="False" showtabs="False" …>`, a PICKER over the
+        //   portal's own files, and the code-behind stored whatever the picker yielded (`:L348`). An
+        //   arbitrary path was unreachable by construction, so no validator was required to refuse one.
+        //
+        //   The target has no such picker - the legacy control library is out of scope - so the field is a
+        //   free-text box, and the constraint the picker enforced STRUCTURALLY must now be enforced by a
+        //   rule. Omitting it is what made the two paths diverge: measured, `iconFile` values of
+        //   `../../../etc/passwd`, `../../bad`, `..\..\bad` and `/etc/passwd` were all accepted and
+        //   stored VERBATIM on create and on update, while the role and page paths refused every one of
+        //   them. The value is later emitted as an image reference, so a rooted or upward-traversing path
+        //   is persistent, not transient.
+        //
+        //   The rule invoked is the application's OWN shared rule, not a private copy: the role paths and
+        //   the page path already apply it, and `CreateRoleRequestValidator` records why it was hoisted
+        //   into a shared helper in the first place - while it was private to one class, the paths that
+        //   lacked it \"accepted references this one refused, and the weaker path defined the
+        //   application's actual behaviour\". This module path was the remaining weaker path.
+        //
+        //   No `When` guard is needed and none is used: the rule admits an absent or empty reference
+        //   itself, which is the normal case and the preserved sentinel representation of "no icon".
+        RuleFor(request => request.IconFile)
+            .Must(IconReferenceRules.IsContained)
+            .WithMessage(IconReferenceRules.NotContainedMessage);
+
         // MIGRATION: VISIBILITY IS CHECKED AS AN ENUMERATION, NEVER AS A NUMERIC RANGE. The legacy
         //   control was a radio-button list whose three items carried the values 0, 1 and 2, and the
         //   legacy reader mapped both 0 AND the legacy integer sentinel - and, through the sentinel
@@ -305,6 +332,16 @@ public class UpdateModuleRequestValidator : AbstractValidator<UpdateModuleReques
         //   and a rule rejecting the integer default would make the first page of every portal
         //   unreachable. Minus one must equally never be refused as an absence marker, the legacy query
         //   surface having used it as an "any page" wildcard.
+        //
+        // MIGRATION: NO RULE ON MoveToTabId, FOR EXACTLY THE REASON RECORDED FOR TabId ABOVE. A relocation
+        //   destination is a page identifier, and Tabs.TabID is IDENTITY (0, 1), so ZERO IS A LEGITIMATE
+        //   DESTINATION and a positive-only rule would make the first page of every portal impossible to
+        //   move a module onto. The check that matters - the page exists, belongs to THIS portal, is not
+        //   deleted, is not the administration page or one of its children, and is one the caller may edit -
+        //   is stateful on every clause, so it belongs to the service and is made there. Absence is
+        //   expressed by omitting the member, which is why it is nullable and why no presence rule applies:
+        //   a caller that is not relocating anything sends nothing, and a caller that names the page the
+        //   module already occupies is likewise not relocating anything.
         //
         // MIGRATION: NO RULE ON CacheTime, and the non-negative floor an earlier revision declared here
         //   is REMOVED rather than kept as a documented divergence. valCacheTime at L172 checked

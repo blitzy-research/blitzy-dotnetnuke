@@ -858,9 +858,16 @@ describe('LoginComponent', () => {
       create();
 
       // A screen that reached the network on arrival would attempt a sign-in nobody asked
-      // for. The `verify()` in `afterEach` covers this too; stating it explicitly names the
-      // property being claimed.
-      httpMock.expectNone(() => true);
+      // for.
+      //
+      // Stated as a COUNTED expectation rather than through `expectNone`: that member asserts
+      // by throwing, so the runner records no expectation for it and reports this spec exactly
+      // as it reports one that asserts nothing at all. `match` returns what it matched, so the
+      // emptiness of that list IS the assertion, and it fails just as loudly on an unexpected
+      // request. It matched nothing, so the `verify()` in `afterEach` still covers this spec.
+      expect(httpMock.match(() => true))
+        .withContext('merely being shown reaches the network for nothing')
+        .toEqual([]);
     });
 
     it('renders the two credential fields in the legacy order and no third field', () => {
@@ -1277,7 +1284,22 @@ describe('LoginComponent', () => {
       fillCredentials();
       submit();
 
-      completeSignIn();
+      // ⚠ THE ASSERTION IS THE DISPATCHED BODY, NOT MERELY THAT A REQUEST HAPPENED. A form held
+      // back by a validator would have produced no request at all, so the presence of one is
+      // half the claim - and the EMPTY code in it is the other half: the member travels as the
+      // empty string rather than being demanded of a person the server has not asked. Asserted
+      // here rather than left to `completeSignIn`, whose `expectOne` asserts by throwing and so
+      // records no expectation for the runner to count.
+      const attempt = expectLoginRequest();
+
+      expect(attempt.request.body).toEqual({
+        username: ACCOUNT_NAME,
+        password: SUBMITTED_PASSWORD,
+        verificationCode: '',
+      });
+
+      attempt.flush(credentialPayload());
+      completeIdentityRead();
     });
 
     it('accepts a six-character credential, one short of the creation policy', () => {
@@ -1466,7 +1488,7 @@ describe('LoginComponent', () => {
 
       // And it completes, so the native path is wired end to end rather than merely reaching
       // the network.
-      expect(navigateSpy).toHaveBeenCalledOnceWith(DEFAULT_SIGNED_IN_ROUTE);
+      expect(navigateSpy).toHaveBeenCalledOnceWith(DEFAULT_SIGNED_IN_ROUTE, { replaceUrl: true });
     });
 
     it('sends the seeded verification code on the first attempt, before any field is on screen', () => {
@@ -1823,8 +1845,11 @@ describe('LoginComponent', () => {
       );
 
       // Automatically re-attempting would defeat the very control that produced the refusal.
-      // `verify()` in `afterEach` would fail on a queued retry; this states the claim.
-      httpMock.expectNone(() => true);
+      // Counted rather than asserted by `expectNone`, so the claim is recorded as an
+      // expectation instead of only as an absence check that throws.
+      expect(httpMock.match(() => true))
+        .withContext('a refusal provokes no retry of any kind')
+        .toEqual([]);
     });
 
     it('dismisses the failure without withdrawing a field the person is being asked to fill in', () => {
@@ -2579,6 +2604,95 @@ describe('LoginComponent', () => {
       expectRejected(null, 'an absent parameter falls back to the default');
     });
 
+    describe('an address the account may not enter', () => {
+      /**
+       * Signs in with a return address the router will REFUSE, and reports every address the
+       * screen tried to navigate to.
+       *
+       * ⚠ A REFUSAL IS A RESOLVED `false`, NOT A REJECTION, which is the whole reason this
+       * defect survived. The screen used to chain only a `catch`, so a cancelled navigation
+       * looked exactly like a successful one and the operator was left on this screen.
+       *
+       * @param returnUrl The address the gate asked to be returned to.
+       * @param at What `Router.url` reports once the refusal has settled.
+       * @param inFlight Whether a further navigation is already under way.
+       * @returns Every address passed to `navigateByUrl`, in order.
+       */
+      async function signInAndBeRefused(
+        returnUrl: string,
+        at: string,
+        inFlight: boolean,
+      ): Promise<readonly string[]> {
+        if (mounted !== null) {
+          mounted.destroy();
+          mounted = null;
+        }
+
+        store.reset();
+        navigateSpy.calls.reset();
+
+        // The FIRST navigation is refused and every later one succeeds, so the fallback's own
+        // outcome cannot be mistaken for the refusal being retried.
+        navigateSpy.and.returnValues(Promise.resolve(false), Promise.resolve(true));
+
+        // The same instance the outer setup spied `navigateByUrl` on; the injector holds one.
+        const routerUnderTest = TestBed.inject(Router);
+
+        spyOnProperty(routerUnderTest, 'url', 'get').and.returnValue(at);
+        spyOn(routerUnderTest, 'getCurrentNavigation').and.returnValue(
+          inFlight ? ({} as ReturnType<Router['getCurrentNavigation']>) : null,
+        );
+
+        queryParams = { [RETURN_URL_QUERY_KEY]: returnUrl };
+
+        create();
+        fillCredentials();
+        submit();
+        completeSignIn();
+
+        // The fallback is decided in a `then`, so the microtask queue has to drain before the
+        // second call can have been made. Awaiting a resolved promise is enough and is more
+        // honest than a timer.
+        await Promise.resolve();
+        await Promise.resolve();
+
+        return navigateSpy.calls.allArgs().map((args) => args[0] as string);
+      }
+
+      it('falls back to the console landing address when the gate refuses the address', async () => {
+        const attempted = await signInAndBeRefused('/portals', '/login?returnUrl=%2Fportals', false);
+
+        // Both navigations, in order: what the gate asked for, then where the operator actually
+        // belongs. The second is the application root, which resolves the landing screen from
+        // the caller's own authority and therefore cannot repeat this defect.
+        expect(attempted).toEqual(['/portals', DEFAULT_SIGNED_IN_ROUTE]);
+      });
+
+      it('leaves a gate that redirects alone, rather than overriding its destination', async () => {
+        // A gate that returns an address expresses it by cancelling THIS navigation and
+        // scheduling its own, so a refusal with a navigation already in flight must not be
+        // answered - doing so would race the gate and could send the operator somewhere the
+        // gate had just decided against.
+        const attempted = await signInAndBeRefused('/portals', '/login?returnUrl=%2Fportals', true);
+
+        expect(attempted).toEqual(['/portals']);
+      });
+
+      it('does nothing when the refusal left the operator somewhere other than sign-in', async () => {
+        const attempted = await signInAndBeRefused('/portals', '/users', false);
+
+        expect(attempted).toEqual(['/portals']);
+      });
+
+      it('does not retry the landing address against itself', async () => {
+        // The one arrangement that could loop: the fallback is refused as well. It is never
+        // attempted a second time.
+        const attempted = await signInAndBeRefused(DEFAULT_SIGNED_IN_ROUTE, '/login', false);
+
+        expect(attempted).toEqual([DEFAULT_SIGNED_IN_ROUTE]);
+      });
+    });
+
     it('honours an internal path exactly as it arrived', () => {
       // The guard that produced the value preserved the attempted address byte for byte, so
       // re-serialising it here could only lose something.
@@ -2703,7 +2817,7 @@ describe('LoginComponent', () => {
       // visitor on. This address is reachable with no credentials at all - guarding the
       // sign-in screen would deadlock the application, and the bearer-token interceptor
       // navigates HERE when a session cannot be renewed - so the case is real.
-      expect(navigateSpy).toHaveBeenCalledOnceWith(DEFAULT_SIGNED_IN_ROUTE);
+      expect(navigateSpy).toHaveBeenCalledOnceWith(DEFAULT_SIGNED_IN_ROUTE, { replaceUrl: true });
     });
 
     it('is sent to the requested address when it is safe, and to the default when it is not', () => {
@@ -2712,7 +2826,7 @@ describe('LoginComponent', () => {
       queryParams = { [RETURN_URL_QUERY_KEY]: '/users/5' };
       create();
 
-      expect(navigateSpy).toHaveBeenCalledOnceWith('/users/5');
+      expect(navigateSpy).toHaveBeenCalledOnceWith('/users/5', { replaceUrl: true });
     });
 
     it('applies the same guard to the address it is sent on to', () => {
@@ -2723,7 +2837,7 @@ describe('LoginComponent', () => {
       queryParams = { [RETURN_URL_QUERY_KEY]: '//evil.test/portals' };
       create();
 
-      expect(navigateSpy).toHaveBeenCalledOnceWith(DEFAULT_SIGNED_IN_ROUTE);
+      expect(navigateSpy).toHaveBeenCalledOnceWith(DEFAULT_SIGNED_IN_ROUTE, { replaceUrl: true });
     });
 
     it('seeds nothing and asks for nothing once it has decided to move on', () => {

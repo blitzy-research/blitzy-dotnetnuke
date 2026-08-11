@@ -752,6 +752,182 @@ public sealed class ModuleApiTests
         updated.EndDate.Should().Be(end);
     }
 
+    /// <summary>
+    /// Naming a different page on the relocation member MOVES the placement, and the placement selector
+    /// continues to identify the page the module was read from.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS IS THE FACT THAT WAS MISSING WHEN THE MOVE-TO-PAGE AFFORDANCE COULD NOT MOVE ANYTHING. The
+    /// contract carried ONE page identifier, which the service reads to SELECT which placement is being
+    /// updated - a module placed on several pages has one row per page, so without it there is no way to
+    /// say which row the submitted values belong to. Carrying the destination on that same member is
+    /// therefore worse than inert: naming a page the module does not yet occupy makes the selection fail,
+    /// so the caller was answered <c>module.placement_not_found</c> and the module stayed exactly where it
+    /// was. Measured before the second member existed: a PUT naming its own page returned 200 while the
+    /// same PUT naming any other page returned 404 with "is not placed on page".
+    /// </para>
+    /// <para>
+    /// MIGRATION: the move reproduces <c>ModuleController.MoveModule</c>, which was deliberately NOT a page
+    /// reassignment - it called <c>CopyModule(..., includeSettings:=True)</c> and then
+    /// <c>DeleteTabModule(fromTabId, moduleId)</c>. So the placement row is REPLACED rather than edited,
+    /// which is why the surrogate key changes and why this test asserts the row count on each page rather
+    /// than only the response body. The legacy sequencing is preserved too: the relocation is applied after
+    /// every other effect, under the legacy's own instruction that the copy and move statements "must be at
+    /// the end of the Update as the Controller code assumes all the Updates to the Module have been carried
+    /// out".
+    /// </para>
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task UpdateModule_NamingAnotherPageAsTheDestination_MovesThePlacement()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+
+        created.TabId.Should().Be(_fixture.Seed.RootTabId, "the module is placed where it was created");
+
+        var request = new UpdateModuleRequest
+        {
+            // The page the module was READ from, which is what selects the placement being updated.
+            TabId = _fixture.Seed.RootTabId,
+            // The page it should end up on.
+            MoveToTabId = _fixture.Seed.ChildTabId,
+            ModuleTitle = created.ModuleTitle,
+        };
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "a destination the module does not yet occupy is a move, not a failed selection");
+
+        ModuleDetailDto moved = await ReadDetailAsync(response);
+
+        moved.TabId.Should().Be(
+            _fixture.Seed.ChildTabId,
+            "the response describes where the module IS, not the page it was moved off");
+        moved.TabModuleId.Should().NotBe(
+            created.TabModuleId,
+            "a move replaces the placement row rather than editing it, exactly as the legacy copy-then-delete did");
+
+        // The decisive assertion, made against the table rather than the response: exactly ONE placement,
+        // and it is on the destination. A copy that failed to delete its source would leave two, and a
+        // response-only check could not tell the two outcomes apart.
+        int placementsOnSource = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[TabModules] WHERE [ModuleID] = @moduleId AND [TabID] = @tabId;",
+            new Dictionary<string, object?>
+            {
+                ["moduleId"] = created.ModuleId,
+                ["tabId"] = _fixture.Seed.RootTabId,
+            });
+
+        int placementsOnDestination = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[TabModules] WHERE [ModuleID] = @moduleId AND [TabID] = @tabId;",
+            new Dictionary<string, object?>
+            {
+                ["moduleId"] = created.ModuleId,
+                ["tabId"] = _fixture.Seed.ChildTabId,
+            });
+
+        placementsOnSource.Should().Be(0, "the page the module left no longer holds it");
+        placementsOnDestination.Should().Be(1, "the destination holds it exactly once");
+    }
+
+    /// <summary>
+    /// Naming the page the module already occupies is not a move, and changes no placement.
+    /// </summary>
+    /// <remarks>
+    /// The guard mirrors <c>ModuleSettings.ascx.vb</c> line 405, <c>If TabId &lt;&gt; newTabId</c>, so an
+    /// ordinary save that leaves the page picker alone carries no relocation at all rather than one that
+    /// happens to cancel itself out. Asserted on the surrogate key because that is the only observable
+    /// difference between "did nothing" and "moved the module to where it already was": the latter would
+    /// delete and recreate the row, changing its identity and discarding its position.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task UpdateModule_NamingItsOwnPageAsTheDestination_MovesNothing()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+
+        var request = new UpdateModuleRequest
+        {
+            TabId = _fixture.Seed.RootTabId,
+            MoveToTabId = _fixture.Seed.RootTabId,
+            ModuleTitle = created.ModuleTitle,
+        };
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        ModuleDetailDto updated = await ReadDetailAsync(response);
+
+        updated.TabId.Should().Be(_fixture.Seed.RootTabId);
+        updated.TabModuleId.Should().Be(
+            created.TabModuleId,
+            "the placement row survives untouched, which is what proves no copy-then-delete ran");
+    }
+
+    /// <summary>
+    /// A destination that is not a content page of this portal is refused as a destination problem rather
+    /// than as a missing placement or a permission problem.
+    /// </summary>
+    /// <remarks>
+    /// The reason code matters as much as the status. <c>module.placement_not_found</c> answers "the page
+    /// you named does not hold this module", which is a statement about the placement being SELECTED;
+    /// <c>module.move_destination_invalid</c> answers "the page you named cannot receive this module".
+    /// Reporting both through one code is what made the earlier behaviour unreadable. Existence is also
+    /// settled BEFORE the page-grant check, so an absent page is not reported as a permission problem - the
+    /// same misdirection this suite refuses elsewhere for an unknown module.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task UpdateModule_NamingAnUnknownDestination_ReportsADestinationProblem()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+
+        var request = new UpdateModuleRequest
+        {
+            TabId = _fixture.Seed.RootTabId,
+            MoveToTabId = int.MaxValue,
+            ModuleTitle = created.ModuleTitle,
+        };
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        string body = await response.Content.ReadAsStringAsync();
+
+        body.Should().Contain("module.move_destination_invalid");
+        body.Should().NotContain(
+            "module.placement_not_found",
+            "the placement was found; it is the destination that cannot receive the module");
+
+        // The module has not moved, and the refusal reached the caller before anything was written.
+        int placementsOnSource = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[TabModules] WHERE [ModuleID] = @moduleId AND [TabID] = @tabId;",
+            new Dictionary<string, object?>
+            {
+                ["moduleId"] = created.ModuleId,
+                ["tabId"] = _fixture.Seed.RootTabId,
+            });
+
+        placementsOnSource.Should().Be(1, "a refused relocation writes nothing");
+    }
+
     /// <summary>An unresolved request host cannot select a module collection.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -862,14 +1038,21 @@ public sealed class ModuleApiTests
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task GetModule_WhenUnresolvable_ReturnsForbiddenWithoutDisclosingExistence()
+    public async Task GetModule_WhenUnresolvable_ReturnsNotFoundWithoutDisclosingExistence()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             ModuleRoute(_fixture.Seed.PortalId, UnknownModuleId));
 
-        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+                // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
+        // administers the tenant. The permission service establishes that the item exists before it resolves
+        // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
+        // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
+        // not permitted to perform this operation" for a module that simply did not exist, which points at
+        // the wrong repair and disagrees with the 404 the portal, user and role endpoints give for the same
+        // class of fault. An unprivileged caller still receives 403, so nothing here is an existence oracle.
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     /// <summary>
@@ -1308,7 +1491,7 @@ public sealed class ModuleApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task UpdateModule_WhenUnresolvable_ReturnsForbidden()
+    public async Task UpdateModule_WhenUnresolvable_ReturnsNotFound()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
@@ -1317,7 +1500,14 @@ public sealed class ModuleApiTests
             new UpdateModuleRequest { ModuleTitle = "No such module" },
             ApiTestFixture.Json);
 
-        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+                // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
+        // administers the tenant. The permission service establishes that the item exists before it resolves
+        // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
+        // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
+        // not permitted to perform this operation" for a module that simply did not exist, which points at
+        // the wrong repair and disagrees with the 404 the portal, user and role endpoints give for the same
+        // class of fault. An unprivileged caller still receives 403, so nothing here is an existence oracle.
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     /// <summary>
@@ -2178,20 +2368,27 @@ public sealed class ModuleApiTests
     /// <summary>Reading the settings of an unresolvable module is refused before the action runs.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task GetModuleSettings_WhenUnresolvable_ReturnsForbidden()
+    public async Task GetModuleSettings_WhenUnresolvable_ReturnsNotFound()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             ModuleSettingsRoute(_fixture.Seed.PortalId, UnknownModuleId));
 
-        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+                // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
+        // administers the tenant. The permission service establishes that the item exists before it resolves
+        // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
+        // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
+        // not permitted to perform this operation" for a module that simply did not exist, which points at
+        // the wrong repair and disagrees with the 404 the portal, user and role endpoints give for the same
+        // class of fault. An unprivileged caller still receives 403, so nothing here is an existence oracle.
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     /// <summary>Writing the settings of an unknown module answers <c>404 Not Found</c>.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task UpdateModuleSettings_WhenUnresolvable_ReturnsForbidden()
+    public async Task UpdateModuleSettings_WhenUnresolvable_ReturnsNotFound()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
@@ -2205,7 +2402,14 @@ public sealed class ModuleApiTests
             },
             ApiTestFixture.Json);
 
-        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+                // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
+        // administers the tenant. The permission service establishes that the item exists before it resolves
+        // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
+        // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
+        // not permitted to perform this operation" for a module that simply did not exist, which points at
+        // the wrong repair and disagrees with the 404 the portal, user and role endpoints give for the same
+        // class of fault. An unprivileged caller still receives 403, so nothing here is an existence oracle.
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     /// <summary>
@@ -2292,14 +2496,21 @@ public sealed class ModuleApiTests
     /// <summary>A delete against a module the permission gate cannot resolve is refused before the action runs.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task DeleteModule_WhenUnresolvable_ReturnsForbidden()
+    public async Task DeleteModule_WhenUnresolvable_ReturnsNotFound()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.DeleteAsync(
             ModuleRoute(_fixture.Seed.PortalId, UnknownModuleId));
 
-        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+                // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
+        // administers the tenant. The permission service establishes that the item exists before it resolves
+        // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
+        // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
+        // not permitted to perform this operation" for a module that simply did not exist, which points at
+        // the wrong repair and disagrees with the 404 the portal, user and role endpoints give for the same
+        // class of fault. An unprivileged caller still receives 403, so nothing here is an existence oracle.
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     /// <summary>
@@ -2346,7 +2557,7 @@ public sealed class ModuleApiTests
     /// <summary>An export of an unresolvable module is refused before the action runs.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task ExportModule_WhenUnresolvable_ReturnsForbidden()
+    public async Task ExportModule_WhenUnresolvable_ReturnsNotFound()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
@@ -2355,7 +2566,14 @@ public sealed class ModuleApiTests
             new ModuleExportRequest { FileName = "content.xml" },
             ApiTestFixture.Json);
 
-        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+                // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
+        // administers the tenant. The permission service establishes that the item exists before it resolves
+        // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
+        // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
+        // not permitted to perform this operation" for a module that simply did not exist, which points at
+        // the wrong repair and disagrees with the 404 the portal, user and role endpoints give for the same
+        // class of fault. An unprivileged caller still receives 403, so nothing here is an existence oracle.
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     /// <summary>An import naming a module in another tenant answers <c>404 Not Found</c>.</summary>

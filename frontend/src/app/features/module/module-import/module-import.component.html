@@ -355,7 +355,8 @@
         attempt is deliberately always allowed for a module that may not accept content, because the
         server owns that answer and says so in words.
       -->
-      <button type="submit" [disabled]="!canSubmit()">{{ importActionLabel }}</button>
+      <button type="submit" [disabled]="!canSubmit()"
+          [attr.aria-busy]="busy() ? 'true' : null">{{ importActionLabel }}</button>
 
       <!--
         MIGRATION: `type="button"` IS THE FAITHFUL TRANSLATION OF THE LEGACY `causesvalidation="False"`,

@@ -643,13 +643,20 @@ public sealed class TabApiTests
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task GetTab_WhenUnknown_ReturnsForbiddenEvenForTheHost()
+    public async Task GetTab_WhenUnknown_ReturnsNotFoundForTheHost()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(TabRoute(UnknownTabId));
 
-        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+                // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
+        // administers the tenant. The permission service establishes that the item exists before it resolves
+        // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
+        // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
+        // not permitted to perform this operation" for a module that simply did not exist, which points at
+        // the wrong repair and disagrees with the 404 the portal, user and role endpoints give for the same
+        // class of fault. An unprivileged caller still receives 403, so nothing here is an existence oracle.
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     /// <summary>A page belonging to another tenant is refused on the same grounds.</summary>
@@ -665,6 +672,12 @@ public sealed class TabApiTests
         // finds it does not belong to it.
         using HttpResponseMessage response = await host.GetAsync(TabRoute(foreignTabId));
 
+                // 403, AND DELIBERATELY NOT 404, BECAUSE THE PAGE EXISTS - it simply belongs to another tenant. The
+        // refusal for an identifier that names NOTHING was changed to 404 so the console can present a
+        // not-found treatment, and that change had to stop precisely here: the permission service reports a
+        // separate reason code for a foreign-tenant item, and the authorisation handler admits only the
+        // genuine non-existence code. Collapsing the two codes lets a tenant administrator read another
+        // tenant's row, which this assertion exists to prevent.
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
@@ -1170,7 +1183,7 @@ public sealed class TabApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task UpdateTab_WhenUnknown_ReturnsForbidden()
+    public async Task UpdateTab_WhenUnknown_ReturnsNotFound()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
@@ -1179,7 +1192,14 @@ public sealed class TabApiTests
             NewUpdateRequest("IGhost" + Suffix()),
             ApiTestFixture.Json);
 
-        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+                // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
+        // administers the tenant. The permission service establishes that the item exists before it resolves
+        // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
+        // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
+        // not permitted to perform this operation" for a module that simply did not exist, which points at
+        // the wrong repair and disagrees with the 404 the portal, user and role endpoints give for the same
+        // class of fault. An unprivileged caller still receives 403, so nothing here is an existence oracle.
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     /// <summary>An authenticated caller holding a view grant but no edit grant cannot write.</summary>
@@ -1892,6 +1912,12 @@ public sealed class TabApiTests
 
         using HttpResponseMessage response = await administrator.GetAsync(TabRoute(foreignTabId));
 
+                // 403, AND DELIBERATELY NOT 404, BECAUSE THE PAGE EXISTS - it simply belongs to another tenant. The
+        // refusal for an identifier that names NOTHING was changed to 404 so the console can present a
+        // not-found treatment, and that change had to stop precisely here: the permission service reports a
+        // separate reason code for a foreign-tenant item, and the authorisation handler admits only the
+        // genuine non-existence code. Collapsing the two codes lets a tenant administrator read another
+        // tenant's row, which this assertion exists to prevent.
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
 
         string payload = await response.Content.ReadAsStringAsync();

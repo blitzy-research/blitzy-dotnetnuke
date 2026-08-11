@@ -134,20 +134,30 @@
      A real anchor, because the address is what makes it a tab stop and what makes
      assistive technology announce it as a link. The global layout partial hides it
      with a negative focus-visible selector rather than by removing it from the
-     layout, so it stays in the tab order while invisible.
+     layout, so it stays in the tab order while invisible, and it reveals the link as
+     an OVERLAY rather than by growing its grid row — the row used to grow, which moved
+     the whole document down 33px on the first Tab press of every screen and back up
+     again on the second.
 
-     ⚠ THE FRAGMENT IS DELIBERATELY NOT ALLOWED TO RESOLVE. Activation is handled and
-     the default action cancelled, because a fragment-only address resolves against
-     the document's BASE url — the static document declares a root base, which deep
-     links require — rather than against the address showing. From any route below
-     the root it therefore names a DIFFERENT PATH, and letting it resolve performs a
-     full document reload that discards the current screen. That was measured in a
-     real browser against the production bundle, not inferred. The component
-     documents the two alternatives that were rejected: a router link with a fragment
-     navigates without reloading but moves NO focus, which is the one thing this
-     affordance exists to do, and removing the root base would fix the resolution and
-     break deep linking. The address is kept regardless, for the two reasons above. -->
-<a class="shell__skip-link" [href]="skipLinkTarget" (click)="focusMainRegion($event)">Skip to main content</a>
+     ⚠ THE ADDRESS IS PATH-QUALIFIED, NOT A BARE FRAGMENT, AND THAT IS A FIX. A
+     fragment-only address resolves against the document's BASE url — the static
+     document declares a root base, which deep links require — rather than against the
+     address showing, so from any route below the root it named a DIFFERENT PATH and
+     letting it resolve performed a full document reload that discarded the current
+     screen. That was measured in a real browser against the production bundle, not
+     inferred, and until now the only thing preventing it was the handler cancelling
+     the default action on every activation. The component composes the address against
+     the current path instead, so the worst the default can do is a same-document
+     fragment navigation. It still cancels — see the component for why: to keep the
+     activation out of the history and to move FOCUS rather than merely scroll. Two
+     alternatives were rejected there: a router link with a fragment moves no focus,
+     and removing the root base would break deep linking. -->
+<a
+  class="shell__skip-link"
+  [href]="skipLinkTarget()"
+  (click)="focusMainRegion($event)"
+  >Skip to main content</a
+>
 
 <!--
   THE THREE BINDINGS BELOW ARE THE WHOLE OF THE SESSION SEAM, AND EACH FORM IS
@@ -174,6 +184,8 @@
   class="shell__header"
   [applicationName]="applicationName"
   [userName]="userName()"
+  [accountProfileLink]="accountProfileLink()"
+  [accountPasswordLink]="accountPasswordLink()"
   [accountServicesLink]="accountServicesLink()"
   [signingOut]="signingOut()"
   (signOut)="onSignOut()"

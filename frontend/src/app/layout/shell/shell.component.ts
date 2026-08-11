@@ -6,11 +6,18 @@ import {
   Input,
   computed,
   inject,
+  signal,
+  viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { Router, RouterOutlet } from '@angular/router';
+import { NavigationEnd, Router, RouterOutlet } from '@angular/router';
 
 import { environment } from '../../../environments/environment';
+import { SIGN_IN_ROUTE as SHARED_SIGN_IN_ROUTE } from '../../core/config/app-routes.config';
+import {
+  activeRouteGuardsUnsavedChanges,
+  holdsUnsavedEdits,
+} from '../../core/guards/unsaved-changes.guard';
 import { AuthStore } from '../../core/state/auth.store';
 import { SessionLifecycleService } from '../../core/state/session-lifecycle.service';
 import { FooterComponent } from '../footer/footer.component';
@@ -32,21 +39,34 @@ import type { Signal } from '@angular/core';
 const MAIN_REGION_ID = 'main-content';
 
 /**
- * The skip link's `href`.
+ * The fragment the skip link's `href` ends with.
+ *
+ * ⚠ A FRAGMENT ALONE IS NOT A SAFE `href` IN THIS APPLICATION, which is why this is only
+ * part of one. `index.html` declares a ROOT base href because deep links require it, and a
+ * fragment-only address resolves against the BASE url rather than against the address
+ * showing - so from `/portals/3/settings` the address `#main-content` names `/#main-content`,
+ * a DIFFERENT DOCUMENT. Letting it resolve reloads the application and discards the
+ * in-memory session; that was measured in a browser, not inferred. The href is therefore
+ * composed against the CURRENT path by {@link ShellComponent.skipLinkTarget}.
  */
-const SKIP_LINK_TARGET = `#${MAIN_REGION_ID}`;
+const SKIP_LINK_FRAGMENT = `#${MAIN_REGION_ID}`;
 
 /**
  * Where an operator is sent once their session has ended.
  *
- * A private copy of the value the two route gates and the bearer interceptor each hold
- * — `core/guards/auth.guard.ts`, `core/guards/permission.guard.ts` and
- * `core/interceptors/auth.interceptor.ts` — rather than an import of one of them. None of
- * the three exports it, and the reason `permission.guard.ts` gives for the duplication
- * applies here too: the four agreeing by construction matters less than no one of them
- * reaching into another. The route itself is declared once, in `app.routes.ts`.
+ * MIGRATION: this WAS a private copy, and the comment justifying it argued that "the four agreeing
+ * by construction matters less than no one of them reaching into another". The premise was right and
+ * the conclusion did not follow, which is exactly the reasoning
+ * `core/config/app-routes.config.ts` was created to settle: a neutral constants module is how the
+ * consumers stop reaching into each other WITHOUT holding several values free to disagree.
+ *
+ * It is worth recording that this copy SURVIVED that consolidation. The constants module names the
+ * four modules it replaced, and one of them was the root component — the sign-out navigation later
+ * moved into this shell and was re-declared here on the way, so the count went back up to five
+ * without anything noticing. Nothing would have failed loudly either: a mismatch resolves to the
+ * catch-all route, so a renamed sign-in screen would leave sign-out landing on the not-found view.
  */
-const SIGN_IN_ROUTE = '/login';
+const SIGN_IN_ROUTE = SHARED_SIGN_IN_ROUTE;
 
 /**
  * The application shell.
@@ -357,6 +377,135 @@ export class ShellComponent {
   private readonly destroyRef = inject(DestroyRef);
 
   /**
+   * Retires notifications that a change of screen has made stale.
+   *
+   * ⚠ THIS BELONGS TO THE SHELL AND NOWHERE ELSE, because the shell is the one component that
+   * both outlives every route and renders the queue. The queue is root-scoped and the surface
+   * sits above the outlet, so before this an entry survived every navigation: an empty-submit
+   * warning raised on one screen was measured still reading word for word after seven
+   * in-application navigations across five feature areas, with the dismiss control the only
+   * way to clear it. On the portal listing it took a full-width band and pushed the page
+   * heading down 42px, so it displaced content on screens it did not belong to.
+   *
+   * `NavigationEnd` specifically, and not every router event. A navigation a guard is about to
+   * refuse has not moved the operator anywhere, so its notifications must survive — and one of
+   * them IS the guard's own refusal. `NavigationEnd` fires only when the operator has genuinely
+   * arrived somewhere else, which is exactly the condition that makes the previous screen's
+   * messages stale. The announcements raised BY an arrival exempt themselves through the
+   * queue's own one-navigation exemption.
+   *
+   * Subscribed in a field initialiser so it is established before the first render and torn
+   * down with the component.
+   */
+  /**
+   * The skip link's `href`, path-qualified against the address currently showing.
+   *
+   * Declared ABOVE the subscription that writes it because field initialisers run in
+   * declaration order, so the reverse would write to an undefined member on the first
+   * navigation that completed.
+   */
+  private readonly skipLinkHref = signal<string>(this.composeSkipLinkHref());
+
+  private readonly notificationSweep = this.router.events
+    .pipe(takeUntilDestroyed(this.destroyRef))
+    .subscribe((event) => {
+      if (event instanceof NavigationEnd) {
+        // ⚠ THE NOTIFICATION SWEEP IS NOT DRIVEN FROM HERE, AND THAT IS A CORRECTION. This handler
+        // ran on every completed navigation, including one that changed only the query string - and
+        // paging, filtering and ordering are all carried in the query string on all four listings, so
+        // turning a page or pressing a column heading swept a refusal the operator was still reading.
+        // The sweep now belongs to the surface that renders the queue, which compares the PATH alone
+        // and therefore treats a change of screen as a departure and a change of page as not one.
+        //
+        // The skip link's address must follow the operator from route to route: it names the
+        // CURRENT path so that the fragment cannot resolve to a different document. See
+        // SKIP_LINK_FRAGMENT for what goes wrong when it does not.
+        this.skipLinkHref.set(this.composeSkipLinkHref());
+      }
+    });
+
+  /**
+   * The outlet every routed screen is mounted into.
+   *
+   * Read for ONE purpose: to ask the screen currently on display whether it is holding edits
+   * nobody has saved, when the browser — not the router — is about to leave. Declared here
+   * because this component owns the outlet, and because it is the only part of the application
+   * guaranteed to be mounted for the whole of a session.
+   *
+   * `viewChild` rather than a constructor injection: the outlet is a child in this component's
+   * own template, so it does not exist until the view is created.
+   */
+  private readonly outlet = viewChild(RouterOutlet);
+
+  constructor() {
+    /*
+     * ⚠ THE BROWSER'S OWN EXITS DO NOT REACH THE ROUTER, AND THEY ACCOUNTED FOR HALF THE
+     * MEASURED DATA LOSS. `core/guards/unsaved-changes.guard.ts` closes the in-application half —
+     * a link, a Cancel, the Back button — but a RELOAD, a tab close, or a navigation to another
+     * address entirely bypasses Angular completely. Runtime testing measured four edits across
+     * two tabs of the site-settings screen destroyed by exactly that, and recorded that
+     * `window.onbeforeunload` was `null`, so the browser had not even been asked to help.
+     *
+     * Registered here rather than in each screen because this component is mounted for the
+     * entire life of the application, so the listener is added once and removed once. The
+     * predicate is IMPORTED rather than restated: two definitions of "holding unsaved edits"
+     * would eventually disagree, and the disagreement would appear as a screen that warns when
+     * you click away but not when you reload.
+     *
+     * ⚠ THE RELOAD CASE IS ESPECIALLY WORTH GUARDING ON THIS APPLICATION, more so than on most.
+     * The access token is held in memory only, so a reload does not merely discard the form —
+     * it ends the session outright and returns the operator to the sign-in screen. Two losses,
+     * one keystroke, and previously no warning before either.
+     */
+    const warnBeforeUnload = (event: BeforeUnloadEvent): void => {
+      const outlet = this.outlet();
+
+      // `component` THROWS on an un-activated outlet, so `isActivated` is a precondition and not
+      // a tidiness check. During the first navigation, and while the shell is mounted over the
+      // sign-in screen, there may be nothing routed at all.
+      if (outlet === undefined || outlet.isActivated === false) {
+        return;
+      }
+
+      /*
+       * ⚠ ONLY THE SCREENS THE ROUTE TABLE PROTECTS, and asking the route table is what keeps
+       * this channel from misfiring. A listing's search box is a `FormGroup` as much as an edit
+       * form is, so typing a filter term marks it dirty — and without this test a reload of the
+       * portals list would warn about "unsaved changes" for a search the operator had typed and
+       * already seen applied. The route gate is declared on the nineteen form routes and on none
+       * of the four listings, so reading that declaration back gives both channels one answer.
+       */
+      if (activeRouteGuardsUnsavedChanges(this.router) === false) {
+        return;
+      }
+
+      if (holdsUnsavedEdits(outlet.component) === false) {
+        return;
+      }
+
+      /*
+       * `preventDefault()` is the standardised way to request the prompt; assigning to
+       * `returnValue` is the legacy form that browsers still honour, and both are performed
+       * because the specification and the shipped implementations do not fully agree on which is
+       * required. NO WORDING IS SUPPLIED: browsers have ignored author-supplied text for this
+       * prompt for years and substitute their own, so offering a sentence here would suggest a
+       * control the application does not have.
+       */
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', warnBeforeUnload);
+
+    // A listener outliving the application would keep this closure — and through it the whole
+    // component — reachable. The shell is destroyed only when the application is, so this is a
+    // correctness statement rather than a practical leak.
+    this.destroyRef.onDestroy(() => {
+      window.removeEventListener('beforeunload', warnBeforeUnload);
+    });
+  }
+
+  /**
    * The name the banner renders for the signed-in account, or `undefined` when no
    * account is signed in.
    *
@@ -429,6 +578,38 @@ export class ShellComponent {
   });
 
   /**
+   * The address of the signed-in account's own profile screen, or `undefined`.
+   *
+   * MIGRATION: added with {@link accountPasswordLink} to close a navigational dead end. Both
+   * screens are permitted to the account OWNER by the route table, but every entry in the
+   * navigation rail requires a portal or host administrator, so a signed-in member had no link to
+   * either and could reach them only by typing a URL containing their own numeric account key.
+   * `ManageUsers.ascx.vb:L439-L456` records that the legacy command bar offered both to an account
+   * viewing itself, so this restores measured behaviour rather than inventing an affordance.
+   *
+   * Derived here for the same reason the services address is: this component owns the session
+   * boundary and is the only place that knows which account is signed in. `undefined` until an
+   * identity resolves, which is what the band tests before rendering the link at all.
+   */
+  protected readonly accountProfileLink: Signal<string | undefined> = computed(() => {
+    const user = this.authStore.currentUser();
+
+    return user === null ? undefined : `/users/${String(user.userId)}/profile`;
+  });
+
+  /**
+   * The address of the signed-in account's own change-password screen, or `undefined`.
+   *
+   * See {@link accountProfileLink}; `cmdPassword` in the legacy command bar is the affordance this
+   * restores.
+   */
+  protected readonly accountPasswordLink: Signal<string | undefined> = computed(() => {
+    const user = this.authStore.currentUser();
+
+    return user === null ? undefined : `/users/${String(user.userId)}/password`;
+  });
+
+  /**
    * Whether the signed-in account is a host (super user), as the SERVER reported it.
    *
    * Forwarded to the navigation rail, which declares this and {@link administersTenant} as REQUIRED
@@ -453,9 +634,23 @@ export class ShellComponent {
   readonly mainRegionId: string = MAIN_REGION_ID;
 
   /**
-   * The skip link's fragment target.
+   * The skip link's `href` — the path currently showing, plus the main region's fragment.
+   *
+   * ⚠ PATH-QUALIFIED, NOT A BARE FRAGMENT, AND THAT REMOVES A LATENT HAZARD RATHER THAN
+   * TIDYING ONE. A bare `#main-content` resolves against the root base href this document
+   * declares, so from any address below the root it named a DIFFERENT PATH and following it
+   * would have reloaded the application and discarded the in-memory session. That was
+   * survivable only because {@link focusMainRegion} cancels the default action on every
+   * activation - which is to say the address was wrong and one line of script was all that
+   * stood between it and a destroyed session. Composed against the current path it is
+   * correct on its own terms: were the default ever to run, the browser would perform a
+   * SAME-DOCUMENT fragment navigation, because the path it names is the path already showing.
+   *
+   * A signal rather than a constant because the path changes under it. It is refreshed on
+   * `NavigationEnd` only - the address is not settled before that, and a navigation a guard
+   * is about to refuse must not be published as the link's target.
    */
-  readonly skipLinkTarget: string = SKIP_LINK_TARGET;
+  readonly skipLinkTarget: Signal<string> = this.skipLinkHref.asReadonly();
 
   /**
    * This component's own host element, used to locate the main region when the
@@ -528,26 +723,44 @@ export class ShellComponent {
   }
 
   /**
-   * Moves keyboard focus to the main region, and cancels the anchor's default
-   * action.
+   * Moves keyboard focus to the main region, and cancels the anchor's default action.
    *
-   * ⚠ THE CANCELLATION IS LOAD-BEARING, AND IT GUARDS A DEFECT THAT WAS MEASURED
-   * RATHER THAN INFERRED. A fragment-only `href` resolves against the document's
-   * BASE url, and `index.html` declares a root base href because deep links
-   * require it. From any address below the root the href therefore names a
-   * DIFFERENT PATH, and letting it resolve performs a FULL DOCUMENT RELOAD that
-   * discards the current screen — observed in a real browser against the
-   * production bundle as `/portals/3/settings` becoming `/` with every bundle
-   * re-fetched.
+   * ⚠ THE CANCELLATION IS STILL REQUIRED, BUT IT IS NO LONGER ALL THAT STANDS BETWEEN THE
+   * LINK AND A DESTROYED SESSION. It used to be. A fragment-only `href` resolves against the
+   * document's BASE url, and `index.html` declares a root base href because deep links
+   * require it, so from any address below the root the href named a DIFFERENT PATH and
+   * letting it resolve performed a FULL DOCUMENT RELOAD that discarded the current screen —
+   * observed in a real browser against the production bundle as `/portals/3/settings`
+   * becoming `/` with every bundle re-fetched. The address is now composed against the
+   * current path ({@link skipLinkTarget}), so the fallback is a same-document fragment
+   * navigation rather than a reload.
    *
-   * Two alternatives were evaluated and rejected. A router link with a fragment
-   * navigates without reloading but moves NO focus, which is the one thing the
-   * affordance exists to do. Removing the root base href would fix the resolution
-   * and break deep linking.
+   * What the cancellation does now is the reason it was always wanted: it keeps the
+   * activation from pushing a history entry the operator would have to press Back through,
+   * and it puts FOCUS on the region rather than merely scrolling to it. A router link with a
+   * fragment was evaluated for the same job and rejected because it moves no focus, which is
+   * the one thing this affordance exists to do; removing the root base href was rejected
+   * because it would break deep linking.
    *
-   * The anchor keeps its `href` regardless: the `href` is what makes it a tab stop
-   * and what makes assistive technology announce it as a link.
+   * The anchor keeps its `href` regardless: the `href` is what makes it a tab stop and what
+   * makes assistive technology announce it as a link.
    */
+  /**
+   * Builds the skip link's `href` from the address currently showing.
+   *
+   * Any fragment already on the address is dropped rather than appended to, because two
+   * fragments in one address name nothing. `Router.url` always begins with a slash, so the
+   * result is root-relative and resolves against the ORIGIN rather than against the base
+   * href - which is the whole point of composing it.
+   *
+   * @returns The current path, query string included, ending in the main region's fragment.
+   */
+  private composeSkipLinkHref(): string {
+    const [pathAndQuery] = this.router.url.split('#');
+
+    return `${pathAndQuery}${SKIP_LINK_FRAGMENT}`;
+  }
+
   protected focusMainRegion(event: Event): void {
     event.preventDefault();
 

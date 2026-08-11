@@ -751,7 +751,13 @@ public class MappingTests
             .Select(property => property.Name)
             .ToArray();
 
-        declared.Should().HaveCount(14);
+        // FIFTEEN: the fourteen role columns plus the derived optimistic-concurrency token. The token is
+        // deliberately admitted by this guard even though it is not a column, because it is not join
+        // denormalisation either - it is computed from THIS row's own values by
+        // RoleMappings.ConcurrencyTokenFor and carries no information from any other table. Everything this
+        // assertion exists to keep out is still kept out by the named exclusions below.
+        declared.Should().HaveCount(15);
+        declared.Should().Contain("ConcurrencyToken");
         declared.Should().NotContain("PortalId");
         declared.Should().NotContain("RoleGroupName");
         declared.Should().NotContain("UserCount");
@@ -2086,13 +2092,71 @@ public class MappingTests
     /// <summary>
     /// The account detail projection carries the account row plus the resolved role names.
     /// </summary>
+    /// <summary>
+    /// The detail projection publishes the SAME removal capability as the list projection, for every
+    /// account the rule distinguishes.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ THE DETAIL CONTRACT PUBLISHED NO CAPABILITY AT ALL, and the consequence was a defect a client
+    /// could not avoid. The removal operation refuses two kinds of account - a super user, and the account
+    /// named by <c>Portals.AdministratorId</c> - but nothing in the detail contract revealed the
+    /// designation, so the screen editing one account approximated the rule as "not a super user". For the
+    /// tenant's own administrator the account LISTING therefore withheld the removal affordance while the
+    /// detail screen offered it: two surfaces disagreeing about one permission, the offered action's only
+    /// possible outcome being a refusal.
+    /// <para>
+    /// Both projections now read one private member, so this asserts AGREEMENT rather than two rules that
+    /// happen to coincide.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void UserToDetail_PublishesTheSameRemovalCapabilityAsTheList()
+    {
+        // ⚠ FullUser() DELIBERATELY CARRIES IsSuperUser = true so that every mapped column holds a
+        // distinguishable value, so an "ordinary" account has to clear it explicitly. Leaving it set is
+        // how the first draft of this test failed: it asserted a host account was removable.
+        User ordinary = FullUser();
+        ordinary.IsSuperUser = false;
+
+        User superUser = FullUser();
+        superUser.IsSuperUser = true;
+
+        // An ordinary account in a tenant that designates somebody else may be removed.
+        UserMappings.ToDetail(ordinary, -1, [], portalAdministratorId: 99).CanDelete.Should().BeTrue();
+
+        // A super user may not, whoever the tenant designates.
+        UserMappings.ToDetail(superUser, -1, [], portalAdministratorId: 99).CanDelete.Should().BeFalse();
+
+        // ⚠ THE CLAUSE THE CLIENT COULD NOT SEE: the designated administrator may not be removed even
+        // though they are NOT a super user. This is the exact case the two screens disagreed about.
+        UserMappings
+            .ToDetail(ordinary, -1, [], portalAdministratorId: ordinary.UserId)
+            .CanDelete.Should()
+            .BeFalse();
+
+        // ⚠ A TENANT THAT DESIGNATES NOBODY PROTECTS NOBODY, and the legacy spelling of a missing integer
+        // is MINUS ONE rather than null - so neither may be read as "matches this row". Users.UserID seeds
+        // IDENTITY(1, 1), so -1 can never be a real account key.
+        UserMappings.ToDetail(ordinary, -1, [], portalAdministratorId: null).CanDelete.Should().BeTrue();
+        UserMappings.ToDetail(ordinary, -1, [], portalAdministratorId: -1).CanDelete.Should().BeTrue();
+
+        // AGREEMENT with the list projection, asserted directly for every distinguished case.
+        foreach (int? designation in new int?[] { null, -1, 99, ordinary.UserId })
+        {
+            UserMappings
+                .ToDetail(ordinary, -1, [], designation)
+                .CanDelete.Should()
+                .Be(UserMappings.ToListItem(ordinary, -1, null, null, designation).CanDelete);
+        }
+    }
+
     [Fact]
     public void UserToDetail_CarriesTheAccountPlusTheResolvedRoles()
     {
         User user = FullUser();
         string[] roles = ["Administrators", "Registered Users"];
 
-        UserDetailDto dto = UserMappings.ToDetail(user, portalId: -1, roles);
+        UserDetailDto dto = UserMappings.ToDetail(user, portalId: -1, roles, portalAdministratorId: null);
 
         dto.UserId.Should().Be(1);
         dto.PortalId.Should().Be(-1);
@@ -2129,7 +2193,7 @@ public class MappingTests
         user.IsLockedOut = null;
         user.IsOnline = null;
 
-        UserDetailDto dto = UserMappings.ToDetail(user, -1, []);
+        UserDetailDto dto = UserMappings.ToDetail(user, -1, [], null);
 
         dto.IsApproved.Should().BeFalse();
         dto.IsLockedOut.Should().BeFalse();
@@ -2619,8 +2683,8 @@ public class MappingTests
         ProfilePropertyDefinition definition = FullDefinition();
 
         Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToListItem(null!, -1, null, null, null); });
-        Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToDetail(null!, -1, []); });
-        Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToDetail(user, -1, null!); });
+        Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToDetail(null!, -1, [], null); });
+        Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToDetail(user, -1, null!, null); });
         Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToDto(null!, 0); });
         Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToProfile(1, null!, [], 0, true); });
         Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToProfile(1, [], null!, 0, true); });
@@ -3827,7 +3891,7 @@ public class MappingTests
         object[] projections =
         [
             UserMappings.ToListItem(user, -1, "12 Measured Street", "555-0100", null),
-            UserMappings.ToDetail(user, -1, ["Administrators"]),
+            UserMappings.ToDetail(user, -1, ["Administrators"], null),
             UserMappings.ToProfile(user.UserId, [FullDefinition()], [NewProfileValue("555-0100", null)], 2, true),
             UserMappings.ToDto(FullDefinition(), 2),
         ];
@@ -3938,7 +4002,7 @@ public class MappingTests
         user.Email = "ada@example.com";
 
         UserMappings.ToListItem(user, -1, null, null, null).Email.Should().Be("ada@example.com");
-        UserMappings.ToDetail(user, -1, []).Email.Should().Be("ada@example.com");
+        UserMappings.ToDetail(user, -1, [], null).Email.Should().Be("ada@example.com");
     }
 
     /// <summary>
@@ -3969,7 +4033,7 @@ public class MappingTests
         unread.CreatedDate = DateTime.MinValue;
         unread.LastLoginDate = null;
 
-        UserDetailDto fromUnread = UserMappings.ToDetail(unread, -1, []);
+        UserDetailDto fromUnread = UserMappings.ToDetail(unread, -1, [], null);
 
         fromUnread.IsApproved.Should().BeFalse();
         fromUnread.IsOnline.Should().BeFalse();
@@ -3982,7 +4046,7 @@ public class MappingTests
         explicitlyFalse.IsOnline = false;
         explicitlyFalse.IsLockedOut = false;
 
-        UserDetailDto fromFalse = UserMappings.ToDetail(explicitlyFalse, -1, []);
+        UserDetailDto fromFalse = UserMappings.ToDetail(explicitlyFalse, -1, [], null);
 
         fromFalse.IsApproved.Should().BeFalse(
             "false and never-read are the same answer on the response, exactly as they were in the store");
@@ -4281,8 +4345,8 @@ public class MappingTests
 
         UserMappings.ToListItem(user, -1, "12 Measured Street", "555-0100", null).Should()
             .BeEquivalentTo(UserMappings.ToListItem(user, -1, "12 Measured Street", "555-0100", null));
-        UserMappings.ToDetail(user, -1, ["Administrators"]).Should()
-            .BeEquivalentTo(UserMappings.ToDetail(user, -1, ["Administrators"]));
+        UserMappings.ToDetail(user, -1, ["Administrators"], null).Should()
+            .BeEquivalentTo(UserMappings.ToDetail(user, -1, ["Administrators"], null));
         UserMappings.ToDto(definition, 2).Should().BeEquivalentTo(UserMappings.ToDto(definition, 2));
         UserMappings.ToProfile(1, [definition], [NewProfileValue("555-0100", null)], 2, true).Should()
             .BeEquivalentTo(

@@ -22,7 +22,7 @@
  * emitting `2` when stepping forward from page zero is asserted on its own below.
  *
  * MIGRATION: the component renders NO page-number window, because it exposes no page list to iterate and its
- * public input surface is closed at three members; the legacy ten-link window is not reproduced. There is
+ * public input surface is closed at four members; the legacy ten-link window is not reproduced. There is
  * therefore no button labelled with a page number to click, and the equivalent coupling is asserted instead:
  * the highest page number a person can READ off the pager is parsed out of the rendered readout, and the
  * control that navigates there must emit exactly that number MINUS ONE.
@@ -249,10 +249,17 @@ describe('PaginationComponent', () => {
   }
 
   describe('whether it renders at all', () => {
-    // MIGRATION: the rule is "hide when the total is no greater than the page size", which is
-    // BYTE-EQUIVALENT to the legacy PORTALS screen and a documented divergence only from the legacy USERS
-    // screen. The two behaved differently while running a character-for-character identical guard, so the
-    // divergence is real and is worth stating precisely:
+    // MIGRATION: the rule has TWO parts, and they are deliberately not the same rule.
+    //
+    //   * THE GROUP renders as soon as there is a result to count. It carries the range summary, which is
+    //     the only on-screen confirmation of how many records a filter matched. Runtime testing measured
+    //     what tying it to navigability cost: a filter narrowing 250 portals to seven removed the whole
+    //     group, so seven rows were shown with nothing stating that seven was the entire match set.
+    //   * THE STEPS render only when there is somewhere to step to, because four permanently disabled
+    //     buttons would assert the opposite of the truth about what can be reached.
+    //
+    // That split is the legacy USERS behaviour and a documented divergence from the legacy PORTALS screen.
+    // The two behaved differently while running a character-for-character identical guard:
     //
     //   * Both ran `If SuppressPager And ctlPagingControl.Visible Then ctlPagingControl.Visible = (PageSize
     //     < TotalRecords)` — Portals.ascx.vb and Users.ascx.vb, identical.
@@ -261,25 +268,37 @@ describe('PaginationComponent', () => {
     //     whenever everything fit on one page.
     //   * USERS read the real `Display_SuppressPager` setting (Users.ascx.vb,
     //     `CType(setting, Boolean)`) whose default is `False` (Library/Components/Users/UserModuleBase.vb),
-    //     so its guard NEVER RAN and its pager stayed visible even for a single page.
+    //     so its guard NEVER RAN and its pager stayed visible even for a single page - status cell and all,
+    //     since `Library/Controls/PagingControl.vb` rendered that cell on every visible pass.
     //
-    // "Show when PageSize < TotalRecords" is exactly "hide when the total is no greater than the page size",
-    // so this reproduces Portals and diverges from Users by design.
+    // The portals guard was disabled code, so the users behaviour is the one adopted for both.
 
-    it('renders nothing when everything already fits on one page', () => {
+    it('keeps the group and its count when everything already fits on one page', () => {
       bind(0, 10, 5);
 
-      expect(isRendered('.pagination')).withContext('a single page needs no pager').toBeFalse();
+      expect(isRendered('.pagination')).withContext('the count is still worth stating').toBeTrue();
+      expect(statusText()).toBe(`1${EN_DASH}5 of 5`);
+      expect(steps().length).withContext('nowhere to step to').toBe(0);
+      expect(isRendered('.pagination__position')).withContext('no page-of-pages readout').toBeFalse();
+    });
+
+    it('keeps the group and its count when the total exactly equals the page size', () => {
+      // The equal case is the boundary the legacy guard turned on: it showed the STEPS only when the page
+      // size was STRICTLY LESS than the total, so equality offers no step - while still counting.
+      bind(0, 10, 10);
+
+      expect(isRendered('.pagination')).toBeTrue();
+      expect(statusText()).withContext('10 of 10 is one full page').toBe(`1${EN_DASH}10 of 10`);
       expect(steps().length).toBe(0);
     });
 
-    it('renders nothing when the total exactly equals the page size', () => {
-      // The equal case is the boundary the legacy guard turned on: it showed the pager only when the page
-      // size was STRICTLY LESS than the total, so equality hides it.
-      bind(0, 10, 10);
+    it('names the group and the step cluster separately, so the count sits inside the named region', () => {
+      bind(0, 10, 25);
 
-      expect(isRendered('.pagination')).withContext('10 of 10 is one full page').toBeFalse();
-      expect(steps().length).toBe(0);
+      expect(element('.pagination').getAttribute('role')).toBe('group');
+      expect(element('.pagination').getAttribute('aria-label')).toBe('Pagination');
+      expect(element('.pagination__controls').getAttribute('role')).toBe('group');
+      expect(element('.pagination__controls').getAttribute('aria-label')).toBe('Pages');
     });
 
     it('renders nothing for an empty result set, and raises nothing', () => {
@@ -936,11 +955,22 @@ describe('PaginationComponent', () => {
       expect(definition().onPush).toBeTrue();
     });
 
-    it('accepts exactly three inputs and publishes exactly one output', () => {
-      // The surface is closed at `page`, `pageSize` and `totalCount` in and `pageChange` out. A fourth input
-      // is a deviation rather than a convenience — it is also what would let a feature smuggle the server's
-      // own page count in and bypass the derivation this component owns.
-      expect(definition().inputNames).toEqual(['page', 'pageSize', 'totalCount']);
+    it('accepts exactly four inputs and publishes exactly one output', () => {
+      // The surface is closed at `page`, `pageSize`, `totalCount` and `loading` in and `pageChange` out. A
+      // FIFTH input is a deviation rather than a convenience — and the one that would matter is a page
+      // count, which would let a feature smuggle the server's own total in and bypass the derivation this
+      // component owns. That derivation is asserted immediately below, from these four inputs alone.
+      //
+      // ⚠ `loading` WAS ADDED DELIBERATELY, AGAINST AN EARLIER "CLOSED AT THREE" CLAIM, and the reason is
+      // that the readout is a LIVE REGION rather than a label. The page number is bound to the page that
+      // was REQUESTED, so the number does not snap backwards while the request is in flight — right for the
+      // eye and wrong for the ear, because assistive technology announces the new range against rows that
+      // are still the old ones. Measured under deliberate Slow-3G throttling, "21–30 of 145" was announced
+      // while the grid still held rows 11–20. `loading` defers only the ANNOUNCEMENT, through `aria-busy`,
+      // and changes no number the component derives — which is why it is the narrowest repair available.
+      // Suppressing the region instead would announce its disappearance, and moving the number to the
+      // settled page would make the control appear to ignore the press.
+      expect(definition().inputNames).toEqual(['loading', 'page', 'pageSize', 'totalCount']);
       expect(definition().outputNames).toEqual(['pageChange']);
     });
 
@@ -956,4 +986,101 @@ describe('PaginationComponent', () => {
       expect(component.lastItemNumber).toBe(75);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // FOCUS AFTER A TERMINAL STEP
+  // ---------------------------------------------------------------------------
+
+  describe('focus after a step that disables itself', () => {
+    // ⚠ FIRST AND LAST DESTROY THEIR OWN AFFORDANCE BY SUCCEEDING. Reaching the last page makes "Last
+    // page" unavailable, the template states that with the native `disabled` property, and a browser
+    // discards focus on an element that becomes disabled - dropping it to `body`. Runtime testing measured
+    // exactly that: focus reached `body` after First and after Last, while Next and Previous retained it
+    // because they stay enabled mid-range, so a keyboard operator was returned to the top of the document
+    // and had to tab through the whole page to reach the pager again.
+    //
+    // The repair hands focus to the step that is still available and in the opposite direction, which is
+    // the only step a person can use next. It is deliberately conditional on focus having been ON the
+    // button, so a programmatic call cannot pull focus out of whatever a person was using.
+
+    /**
+     * Simulates a real activation: focus the control, then click it, the way both a pointer and a keyboard
+     * leave the document.
+     */
+    function activate(label: string): void {
+      const control = step(label);
+
+      control.focus();
+      control.click();
+    }
+
+    it('moves focus to Previous when Last disables itself', () => {
+      bind(0, 10, 25);
+
+      activate(STEP.last);
+      // The consumer owns the page: binding the emitted index back is what makes the step disabled, which
+      // is the state the repair reacts to.
+      bind(2, 10, 25);
+
+      expect(step(STEP.last).disabled).withContext('the activated step is now unavailable').toBeTrue();
+      expect(document.activeElement).withContext('focus retained inside the pager').toBe(step(STEP.previous));
+    });
+
+    it('moves focus to Next when First disables itself', () => {
+      bind(2, 10, 25);
+
+      activate(STEP.first);
+      bind(0, 10, 25);
+
+      expect(step(STEP.first).disabled).toBeTrue();
+      expect(document.activeElement).toBe(step(STEP.next));
+    });
+
+    it('leaves focus alone when the activated step stays available', () => {
+      // Ten pages, stepping from the second to the third: Next stays enabled throughout, so the browser
+      // keeps focus on it by itself and nothing here should intervene.
+      bind(1, 10, 100);
+
+      const next = step(STEP.next);
+
+      next.focus();
+      next.click();
+      bind(2, 10, 100);
+
+      expect(step(STEP.next).disabled).withContext('mid-range, so still available').toBeFalse();
+      expect(document.activeElement).withContext('the browser kept it').toBe(step(STEP.next));
+    });
+
+    it('does not take focus when a person is somewhere else entirely', () => {
+      bind(0, 10, 25);
+
+      const elsewhere = document.createElement('button');
+
+      document.body.appendChild(elsewhere);
+      elsewhere.focus();
+
+      // A programmatic step, with focus outside the pager. Nothing here may steal it.
+      component.goLast();
+      bind(2, 10, 25);
+
+      expect(document.activeElement).withContext('left where the person put it').toBe(elsewhere);
+
+      elsewhere.remove();
+    });
+
+    it('takes no focus when the steps stop rendering altogether', () => {
+      bind(0, 10, 25);
+
+      activate(STEP.last);
+      // Records vanished between the request and the response, leaving a single page: the steps are gone,
+      // so there is nothing to move focus to and nothing may be invented.
+      bind(0, 10, 4);
+
+      expect(steps().length).withContext('no steps left').toBe(0);
+      expect(document.activeElement === document.body || document.activeElement === null)
+        .withContext('focus is not moved into an element that no longer exists')
+        .toBeTrue();
+    });
+  });
+
 });

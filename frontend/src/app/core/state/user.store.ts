@@ -233,6 +233,26 @@ const OPENING_LETTER = 'A';
 const FIRST_LETTER_SEARCH_TEXT = 'A';
 
 /**
+ * The status the account-policy read answers with when the tenant stores no policy.
+ *
+ * ⚠ THIS IS AN "ABSENT" ANSWER WEARING AN ERROR'S STATUS, and the mismatch originates in the
+ * transport rather than in either layer's intent. The Application layer returns a SUCCESSFUL outcome
+ * carrying no value, and the shared response helper maps that onto `404` by a convention it documents
+ * as "a nullable value on a successful outcome is how this solution expresses 'asked, and it is not
+ * there'". There is no cleaner status for a GET whose answer is legitimately nothing.
+ *
+ * Named rather than inlined because the number alone reads as an error at the one place it is tested,
+ * which is precisely the misreading that produced the defect it now prevents.
+ *
+ * ⚠ UNAMBIGUOUS ONLY BECAUSE THE TENANT IS RESOLVED FIRST. An unresolvable tenant never reaches this
+ * read - the controller answers `403` with `portal.tenant_unresolved` before consulting the service,
+ * measured directly against a non-aliased origin - so a `404` arriving here after a successful
+ * authentication can only mean the resolved tenant has no policy to return.
+ */
+const MEMBERSHIP_SETTINGS_ABSENT_STATUS = 404;
+
+
+/**
  * Which search the account listing is currently applying.
  *
  * MIGRATION: the legacy screen chose its query by comparing the search text against
@@ -907,6 +927,35 @@ export class UserStore implements OnDestroy {
   private readonly _membershipSettings = signal<MembershipSettings | null>(null);
 
   /**
+   * Whether the tenant stores no account policy at all, as distinct from one that could not be read.
+   *
+   * ⚠ THIS DISTINCTION IS THE WHOLE POINT, because the slice beside it cannot express it. A null
+   * policy means "no policy in hand" and arises from three unrelated situations — not read yet, read
+   * and refused, read and legitimately absent — and every consumer that tests it for null was
+   * therefore forced to treat an ordinary tenant as a broken one.
+   *
+   * MIGRATION: absence is a LEGITIMATE answer here, not a failure, and the server says so in its own
+   * words. `UserService.GetMembershipSettingsAsync` returns `Success` carrying a null value and
+   * records why: "A tenant with no settings source legitimately answers with no value, which is what
+   * the legacy reader did ... and the screens that consumed it fell back to their own defaults.
+   * Reporting a failure instead would change behaviour those screens depended upon." That traces to
+   * `Library/Components/Users/UserController.vb:L656-L671`, where `GetUserSettings` located the
+   * "User Accounts" module by definition name and assigned its result ONLY inside a not-nothing
+   * guard, so a tenant without that module received `Nothing` and no error whatsoever.
+   *
+   * The transport nevertheless has to answer a GET with a status, and the shared translation helper
+   * maps a successful outcome carrying no value onto `404` by documented convention. So the wire
+   * cannot distinguish "absent" from "missing" on the status line alone, and this flag is where that
+   * distinction is recovered and published once instead of being re-derived, differently, per screen.
+   *
+   * ⚠ ABSENCE IS NOT THE SAME AS WRITABILITY. A tenant reaching this state cannot store a policy
+   * either: the write answers `404` with `user.membership_settings.source_missing` and the measured
+   * sentence "Portal -1 has no \"User Accounts\" module instance to store membership settings
+   * against." A consumer must therefore NOT read this flag as licence to offer a save.
+   */
+  private readonly _membershipSettingsUnconfigured = signal<boolean>(false);
+
+  /**
    * The tenant's profile declarations, in the order the server returned them.
    *
    * UNPAGED, and deliberately so: the transport returns a plain array, and this store
@@ -1090,6 +1139,18 @@ export class UserStore implements OnDestroy {
 
   /** The tenant's account policy, or null when it has not been read. */
   readonly membershipSettings = this._membershipSettings.asReadonly();
+
+  /**
+   * Whether the tenant legitimately stores no account policy, as opposed to one that could not be read.
+   *
+   * True only after a read that the server answered with "absent". A read still outstanding, a read
+   * that succeeded, and a read that genuinely failed all report false, so a consumer testing this can
+   * rely on it meaning exactly one thing.
+   *
+   * ⚠ NOT A LICENCE TO OFFER A SAVE. See the backing slice: the same tenant cannot store a policy
+   * either, so a screen reading this must explain the state rather than open a form over it.
+   */
+  readonly membershipSettingsUnconfigured = this._membershipSettingsUnconfigured.asReadonly();
 
   /** The tenant's profile declarations, unpaged and in the server's order. */
   readonly profileDefinitions = this._profileDefinitions.asReadonly();
@@ -1678,6 +1739,58 @@ export class UserStore implements OnDestroy {
   }
 
   /**
+   * Returns the listing to the state a first visit shows: no query chosen, no rows.
+   *
+   * ⚠ THIS EXISTS TO CLOSE A MEASURED CONTRADICTION BETWEEN THIS STORE AND THE SCREEN THAT
+   * DISPLAYS IT. The listing screen's free-text box and its search-axis control are component
+   * state, so they are reconstructed EMPTY every time the screen is mounted, while this store
+   * outlives the screen and kept the previous search. Measured: filter the listing, open an
+   * account, come back — the controls claimed no filter was applied, the strip showed no letter
+   * applied, and the store nonetheless re-issued the retained search, so the operator was shown
+   * an empty grid reading "Nothing to Display" with nothing on screen to explain why and no
+   * control to undo. The rows and the controls described two different queries.
+   *
+   * The screen calls this on initialisation, so a fresh arrival is genuinely fresh and every
+   * control on it is telling the truth. Distinct from {@link clearSearch}, which means "show me
+   * everything" and DOES ask the server: this asks for nothing and then lets the screen's normal
+   * opening path decide what to request, which is the point — it RESTORES the first-visit
+   * behaviour rather than imposing a state of its own.
+   *
+   * ⚠ WHAT THE OPERATOR THEN SEES IS THE TENANT'S CHOICE, NOT AN EMPTY SCREEN, and that was
+   * verified at runtime rather than assumed. {@link openingSearchForPolicy} derives the opening
+   * search from the tenant's display-mode policy, so after this call the listing opens on whatever
+   * that policy asks for — the unfiltered listing, an opening letter, or genuinely nothing when the
+   * policy names the no-query mode. On a tenant whose membership settings are unavailable the
+   * policy resolves to the unfiltered listing, so a return arrival was measured showing the full
+   * listing with an empty search box and no letter applied: controls and rows agreeing, which is
+   * the whole objective. An earlier draft of this remark claimed the screen would be left asking
+   * for nothing; that was wrong, and only the description was — the behaviour is correct.
+   *
+   * It is also the faithful reading of the legacy screen, which carried its filter in the ADDRESS
+   * (`Users.ascx.vb` `FilterURL`) — so arriving at a bare address with no filter in it showed no
+   * filter — and whose opening state was likewise the tenant's display-mode policy rather than a
+   * remembered one.
+   *
+   * Narrow on purpose. It touches ONLY the four slices that describe which records the listing is
+   * asking for, and deliberately not {@link reset}: that one is the session boundary, and calling
+   * it here would discard the tenant's membership settings and profile declarations that this
+   * screen has just asked for, turning one stale query into several redundant requests.
+   */
+  resetSearchCriteria(): void {
+    // Reads in flight belong to the query being abandoned. Left running, the later of the two
+    // answers wins and repopulates the listing this method has just emptied.
+    this.cancelReads();
+
+    this._failure.set(null);
+    this._users.set(emptyPagedResult<UserListItem>());
+    this._requestedPageIndex.set(0);
+    this._search.set({ mode: 'none' });
+    this._sortField.set(undefined);
+    this._sortDirection.set(undefined);
+    this._approvalFilter.set(undefined);
+  }
+
+  /**
    * Orders the listing by a field, or hands the ordering back to the server.
    *
    * @param sortBy The field to order by, or undefined to accept the server's own
@@ -1700,6 +1813,33 @@ export class UserStore implements OnDestroy {
    */
   setSortDirection(sortDir: SortDirection | undefined): void {
     this._failure.set(null);
+    this._sortDirection.set(sortDir);
+    this.returnToFirstPage();
+    this.dispatchUsers();
+  }
+
+  /**
+   * Orders the listing by a field IN a direction, in one request.
+   *
+   * ⚠ WHY THIS EXISTS ALONGSIDE THE TWO SETTERS ABOVE. Each of those dispatches a read of its own, so a
+   * caller expressing one ordering through both would issue TWO requests for one reader action - and the
+   * first of the pair asks a question nobody wanted: the new field in the OLD direction. The second answer
+   * would usually land last and hide it, but which answer lands last is not something a caller can
+   * guarantee. This command changes both coordinates and then reads once, which is what a heading press in
+   * the shared grid means.
+   *
+   * The single setters are kept for the callers that genuinely change one coordinate alone, and both remain
+   * in use.
+   *
+   * @param sortBy The field to order by, or undefined to hand the ordering back to the server. Only the
+   * fields the listing actually supports are expressible, so an unsupported name is a compilation error
+   * rather than a rejected request.
+   * @param sortDir The direction, or undefined to accept the server's default. Passing undefined for BOTH
+   * arguments is how a caller clears the ordering entirely, which is the state the listing arrives in.
+   */
+  setSort(sortBy: UserSortField | undefined, sortDir: SortDirection | undefined): void {
+    this._failure.set(null);
+    this._sortField.set(sortBy);
     this._sortDirection.set(sortDir);
     this.returnToFirstPage();
     this.dispatchUsers();
@@ -2534,7 +2674,6 @@ export class UserStore implements OnDestroy {
     return mutationId;
   }
 
-
   // -------------------------------------------------------------------------
   // COMMANDS — THE ACCOUNT'S OWN SUBSCRIPTIONS
   //
@@ -2709,6 +2848,9 @@ export class UserStore implements OnDestroy {
     this._selectedUser.set(null);
     this._profile.set(null);
     this._membershipSettings.set(null);
+    // Released with the policy itself: the flag describes the PREVIOUS tenant's read, and a session
+    // boundary can change which tenant the next read addresses.
+    this._membershipSettingsUnconfigured.set(false);
     this._profileDefinitions.set([]);
     this._selectedPropertyDefinitionId.set(undefined);
     this._selectedProfileDefinition.set(null);
@@ -2755,6 +2897,70 @@ export class UserStore implements OnDestroy {
     this._search.set(search);
     this.returnToFirstPage();
     this.dispatchUsers();
+  }
+
+  /**
+   * Adopts a search and a page together WITHOUT reading anything.
+   *
+   * ⚠ THIS COMMAND DISPATCHES NOTHING, WHICH IS THE WHOLE POINT OF IT. Every other search command on this
+   * store couples the change to a read, which is right when the change originates in an affordance the
+   * operator just used. It is wrong when the change originates in the ADDRESS. The listing screen keeps its
+   * search, its axis and its page in the address so that a reload, a bookmark and the browser's back and
+   * forward buttons all reproduce what was on screen, and on entry it therefore restores BOTH coordinates at
+   * once — through one command, because {@link applySearch} RETURNS TO THE FIRST PAGE and would discard the
+   * page the address had just asked for.
+   *
+   * Separating the change from the read is also what lets an address-borne search take part in the opening
+   * sequence rather than racing it. {@link initialise} reads the tenant's policy and then decides the opening
+   * view, and it deliberately yields to a search that was already chosen — so a screen that stages the
+   * address's search BEFORE calling it gets exactly one listing read, at the address's own coordinates, with
+   * the policy's opening view correctly overridden. Staging afterwards, or dispatching here, would cost two.
+   *
+   * A staged mode of `none` is a real instruction and not a no-op: it means the address asked for nothing, so
+   * the policy is left to choose the opening view exactly as it does on a first ever visit.
+   *
+   * MIGRATION: no legacy counterpart. The legacy screen posted back for every query
+   * (`Users.ascx.vb` L264-L275), so a state change and a read were inseparable by construction.
+   *
+   * THE ORDERING IS STAGED HERE TOO, and for the same reason the page is. It is a further coordinate the
+   * address states, so restoring it through {@link UserStore.setSortField} and
+   * {@link UserStore.setSortDirection} would take two commands to express one view - and each of those is
+   * a state change a caller is expected to follow with a read, which is precisely the coupling this
+   * command exists to avoid. Both members are stored EXACTLY as supplied: the caller that read them out
+   * of the address is the party that validated the field against what the endpoint accepts, and this
+   * store is not the place to second-guess that.
+   *
+   * @param search The search to adopt.
+   * @param pageIndex The page to adopt, counted from zero. Stored exactly as supplied; nothing here clamps
+   * it against a total this store may not yet know.
+   * @param sortBy The endpoint field to order by, or undefined to accept the endpoint's own default.
+   * @param sortDir The direction, or undefined. Meaningful only alongside `sortBy`.
+   */
+  stageSearch(
+    search: UserSearch,
+    pageIndex: number,
+    sortBy: UserSortField | undefined = undefined,
+    sortDir: SortDirection | undefined = undefined,
+  ): void {
+    this._failure.set(null);
+    this._search.set(search);
+    this._requestedPageIndex.set(pageIndex);
+    this._sortField.set(sortBy);
+    this._sortDirection.set(sortDir);
+
+    // ⚠ THE NOTHING-ASKED-FOR STATE HAS NO RESULT SET, AND SAYING SO IS PART OF ENTERING IT. This store is
+    // provided at the application root and OUTLIVES the listing route, so a previous visit's rows are still
+    // held here; and this mode deliberately issues NO request, so nothing would ever replace them. Runtime
+    // testing measured the consequence exactly: the screen printed "No accounts have been requested yet"
+    // directly above 255 retained rows from an earlier query, and pressing Back onto the bare address changed
+    // the address without changing the view. Clearing the rows is what makes the two agree.
+    //
+    // Only this mode clears. Every other mode is about to be read, and emptying the grid first would replace
+    // the operator's current rows with a blank frame for the duration of the request - the teardown flicker a
+    // sibling finding was raised about.
+    if (search.mode === 'none') {
+      this._users.set(emptyPagedResult<UserListItem>());
+    }
   }
 
   /** Returns the requested page to the first one, which is index zero. */
@@ -2906,6 +3112,9 @@ export class UserStore implements OnDestroy {
       next: (settings: MembershipSettings) => {
         this._membershipSettings.set(settings);
         this._membershipSettingsLoading.set(false);
+        // Cleared on every success, so a tenant that gains an account module stops reporting absence
+        // without needing the store to be reset.
+        this._membershipSettingsUnconfigured.set(false);
 
         if (thenReadListing) {
           this.readListingAfterSettings();
@@ -2913,7 +3122,31 @@ export class UserStore implements OnDestroy {
       },
       error: (cause: unknown) => {
         this._membershipSettingsLoading.set(false);
-        this.recordFailure('loadMembershipSettings', cause);
+
+        // ⚠ ABSENCE IS SORTED FROM FAILURE HERE, and it is the only read in this store that needs to
+        // be. Every other read asks for something a caller named, so "not there" IS a failure worth
+        // reporting. This one asks for OPTIONAL tenant configuration whose absence has a defined
+        // meaning - fall back to the legacy defaults - which is why the server reports it as a
+        // SUCCESS carrying no value and only the transport's status line makes it look like an error.
+        //
+        // ⚠ THE DEFECT THIS REMOVES was a user-facing one on three working screens: recording a
+        // failure here put "Not Found / The requested resource does not exist. / Reference:
+        // <correlation guid>" and a "Try again" button on a fully loaded account listing, because that
+        // screen surfaces this operation's failure alongside its own. Nothing was wrong, nothing could
+        // be retried into existence, and the reference invited a support conversation about a
+        // correctly functioning tenant.
+        //
+        // Described rather than recorded, so the status can be read without publishing anything: the
+        // slot is set below only on the branch that genuinely warrants it. A non-absent failure still
+        // takes the ordinary path and still reaches every surface that watches for it.
+        const described: UserFailure = this.describeFailure('loadMembershipSettings', cause);
+        const absent: boolean = described.problem?.status === MEMBERSHIP_SETTINGS_ABSENT_STATUS;
+
+        this._membershipSettingsUnconfigured.set(absent);
+
+        if (!absent) {
+          this._failure.set(described);
+        }
 
         if (thenReadListing) {
           this.readListingAfterSettings();

@@ -72,7 +72,7 @@ import { signal } from '@angular/core';
 import { TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { provideRouter } from '@angular/router';
+import { Router, provideRouter } from '@angular/router';
 
 import { NotificationService } from '../../../core/services/notification.service';
 /*
@@ -152,6 +152,15 @@ function userUrl(userId: number): string {
 
 const PAGE_INDEX_PARAM = 'pageIndex';
 const PAGE_SIZE_PARAM = 'pageSize';
+/** Address parameter carrying the search term, shared with the other three listings. */
+const FILTER_QUERY_KEY = 'filter';
+
+/** Address parameter carrying the search axis. This listing's own. */
+const SEARCH_BY_QUERY_KEY = 'searchby';
+
+/** Address parameter carrying the page, counted from ONE, shared with the other three listings. */
+const PAGE_QUERY_KEY = 'currentpage';
+
 const USER_NAME_PARAM = 'userName';
 const EMAIL_PARAM = 'email';
 const PROFILE_PROPERTY_NAME_PARAM = 'profilePropertyName';
@@ -209,7 +218,16 @@ const ADD_USER_LABEL = 'Add New User';
 const MEMBERSHIP_SETTINGS_LABEL = 'User Settings';
 const PROFILE_DEFINITIONS_LABEL = 'Manage Profile Properties';
 const SEARCH_FIELD_CAPTION = 'Search by';
-const SEARCH_PLACEHOLDER = 'Search accounts';
+/**
+ * ⚠ U-M13 — 'Search accounts' UNTIL THIS FINDING. The old wording promised a search OF the account,
+ * anywhere in it; the match is a STARTS-WITH — `Website/admin/Users/Users.ascx.vb` L269, L271 and L274
+ * each append one TRAILING wildcard and nothing leading, and the endpoint reproduces that appending.
+ * An operator working from the old promise would read `smith` failing to find `johnsmith` as missing
+ * data rather than as the rule. It names no FIELD, deliberately: the axis is an open set chosen in the
+ * selector beside the box, so naming one here would contradict the selector for two of its three kinds
+ * of entry.
+ */
+const SEARCH_PLACEHOLDER = 'Begins with';
 const RETRY_LABEL = 'Try again';
 
 /** `SharedResources.resx` `Edit.Text` — the local file carries no `Edit` key, so this is a fall-through. */
@@ -318,7 +336,7 @@ const SEARCH_SUBMIT_SELECTOR = 'button.search-input__submit';
 const LETTER_SELECTOR = 'button.user-list__letter';
 const HEADER_SELECTOR = 'th.data-table__header';
 const ROW_SELECTOR = 'tr.data-table__row';
-const CELL_SELECTOR = 'td.data-table__cell';
+const CELL_SELECTOR = 'td.data-table__cell,th.data-table__cell';
 const ACTION_CELL_SELECTOR = 'td.data-table__cell--actions';
 const PLACEHOLDER_SELECTOR = 'td.data-table__message';
 const ROW_ACTION_SELECTOR = '.user-list__row-action';
@@ -507,6 +525,10 @@ function userRow(userId = 7, overrides: Partial<UserListItem> = {}): UserListIte
  */
 function membershipSettings(overrides: Partial<MembershipSettings> = {}): MembershipSettings {
   return {
+    // ⚠ #5/#6 — stated rather than left to the override, so a specification that says nothing about
+    // provenance still gets a policy claiming to be stored. Provenance-sensitive specifications pass
+    // `isStored: false` explicitly.
+    isStored: true,
     columnFirstName: true,
     columnLastName: true,
     columnDisplayName: true,
@@ -749,7 +771,10 @@ describe('UserListComponent', () => {
         // ⚠ ORDER IS LOAD-BEARING: the real client FIRST, then the testing backend that displaces it.
         provideHttpClient(),
         provideHttpClientTesting(),
-        provideRouter([]),
+        // ⚠ A ROUTE THAT ALWAYS MATCHES, because this screen now keeps its search, axis and page in the
+        // ADDRESS and writes them with a real navigation. An empty route table refuses every navigation, so
+        // the write would silently fail and the read that follows the address change would never be issued.
+        provideRouter([{ path: '**', component: UserListComponent }]),
         /*
          * The REAL store, pinned to this injector rather than left to its root registration, so each
          * case starts from a store that has read nothing. It is the subject of half the assertions
@@ -803,6 +828,29 @@ describe('UserListComponent', () => {
   // ---------------------------------------------------------------------------------------------------
 
   /** Creates the screen. `ngOnInit` issues the policy read and the declarations read during this pass. */
+  /**
+   * Lets a navigation this screen started actually happen.
+   *
+   * The search box, the alphabet strip and the pager write the ADDRESS rather than calling the store, and a
+   * router navigation is asynchronous, so the read that follows one is not issued in the same task.
+   */
+  async function settleAddress(): Promise<void> {
+    await fixture.whenStable();
+    fixture.detectChanges();
+  }
+
+  /** Navigates to an address BEFORE the screen mounts, which is how an entry is simulated. */
+  async function enterAt(url: string): Promise<void> {
+    await TestBed.inject(Router).navigateByUrl(url);
+  }
+
+  /** The query parameters the screen has actually navigated to. */
+  function addressParams(): Readonly<Record<string, string>> {
+    const router: Router = TestBed.inject(Router);
+
+    return router.parseUrl(router.url).queryParams as Readonly<Record<string, string>>;
+  }
+
   function create(): void {
     fixture = TestBed.createComponent(UserListComponent);
     mounted = true;
@@ -1017,7 +1065,7 @@ describe('UserListComponent', () => {
     }
 
     const cells: readonly HTMLTableCellElement[] = Array.from(
-      first.querySelectorAll<HTMLTableCellElement>('td'),
+      first.querySelectorAll<HTMLTableCellElement>('td,th'),
     );
     const cell: HTMLTableCellElement | undefined = cells[position];
 
@@ -1117,11 +1165,21 @@ describe('UserListComponent', () => {
 
   /** Asserts that the screen has issued no listing read at all, to either address. */
   function expectNoListRead(): void {
-    httpMock.expectNone(
-      (candidate) =>
-        (candidate.method === 'GET' && candidate.url === USERS_URL)
-        || (candidate.method === 'POST' && candidate.url === USERS_SEARCH_URL),
-    );
+    // ⚠ COUNTED, NOT `expectNone`, AND THE DIFFERENCE IS VISIBLE IN THE LOG. `expectNone` asserts by
+    // throwing, so Jasmine records no expectation for a spec whose entire claim is this call - and the
+    // runner then reports that spec exactly as it reports one that forgot to assert anything. `match`
+    // returns what it matched, so the emptiness of that list is the assertion and it fails just as loudly
+    // on an unexpected read. Nothing is weakened: the predicate names only the two listing addresses, and
+    // it matched neither, so the `verify()` in the teardown still guards every other request.
+    expect(
+      httpMock.match(
+        (candidate) =>
+          (candidate.method === 'GET' && candidate.url === USERS_URL)
+          || (candidate.method === 'POST' && candidate.url === USERS_SEARCH_URL),
+      ),
+    )
+      .withContext('no listing read of either shape was issued')
+      .toEqual([]);
   }
 
   /**
@@ -1172,7 +1230,7 @@ describe('UserListComponent', () => {
    *
    * @param term The text to type, passed through exactly as given.
    */
-  function typeSearch(term: string): void {
+  async function typeSearch(term: string): Promise<void> {
     const field = queryOrFail<HTMLInputElement>(host(), SEARCH_INPUT_SELECTOR);
 
     field.value = term;
@@ -1182,6 +1240,7 @@ describe('UserListComponent', () => {
 
     submit.click();
     fixture.detectChanges();
+    await settleAddress();
   }
 
   /**
@@ -1213,7 +1272,7 @@ describe('UserListComponent', () => {
    *
    * @param affordance A single letter, or the unfiltered affordance's own wording.
    */
-  function pressLetter(affordance: string): void {
+  async function pressLetter(affordance: string): Promise<void> {
     const entry: HTMLButtonElement | undefined = queryAll<HTMLButtonElement>(
       LETTER_SELECTOR,
     ).find((candidate) => textIn(candidate) === affordance);
@@ -1224,6 +1283,7 @@ describe('UserListComponent', () => {
 
     entry.click();
     fixture.detectChanges();
+    await settleAddress();
   }
 
   /**
@@ -1231,7 +1291,7 @@ describe('UserListComponent', () => {
    *
    * @param label One of the pager's four step names.
    */
-  function pressPager(label: string): void {
+  async function pressPager(label: string): Promise<void> {
     const step: HTMLButtonElement | undefined = queryAll<HTMLButtonElement>(
       'button.pagination__button',
     ).find((candidate) => candidate.getAttribute('aria-label') === label);
@@ -1242,6 +1302,7 @@ describe('UserListComponent', () => {
 
     step.click();
     fixture.detectChanges();
+    await settleAddress();
   }
 
   /** The pager's one-based position readout, as rendered. */
@@ -1377,7 +1438,7 @@ describe('UserListComponent', () => {
       expect(rows()).toHaveSize(1);
     });
 
-    it('lists the accounts even when the tenant policy cannot be read, at the shared fallback size', () => {
+    it('lists the accounts even when the tenant stores no policy, at the shared fallback size', () => {
       create();
 
       expectRequest('GET', MEMBERSHIP_SETTINGS_URL).flush(
@@ -1401,7 +1462,7 @@ describe('UserListComponent', () => {
       expect(rows()).toHaveSize(1);
     });
 
-    it('shows only the four columns the legacy defaults left visible when the policy cannot be read', () => {
+    it('shows only the four columns the legacy defaults left visible when the tenant stores no policy', () => {
       create();
       expectRequest('GET', MEMBERSHIP_SETTINGS_URL).flush(
         problem('not_found', 404, 'That portal could not be resolved.'),
@@ -1450,14 +1511,25 @@ describe('UserListComponent', () => {
     });
 
     it('re-reads the policy, the declarations and the listing when the reader retries', () => {
+      /*
+       * ⚠ #5 — THE FAULT THIS CASE INJECTS CHANGED, AND THE CHANGE IS THE FIX. It used to fail the
+       * account-POLICY read, because that was one of the three operations the screen-level failure
+       * surface answered for. It no longer is: a policy that cannot be read costs the tenant its
+       * preferred page size and column selection, both of which this screen has a documented fallback
+       * for, and the listing is dispatched on that failure exactly as it is on success — so the surface
+       * used to raise an assertive "Not Found" banner with a retry command above a perfectly healthy
+       * listing of accounts. The fault is now injected on the LISTING read, which IS this screen's own
+       * content and is the state a retry genuinely recovers from. The behaviour being asserted — that
+       * the retry re-reads all THREE, not just the one that failed — is unchanged.
+       */
       create();
-      expectRequest('GET', MEMBERSHIP_SETTINGS_URL).flush(
-        problem('not_found', 404, 'That portal could not be resolved.'),
-        { status: 404, statusText: 'Not Found' },
+      answerSettings();
+      answerDefinitions();
+      expectListRead('the listing read').flush(
+        problem('internal', 500, 'The accounts could not be read.'),
+        { status: 500, statusText: 'Internal Server Error' },
       );
       fixture.detectChanges();
-      answerDefinitions();
-      answerListing(pageOf([userRow()], 1, 0, 10));
 
       pressIn(host(), RETRY_LABEL);
 
@@ -1470,6 +1542,74 @@ describe('UserListComponent', () => {
       answerListing();
 
       expect(query(RETRY_SELECTOR)).toBeNull();
+    });
+
+    it('does NOT raise the screen-level failure surface when only the account policy fails', () => {
+      /*
+       * ⚠ #5 — THE DEFECT, STATED AS AN ASSERTION. The account-policy read used to open the screen's
+       * failure surface: an assertive banner reading "Not Found", with a Try-again command, sitting
+       * directly above a listing that had loaded correctly and was showing every account it should. The
+       * banner reported a failure of the listing that had not happened, and offered a retry for a
+       * listing that needed none.
+       *
+       * Nothing about the accounts is affected by an unreadable policy. The store dispatches the listing
+       * on BOTH policy outcomes for exactly that reason, and this screen holds a documented fallback for
+       * each of the two things the policy decides — the page size and the optional-column selection.
+       */
+      create();
+      expectRequest('GET', MEMBERSHIP_SETTINGS_URL).flush(
+        problem('not_found', 404, 'That portal could not be resolved.'),
+        { status: 404, statusText: 'Not Found' },
+      );
+      fixture.detectChanges();
+      answerDefinitions();
+      answerListing(pageOf([userRow()], 1, 0, 10));
+
+      // No banner, and no retry command: the listing is healthy and there is nothing to retry.
+      expect(query(RETRY_SELECTOR)).toBeNull();
+      expect(query('.user-list__failure')).toBeNull();
+
+      // The row is on screen, which is the whole reason the banner was wrong.
+      expect(rows()).toHaveSize(1);
+    });
+
+    it('discloses the degradation quietly instead, naming only what the policy decides', () => {
+      /*
+       * ⚠ #5 — SILENCE WOULD BE THE MIRROR OF THE DEFECT. A listing quietly showing ten rows a page
+       * when the tenant asked for fifty, with nothing on screen to say the preference was not honoured,
+       * is as misleading as a banner claiming the listing failed. The disclosure is a plain paragraph
+       * rather than a live region or an alert: it describes what is on screen rather than reporting an
+       * event, and it is not a fault the reader can act on from here.
+       */
+      create();
+      expectRequest('GET', MEMBERSHIP_SETTINGS_URL).flush(
+        problem('not_found', 404, 'That portal could not be resolved.'),
+        { status: 404, statusText: 'Not Found' },
+      );
+      fixture.detectChanges();
+      answerDefinitions();
+      answerListing(pageOf([userRow()], 1, 0, 10));
+
+      const notice = queryOrFail<HTMLElement>(host(), '.user-list__policy-notice');
+
+      expect(notice.getAttribute('role')).withContext('not an alert').toBeNull();
+      expect(notice.getAttribute('aria-live')).withContext('not a live region').toBeNull();
+
+      // It names the two things the policy decides here and says the accounts are unaffected, so it
+      // cannot be read as claiming the listing is broken.
+      const wording: string = (notice.textContent ?? '').trim();
+
+      expect(wording).toContain('default page size');
+      expect(wording).toContain('default columns');
+      expect(wording).toContain('accounts themselves are unaffected');
+    });
+
+    it('shows no degradation notice while the policy reads successfully', () => {
+      // The counterpart of the case above. The notice must be absent in the ordinary state, or it would
+      // be describing a degradation that is not happening.
+      arrive();
+
+      expect(query('.user-list__policy-notice')).toBeNull();
     });
   });
 
@@ -1542,17 +1682,188 @@ describe('UserListComponent', () => {
       expect(carries(listing, PAGE_SIZE_PARAM)).toBeTrue();
     });
 
-    it('sends no ordering parameters, because the legacy grid offered no sorting', () => {
+    it('sends no ordering parameters when the address asks for none, yet offers exactly five sortable headings', () => {
       const listing = arrive();
 
       /*
-       * `users.ascx` L22-L23 declares no `AllowSorting` and the code-behind has no sort handler, so the
-       * legacy grid could not be reordered. Offering sorting would be an enhancement rather than a
-       * port, and the ordering the server chooses applies.
+       * ⚠ THIS TEST USED TO ASSERT THE OPPOSITE OF ITS SECOND HALF, and the reversal is deliberate. It
+       * read "sends no ordering parameters, because the legacy grid offered no sorting" and required
+       * ZERO sort buttons, on the authority that `users.ascx` L22-L23 declares no `AllowSorting`. That
+       * authority is real but is OUTRANKED twice over: AAP 0.3.2 specifies `sortBy`, `sortDir` and
+       * `sortChange` on the shared record grid, and the review recorded their absence from this listing
+       * as an AAP compliance failure rather than a design choice. The test was encoding the defect.
+       *
+       * The half that WAS right is kept and still matters: arriving with no ordering in the address must
+       * send no ordering on the wire, so the endpoint's own default applies rather than a direction this
+       * screen invented. An unasked-for ordering announced as though it were asked for is its own defect.
        */
       expect(carries(listing, 'sortBy')).toBeFalse();
       expect(carries(listing, 'sortDir')).toBeFalse();
-      expect(queryAll('button.data-table__sort')).toHaveSize(0);
+
+      /*
+       * The five headings, named rather than counted. A bare count of five would pass if the WRONG five
+       * were sortable, which would be worse than none: each of these was issued against the running
+       * endpoint and observed to return 200 with a genuinely different order.
+       */
+      const sortableHeadings: readonly string[] = queryAll('button.data-table__sort').map((button) =>
+        (button.textContent ?? '').replace(/[\u25b2\u25bc]/g, '').trim(),
+      );
+
+      expect(sortableHeadings).toHaveSize(5);
+
+      for (const heading of [
+        USERNAME_HEADING,
+        FIRST_NAME_HEADING,
+        LAST_NAME_HEADING,
+        DISPLAY_NAME_HEADING,
+        EMAIL_HEADING,
+      ]) {
+        expect(sortableHeadings)
+          .withContext(`"${heading}" must offer an ordering`)
+          .toContain(heading);
+      }
+
+      /*
+       * THE NEGATIVE CONTROL, which is what makes the five above mean something. Each of these five was
+       * ALSO issued against the running endpoint and observed to be REFUSED with a field-level 400, so
+       * offering a heading for it would produce an affordance that cannot work.
+       */
+      for (const heading of [
+        ADDRESS_HEADING,
+        TELEPHONE_HEADING,
+        CREATED_DATE_HEADING,
+        LAST_LOGIN_HEADING,
+        AUTHORIZED_HEADING,
+      ]) {
+        expect(sortableHeadings)
+          .withContext(`"${heading}" must NOT offer an ordering — the endpoint refuses it`)
+          .not.toContain(heading);
+      }
+    });
+
+    /**
+     * The offered set is bounded by the endpoint, not by the grid. `SortableFields.Users` in
+     * `backend/src/DnnMigration.Application/Validation/SortableFields.cs` permits `UserId`, `Username`,
+     * `FirstName`, `LastName`, `DisplayName`, `Email` and `IsSuperUser`; the five below are exactly those of
+     * the seven this grid paints a column for. Nothing else may carry a control: `Address` and `Telephone`
+     * are profile values in a second table, and the created, last-login and authorised columns are filled
+     * from the external membership store after the page has been taken, so ordering by any of them would
+     * order the page rather than the collection. That file refuses all five at the boundary.
+     */
+    it('offers a sort on exactly the columns the endpoint permits and paints', () => {
+      arrive();
+
+      const names: readonly string[] = queryAll<HTMLButtonElement>('button.data-table__sort').map(
+        (control) => control.getAttribute('aria-label') ?? '',
+      );
+
+      expect(names).toEqual([
+        'Sort by Username',
+        'Sort by First Name',
+        'Sort by Last Name',
+        'Sort by Name',
+        'Sort by Email',
+      ]);
+    });
+
+    /**
+     * ⚠ THE TRANSMITTED FIELD IS THE SERVER'S PASCAL-CASE MEMBER NAME, NOT THE CAMEL-CASED COLUMN KEY, and
+     * this is the assertion that catches the confusion. The grid identifies its columns by keys this screen
+     * spells `userName`, `displayName` and so on, while the endpoint’s allowlist is typed as
+     * `UserSortField` and holds `Username`, `DisplayName` and the rest. Sending a key would be answered
+     * with a field-level rejection - and only a request-level assertion can tell the two apart, because
+     * both spellings look correct in the template.
+     *
+     * The ordering travels through the ADDRESS, so the navigation the press starts is settled before the
+     * read it causes is consumed.
+     */
+    it('transmits the endpoint field name for the pressed column, in the server spelling', async () => {
+      arrive();
+
+      const controls = queryAll<HTMLButtonElement>('button.data-table__sort');
+
+      // The fourth control is the column keyed `displayName`, whose endpoint field is `DisplayName` and
+      // whose heading the resource file renames to "Name" - so all three spellings differ here.
+      controls[3]?.click();
+      fixture.detectChanges();
+      await settleAddress();
+
+      const ordered = expectListRead('the ordered listing read');
+
+      expect(paramOf(ordered, 'sortBy')).toBe('DisplayName');
+      expect(paramOf(ordered, 'sortDir')).toBe('Ascending');
+      expect(paramOf(ordered, PAGE_INDEX_PARAM))
+        .withContext('a row page depends on the ordering, so the coordinate returns to the first page')
+        .toBe('0');
+
+      ordered.flush(pageOf([userRow()]));
+      fixture.detectChanges();
+
+      // The heading announces it, which proves the projection BACK from the field name to the column key:
+      // handed the field name instead, the grid would compare it against a column key and report nothing.
+      const announced: readonly string[] = queryAll<HTMLElement>('th.data-table__header')
+        .map((cell) => cell.getAttribute('aria-sort') ?? '')
+        .filter((value) => value === 'ascending' || value === 'descending');
+
+      expect(announced).toEqual(['ascending']);
+    });
+
+    it('clears the ordering on the third press, sending neither parameter again', async () => {
+      arrive();
+
+      const press = async (): Promise<void> => {
+        queryAll<HTMLButtonElement>('button.data-table__sort')[0]?.click();
+        fixture.detectChanges();
+        await settleAddress();
+      };
+
+      const answer = (request: TestRequest): void => {
+        request.flush(pageOf([userRow()]));
+        fixture.detectChanges();
+      };
+
+      await press();
+      answer(expectListRead('the ascending read'));
+      await press();
+      const descending = expectListRead('the descending read');
+      expect(paramOf(descending, 'sortDir')).toBe('Descending');
+      answer(descending);
+
+      await press();
+      const cleared = expectListRead('the unordered read');
+
+      expect(carries(cleared, 'sortBy')).withContext('no key is sent').toBeFalse();
+      expect(carries(cleared, 'sortDir')).withContext('no direction is sent').toBeFalse();
+
+      answer(cleared);
+
+      const announced: readonly string[] = queryAll<HTMLElement>('th.data-table__header')
+        .map((cell) => cell.getAttribute('aria-sort') ?? '')
+        .filter((value) => value === 'ascending' || value === 'descending');
+
+      expect(announced).withContext('no column reports itself sorted').toEqual([]);
+    });
+
+    /**
+     * ONE READER ACTION, ONE REQUEST. The store's single-coordinate setters each dispatch a read of their
+     * own, so a screen expressing one ordering through both would issue two - and the first of the pair
+     * asks for the new field in the OLD direction, a question nobody wanted answered. The address is
+     * written once and the subscription watching it reads once, and only a count can prove it.
+     */
+    it('issues exactly one request per sort press', async () => {
+      arrive();
+
+      queryAll<HTMLButtonElement>('button.data-table__sort')[0]?.click();
+      fixture.detectChanges();
+      await settleAddress();
+
+      const issued = httpMock.match(
+        (candidate) => candidate.url === USERS_URL || candidate.url === USERS_SEARCH_URL,
+      );
+
+      expect(issued).toHaveSize(1);
+      issued[0]?.flush(pageOf([userRow()]));
+      fixture.detectChanges();
     });
   });
 
@@ -1582,10 +1893,10 @@ describe('UserListComponent', () => {
       expect(paramOf(listing, PAGE_INDEX_PARAM)).not.toBe('1');
     });
 
-    it('sends 1 for the second page', () => {
+    it('sends 1 for the second page', async () => {
       arrive(pageOf([userRow(1)], 9, 0, TENANT_PAGE_SIZE));
 
-      pressPager(PAGER_NEXT_LABEL);
+      await pressPager(PAGER_NEXT_LABEL);
 
       const second = expectListRead('the second-page read');
 
@@ -1598,7 +1909,7 @@ describe('UserListComponent', () => {
       expect(pagerPosition()).toBe(`2 / ${Math.ceil(9 / TENANT_PAGE_SIZE)}`);
     });
 
-    it('forwards the pager index unchanged, adding and subtracting nothing', () => {
+    it('forwards the pager index unchanged, adding and subtracting nothing', async () => {
       /*
        * ⚠ THE BRANCH THIS COMPONENT TOOK, STATED EXPLICITLY: BOTH ENDS ARE ALREADY ZERO-BASED, so there
        * is NO ±1 ARITHMETIC in the screen at all. Verified in the shared pager rather than assumed — it
@@ -1612,7 +1923,7 @@ describe('UserListComponent', () => {
        */
       arrive(pageOf([userRow(1)], 12, 0, TENANT_PAGE_SIZE));
 
-      pressPager(PAGER_LAST_LABEL);
+      await pressPager(PAGER_LAST_LABEL);
 
       const third = expectListRead('the last-page read');
 
@@ -1626,10 +1937,10 @@ describe('UserListComponent', () => {
       expect(pagerPosition()).toBe('3 / 3');
     });
 
-    it('binds the index the SERVER reported, so the pager cannot claim a page whose request failed', () => {
+    it('binds the index the SERVER reported, so the pager cannot claim a page whose request failed', async () => {
       arrive(pageOf([userRow(1)], 12, 0, TENANT_PAGE_SIZE));
 
-      pressPager(PAGER_NEXT_LABEL);
+      await pressPager(PAGER_NEXT_LABEL);
 
       expectListRead('the second-page read').flush(
         problem('server_error', 500, 'The server could not complete the request.'),
@@ -1641,16 +1952,16 @@ describe('UserListComponent', () => {
       expect(pagerPosition()).toBe('1 / 3');
     });
 
-    it('returns to the first page through the pager as well, sending 0 again', () => {
+    it('returns to the first page through the pager as well, sending 0 again', async () => {
       arrive(pageOf([userRow(1)], 12, 0, TENANT_PAGE_SIZE));
 
-      pressPager(PAGER_NEXT_LABEL);
+      await pressPager(PAGER_NEXT_LABEL);
       expectListRead('the second-page read').flush(
         pageOf([userRow(5)], 12, 1, TENANT_PAGE_SIZE),
       );
       fixture.detectChanges();
 
-      pressPager(PAGER_FIRST_LABEL);
+      await pressPager(PAGER_FIRST_LABEL);
 
       const back = expectListRead('the return to the first page');
 
@@ -1660,7 +1971,7 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('steps backwards to index 1 from the last page, never to a negative index', () => {
+    it('steps backwards to index 1 from the last page, never to a negative index', async () => {
       /*
        * The pager emits only a whole index inside the available range, and the store passes the index
        * straight to the transport without clamping it — so stepping back from the last of three pages must
@@ -1669,13 +1980,13 @@ describe('UserListComponent', () => {
        */
       arrive(pageOf([userRow(1)], 12, 0, TENANT_PAGE_SIZE));
 
-      pressPager(PAGER_LAST_LABEL);
+      await pressPager(PAGER_LAST_LABEL);
       expectListRead('the last-page read').flush(
         pageOf([userRow(9)], 12, 2, TENANT_PAGE_SIZE),
       );
       fixture.detectChanges();
 
-      pressPager(PAGER_PREVIOUS_LABEL);
+      await pressPager(PAGER_PREVIOUS_LABEL);
 
       const previous = expectListRead('the step backwards');
 
@@ -1696,8 +2007,8 @@ describe('UserListComponent', () => {
      *
      * @returns Nothing; the second page is settled when this returns.
      */
-    function goToSecondPage(): void {
-      pressPager(PAGER_NEXT_LABEL);
+    async function goToSecondPage(): Promise<void> {
+      await pressPager(PAGER_NEXT_LABEL);
 
       const second = expectListRead('the second-page read');
 
@@ -1707,7 +2018,7 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
     }
 
-    it('resets to the first page when a letter is activated from a later page', () => {
+    it('resets to the first page when a letter is activated from a later page', async () => {
       /*
        * `FilterURL` (`Users.ascx.vb` L446-L456) was called from the strip with a LITERAL page argument of
        * "1" (`users.ascx` L16), so a letter always returned to the first page — and asking for the fifth
@@ -1715,9 +2026,9 @@ describe('UserListComponent', () => {
        * something there.
        */
       arrive(pageOf([userRow(1)], 12, 0, TENANT_PAGE_SIZE));
-      goToSecondPage();
+      await goToSecondPage();
 
-      pressLetter('B');
+      await pressLetter('B');
 
       const filtered = expectListRead('the letter-filtered read');
 
@@ -1728,12 +2039,12 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('resets to the first page for a new search term from a later page', () => {
+    it('resets to the first page for a new search term from a later page', async () => {
       // `Users.ascx.vb` L631 set `CurrentPage = 1` before redirecting, for the same reason.
       arrive(pageOf([userRow(1)], 12, 0, TENANT_PAGE_SIZE));
-      goToSecondPage();
+      await goToSecondPage();
 
-      typeSearch('blog');
+      await typeSearch('blog');
 
       const searched = expectListRead('the searched read');
 
@@ -1744,11 +2055,11 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('resets to the first page for the unfiltered affordance from a later page', () => {
+    it('resets to the first page for the unfiltered affordance from a later page', async () => {
       arrive(pageOf([userRow(1)], 12, 0, TENANT_PAGE_SIZE));
-      goToSecondPage();
+      await goToSecondPage();
 
-      pressLetter(ALL_FILTER_LABEL);
+      await pressLetter(ALL_FILTER_LABEL);
 
       const unfiltered = expectListRead('the unfiltered read');
 
@@ -1867,10 +2178,10 @@ describe('UserListComponent', () => {
       answerListing(pageOf([userRow(8)]));
       settleOutcome();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', USER_DELETED_MESSAGE);
+      expect(notifySpy).toHaveBeenCalledWith('success', USER_DELETED_MESSAGE, null, false);
     });
 
-    it('re-reads the SAME page after a removal, never the first', () => {
+    it('re-reads the SAME page after a removal, never the first', async () => {
       /*
        * ⚠ THE ASYMMETRY, AND IT IS REAL BEHAVIOUR RATHER THAN AN OVERSIGHT. `grdUsers_DeleteCommand`
        * (`Users.ascx.vb` L646-L669) called `BindData` after removing an account and never touched
@@ -1880,7 +2191,7 @@ describe('UserListComponent', () => {
        */
       arrive(pageOf([userRow(1)], 12, 0, TENANT_PAGE_SIZE));
 
-      pressPager(PAGER_NEXT_LABEL);
+      await pressPager(PAGER_NEXT_LABEL);
       expectListRead('the second-page read').flush(
         pageOf([userRow(5)], 12, 1, TENANT_PAGE_SIZE),
       );
@@ -1904,9 +2215,15 @@ describe('UserListComponent', () => {
        * total the SERVER owns — leaving a pager with two sources of truth.
        *
        * The evidence is threefold, and the middle part is the one a naive case misses: a re-read IS issued;
-       * while it is in flight the grid shows its progress indicator rather than a quietly shortened list,
-       * which is what "waiting wins over empty" means here; and the row count that finally appears is the
-       * server's answer rather than arithmetic performed on this side.
+       * while it is in flight the grid KEEPS the rows already on screen and marks itself busy rather than
+       * tearing them down; and the row count that finally appears is the server's answer rather than
+       * arithmetic performed on this side.
+       *
+       * The middle assertion changed with the shared grid. It used to require the progress indicator to
+       * REPLACE the rows, which meant every read tore the body down to one spanning cell and rebuilt it -
+       * measured as a zero-data row on every transition, a pager yanked several hundred pixels, and the
+       * application's largest layout shift. `aria-busy` now carries the same fact to assistive technology
+       * without blanking the rows a reader is looking at.
        */
       arrive(pageOf([userRow(7), userRow(8)], 2));
 
@@ -1917,7 +2234,12 @@ describe('UserListComponent', () => {
 
       const reread = expectListRead('the re-read after removal');
 
-      expect(query('app-loading-spinner')).not.toBeNull();
+      expect(rows())
+        .withContext('the rows stay on screen while the re-read is in flight')
+        .toHaveSize(2);
+      expect(query('table.data-table')?.getAttribute('aria-busy'))
+        .withContext('and the grid reports the read instead')
+        .toBe('true');
 
       reread.flush(pageOf([userRow(8)], 1));
       fixture.detectChanges();
@@ -2078,7 +2400,7 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
       settleOutcome();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', USER_DELETED_MESSAGE);
+      expect(notifySpy).toHaveBeenCalledWith('success', USER_DELETED_MESSAGE, null, false);
       expect(query('app-error-banner')).not.toBeNull();
     });
 
@@ -2093,7 +2415,10 @@ describe('UserListComponent', () => {
       // Draining again, and moving a signal the screen reads, must not report the same outcome twice:
       // the effect acts on a TRANSITION and clears its own marker before reporting.
       settleOutcome();
-      designatedAdministrator.set(4242);
+      // Moving a signal the screen reads must not report the same outcome twice. The tenant record is no
+      // longer one of them — see U-M5 — so the caller's own identity is poked instead, which the row-level
+      // removal guard genuinely still consults.
+      callerIdentity.set(callerAccount({ userId: 4242 }));
       settleOutcome();
 
       expect(notifySpy).toHaveBeenCalledTimes(1);
@@ -2137,6 +2462,31 @@ describe('UserListComponent', () => {
       ]);
     });
 
+    it('renders a tenant property whose name COLLIDES with an account field, keeping both entries', () => {
+      /*
+       * ⚠ THE TRACKING-KEY REGRESSION GUARD, AND THE CONFIGURATION IS REAL RATHER THAN CONTRIVED. The
+       * profile axis is an OPEN SET, so a tenant may declare a property literally named `Username`, and
+       * the legacy order — account fields first (L577-L578), then declarations (L579-L582), with
+       * `Items.Insert` never used — means the collision is PRESERVED rather than de-duplicated: the
+       * legacy switch tested the account field first, so the account field wins the query and the
+       * duplicate entry still appears in the list.
+       *
+       * That is precisely why the template cannot track this loop by `option.value`: two entries would
+       * carry the same key and Angular would raise a duplicated-key error, breaking the screen for a
+       * configuration the component deliberately keeps working. The entries carry an ordinal-plus-value
+       * key instead, so this case renders four options with the third repeating the first's value — and
+       * because a duplicated key is a hard runtime error, this expectation is the proof that no two keys
+       * collide.
+       */
+      arrive(pageOf([userRow()]), membershipSettings(), [
+        profileDefinition('Username', 21),
+        profileDefinition(SECOND_PROPERTY_NAME, 22),
+      ]);
+
+      expect(axisValues()).toEqual(['Username', 'Email', 'Username', SECOND_PROPERTY_NAME]);
+      expect(axisOptions()).toEqual(['Username', 'Email', 'Username', SECOND_PROPERTY_NAME]);
+    });
+
     it('labels a property the resource file knows, and falls back to the raw name for one it does not', () => {
       /*
        * `AddSearchItem` (L205-L218) resolved each entry through a resource lookup and FELL BACK TO THE RAW
@@ -2162,6 +2512,11 @@ describe('UserListComponent', () => {
        * labels on one field and read the words twice to a screen reader. The placeholder is authored: the
        * legacy text box had none, and it promises neither a starts-with nor a contains test, because the
        * matching rule is the server's to state.
+       *
+       * ⚠ U-M13 — THAT LAST SENTENCE IS WITHDRAWN AND THE PLACEHOLDER NOW STATES THE PREDICATE. Leaving
+       * the rule unstated was defensible only while the rule was genuinely the server's private business,
+       * and it is not: the endpoint appends exactly one trailing wildcard, which is a starts-with, and it
+       * is the same rule the twenty-seven-entry alphabet strip beside the box depends on. See the constant.
        */
       arrive();
 
@@ -2169,6 +2524,7 @@ describe('UserListComponent', () => {
 
       expect(field.type).toBe('search');
       expect(field.placeholder).toBe(SEARCH_PLACEHOLDER);
+      expect(field.placeholder).withContext('states the predicate').toContain('Begins with');
       expect(textOf('label.search-input__label')).toEqual(['Search:']);
     });
 
@@ -2230,7 +2586,7 @@ describe('UserListComponent', () => {
       expect(axisValues()).toEqual(['Username', 'Email']);
     });
 
-    it('searches the account name on the axis the screen opens with', () => {
+    it('searches the account name on the axis the screen opens with', async () => {
       /*
        * Seeded to the account name because L577 added that entry FIRST and `AddSearchItem` selected an
        * entry only when it matched a `filterProperty` query-string value, so with no query string the first
@@ -2238,7 +2594,7 @@ describe('UserListComponent', () => {
        */
       arrive();
 
-      typeSearch('blog');
+      await typeSearch('blog');
 
       const searched = expectListRead('the account-name search');
 
@@ -2251,12 +2607,12 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('searches the address when that axis is chosen', () => {
+    it('searches the address when that axis is chosen', async () => {
       // `Users.ascx.vb` L268-L269 `GetUsersByEmail`.
       arrive();
 
       chooseAxis('Email');
-      typeSearch('jbloggs@');
+      await typeSearch('jbloggs@');
 
       const searched = expectListRead('the address search');
 
@@ -2268,12 +2624,12 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('searches a profile property by name and value when a declared property is chosen', () => {
+    it('searches a profile property by name and value when a declared property is chosen', async () => {
       // `Users.ascx.vb` L272-L274 `GetUsersByProfileProperty(…, SearchField, SearchText + "%", …)`.
       arrive();
 
       chooseAxis(ODD_PROPERTY_NAME);
-      typeSearch('Bris');
+      await typeSearch('Bris');
 
       const searched = expectListRead('the profile-property search');
 
@@ -2286,7 +2642,7 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('transmits the property name VERBATIM — not validated, not case-folded, not restricted', () => {
+    it('transmits the property name VERBATIM — not validated, not case-folded, not restricted', async () => {
       /*
        * ⚠ THE FIXTURE NAME IS DELIBERATELY UNUSUAL — mixed case, an underscore, a digit and a space — so
        * that any normalisation at all is visible. The legacy screen passed its field name straight through
@@ -2296,7 +2652,7 @@ describe('UserListComponent', () => {
       arrive();
 
       chooseAxis(ODD_PROPERTY_NAME);
-      typeSearch('anything');
+      await typeSearch('anything');
 
       const searched = expectListRead('the verbatim property search');
       const transmitted: string = paramOf(searched, PROFILE_PROPERTY_NAME_PARAM);
@@ -2309,7 +2665,7 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('keeps every searched value out of the request target', () => {
+    it('keeps every searched value out of the request target', async () => {
       // ⚠ CWE-598, PINNED FROM THE SCREEN'S SIDE AS WELL AS THE TRANSPORT'S. The screen's three search
       // axes all name a person: an account name, an email address, and an arbitrary profile-property
       // name paired with the value to match. A request target is written to the browser's history, to
@@ -2323,7 +2679,7 @@ describe('UserListComponent', () => {
       // through a helper that is deliberately blind to which address carried them.
       arrive();
 
-      typeSearch('jbloggs');
+      await typeSearch('jbloggs');
 
       const byName = expectListRead('the account-name search');
 
@@ -2335,7 +2691,7 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
 
       chooseAxis('Email');
-      typeSearch('jbloggs@example.test');
+      await typeSearch('jbloggs@example.test');
 
       const byAddress = expectListRead('the address search');
 
@@ -2346,7 +2702,7 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
 
       chooseAxis(ODD_PROPERTY_NAME);
-      typeSearch('Bris');
+      await typeSearch('Bris');
 
       const byProperty = expectListRead('the profile-property search');
       const target = byProperty.request.urlWithParams;
@@ -2363,16 +2719,16 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('leaves the unfiltered listing on the cacheable GET, because it names nobody', () => {
+    it('leaves the unfiltered listing on the cacheable GET, because it names nobody', async () => {
       // The boundary in the other direction, and it matters: moving a read that identifies nobody
       // into a body would give up caching and idempotence for no privacy gain whatsoever.
       arrive();
 
-      typeSearch('jbloggs');
+      await typeSearch('jbloggs');
       expectListRead('the search').flush(pageOf([userRow()]));
       fixture.detectChanges();
 
-      pressLetter(ALL_FILTER_LABEL);
+      await pressLetter(ALL_FILTER_LABEL);
 
       const unfiltered = expectListRead('the unfiltered read');
 
@@ -2414,20 +2770,20 @@ describe('UserListComponent', () => {
      * @param term The text to type.
      * @returns The listing request the search provoked.
      */
-    function searchFor(term: string): TestRequest {
-      typeSearch(term);
+    async function searchFor(term: string): Promise<TestRequest> {
+      await typeSearch(term);
 
       return expectListRead(`the search for ${JSON.stringify(term)}`);
     }
 
-    it('transmits exactly what was typed, appending no wildcard', () => {
+    it('transmits exactly what was typed, appending no wildcard', async () => {
       /*
        * ⚠ THE TRAILING WILDCARD IS THE SERVER'S. All three legacy modes appended a single `%` at the call
        * site — `SearchText + "%"` at L269, L271 and L274 — and the target endpoint reproduces that
        * appending, so the match is a STARTS-WITH and the client sends raw text. Appending one here would
        * produce a doubled pattern; leading with one would silently turn a starts-with into a contains.
        */
-      const searched = searchFor('Blog');
+      const searched = await searchFor('Blog');
 
       expect(paramOf(searched, USER_NAME_PARAM)).toBe('Blog');
 
@@ -2435,12 +2791,12 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('sends no per-cent character in any transmitted value', () => {
+    it('sends no per-cent character in any transmitted value', async () => {
       // ⚠ THE SWEEP FOLLOWS THE VALUES TO WHEREVER THEY TRAVEL. A search now goes in a body, so a loop
       // over the query parameters alone would find nothing to inspect and pass vacuously — the exact
       // shape of a check that has silently stopped checking. Both are swept, so this case is
       // meaningful whichever address the transport chose.
-      const searched = searchFor('Blog');
+      const searched = await searchFor('Blog');
 
       for (const name of searched.request.params.keys()) {
         const value: string | null = searched.request.params.get(name);
@@ -2468,13 +2824,13 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('preserves a per-cent character the reader typed, rather than escaping or stripping it', () => {
+    it('preserves a per-cent character the reader typed, rather than escaping or stripping it', async () => {
       /*
        * The complement of the case above, and the one that proves the absence there is the CLIENT declining
        * to add a wildcard rather than the client scrubbing the parameter. A term a person typed is theirs;
        * the server states the matching rule.
        */
-      const searched = searchFor('100%');
+      const searched = await searchFor('100%');
 
       expect(paramOf(searched, USER_NAME_PARAM)).toBe('100%');
 
@@ -2482,9 +2838,9 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('does not trim the term', () => {
+    it('does not trim the term', async () => {
       // Trimming would make a leading space unsearchable, and a stored name may legitimately carry one.
-      const searched = searchFor('  Blog ');
+      const searched = await searchFor('  Blog ');
 
       expect(paramOf(searched, USER_NAME_PARAM)).toBe('  Blog ');
 
@@ -2492,9 +2848,9 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('does not case-fold the term', () => {
+    it('does not case-fold the term', async () => {
       // Case-folding would presume a collation this side does not know; the comparison is the server's.
-      const searched = searchFor('BlOgGs');
+      const searched = await searchFor('BlOgGs');
 
       expect(paramOf(searched, USER_NAME_PARAM)).toBe('BlOgGs');
 
@@ -2502,7 +2858,7 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('does not hand-encode the term, leaving any encoding to the transport', () => {
+    it('does not hand-encode the term, leaving any encoding to the transport', async () => {
       /*
        * The term is carried DECODED, exactly as the operator typed it. Encoding by hand would double-encode
        * it: the per-cent sign of each escape would itself be escaped, and the server would search for the
@@ -2518,7 +2874,7 @@ describe('UserListComponent', () => {
        * The four characters chosen are the ones that would have been escaped in a query string and that
        * would separate or terminate a parameter if they were not: a space, an ampersand, an equals sign.
        */
-      const searched = searchFor('a b&c=d');
+      const searched = await searchFor('a b&c=d');
 
       expect(paramOf(searched, USER_NAME_PARAM)).toBe('a b&c=d');
       expect(searched.request.method).toBe('POST');
@@ -2533,7 +2889,7 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('searches for a term the legacy screen could never search for', () => {
+    it('searches for a term the legacy screen could never search for', async () => {
       /*
        * MIGRATION: the legacy branch was chosen by comparing the search TEXT against localised words — L258
        * `Unauthorized`, L261 `OnLine`, L264 `All` — so which query an operator got depended on the language
@@ -2541,7 +2897,7 @@ describe('UserListComponent', () => {
        * though each is an ordinary thing to type. The branch is a typed discriminator here, so every one of
        * them is searchable like any other text.
        */
-      const searched = searchFor(ALL_FILTER_LABEL);
+      const searched = await searchFor(ALL_FILTER_LABEL);
 
       expect(paramOf(searched, USER_NAME_PARAM)).toBe(ALL_FILTER_LABEL);
 
@@ -2549,17 +2905,17 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('searches for the empty term as a real value rather than dropping the filter', () => {
+    it('searches for the empty term as a real value rather than dropping the filter', async () => {
       /*
        * Empty text is a LEGITIMATE value on this contract, and the omission rule treats only `undefined`
        * and `null` as absent. Clearing the box and pressing search is therefore a search for the empty
        * prefix, which is a request the server answers — not a silent reversion to the unfiltered listing.
        */
-      typeSearch('present');
+      await typeSearch('present');
       expectListRead('the first search').flush(pageOf([userRow()]));
       fixture.detectChanges();
 
-      typeSearch('');
+      await typeSearch('');
 
       const cleared = expectListRead('the emptied search');
 
@@ -2576,7 +2932,7 @@ describe('UserListComponent', () => {
   // ===================================================================================================
 
   describe('the reserved words', () => {
-    it('never transmits the literal "None"', () => {
+    it('never transmits the literal "None"', async () => {
       /*
        * `Users.ascx.vb` L266 read `ElseIf SearchText <> "None"`, so the marker meant DO NOT QUERY AT ALL —
        * every branch fell through and the grid was left unbound. The successor state issues no request
@@ -2588,7 +2944,7 @@ describe('UserListComponent', () => {
        */
       arrive();
 
-      typeSearch('None');
+      await typeSearch('None');
 
       const searched = expectListRead('the search for the word "None"');
 
@@ -2605,18 +2961,18 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('issues a paged, unfiltered request for the "All" affordance, carrying no search parameter', () => {
+    it('issues a paged, unfiltered request for the "All" affordance, carrying no search parameter', async () => {
       /*
        * `Users.ascx.vb` L264-L265 called the unfiltered PAGED reader, which is a DISTINCT FOURTH BRANCH and
        * not the same as the `"None"` fall-through: it really does ask the server for everything.
        */
       arrive();
 
-      typeSearch('narrowed');
+      await typeSearch('narrowed');
       expectListRead('the narrowing search').flush(pageOf([userRow()]));
       fixture.detectChanges();
 
-      pressLetter(ALL_FILTER_LABEL);
+      await pressLetter(ALL_FILTER_LABEL);
 
       const unfiltered = expectListRead('the unfiltered read');
 
@@ -2711,7 +3067,7 @@ describe('UserListComponent', () => {
       expect(carries(listing, 'isApproved')).toBeFalse();
     });
 
-    it('ANNOUNCES the applied entry, which the legacy strip never did', () => {
+    it('ANNOUNCES the applied entry, which the legacy strip never did', async () => {
       /*
        * ⚠ THIS CLOSES A GAP THE TEMPLATE USED TO REPORT RATHER THAN FIX. The markup carried a note
        * saying the applied entry could not be announced because "the letter in force lives inside the
@@ -2732,7 +3088,7 @@ describe('UserListComponent', () => {
         .withContext('exactly one entry is ever pressed')
         .toEqual([ALL_FILTER_LABEL]);
 
-      pressLetter('C');
+      await pressLetter('C');
       expectListRead('the letter search').flush(pageOf([userRow(1)]));
       fixture.detectChanges();
 
@@ -2760,39 +3116,39 @@ describe('UserListComponent', () => {
       ).toHaveSize(26);
     });
 
-    it('shows NO entry as applied when the search is on an axis the strip does not offer', () => {
+    it('shows NO entry as applied when the search is on an axis the strip does not offer', async () => {
       // An electronic-mail prefix is a real search that no strip entry describes, so the truthful
       // answer is that none of them is pressed — including the unfiltered entry, which is emphatically
       // not what is in force.
       arrive();
 
       chooseAxis('Email');
-      typeSearch('a@example.test');
+      await typeSearch('a@example.test');
       expectListRead('the address search').flush(pageOf([userRow(1)]));
       fixture.detectChanges();
 
       expect(pressedAffordances()).toEqual([]);
     });
 
-    it('matches a letter case-INSENSITIVELY, so the strip agrees with the listing it describes', () => {
+    it('matches a letter case-INSENSITIVELY, so the strip agrees with the listing it describes', async () => {
       // The strip renders upper case while the free-text field admits any case, and both land in an
       // identical search. A case-sensitive comparison would leave the strip claiming nothing was
       // applied while the grid showed a letter-filtered listing.
       arrive();
 
-      typeSearch('c');
+      await typeSearch('c');
       expectListRead('the lower-case letter search').flush(pageOf([userRow(1)]));
       fixture.detectChanges();
 
       expect(pressedAffordances()).toEqual(['C']);
     });
 
-    it('shows no entry as applied for a MULTI-CHARACTER prefix, which no letter describes', () => {
+    it('shows no entry as applied for a MULTI-CHARACTER prefix, which no letter describes', async () => {
       // "Ca" is a sign-in prefix search, but it is not the letter "C": pressing "C" would change the
       // listing, so reporting "C" as applied would be a lie about what the grid is showing.
       arrive();
 
-      typeSearch('Ca');
+      await typeSearch('Ca');
       expectListRead('the two-character search').flush(pageOf([userRow(1)]));
       fixture.detectChanges();
 
@@ -2820,7 +3176,7 @@ describe('UserListComponent', () => {
       expect(affordances).not.toContain('0-9');
     });
 
-    it('treats a letter as a prefix search on the axis currently chosen, not as a query of its own', () => {
+    it('treats a letter as a prefix search on the axis currently chosen, not as a query of its own', async () => {
       /*
        * `Users.ascx.vb` L586 passed the filter and `ddlSearchType.SelectedItem.Value` into the SAME
        * `BindData` the search button used, so pressing "A" with the address axis chosen listed accounts
@@ -2829,7 +3185,7 @@ describe('UserListComponent', () => {
       arrive();
 
       chooseAxis('Email');
-      pressLetter('A');
+      await pressLetter('A');
 
       const filtered = expectListRead('the letter search on the address axis');
 
@@ -2879,7 +3235,7 @@ describe('UserListComponent', () => {
       answerListing(pageOf([]));
       settleOutcome();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', USER_DELETED_MESSAGE);
+      expect(notifySpy).toHaveBeenCalledWith('success', USER_DELETED_MESSAGE, null, false);
     });
 
     it('retains a tenant identifier of minus one on the row it renders', () => {
@@ -2895,12 +3251,24 @@ describe('UserListComponent', () => {
       expect(rowAction(EDIT_COMMAND_LABEL).getAttribute('href')).toBe('/users/7');
     });
 
-    it('renders a row whose every nullable member is absent, without a placeholder word', () => {
+    it('renders a row whose every nullable member is absent, and never a placeholder WORD', () => {
       /*
        * `Null.NullString` is the EMPTY STRING rather than a null reference (`Null.vb` L71-L75), so a stored
        * empty value and an absent one were indistinguishable once read by the legacy screen. They stay
-       * distinct on the wire here and are rendered identically, which is the legacy outcome — and neither
-       * ever renders as the word "null" or "undefined", which is what an unguarded interpolation produces.
+       * distinct on the wire here and neither ever renders as the word "null" or "undefined", which is what
+       * an unguarded interpolation produces.
+       *
+       * ⚠ U-M2 — THE TWO PROFILE CELLS ARE NO LONGER EXPECTED TO BE EMPTY, AND THIS CASE IS WHERE THAT
+       * CHANGED. It used to require them to paint nothing at all. Measured against the seeded tenant, that
+       * produced two of the nine columns rendering nothing on EVERY one of two hundred and fifty-three
+       * rows — two hundred and thirty-eight units of grid saying nothing, indistinguishable from a grid
+       * that had failed to render. The values genuinely are absent, on the detail endpoint as well as on
+       * the listing, so an empty cell was truthful; what it was not was distinguishable from a fault.
+       *
+       * ⚠ THE MARK IS NOT A PLACEHOLDER WORD, WHICH IS WHY THIS CASE STILL FORBIDS ONE. An em dash cannot
+       * be mistaken for a stored value: no address and no telephone number can be spelled that way,
+       * whereas "None", "N/A" and "Unknown" are all things a person could type into a free-text profile
+       * field. The words this case rejects are exactly the ones that would be ambiguous.
        */
       arrive(
         pageOf([
@@ -2924,8 +3292,48 @@ describe('UserListComponent', () => {
       expect(painted).not.toContain('null');
       expect(painted).not.toContain('undefined');
       expect(painted).not.toContain('NaN');
-      expect(textIn(cellUnder(ADDRESS_HEADING))).toBe('');
-      expect(textIn(cellUnder(TELEPHONE_HEADING))).toBe('');
+      expect(painted).withContext('no placeholder word').not.toContain('None');
+      expect(painted).not.toContain('N/A');
+      expect(painted).not.toContain('Unknown');
+
+      // The mark is hidden from assistive technology and the sentence beside it is hidden from sight, so
+      // each cell carries exactly one of the two for each kind of reader.
+      for (const heading of [ADDRESS_HEADING, TELEPHONE_HEADING]) {
+        const cell = cellUnder(heading);
+        const mark = queryOrFail<HTMLElement>(cell, 'span.user-list__absent-value');
+        const description = queryOrFail<HTMLElement>(cell, 'span.user-list__row-mark-description');
+
+        expect(mark.textContent).withContext('an em dash, not a word').toBe('\u2014');
+        expect(mark.getAttribute('aria-hidden')).toBe('true');
+        expect((description.textContent ?? '').trim()).toBe('not recorded');
+        expect(description.getAttribute('aria-hidden')).withContext('exposed').toBeNull();
+      }
+    });
+
+    it('paints a recorded profile value and no mark beside it', () => {
+      // U-M2's counterpart: the mark must appear ONLY where nothing would otherwise be painted, or it
+      // would be claiming an absence that is not there.
+      arrive(pageOf([userRow(7, { address: '12 Example Street', telephone: '555-0100' })]));
+
+      expect(textIn(cellUnder(ADDRESS_HEADING))).toBe('12 Example Street');
+      expect(textIn(cellUnder(TELEPHONE_HEADING))).toBe('555-0100');
+      expect(cellUnder(ADDRESS_HEADING).querySelector('span.user-list__absent-value')).toBeNull();
+      expect(cellUnder(TELEPHONE_HEADING).querySelector('span.user-list__absent-value')).toBeNull();
+    });
+
+    it('marks a whitespace-only profile value as absent, because nothing would be painted', () => {
+      /*
+       * ⚠ U-M2 — WHITESPACE IS TREATED AS ABSENT HERE AND AS A VALUE EVERYWHERE ELSE, and the two are
+       * answering different questions. The value itself is never rewritten: the legacy null contract makes
+       * an empty string a STORED value (`Null.vb` L71-L75) and it stays one. But the question this mark
+       * answers is "would a reader see anything", and for three spaces the answer is no — so leaving it
+       * unmarked would reinstate the very blank cell the mark exists to explain.
+       */
+      arrive(pageOf([userRow(7, { address: '   ', telephone: '' })]));
+
+      for (const heading of [ADDRESS_HEADING, TELEPHONE_HEADING]) {
+        expect(cellUnder(heading).querySelector('span.user-list__absent-value')).not.toBeNull();
+      }
     });
   });
 
@@ -3243,16 +3651,30 @@ describe('UserListComponent', () => {
   // ===================================================================================================
 
   describe('the two protected accounts', () => {
-    it('asks for the tenant\u2019s protected facts on arrival, for the caller\u2019s OWN tenant', () => {
-      // Read from the identity rather than from a route, because this screen names no portal segment.
+    it('reads the tenant record NOT AT ALL, because the row already carries the verdict', () => {
+      /*
+       * ⚠ U-M5 — THIS ASSERTION IS THE REVERSE OF WHAT IT USED TO BE. It previously REQUIRED the screen
+       * to read the tenant's own record on arrival, purely to learn `Portals.AdministratorId` and compare
+       * it against each row. That comparison is one the server has already made:
+       * `UserMappings.ToListItem` computes `canDelete` as
+       * `!user.IsSuperUser && (portalAdministratorId is not { } designated || designated != user.UserId)`.
+       * The client was therefore issuing a whole extra request, on every visit, to recompute a verdict it
+       * was being handed with every row — the fourth of four requests this screen needed to paint.
+       *
+       * The duplication was not merely wasteful. It was WEAKER, because the flag withholds every host
+       * account as well while the client clause covered one account only; and it was RACY, because the
+       * tenant read settled independently of the listing, so for the interval before it arrived the
+       * clause protected nobody and the command was rendered on a row the server would refuse.
+       */
       arrive();
 
-      expect(loadCurrentPortalContext).toHaveBeenCalledOnceWith(-1);
+      expect(loadCurrentPortalContext).not.toHaveBeenCalled();
     });
 
-    it('asks for nothing at all while the caller\u2019s identity is unresolved', () => {
-      // The identity is fetched, so it is null for a window after the screen mounts. Asking with no
-      // tenant in hand would either fault or ask for the wrong one.
+    it('asks for nothing extra while the caller\u2019s identity is unresolved either', () => {
+      // The identity is fetched, so it is null for a window after the screen mounts. Nothing about the
+      // removal verdict depends on the tenant record any more, so there is nothing to ask for in that
+      // window — which is a stronger property than asking correctly.
       callerIdentity.set(null);
       arrive();
 
@@ -3260,17 +3682,24 @@ describe('UserListComponent', () => {
     });
 
     it('withholds removal from the tenant\u2019s designated administrator', () => {
-      designatedAdministrator.set(7);
-      arrive(pageOf([userRow(7)]));
+      // ⚠ U-M5 — DRIVEN THROUGH THE ROW'S OWN VERDICT RATHER THAN THROUGH A SEPARATELY-READ TENANT
+      // RECORD. The server withholds `canDelete` for the account named by `Portals.AdministratorId`, so
+      // that flag IS the designation as far as this screen is concerned, and it arrives with the row.
+      arrive(pageOf([userRow(7, { canDelete: false })]));
 
       expect(textOf(ROW_ACTION_SELECTOR)).toEqual([EDIT_COMMAND_LABEL, MANAGE_ROLES_COMMAND_LABEL]);
       expect(textOf(ROW_ACTION_SELECTOR)).not.toContain(DELETE_COMMAND_LABEL);
     });
 
     it('keeps removal on every OTHER account in the same page', () => {
-      // The guard is per row, so protecting one account must not disarm the column.
-      designatedAdministrator.set(7);
-      arrive(pageOf([userRow(7), userRow(8, { username: 'asmith' })]));
+      // The guard is per row, so protecting one account must not disarm the column. The verdict is now
+      // per row on the wire as well, which is what makes that guarantee structural rather than incidental.
+      arrive(
+        pageOf([
+          userRow(7, { canDelete: false }),
+          userRow(8, { username: 'asmith', canDelete: true }),
+        ]),
+      );
 
       const names: readonly (string | null)[] = queryAll<HTMLElement>(ROW_ACTION_SELECTOR).map(
         (action) => action.getAttribute('aria-label'),
@@ -3284,8 +3713,13 @@ describe('UserListComponent', () => {
       // ⚠ SENTINEL DISCIPLINE. The guard compares with explicit equality against a resolved key: a
       // truthiness test would read a legitimate key of zero as "no designation" and expose the one
       // account the legacy screen most carefully protected.
-      designatedAdministrator.set(0);
-      arrive(pageOf([userRow(0)]));
+      // ⚠ U-M5 — THE SENTINEL DISCIPLINE MOVED TO THE SERVER WITH THE COMPARISON, and it is expressed
+      // there in the same terms: `portalAdministratorId is not { } designated || designated != user.UserId`
+      // is a pattern match on presence followed by an equality, never a truthiness test, so a designated
+      // key of zero is a designation. What this screen must still get right is the flag itself: it is
+      // compared against `false` explicitly and never read for truthiness, because a row identifier of
+      // zero sitting beside it is a legitimate account.
+      arrive(pageOf([userRow(0, { canDelete: false })]));
 
       expect(textOf(ROW_ACTION_SELECTOR)).not.toContain(DELETE_COMMAND_LABEL);
     });
@@ -3316,25 +3750,27 @@ describe('UserListComponent', () => {
       expect(textOf(ROW_ACTION_SELECTOR)).toContain(DELETE_COMMAND_LABEL);
     });
 
-    it('withholds nothing while the tenant\u2019s facts are still unresolved', () => {
-      // ⚠ THE FAIL-SAFE DIRECTION, AND IT IS THE OPPOSITE OF THE USUAL ONE. Until the tenant record
-      // has been read the designation is null, so the first clause protects nobody and behaviour is
-      // exactly what it was before the guard existed: the command is offered and the API's refusal
-      // governs. Hiding it until the read completed would strip a capability from every row for the
-      // duration of a request.
-      designatedAdministrator.set(null);
-      arrive(pageOf([userRow(7)]));
+    it('offers removal on a row the server says may be removed', () => {
+      // ⚠ U-M5 — THERE IS NO LONGER AN "UNRESOLVED" WINDOW TO BE FAIL-SAFE ABOUT, WHICH IS THE POINT.
+      // This case used to assert the fail-safe direction for the interval between the screen painting and
+      // the tenant record arriving: the designation was null, the client clause protected nobody, and the
+      // command was offered on every row until the read settled. That interval is gone — the verdict
+      // arrives WITH the row it applies to, so there is no state in which the screen holds rows and does
+      // not yet know which of them may be removed.
+      arrive(pageOf([userRow(7, { canDelete: true })]));
 
       expect(textOf(ROW_ACTION_SELECTOR)).toContain(DELETE_COMMAND_LABEL);
     });
 
-    it('arms and disarms the guard as the facts arrive, without remounting', () => {
-      arrive(pageOf([userRow(7)]));
+    it('re-arms the guard from a fresh page, without remounting', async () => {
+      // The verdict travels with the page, so a re-read is what changes it. Asserted without remounting
+      // because the command column is assembled once and its per-row branch has to keep answering.
+      arrive(pageOf([userRow(7, { canDelete: true })]));
 
       expect(textOf(ROW_ACTION_SELECTOR)).toContain(DELETE_COMMAND_LABEL);
 
-      designatedAdministrator.set(7);
-      fixture.detectChanges();
+      await pressLetter(ALL_FILTER_LABEL);
+      answerListing(pageOf([userRow(7, { canDelete: false })]));
 
       expect(textOf(ROW_ACTION_SELECTOR)).not.toContain(DELETE_COMMAND_LABEL);
     });
@@ -3343,8 +3779,7 @@ describe('UserListComponent', () => {
       // The two protections are about the RECORD, not about the caller's authority: an administrator
       // is exactly who reaches this screen, and the legacy guard applied to them too.
       administersPortal.set(true);
-      designatedAdministrator.set(7);
-      arrive(pageOf([userRow(7)]));
+      arrive(pageOf([userRow(7, { canDelete: false })]));
 
       expect(textOf(ROW_ACTION_SELECTOR)).not.toContain(DELETE_COMMAND_LABEL);
       expect(textOf(ROW_ACTION_SELECTOR)).toContain(EDIT_COMMAND_LABEL);
@@ -3446,6 +3881,42 @@ describe('UserListComponent', () => {
       );
 
       expect(textOf(HEADER_SELECTOR)).toEqual([...COMMAND_HEADINGS, USERNAME_HEADING]);
+    });
+
+    /**
+     * ⚠ A SORT CONTROL CANNOT SIT ON A COLUMN THAT IS NOT PAINTED, and this was measured in the running
+     * application rather than reasoned about. Against the live tenant, `GET /api/v1/users/settings` answers
+     * 404, so `membershipSettings()` is null and `LEGACY_DEFAULT_COLUMN_VISIBILITY` applies - which declares
+     * `firstName: false`, `lastName: false` and `columnEmail: false`. Three of the five sortable columns are
+     * therefore not rendered at all, and the grid showed TWO sort controls rather than five. That is the
+     * CORRECT outcome: the offered set is the intersection of "the endpoint permits it" and "this tenant
+     * paints it", and a control over a column nobody can see would order rows by a value nobody can read.
+     *
+     * The two halves are asserted together here so the intersection cannot silently become a union: the
+     * account name keeps its control because that column is unconditional, and the three switched-off
+     * columns lose both the heading AND the control.
+     */
+    it('offers a sort only on the columns this tenant actually paints', () => {
+      arrive(
+        pageOf([userRow()]),
+        membershipSettings({
+          columnFirstName: false,
+          columnLastName: false,
+          columnEmail: false,
+        }),
+      );
+
+      const names: readonly string[] = queryAll<HTMLButtonElement>('button.data-table__sort').map(
+        (control) => control.getAttribute('aria-label') ?? '',
+      );
+
+      expect(names).toEqual(['Sort by Username', 'Sort by Name']);
+
+      const headings: readonly string[] = textOf(HEADER_SELECTOR);
+
+      expect(headings).not.toContain(FIRST_NAME_HEADING);
+      expect(headings).not.toContain(LAST_NAME_HEADING);
+      expect(headings).not.toContain(EMAIL_HEADING);
     });
 
     it('hides one optional column when the tenant switches exactly that one off', () => {
@@ -3713,7 +4184,7 @@ describe('UserListComponent', () => {
         .toBeNull();
     });
 
-    it('withdraws the notice the moment the operator asks for something', () => {
+    it('withdraws the notice the moment the operator asks for something', async () => {
       create();
       answerSettings(membershipSettings({ displayMode: 2 }));
       answerDefinitions();
@@ -3724,7 +4195,7 @@ describe('UserListComponent', () => {
 
       // The unfiltered affordance the notice names. Pressed, it dispatches the listing the legacy's
       // L264 branch served.
-      pressLetter(ALL_FILTER_LABEL);
+      await pressLetter(ALL_FILTER_LABEL);
 
       const listing = expectRequest('GET', USERS_URL, 'the unfiltered listing');
 
@@ -3760,7 +4231,7 @@ describe('UserListComponent', () => {
       expect(rows()).toHaveSize(1);
     });
 
-    it('lets waiting win over emptiness', () => {
+    it('lets waiting win over emptiness', async () => {
       /*
        * An empty page is a legitimate answer rather than an error, but claiming it while a request is still
        * in flight would tell the reader "nothing found" about a query that has not answered yet.
@@ -3769,7 +4240,7 @@ describe('UserListComponent', () => {
 
       expect(query('app-empty-state')).not.toBeNull();
 
-      typeSearch('pending');
+      await typeSearch('pending');
 
       const pending = expectListRead('the pending search');
 
@@ -3962,21 +4433,27 @@ describe('UserListComponent', () => {
 
     it('disables the retry affordance while a read is still in flight beneath a recorded failure', () => {
       /*
-       * ⚠ REACHED THROUGH THE POLICY FAILURE, WHICH IS THE ONE STATE WHERE BOTH HOLD AT ONCE. Every store
-       * command clears the failure slot before it dispatches, so pressing retry REMOVES the surface the
-       * affordance lives on — the disabled binding could never be observed that way. The policy path is
-       * different by design: a failed policy read is RECORDED and the listing is then dispatched anyway,
-       * without clearing it, because a tenant whose policy is unavailable still has accounts. So the banner
-       * is on screen while the listing is genuinely in flight, and that is when a second press must not be
-       * able to queue behind the first.
+       * ⚠ REACHED THROUGH THE PROFILE-DECLARATIONS FAILURE, WHICH IS NOW THE ONE STATE WHERE BOTH HOLD AT
+       * ONCE. Every store command clears the failure slot before it dispatches, so pressing retry REMOVES
+       * the surface the affordance lives on — the disabled binding could never be observed that way. What
+       * is needed is a read that FAILS while a different read is still in flight, and whose failure this
+       * screen answers for.
+       *
+       * ⚠ #5 — IT USED TO BE REACHED THROUGH THE ACCOUNT-POLICY FAILURE AND CANNOT BE ANY MORE. A failed
+       * policy read no longer opens this surface at all: it costs the tenant its preferred page size and
+       * column selection, both of which have a documented fallback here, so raising an assertive banner
+       * with a retry above a healthy listing reported a failure that had not happened. The declarations
+       * read is the substitute and is a better fit than the policy ever was — it is genuinely one of this
+       * screen's own reads, it feeds the search-axis selector, and it is dispatched INDEPENDENTLY of the
+       * listing, so failing it leaves the listing in flight beneath the surface exactly as required.
        */
       create();
-      expectRequest('GET', MEMBERSHIP_SETTINGS_URL, 'the account-policy read').flush(
-        problem('server_error', 500, 'The policy store is unavailable.'),
+      answerSettings();
+      expectRequest('GET', PROFILE_DEFINITIONS_URL, 'the profile-declarations read').flush(
+        problem('server_error', 500, 'The declarations store is unavailable.'),
         { status: 500, statusText: 'Internal Server Error' },
       );
       fixture.detectChanges();
-      answerDefinitions();
 
       const inFlight = expectListRead('the listing read');
 
@@ -4021,7 +4498,15 @@ describe('UserListComponent', () => {
       arrive();
       beginTyping('bl');
 
-      pressLetter('B');
+      // ⚠ NOT AWAITED, because `await` is illegal inside `fakeAsync`. The helper's synchronous
+
+      // half - the click and the change detection - runs immediately, and the `tick` below flushes both
+
+      // the navigation it started and the settle it is waiting on.
+
+      void pressLetter('B');
+
+      tick();
 
       const filtered = expectListRead('the letter-filtered read');
 
@@ -4039,7 +4524,15 @@ describe('UserListComponent', () => {
       arrive();
       beginTyping('bl');
 
-      pressLetter('B');
+      // ⚠ NOT AWAITED, because `await` is illegal inside `fakeAsync`. The helper's synchronous
+
+      // half - the click and the change detection - runs immediately, and the `tick` below flushes both
+
+      // the navigation it started and the settle it is waiting on.
+
+      void pressLetter('B');
+
+      tick();
       expectListRead('the letter-filtered read').flush(pageOf([userRow(2)], 1, 0, TENANT_PAGE_SIZE));
       fixture.detectChanges();
       tick(5000);
@@ -4054,7 +4547,15 @@ describe('UserListComponent', () => {
       arrive();
       beginTyping('bl');
 
-      pressLetter(ALL_FILTER_LABEL);
+      // ⚠ NOT AWAITED, because `await` is illegal inside `fakeAsync`. The helper's synchronous
+
+      // half - the click and the change detection - runs immediately, and the `tick` below flushes both
+
+      // the navigation it started and the settle it is waiting on.
+
+      void pressLetter(ALL_FILTER_LABEL);
+
+      tick();
 
       const unfiltered = expectListRead('the unfiltered read');
 
@@ -4071,7 +4572,7 @@ describe('UserListComponent', () => {
   });
 
   describe('the chosen axis and what is still declared', () => {
-    it('falls back to the account name when the chosen property stops being declared', () => {
+    it('falls back to the account name when the chosen property stops being declared', async () => {
       // ⚠ THE SCREEN LIED ABOUT WHAT IT WAS SEARCHING. The third axis is one entry per
       // tenant-declared profile property, and the declarations live in the application-scoped store
       // that the neighbouring profile-declarations screen writes. The chosen axis was written only by
@@ -4091,7 +4592,7 @@ describe('UserListComponent', () => {
       );
       fixture.detectChanges();
 
-      typeSearch('Bris');
+      await typeSearch('Bris');
 
       const searched = expectListRead('the search after the property vanished');
 
@@ -4126,7 +4627,7 @@ describe('UserListComponent', () => {
         .toBe('Username');
     });
 
-    it('keeps a chosen property that is still declared', () => {
+    it('keeps a chosen property that is still declared', async () => {
       // The reconciliation must not be a reset on every catalogue read, or an operator's choice would
       // be discarded whenever anything re-read the declarations.
       arrive();
@@ -4138,7 +4639,7 @@ describe('UserListComponent', () => {
       );
       fixture.detectChanges();
 
-      typeSearch('Bris');
+      await typeSearch('Bris');
 
       const searched = expectListRead('the search on the retained axis');
 
@@ -4176,14 +4677,14 @@ describe('UserListComponent', () => {
       expect(query('.error-banner-live')?.getAttribute('role')).toBe('alert');
     });
 
-    it('leaves the search and paging affordances usable, so there is a way to retry', () => {
+    it('leaves the search and paging affordances usable, so there is a way to retry', async () => {
       create();
       answerSettings();
       answerDefinitions();
       expectListRead('the listing read').flush({ items: [userRow()] });
       fixture.detectChanges();
 
-      typeSearch('bl');
+      await typeSearch('bl');
 
       const retried = expectListRead('the retry');
 
@@ -4236,4 +4737,190 @@ describe('UserListComponent', () => {
   });
 
 
+  // ---------------------------------------------------------------------------------------------------
+  // PROOF — THE ADDRESS CARRIES THE SEARCH, THE AXIS AND THE PAGE
+  //
+  // Runtime testing on the sibling portal listing measured five desyncs from keeping this state privately:
+  // pager clicks advanced the grid while the address stayed on the bare route, pressing back from page three
+  // was not possible because paging created no history entry at all, a typed address carrying a filter issued
+  // no request, and a fresh arrival landed on a page and a filter the operator could not see, because this
+  // store is provided at the application root and OUTLIVES this route.
+  //
+  // ⚠ THIS LISTING HAS A THIRD STATE THE OTHER THREE DO NOT: an address that states NO search means nothing
+  // has been asked for, which is a real legacy state distinct from the unfiltered listing. Several cases here
+  // exist only to hold that distinction in place.
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('the address', () => {
+    it('writes a typed search and its default axis, stating the axis by omission', async () => {
+      arrive();
+
+      await typeSearch('Blog');
+      expectListRead('the searched read').flush(pageOf([userRow()]));
+      fixture.detectChanges();
+
+      expect(addressParams()[FILTER_QUERY_KEY]).toBe('Blog');
+      expect(addressParams()[SEARCH_BY_QUERY_KEY])
+        .withContext('the default axis is omitted, so a plain name search reads as ?filter=Blog')
+        .toBeUndefined();
+    });
+
+    it('states a non-default axis explicitly', async () => {
+      arrive();
+
+      chooseAxis('Email');
+      await typeSearch('someone@example.test');
+      expectListRead('the email read').flush(pageOf([userRow()]));
+      fixture.detectChanges();
+
+      expect(addressParams()[SEARCH_BY_QUERY_KEY]).toBe('Email');
+      expect(addressParams()[FILTER_QUERY_KEY]).toBe('someone@example.test');
+    });
+
+    it('states the unfiltered listing as a word, because absence means something else here', async () => {
+      arrive();
+
+      await pressLetter(ALL_FILTER_LABEL);
+      expectListRead('the unfiltered read').flush(pageOf([userRow()]));
+      fixture.detectChanges();
+
+      expect(addressParams()[SEARCH_BY_QUERY_KEY])
+        .withContext('an empty address would mean "nothing asked for", which is a different query')
+        .toBe('all');
+      expect(addressParams()[FILTER_QUERY_KEY]).toBeUndefined();
+    });
+
+    it('restores a whole view from the address on entry: axis, term and page together', async () => {
+      // ⚠ ONE READ, AT THE RIGHT COORDINATE. Every search command on the store returns the listing to the
+      // first page, so restoring the search and the page separately would discard the page the address asked
+      // for. The staged search also has to outrank the policy's own opening view.
+      await enterAt('/users?searchby=Email&filter=a&currentpage=3');
+      create();
+      answerSettings();
+      answerDefinitions();
+
+      const read: TestRequest = expectListRead('the restored read');
+
+      expect(paramOf(read, EMAIL_PARAM)).toBe('a');
+      expect(paramOf(read, PAGE_INDEX_PARAM))
+        .withContext('the page survived the search that would otherwise have reset it')
+        .toBe('2');
+
+      read.flush(pageOf([userRow()], 40, 2, TENANT_PAGE_SIZE));
+      fixture.detectChanges();
+
+      expect(httpMock.match(() => true))
+        .withContext('and nothing further, so the restore cost exactly one listing read')
+        .toHaveSize(0);
+      // The restored term and axis are both shown, so a filter in force is visible and clearable.
+      expect(queryOrFail<HTMLInputElement>(host(), SEARCH_INPUT_SELECTOR).value).toBe('a');
+    });
+
+    it('leaves the opening view to the policy when the address states no search', async () => {
+      // THE THIRD STATE. A bare address must NOT be read as "show everything": the policy decides, exactly as
+      // it does on a first ever visit, and that is the legacy behaviour this preserves.
+      await enterAt('/users');
+      create();
+      answerSettings();
+      answerDefinitions();
+
+      expect(addressParams()[SEARCH_BY_QUERY_KEY])
+        .withContext('the screen does not invent an address the operator did not ask for')
+        .toBeUndefined();
+
+      httpMock.match(() => true).forEach((pending) => pending.flush(pageOf([userRow()])));
+      fixture.detectChanges();
+    });
+
+    it('corrects away a page on an address that states no search', async () => {
+      // Which page four IS depends on a result set nobody asked for, so the page cannot be honoured. Every
+      // affordance writes the search alongside the page precisely so this is only reached by a hand-edited
+      // address.
+      await enterAt('/users?currentpage=4');
+      create();
+      await settleAddress();
+
+      expect(addressParams()[PAGE_QUERY_KEY]).toBeUndefined();
+
+      answerSettings();
+      answerDefinitions();
+      httpMock.match(() => true).forEach((pending) => pending.flush(pageOf([userRow()])));
+      fixture.detectChanges();
+    });
+
+    it('writes the search alongside the page when a page is turned', async () => {
+      // ⚠ THE CASE THAT KEEPS A POLICY-CHOSEN VIEW PAGEABLE. The policy chose the opening view, so the address
+      // still states no search; writing only the page would produce an address that the rule above corrects
+      // away, and the operator's page turn would be undone.
+      arrive(pageOf([userRow()], 40, 0, TENANT_PAGE_SIZE));
+
+      await pressPager(PAGER_NEXT_LABEL);
+      expectListRead('the second-page read').flush(pageOf([userRow(5)], 40, 1, TENANT_PAGE_SIZE));
+      fixture.detectChanges();
+
+      expect(addressParams()[PAGE_QUERY_KEY]).toBe('2');
+      expect(addressParams()[SEARCH_BY_QUERY_KEY])
+        .withContext('the page is only meaningful beside the search it belongs to')
+        .toBe('all');
+    });
+
+    it('clears the rows when the address becomes bare, rather than captioning stale ones', async () => {
+      // ⚠ THE DEFECT RUNTIME TESTING FOUND, PINNED. This store outlives the route and the nothing-asked-for
+      // state issues NO request, so a previous query's rows had nothing to replace them: the screen printed
+      // "No accounts have been requested yet" directly above 255 retained rows, and pressing Back onto the
+      // bare address changed the address without changing the view. Both halves are asserted - the rows are
+      // gone AND the hint is shown - because either alone would pass while the other failed.
+      arrive();
+
+      await pressLetter(ALL_FILTER_LABEL);
+      expectListRead('the unfiltered read').flush(pageOf([userRow(), userRow(5)], 257, 0, TENANT_PAGE_SIZE));
+      fixture.detectChanges();
+
+      expect(host().querySelectorAll('tr.data-table__row').length)
+        .withContext('the previous query really did leave rows on screen')
+        .toBe(2);
+
+      // Back to the bare address, which states no search at all.
+      await enterAt('/users');
+      await settleAddress();
+
+      // ⚠ COUNTED BY THE ROW CLASS, NOT BY `tbody tr`. The shared table also renders a waiting placeholder and
+      // two virtualisation spacer rows inside its body, so a bare `tbody tr` count never reaches nought and
+      // would pass for any implementation.
+      expect(host().querySelectorAll('tr.data-table__row').length)
+        .withContext('a bare address states no search, so there is no result set to show')
+        .toBe(0);
+      expect(httpMock.match(() => true))
+        .withContext('and nothing is read, because nothing has been asked for')
+        .toHaveSize(0);
+    });
+
+    it('starts clean on a fresh entry, even though the store outlives the route', async () => {
+      // THE MEASURED DEFECT: a fresh sidebar arrival landed on the page and filter of a previous visit.
+      arrive();
+
+      await typeSearch('Zeta');
+      expectListRead('the searched read').flush(pageOf([userRow()], 40, 0, TENANT_PAGE_SIZE));
+      fixture.detectChanges();
+      fixture.destroy();
+
+      await enterAt('/users');
+      create();
+      answerSettings();
+      answerDefinitions();
+
+      const read: TestRequest = expectListRead('the fresh read');
+
+      // Asserted as ABSENT rather than empty: the helper above throws for a parameter that is not there, so
+      // presence is checked directly. An empty term would be a real search for the empty string, which is a
+      // different query from no search at all.
+      expect(read.request.params.has(USER_NAME_PARAM))
+        .withContext('the bare address carries no term, whatever the store still held')
+        .toBeFalse();
+      expect(paramOf(read, PAGE_INDEX_PARAM)).toBe('0');
+
+      read.flush(pageOf([userRow()]));
+      fixture.detectChanges();
+    });
+  });
 });

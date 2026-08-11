@@ -133,6 +133,21 @@
 //  create a second definition site free to drift from the first.
 :host {
   display: grid;
+
+  // THE EXPLICIT FLUID TRACK. See the note on the same declaration in
+  // `portal-list.component.scss` for the measured failure. An implicit single-column track takes
+  // an automatic `min-content` minimum, so the shared grid's `min-inline-size: 40rem` sized the
+  // track and stretched every sibling region to it, which put this screen's document at
+  // `scrollWidth` 843 against a 320px viewport - the worst of the four affected screens, because
+  // the navigation rail beside it is content-sized and the active label here is the longest in
+  // the application. All four Required/Visible row checkboxes went off screen at 320 and 375, two
+  // were still out at 768, and the primary "Add New Profile Property" action was BISECTED by the
+  // 768px edge, so `elementFromPoint` at its centre returned null and it could not be clicked.
+  //
+  // The token's zero floor lets the track yield completely, which returns the overflow to the
+  // table container whose `overflow-x: auto` exists to absorb it.
+  grid-template-columns: var(--grid-track-fluid);
+
   gap: var(--space-4);
 }
 
@@ -276,8 +291,19 @@
   justify-content: center;
   gap: var(--space-1);
 
-  min-inline-size: var(--space-8);
-  min-block-size: var(--space-8);
+  // ⚠ THE TARGET FLOOR, AND IT MUST COME FROM THE TARGET FAMILY. This pair read
+  //    `var(--space-8)` — a SPACING token that happens to evaluate to 2.5rem — so every one
+  //    of this grid's forty-six row actions measured exactly 40.00 x 40.00 under runtime
+  //    measurement, uniformly 4.00px short on both axes of the 2.75rem the token vocabulary
+  //    names for row actions. The value was close enough to look deliberate and to survive
+  //    review, which is exactly why the wrong family is worth naming: a spacing step and a
+  //    target floor are free to diverge on any future change to either scale, and a control
+  //    sized from the spacing scale would then drift silently. These actions are the densest
+  //    in the application — four per row on ten of twelve rows — and they still clear the
+  //    floor, so no exception is needed and the compact step stays reserved for the alphabet
+  //    strip it was defined for.
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
 
   padding-block: var(--space-1);
   padding-inline: var(--space-2);

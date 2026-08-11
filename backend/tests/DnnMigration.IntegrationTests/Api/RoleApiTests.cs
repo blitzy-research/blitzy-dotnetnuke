@@ -122,7 +122,7 @@ public sealed class RoleApiTests
     /// pins the operator; this constant pins the wording.
     /// </remarks>
     private const string BillingPeriodNotPositiveMessage =
-        "Billing Period Must Be Greater Than or Equal to Zero";
+        "Billing Period Must Be Greater Than Zero";
 
     /// <summary>valTrialFee2's wording (<c>editroles.ascx</c> L127).</summary>
     /// <remarks>
@@ -133,7 +133,7 @@ public sealed class RoleApiTests
     /// screen allowed, which is why the accepted-boundary theory below asserts that a trial fee of zero
     /// is created rather than refused.
     /// </remarks>
-    private const string TrialFeeNegativeMessage = "Trial Fee Must Be Greater Than Zero";
+    private const string TrialFeeNegativeMessage = "Trial Fee Must Be Greater Than or Equal to Zero";
 
     /// <summary>valTrialPeriod2's wording (<c>editroles.ascx</c> L145), where text and operator agree.</summary>
     private const string TrialPeriodNotPositiveMessage = "Trial Period Must Be Greater Than Zero";
@@ -2975,9 +2975,12 @@ public sealed class RoleApiTests
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
-    /// The trial-fee half of this theory is the case the wording actively argues against: valTrialFee2's
-    /// message reads "Trial Fee Must Be Greater Than Zero" while its operator admits zero. The operator
-    /// wins, so a free trial is created - and that is why the defect is annotated rather than repaired.
+    /// The trial-fee half of this theory admits zero, and the wording now says so. An earlier revision
+    /// of this remark described valTrialFee2 as arguing against its own operator, on the strength of a
+    /// message reading "Trial Fee Must Be Greater Than Zero". That was a mistranscription in this
+    /// solution, not a legacy defect: EditRoles.ascx.resx declares valTrialFee2.Text as "Trial Fee Must
+    /// Be Greater Than or Equal to Zero", which agrees with Operator="GreaterThanEqual". The operator is
+    /// unchanged, a free trial is still created, and the message no longer contradicts it.
     /// </para>
     /// <para>
     /// The second assertion is the sentinel half of the same fact. Serialisation is configured with the

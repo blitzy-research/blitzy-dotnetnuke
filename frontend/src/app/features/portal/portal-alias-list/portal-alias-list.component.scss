@@ -7,10 +7,12 @@
 // emit exactly this vocabulary:
 //
 //     .portal-alias-list
-//     .portal-alias-list__header
 //     .portal-alias-list__status
 //     .portal-alias-list__edit
 //     .portal-alias-list__commands
+//     .portal-alias-list__absent-host
+//     .portal-alias-list__absent-host-description
+//     .portal-alias-list__current-note
 
 // =============================================================================
 // Portal HTTP-alias list with the create / edit form on the same screen. View
@@ -37,13 +39,21 @@
   line-height: var(--line-height-tight);
 }
 
-.portal-alias-list__header {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  align-items: baseline;
-  justify-content: space-between;
-}
+// THE HEADER WRAPPER IS GONE, AND ITS REMOVAL IS THE FIX FOR A MEASURED MISALIGNMENT.
+//
+// It was a `space-between` flex row holding a SINGLE child - the shared page header - which made
+// it a constraint rather than a layout. A lone flex item is placed at the start and sized to its
+// CONTENT, so the shared header never received the full measure, and its own right-alignment had
+// no free space to distribute: measured, this screen's header actions rendered inline beside the
+// title at x≈338 and x≈464 while the sibling settings screen right-aligned its action at
+// x≈1506. Two screens in one feature, disagreeing about where a page action lives.
+//
+// The wrapper made sense when the create affordance sat OUTSIDE the header and the row had two
+// children to separate. Once it moved into the header's own action slot the row had one child and
+// nothing to do but get in the way. The header is now a direct child of the component root, which
+// is a grid - so it stretches to the full measure and the shared component decides its own layout,
+// which is the rule this stylesheet states at the top: shared components own their appearance and
+// this file only places them.
 
 .portal-alias-list__status {
   display: grid;
@@ -69,6 +79,34 @@
   flex-wrap: wrap;
   gap: var(--space-2);
   align-items: center;
+}
+
+// THE DESTRUCTIVE COMMAND IN THE INLINE EDITOR.
+//
+// ⚠ THE MEASURED DEFECT: IT HAD NO DESTRUCTIVE TREATMENT AT ALL. Delete sat between Update
+// and Cancel as a bare button, indistinguishable from either, while the confirmation it opens
+// paints its own Delete with a red border and a danger label. One screen therefore carried two
+// treatments for one destructive act, and an operator meets the weaker one first - at the
+// moment the decision is actually made, since the dialog only confirms it.
+//
+// The ink is the danger token, matching the row commands on the portal listing so the console
+// has one destructive appearance rather than three. Colour is a reinforcement and never the
+// only signal: the label reads "Delete", the command is withheld entirely on the row this
+// request arrived through and on a portal with a single host name, and it opens a confirmation
+// that must be accepted. `:enabled` qualifies both feedback states so a disabled control gives
+// no response implying it can be actioned, which is the pattern the shared dialog uses.
+.portal-alias-list__command--danger {
+  color: var(--color-danger);
+  font-weight: var(--font-weight-bold);
+
+  // Hover and press move the SURFACE rather than the hue, so the destructive intent does not
+  // blink away under the pointer - the same choice the portal listing's danger row command
+  // makes, and the reason a reader who cannot separate the two reds still perceives the change.
+  &:enabled:hover,
+  &:enabled:active {
+    background-color: var(--color-surface);
+    color: var(--color-danger);
+  }
 }
 
 // =============================================================================
@@ -103,3 +141,59 @@
 // scale rather than a pixel match. The list region's own width constraint came out
 // with the table rules: sizing the list is the shared data table's concern.
 // =============================================================================
+
+// THE HIDDEN EXPLANATION IN THE COMMAND CELL OF THE ROW THAT OFFERS NO COMMAND.
+//
+// Hidden from sight and kept in the accessibility tree, so the cell renders exactly as the
+// legacy grid rendered it - an invisible server control emitted nothing - while a reader who
+// meets the absence is told why it is there. The design specification's precedence order is what
+// dictates that shape: accessibility is answered THIRD and with zero visual change, so the
+// explanation may not occupy a pixel.
+.portal-alias-list__row-note {
+  @include mx.visually-hidden;
+}
+
+// =============================================================================
+//  Pf-M1 AND Pf-M2 — THE TWO ROW STATES THAT PAINTED NOTHING
+// =============================================================================
+// Both rules exist because runtime measurement found an EMPTY CELL where an operator
+// needed a fact. Neither adds a colour, a border or a box: the mark and the note are
+// plain text in the inherited type, so the grid's appearance is unchanged except that
+// two previously blank cells now hold something.
+// Pf-M1: the absent-host mark. Painted, never announced — its words are carried by the
+// sibling below, so a reader is told "no host name recorded" rather than "em dash".
+.portal-alias-list__absent-host {
+  // The mark is data-about-data rather than data, so it is dimmed to the muted step to
+  // keep it from reading as a host name that happens to be one character long.
+  color: var(--color-text-muted);
+}
+// Pf-M1: the words behind the mark. Announced, never painted.
+.portal-alias-list__absent-host-description {
+  @include mx.visually-hidden;
+}
+// Pf-M2: the note that stands where the withheld command would be.
+// MIGRATION: the command's ABSENCE is legacy-faithful (`portalalias.ascx:L8` bound the
+// hyperlink's `Visible` property) and is preserved. This rule exists only so the cell is
+// not empty, because an empty cell collapsed the row to 20.5px against its neighbours'
+// 31.75px — measured at runtime — and made the one row that most needed explaining look
+// like a rendering fault.
+// The height is matched by paying the same block padding a row command pays rather than
+// by declaring a height, so the two stay aligned if the command's own metrics change.
+.portal-alias-list__current-note {
+  // ⚠ Pf-M2 — THE FLOOR IS THE COMMAND'S OWN, and it is measured rather than guessed.
+  // Runtime measurement isolated the delta exactly: both cells pay identical 4px + 4px block
+  // padding, so the whole row difference came from CONTENT height. A row command carries
+  // `min-block-size: 44px` (the target-size floor every command on this screen pays) and therefore
+  // always contributes 44px, giving 44 + 8 = 52px rows. This note carried `min-block-size: auto`
+  // and contributed only its natural 24.25px, giving 24.25 + 8 = 32.25px - and 44 − 24.25 = 19.75,
+  // which is precisely the 52 → 32.25 shortfall observed on one row out of eighteen.
+  // Paying the same floor is what makes the row flush, and expressing it as the shared target-size
+  // token rather than as a literal is what keeps the two in step if that floor ever moves. The note
+  // is NOT a target - nothing here is pressable - so this buys alignment, not hit area.
+  display: flex;
+  align-items: center;
+  min-block-size: var(--target-size-min);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+}

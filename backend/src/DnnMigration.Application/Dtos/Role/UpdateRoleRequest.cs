@@ -338,4 +338,23 @@ public sealed class UpdateRoleRequest
     // forms are the validator's rules, and turning the stored path into something a browser can
     // request is the client's concern.
     public string? IconFile { get; set; }
+
+    /// <summary>
+    /// The optimistic-concurrency token the caller received when it read this role, or
+    /// <see langword="null"/> to apply the update unconditionally.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS IS A WHOLE-ROW REPLACEMENT, which is what makes the token matter. Every member of this
+    /// request is written, so a request composed from a snapshot read before someone else's committed edit
+    /// does not merely lose the field the caller was editing - it rolls back every other column to the
+    /// snapshot's values. Supplying the token turns that into a refusal the caller can act on.
+    /// </para>
+    /// <para>
+    /// OPTIONAL, and permissive when omitted, so a caller that predates the token still works exactly as it
+    /// did. When supplied and no longer current, the write is refused with
+    /// <c>role.concurrency_conflict</c> and nothing is written.
+    /// </para>
+    /// </remarks>
+    public string? ConcurrencyToken { get; set; }
 }

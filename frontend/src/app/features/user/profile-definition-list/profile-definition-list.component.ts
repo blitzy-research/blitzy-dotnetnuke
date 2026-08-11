@@ -28,6 +28,7 @@ import { YesNoPipe } from '../../../shared/pipes/yes-no.pipe';
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
 import type { OnInit, Signal } from '@angular/core';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
+import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
 import type {
   CreateProfilePropertyDefinitionRequest,
   ProfilePropertyDefinition,
@@ -44,6 +45,7 @@ import type {
   DataTableCellContext,
   DataTableColumn,
 } from '../../../shared/components/data-table/data-table.component';
+import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
 
 // WORDING
 //
@@ -254,11 +256,6 @@ const EXPRESSION_MAX_LENGTH = 512;
  * `SharedResources.resxDeleteItem.Text` — the legacy confirm text.
  */
 const DELETE_CONFIRM_MESSAGE = 'Are You Sure You Wish To Delete This Item?';
-
-/**
- * Heading of the removal dialog. Authored: the legacy affordance was a browser confirm.
- */
-const DELETE_CONFIRM_TITLE = 'Delete Profile Property';
 
 /**
  * `DuplicateName.Text`, reproduced byte for byte including both double spaces.
@@ -574,6 +571,62 @@ type MutableProfileRow = {
  * `Null.NullInteger`. Named so that no comparison in this file spells a bare -1.
  */
 const NULL_INTEGER = -1;
+
+/**
+ * What the data-type cell paints. U+2014 EM DASH.
+ *
+ * WHY THE STORED INTEGER IS NOT PAINTED. `DisplayDataType` L339-L351 is four statements long and it
+ * never returns a number:
+ *
+ *     Dim retValue As String = Null.NullString
+ *     Dim definitionEntry As ListEntryInfo = objListController.GetListEntryInfo(definition.DataType)
+ *     If Not definitionEntry Is Nothing Then retValue = definitionEntry.Value
+ *     Return retValue
+ *
+ * It returns the resolved list-entry VALUE, or `Null.NullString` when the entry cannot be found. So
+ * painting `349` was a divergence from the legacy screen, not a faithful rendering of it, and the raw
+ * foreign key reached the user in a column headed `DataType` where it reads as a type name.
+ *
+ * WHY THE NAME CANNOT BE RESOLVED, ON THREE INDEPENDENT GROUNDS. The name lives in the shared `Lists`
+ * lookup table, filtered to the entries whose list name is `DataType`. First, `Library/Components/Lists`
+ * is one of the twenty-three sub-trees the migration plan excludes by name, so building a resolver is
+ * outside this work. Second, there is no `Lists` entity, configuration, repository or endpoint anywhere
+ * in the backend — the API's own validators decline to range-check the member for exactly this reason,
+ * recording that "that subsystem is excluded ... so there is no set to check membership of". Third, and
+ * decisively, `dbo.Lists` is not one of the tables this application's schema declares at all; it is
+ * created only by the legacy upgrade chain. There is therefore nothing to read even in principle, which
+ * is precisely the branch `DisplayDataType` handled by returning the empty string.
+ *
+ * WHY A MARK AND NOT A BLANK. A strictly literal reading of `Null.NullString` would paint nothing. Two
+ * things argue against that. The mark is this application's settled vocabulary for "no value to show" —
+ * it is used for absent portal tallies, absent user profile values, absent alias host names, absent role
+ * periods and fees, and absent module titles, in every case paired with wording carried to the
+ * accessibility tree. A silent cell here would be the only absent-value treatment in the application
+ * that says nothing. More importantly, this blank would not BE the datum, it would CONCEAL one: the row
+ * really does store 349. That is the distinction between this cell and the role description column,
+ * where a blank was left blank because `Null.NullString` genuinely is the stored value. So the mark is
+ * painted, the reference travels in the accessibility tree and in a `title`, and nothing is destroyed.
+ */
+const UNNAMED_DATA_TYPE_MARK = '\u2014';
+
+/**
+ * The wording behind {@link UNNAMED_DATA_TYPE_MARK} when a type IS stored but cannot be named.
+ *
+ * Split around the reference so the number is interpolated between two fixed strings rather than
+ * assembled by a template, which keeps the sentence in one place and lets the `title` attribute and the
+ * clipped span be generated from a single accessor. One rule, one sentence.
+ */
+const UNNAMEABLE_DATA_TYPE_PREFIX = 'data type reference ';
+const UNNAMEABLE_DATA_TYPE_SUFFIX = ', name unavailable';
+
+/**
+ * The wording behind {@link UNNAMED_DATA_TYPE_MARK} for the `Null.NullInteger` sentinel.
+ *
+ * -1 is the legacy field initialiser and means "no type chosen yet", which is a different fact from a
+ * stored type whose name cannot be read. The two cases paint the same mark, exactly as the legacy
+ * rendered both as the empty string, but they are described differently because they are not the same.
+ */
+const NO_DATA_TYPE_CHOSEN_DESCRIPTION = 'no data type chosen';
 
 /**
  * The create-mode defaults, measured from the legacy field initialisers.
@@ -939,6 +992,8 @@ function refusalMessage(pending: AwaitedWrite, failure: UserFailure): string {
   selector: 'app-profile-definition-list',
   standalone: true,
   imports: [
+    FocusFirstInvalidDirective,
+    SubmitGuardDirective,
     // Backs the inline create-and-edit form.
     ReactiveFormsModule,
     // Page heading plus the projected action bar.
@@ -954,6 +1009,7 @@ function refusalMessage(pending: AwaitedWrite, failure: UserFailure): string {
     ErrorBannerComponent,
     // Renders the two boolean columns as announced text in the read-only cells.
     YesNoPipe,
+    FocusFirstInvalidDirective,
   ],
   templateUrl: './profile-definition-list.component.html',
   styleUrl: './profile-definition-list.component.scss',
@@ -1100,6 +1156,32 @@ export class ProfileDefinitionListComponent implements OnInit {
    * at the application root — can never be mistaken for this batch settling.
    */
   private readonly batchWrite = signal<number | null>(null);
+
+  /**
+   * How many rows the outstanding Apply batch dispatched.
+   *
+   * Captured at dispatch because the settled result cannot supply it: the store publishes one result
+   * for the whole command and the staged set has already been overtaken by the re-read by the time it
+   * arrives. Only {@link applyAnnouncement} reads it, and only to state a number.
+   */
+  private readonly batchRows = signal<number>(0);
+
+  /**
+   * What to announce about the batch that has just settled, or the empty string when there is nothing.
+   *
+   * ⚠ THIS EXISTS FOR A NON-VISUAL READER AND CHANGES NOTHING ON SCREEN. The legacy announced no
+   * success sentence either — `cmdUpdate_Click` L444-L452 called `UpdateProperties` then `RefreshGrid`
+   * and set no message label, and `ProfileDefinitions.ascx` declares none to set — so raising a toast
+   * here would be a visible divergence, and for a five-row apply a repetitive one. But the legacy's
+   * `RefreshGrid` ran inside a full post-back, and a screen reader announces a document load; that
+   * signal is what the single-page rewrite removed, and this restores it in the register the legacy
+   * used rather than in a louder one.
+   *
+   * Cleared when the next batch is dispatched, so a stale confirmation cannot be read out over a
+   * batch still in flight, and left empty when any row was refused because the refusal is then the
+   * announcement.
+   */
+  private readonly batchApplied = signal<string>('');
 
   /**
    * Whether a submission has been attempted since the form was opened.
@@ -1263,6 +1345,25 @@ export class ProfileDefinitionListComponent implements OnInit {
    * Whether "Apply Changes" has anything to do.
    */
   protected readonly hasPendingChanges = computed<boolean>(() => this.pendingRows().length > 0);
+
+  /**
+   * The sentence the screen's polite status region carries.
+   *
+   * ⚠ THE LIVE REGION IS MOUNTED PERMANENTLY AND ONLY ITS TEXT CHANGES, WHICH IS THE POINT. The
+   * staged-edit count used to carry `aria-live` on the visible hint, and that hint is rendered only
+   * while something is staged — so the region was CREATED already holding its text, which assistive
+   * technology is not obliged to announce, and it was DESTROYED when the batch landed, and the removal
+   * of a live region announces nothing at all. Whichever way the operator got there, they heard
+   * nothing. A region that is always present and whose text is swapped is the pattern that works.
+   *
+   * While work is outstanding this reports the count, so staging and un-staging rows is audible. Once
+   * the batch lands the count is gone by construction and the settled sentence takes its place.
+   */
+  protected readonly applyAnnouncement = computed<string>(() =>
+    this.hasPendingChanges()
+      ? `${this.dirtyCount()} unapplied change(s).`
+      : this.batchApplied(),
+  );
 
   /**
    * Whether every declaration is already required, and likewise for visible.
@@ -1478,12 +1579,58 @@ export class ProfileDefinitionListComponent implements OnInit {
   protected readonly deleteLabel = DELETE_LABEL;
   protected readonly moveUpLabel = MOVE_UP_LABEL;
   protected readonly moveDownLabel = MOVE_DOWN_LABEL;
+
+  /**
+   * Composes the accessible name of one of the two state check boxes in a grid row.
+   *
+   * ⚠ THE COLUMN WORD IS THE WHOLE POINT, AND ITS ABSENCE WAS A REAL DEFECT. Each cell used to
+   * name its box with the row's property name ALONE, so the two boxes in a row both announced
+   * "City" - and a reader using assistive technology could not tell which of them made the property
+   * required and which made it visible. Measured across two rows, all four boxes reduced to two
+   * names. The row name still has to be there for the mirror-image reason: "Required" alone in a
+   * grid of many rows does not say WHICH property it is about.
+   *
+   * The column word is the grid's own heading rather than an authored synonym, so the name a reader
+   * hears is the word they can see at the top of the column. The separator is an em dash, matching
+   * every other composed accessible name in this application.
+   *
+   * @param heading The column's heading, exactly as the grid renders it.
+   * @param propertyName The row's property name.
+   * @returns The composed name, for a visually hidden span inside the box's label.
+   */
+  protected stateCheckboxName(heading: string, propertyName: string): string {
+    return `${heading} — ${propertyName}`;
+  }
+
+  /** The Required column's heading, for composing a check box's accessible name. */
+  protected readonly requiredHeading = REQUIRED_HEADING;
+
+  /** The Visible column's heading, for composing a check box's accessible name. */
+  protected readonly visibleHeading = VISIBLE_HEADING;
   protected readonly gridCaption = GRID_CAPTION;
   protected readonly allRequiredLabel = ALL_REQUIRED_LABEL;
   protected readonly allVisibleLabel = ALL_VISIBLE_LABEL;
-  protected readonly removalTitle = DELETE_CONFIRM_TITLE;
+
   protected readonly removalMessage = DELETE_CONFIRM_MESSAGE;
   protected readonly fieldText = FIELD_TEXT;
+
+  /**
+   * How a row identifies itself to the shared grid, so a re-read of the page already shown reuses its row
+   * elements instead of rebuilding them.
+   *
+   * ⚠ THE DATABASE KEY, NOT THE ARRAY POSITION AND NOT THE OBJECT. The grid's own fallback is the row
+   * OBJECT, which is a correct key only while the same objects stay in play; every read from the server
+   * decodes fresh objects, so without this a refetch of the same page presents entirely new keys and the
+   * whole body is rebuilt to display records that never changed. `propertyDefinitionId` is unique by definition, being
+   * the record's own identifier, which is what `@for` requires - a repeated key is an error there.
+   *
+   * Declared as a bound field rather than an inline arrow so the reference is stable across change
+   * detection; a new function each redraw would set the grid's input every time and defeat its purpose.
+   *
+   * @param row The row about to be rendered.
+   * @returns The record's identifier.
+   */
+  protected readonly definitionRowKey = (row: ProfilePropertyDefinition): number => row.propertyDefinitionId;
 
   // LIFECYCLE
 
@@ -1570,25 +1717,33 @@ export class ProfileDefinitionListComponent implements OnInit {
   }
 
   /**
-   * What to render in the data-type cell.
+   * The mark painted in the data-type cell.
    *
-   * Gap reported (dl-8). `DisplayDataType` resolved the integer through
-   * `ListController.GetListEntryInfo(...).Value` and started from `Null.NullString`, so an unresolved type
-   * legitimately rendered EMPTY. `Library/Components/Lists` is excluded from this migration and the contract
-   * carries only the integer — the API's own validator says as much, declining to check the member because
-   * "that subsystem is excluded... so there is no set to check membership of" — so there is NO in-scope
-   * source for the display name. The integer is rendered, and the null-integer sentinel renders empty
-   * exactly as the legacy did for a type it could not resolve.
+   * Every row paints it, because no row's type can be named: see {@link UNNAMED_DATA_TYPE_MARK} for the
+   * three independent reasons the `Lists` vocabulary is unreachable, and for why a mark is painted rather
+   * than the blank a strictly literal reading of `Null.NullString` would give.
    *
    * MIGRATION: the legacy template cast `CType(Container.DataItem, ProfilePropertyDefinition)` under Option
    * Strict OFF — a late-bound cast of an untyped data item. This is that cast made explicit: the row arrives
    * typed, so there is nothing to coerce.
-   *
-   * @param definition The row being rendered.
-   * @returns The type key as text, or the empty string for the sentinel.
    */
-  protected dataTypeLabel(definition: ProfilePropertyDefinition): string {
-    return definition.dataType === NULL_INTEGER ? '' : String(definition.dataType);
+  protected readonly unnamedDataTypeMark = UNNAMED_DATA_TYPE_MARK;
+
+  /**
+   * The words behind {@link UNNAMED_DATA_TYPE_MARK} for one row.
+   *
+   * Used for BOTH the clipped span and the cell's `title`, so a sighted reader hovering and a screen
+   * reader announcing receive the same sentence by construction. Phase 9 of this remediation found two
+   * renderings of one icon rule that had drifted into seventeen differing computed properties; generating
+   * both surfaces from a single accessor is the cheap way not to repeat that.
+   *
+   * @param definition The row being described.
+   * @returns Wording naming the stored reference, or naming the absence when nothing has been chosen.
+   */
+  protected dataTypeDescription(definition: ProfilePropertyDefinition): string {
+    return definition.dataType === NULL_INTEGER
+      ? NO_DATA_TYPE_CHOSEN_DESCRIPTION
+      : `${UNNAMEABLE_DATA_TYPE_PREFIX}${definition.dataType}${UNNAMEABLE_DATA_TYPE_SUFFIX}`;
   }
 
   /**
@@ -1758,9 +1913,12 @@ export class ProfileDefinitionListComponent implements OnInit {
    * was itself strictly sequential because it was synchronous. So this is the legacy transport
    * pattern reproduced rather than departed from.
    *
-   * NOTHING IS ANNOUNCED WHEN THE BATCH WHOLLY SUCCEEDS, exactly as the legacy behaved — the
-   * unapplied-change count falls by itself, because it is derived. A batch that carried a refusal
-   * is announced ONCE, by {@link reportBatchOutcome}, through the notification service and
+   * NO NOTIFICATION IS RAISED WHEN THE BATCH WHOLLY SUCCEEDS, exactly as the legacy behaved — the
+   * unapplied-change count falls by itself, because it is derived. A success IS stated in the
+   * screen's polite status region, which is invisible and which restores the signal the legacy's
+   * post-back carried for a non-visual reader; {@link batchApplied} sets out the whole argument.
+   * A batch that carried a refusal is announced ONCE, by {@link reportBatchOutcome}, through the
+   * notification service and
    * deliberately NOT through the shared banner as well: the banner on this screen is reserved for
    * the read that populates it, so reporting a write in both places said the same thing twice and
    * left the less useful of the two standing on screen afterwards.
@@ -1770,6 +1928,10 @@ export class ProfileDefinitionListComponent implements OnInit {
       propertyDefinitionId: definition.propertyDefinitionId,
       request: toUpdateRequest(definition),
     }));
+
+    // A confirmation of the PREVIOUS batch must not still be readable while this one is in flight.
+    this.batchApplied.set('');
+    this.batchRows.set(edits.length);
 
     // ⚠ THE IDENTIFIER IS KEPT, NOT DISCARDED. The store is provided at the application root, so a
     // settled result only belongs to this batch when its identifier matches; zero comes back when
@@ -2436,11 +2598,18 @@ export class ProfileDefinitionListComponent implements OnInit {
    * whole batch, so at most one refusal survived — and whether even that one was still there when
    * the screen looked depended on the order the answers happened to arrive in.
    *
-   * ⚠ SUCCESS ANNOUNCES NOTHING, DELIBERATELY, AND THAT IS NOT AN OMISSION. The legacy Apply
-   * announced nothing on success either, and the pending set from which the grid's dirty rows are
-   * derived is computed as the DIFFERENCE between the staged values and the server's — so a row that
-   * landed drops out of it by itself and the operator can see the batch shrink. A per-row success
-   * message would additionally mean five announcements for a five-row apply that worked.
+   * ⚠ SUCCESS RAISES NO NOTIFICATION, DELIBERATELY. The legacy Apply set no message label on success
+   * either, and the pending set from which the grid's dirty rows are derived is computed as the
+   * DIFFERENCE between the staged values and the server's — so a row that landed drops out of it by
+   * itself and the operator can see the batch shrink. A per-row toast would additionally mean five
+   * announcements for a five-row apply that worked.
+   *
+   * ⚠ IT IS NOT SILENT, THOUGH, AND THE DISTINCTION MATTERS. A browser measurement of this screen
+   * found a successful Apply produced no observable feedback of any kind — no toast, and nothing in
+   * any live region — which for a non-visual reader is indistinguishable from the button having done
+   * nothing. Watching the visible count fall is not available to them. The all-accepted branch below
+   * therefore states the outcome ONCE in the polite status region, which costs no pixels; see
+   * {@link batchApplied}.
    *
    * The notification is the SINGLE surface for a write refusal on this screen. The banner is reserved
    * for the read that populates the grid; see {@link ProfileDefinitionListComponent.problem} for why
@@ -2467,6 +2636,10 @@ export class ProfileDefinitionListComponent implements OnInit {
     const refusals: readonly ProfileDefinitionBatchRefusal[] = this.store.profileDefinitionBatchRefusals();
 
     if (refusals.length === 0) {
+      // Announced in the polite status region and NOWHERE ELSE — see {@link batchApplied} for why a
+      // toast would be the wrong register here, and why silence was nevertheless a regression.
+      const applied: number = this.batchRows();
+      this.batchApplied.set(`${applied} change(s) applied.`);
       return;
     }
 
@@ -2563,9 +2736,14 @@ export class ProfileDefinitionListComponent implements OnInit {
    * while the `label` keeps the column NAMED in the accessibility tree, so a cell is still announced with
    * its column name.
    *
-   * The shared table EMITS a sort intent and never performs one, so marking a column sortable would oblige
-   * this screen to reorder the rows itself and to drive `aria-sort` from its own state. There is nothing to
-   * reproduce, so nothing is declared, and `sortChange` is left unbound.
+   * NO COLUMN IS SORTABLE, BECAUSE THE ENDPOINT ACCEPTS NO ORDERING. `ProfileDefinitionsController
+   * .ListAsync` takes a cancellation token and nothing else and answers an unpaged `IReadOnlyList`, so
+   * there is no sort parameter to send and `SortableFields.cs` declares no permitted set for this
+   * collection at all. Marking a column sortable would additionally oblige this screen to reorder the rows
+   * itself and to drive `aria-sort` from its own state, since the shared table emits a sort intent and never
+   * performs one. Nothing is declared and `sortChange` is left unbound. Where the endpoint does accept an
+   * ordering the affordance IS offered - see the portal, account, role, membership and module listings - so
+   * this absence is a property of the collection rather than a gap.
    *
    * NO WIDTHS. The legacy declared `Width="100px"` on five columns; the shared table's width contract admits
    * only a percentage, `min-content`, `max-content` or a custom property, and rejects anything else when the
@@ -2609,6 +2787,20 @@ export class ProfileDefinitionListComponent implements OnInit {
       // 2-3. `MoveDown` then `MoveUp`, in that order. The order is the markup's and the constants confirm it
       // (`COLUMN_MOVE_DOWN = 2`, `COLUMN_MOVE_UP = 3`), which is worth stating because down-before-up reads
       // backwards.
+      //
+      // ⚠ TWO SEPARATE COLUMNS IS THE LEGACY LAYOUT AND IT IS KEPT, INCLUDING THE ROW-TO-ROW OFFSET IT
+      // PRODUCES. `ProfileDefinitions.ascx:L19-L20` declares two `dnn:imagecommandcolumn` entries -
+      // `commandname="MoveDown" headertext="Dn"` and `commandname="MoveUp" headertext="Up"` - so each
+      // direction has a fixed column of its own. The consequence is that the FIRST row, which cannot move up,
+      // leaves its Up cell empty, and the LAST row, which cannot move down, leaves its Down cell empty; the
+      // arrows therefore appear in different columns from one row to the next. That was reported as a
+      // misalignment defect and it is declined here, because merging the two into one column would move a
+      // control out of the column the legacy grid gave it - a visual divergence from the only visual
+      // reference this migration has, the legacy screen itself. Nothing is broken: each direction is always
+      // in its own column and each row's affordances are exactly the ones that row can act on.
+      //
+      // If the offset is ever judged unacceptable it is a DESIGN decision that needs a design source, not a
+      // defect to be fixed here; the two-column shape is what the source declares.
       {
         key: 'moveDown',
         label: MOVE_DOWN_LABEL,
@@ -2634,6 +2826,12 @@ export class ProfileDefinitionListComponent implements OnInit {
       //   non-nullable string, so there is nothing to format.
       {
         key: 'propertyName',
+        // The row's NAME. Emitted as `<th scope="row">` so a screen reader announces which record
+        // each cell belongs to - without it, traversing a row gives the column name and the value
+        // and never the record's identity. This column is the one a person would read aloud to say
+        // which row they mean. No visual change: the shared stylesheet restores a body row
+        // header's normal weight.
+        rowHeader: true,
         label: NAME_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
@@ -2650,8 +2848,8 @@ export class ProfileDefinitionListComponent implements OnInit {
       },
 
       // 6. `asp:TemplateColumn HeaderText="DataType"`. A template column because the legacy cell was itself
-      //   a template that called `DisplayDataType`; see {@link dataTypeLabel} for the reported gap that
-      //   leaves it rendering the integer.
+      //   a template that called `DisplayDataType`; see {@link UNNAMED_DATA_TYPE_MARK} for why the cell
+      //   paints the absent-value mark rather than the stored foreign key.
       {
         key: 'dataType',
         label: DATA_TYPE_HEADING,

@@ -422,6 +422,26 @@ public sealed class UserDetailDto
     /// </remarks>
     public IReadOnlyList<string> Roles { get; set; } = Array.Empty<string>();
 
+    /// <summary>
+    /// Whether this account may be removed from the tenant.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ PUBLISHED BECAUSE THE CLIENT CANNOT DERIVE IT. The removal operation refuses a super user and it
+    /// refuses the account named by <c>Portals.AdministratorId</c>, and nothing else in this contract
+    /// reveals who that designated administrator is - so a screen editing one account had no way to reach
+    /// the second clause. It approximated the rule as "not a super user", and the consequence was
+    /// measurable: for the tenant's own administrator the account LISTING correctly withheld the removal
+    /// affordance while the detail screen offered it, two surfaces disagreeing about one permission, with
+    /// the offered action's only possible outcome being a refusal.
+    /// </para>
+    /// <para>
+    /// Computed by the same member that computes <see cref="UserListItemDto.CanDelete"/>, so the two
+    /// contracts cannot come to disagree again.
+    /// </para>
+    /// </remarks>
+    public bool CanDelete { get; set; }
+
     // -------------------------------------------------------------------------
     // DELIBERATE OMISSIONS - recorded so that a future reader does not "restore" them believing they
     // were overlooked.

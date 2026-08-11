@@ -127,7 +127,16 @@
   padding-block: var(--space-2);
   padding-inline: var(--space-4);
   border: var(--border-width) var(--border-style) var(--color-primary);
-  border-radius: var(--radius-md);
+
+  // ⚠ THE SMALL STEP, AND THIS RULE USED TO NAME THE MEDIUM ONE. Every other button in the
+  // application takes its corner from the global control rule, which names the small step, so a
+  // 4px corner here made the two buttons inside this dialog the only buttons in the product with
+  // a different corner from every button outside it - and the difference was visible in the same
+  // glance, because the dialog is painted over the screen that owns those other buttons. The
+  // PANEL keeps the large step: a surface floating over the page and a control inside it are
+  // different kinds of thing, and the scale exists to distinguish them. What it does not exist
+  // to do is give one kind of thing two values.
+  border-radius: var(--radius-sm);
   background-color: var(--color-background);
   color: var(--color-primary);
   font-family: var(--font-family-base);
@@ -172,16 +181,36 @@
 // by the bold weight and by the label text as well, so it never depends on hue alone. The legacy error
 // rule's larger font size is deliberately not carried across: sizing one member of a button row differently
 // from its neighbour reads as a layout defect rather than as emphasis.
+//
+// ⚠ THE MEASURED DEFECT: THIS RULE NAMED THE HOVER TOKEN FOR ITS INK, IN ALL THREE STATES. The border
+// resolved to the danger token while the label resolved to `--color-primary-hover`, so the destructive
+// button was a red-bordered box with an ORDINARY BLUE LABEL - and the comment above this rule already
+// claimed the ink was the token's own value, so the code and its own explanation disagreed. The blue also
+// made the resting state identical to the neighbouring Cancel button's hover state, which is the one
+// appearance a destructive control must not borrow.
+//
+// The three states now all name the danger token, following the row-command precedent on the portal
+// listing: hover and press change the BACKGROUND rather than the hue, so the destructive intent does not
+// blink away under the pointer and a reader who cannot separate the two reds still sees the state change.
+// The contrast ratio of this token as text is a recorded divergence carried in the token vocabulary and the
+// migration notes; every non-colour cue it depends on is present here - the label reads "Delete", the
+// weight is bold, the border is red, and the control lives inside an alert dialog that had to be opened.
 .confirm-dialog__button--danger {
   border-color: var(--color-danger);
-  color: var(--color-primary-hover);
+
+  // The destructive label now reads in the danger TEXT token rather than in the link
+  // colour. It was the link colour because the only red available failed the contrast
+  // minimum at this size, so severity had to be carried by weight and wording alone;
+  // --color-danger-text clears 4.5:1 on every surface this dialog paints on, so the
+  // label can state its severity in colour as well without costing a reader anything.
+  color: var(--color-danger-text);
   font-weight: var(--font-weight-bold);
 
   &:enabled:hover {
-    color: var(--color-primary-hover);
+    color: var(--color-danger-text);
   }
 
   &:enabled:active {
-    color: var(--color-primary-hover);
+    color: var(--color-danger-text);
   }
 }

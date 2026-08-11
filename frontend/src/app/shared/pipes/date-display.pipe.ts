@@ -257,84 +257,18 @@ export class DateDisplayPipe implements PipeTransform {
     value: string | null | undefined,
     mode: DateDisplayMode = 'date',
   ): string {
-    // MIGRATION: an absent value and the legacy null-date sentinel render identically. The
-    // erasure is confined to the display layer; the wire still distinguishes them, because
-    // the API serialises a minimum-value date as a real ISO-8601 string rather than
-    // omitting the property or writing null.
+    // MIGRATION: an absent value, an unusable one and the legacy null-date sentinel all render
+    // identically, as an empty cell. The erasure is confined to the display layer; the wire
+    // still distinguishes them, because the API serialises a minimum-value date as a real
+    // ISO-8601 string rather than omitting the property or writing null.
     //
-    // The test is `typeof`, not a pair of equality checks against `null` and `undefined`,
-    // and that is the load-bearing difference. A value reaching this pipe has usually come
-    // off the wire, typed only by an interface that is erased at runtime, so a malformed or
-    // evolved response can deliver a number, an object or an array where the contract
-    // promised a string. An equality check lets such a value straight through to `.trim()`,
-    // which throws; and because a pipe runs inside a template expression, that exception
-    // aborts the whole view rather than one cell. `typeof` subsumes both nullish cases and
-    // every other non-string payload.
-    //
-    // The parameter type is deliberately NOT widened to `unknown` to match, because that
-    // would withdraw the compile-time protection template authors have today.
-    if (typeof value !== 'string') {
-      return EMPTY_DISPLAY_VALUE;
-    }
-
-    const trimmed = value.trim();
-    if (trimmed === EMPTY_DISPLAY_VALUE) {
-      return EMPTY_DISPLAY_VALUE;
-    }
-
-    // A candidate longer than any parseable ISO-8601 instant is rejected without being
-    // normalised or parsed; see {@link MAX_WIRE_DATE_LENGTH}. This cannot change what
-    // renders, because such a value already produced an empty cell by failing to parse. The
-    // bound is applied to the TRIMMED value, so a legitimate date padded with unusual
-    // whitespace is not blanked.
-    if (trimmed.length > MAX_WIRE_DATE_LENGTH) {
-      return EMPTY_DISPLAY_VALUE;
-    }
-
-    // MIGRATION: the wire shape is validated BEFORE the value is parsed, and a value
-    // outside that shape renders as an empty cell rather than as whatever the platform's
-    // permissive parser makes of it. This is a deliberate NARROWING of platform behaviour,
-    // not a reproduction of it: `new Date('0')` yields 2000-01-01 and
-    // `new Date('Sep 10 2024')` succeeds, so without this guard a mismapped identifier or a
-    // locale-formatted string would render as a confident, wrong date. An empty cell is the
-    // legacy outcome - every legacy formatter seeded its result with the empty sentinel and
-    // returned that seed when the value could not be used - so degrading is faithful and
-    // displaying a fabricated date is not.
-    const wireFields = ISO_WIRE_FORMAT.exec(trimmed);
-    if (wireFields === null) {
-      return EMPTY_DISPLAY_VALUE;
-    }
-
-    // MIGRATION: a syntactically well-formed date that does not exist on the calendar also
-    // renders as an empty cell. The platform rolls such a value forward instead of
-    // rejecting it, which is indistinguishable on screen from a real date and therefore
-    // worse than showing nothing. The month and day groups are guaranteed present by the
-    // pattern, because the date portion is not optional within it. This single check is the
-    // whole of the calendar validation: it is performed on the date triple alone, so an
-    // offset-bearing value that legitimately lands on a different UTC day is preserved, and
-    // it probes with `setUTCFullYear` so low years are not remapped.
-    if (
-      !isRealCalendarDate(
-        Number(wireFields[1]),
-        Number(wireFields[2]),
-        Number(wireFields[3]),
-      )
-    ) {
-      return EMPTY_DISPLAY_VALUE;
-    }
-
-    const instant = new Date(toAbsoluteUtcCandidate(trimmed));
-
-    // An explicit numeric test, because a date instance is truthy even when it holds no
-    // usable value - and the platform's own invalid-date wording must never reach a cell.
-    if (Number.isNaN(instant.getTime())) {
-      return EMPTY_DISPLAY_VALUE;
-    }
-
-    // Tested before formatting: year one predates modern zone rules, so formatting it would
-    // emit a wrong and alarming date. A year-9999 date is deliberately not treated this way
-    // - it is a real "perpetual" expiry and renders like any other value.
-    if (isSentinelDate(instant)) {
+    // Every one of those decisions - and the deliberate NARROWING of the platform's parser
+    // that makes them safe - now lives in {@link parseDisplayInstant}, which this pipe and any
+    // screen that needs to reason ABOUT the instant both call. See that function for the whole
+    // rationale; it moved there unchanged so that the two can never disagree about which
+    // values are usable.
+    const instant: Date | null = parseDisplayInstant(value);
+    if (instant === null) {
       return EMPTY_DISPLAY_VALUE;
     }
 
@@ -373,4 +307,87 @@ export class DateDisplayPipe implements PipeTransform {
       return EMPTY_DISPLAY_VALUE;
     }
   }
+}
+
+/**
+ * Parses a wire date into the instant the display layer will actually show, or `null` when there
+ * is nothing meaningful to show.
+ *
+ * ⚠ THIS IS THE ONE PLACE THAT DECIDES WHETHER A WIRE DATE IS USABLE, AND BOTH CALLERS MUST USE
+ * IT. {@link DateDisplayPipe} renders whatever this returns and paints an empty cell for `null`;
+ * a screen that needs to reason about the instant - is this expiry in the past? - needs the same
+ * verdict, because a screen that accepted a value the pipe rejects would paint a qualifier beside
+ * an empty cell, and one that rejected a value the pipe accepts would paint a date with no
+ * qualifier. Re-implementing the checks at a call site is what makes those two disagreements
+ * possible, so the chain is stated once here.
+ *
+ * The behaviour, unchanged from where it was inlined in the pipe:
+ *
+ * - Anything that is not a string is unusable. The test is `typeof`, not a pair of equality
+ *   checks against `null` and `undefined`, and that is load-bearing: a value reaching here has
+ *   usually come off the wire, typed only by an interface that is erased at runtime, so a
+ *   malformed or evolved response can deliver a number, an object or an array where the contract
+ *   promised a string. An equality check lets such a value through to `.trim()`, which throws -
+ *   and because the pipe runs inside a template expression, that exception aborts the whole view
+ *   rather than one cell.
+ * - A blank string is unusable.
+ * - A candidate longer than any parseable ISO-8601 instant is rejected without being normalised
+ *   or parsed; see {@link MAX_WIRE_DATE_LENGTH}. The bound applies to the TRIMMED value, so a
+ *   legitimate date padded with unusual whitespace is not blanked.
+ * - The wire SHAPE is validated before the value is parsed, which deliberately NARROWS the
+ *   platform's parser rather than reproducing it: `new Date('0')` yields 2000-01-01 and
+ *   `new Date('Sep 10 2024')` succeeds, so without this guard a mismapped identifier or a
+ *   locale-formatted string would render as a confident, wrong date.
+ * - A syntactically well-formed date that does not exist on the calendar is rejected, because
+ *   the platform rolls such a value FORWARD instead of refusing it - `2024-02-30` becomes
+ *   2024-03-01 - which is indistinguishable on screen from a real date and therefore worse than
+ *   showing nothing. Validated on the date triple alone, so an offset-bearing value that
+ *   legitimately lands on a different UTC day is preserved.
+ * - The legacy null-date sentinel is rejected: year one predates modern zone rules, so
+ *   formatting it would emit a wrong and alarming date. `9999-12-31` is deliberately NOT treated
+ *   this way - it is a real "perpetual" expiry and is returned like any other instant.
+ *
+ * @param value An absolute UTC ISO-8601 date string, or nothing.
+ * @returns The parsed instant, or `null` when the value is absent, unparseable or the sentinel.
+ */
+export function parseDisplayInstant(value: string | null | undefined): Date | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed === EMPTY_DISPLAY_VALUE) {
+    return null;
+  }
+
+  if (trimmed.length > MAX_WIRE_DATE_LENGTH) {
+    return null;
+  }
+
+  const wireFields = ISO_WIRE_FORMAT.exec(trimmed);
+  if (wireFields === null) {
+    return null;
+  }
+
+  // The month and day groups are guaranteed present by the pattern, because the date portion is
+  // not optional within it.
+  if (
+    !isRealCalendarDate(
+      Number(wireFields[1]),
+      Number(wireFields[2]),
+      Number(wireFields[3]),
+    )
+  ) {
+    return null;
+  }
+
+  const instant = new Date(toAbsoluteUtcCandidate(trimmed));
+
+  // An explicit numeric test, because a date instance is truthy even when it holds no usable
+  // value - and the platform's own invalid-date wording must never reach a cell.
+  if (Number.isNaN(instant.getTime())) {
+    return null;
+  }
+
+  return isSentinelDate(instant) ? null : instant;
 }

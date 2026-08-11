@@ -114,7 +114,15 @@ import type { Signal } from '@angular/core';
  *
  * ⚠ THE REASON NEVER CHANGES WHAT IS DISCARDED. A partial discard would be a per-caller judgement
  * about which of another operator's rows are acceptable to leave on screen, and there is no safe
- * answer to that. The reason is a record, not a switch.
+ * answer to that. That invariant is unchanged and unconditional: every member below discards
+ * exactly the same footprint.
+ *
+ * ⚠ IT DOES DECIDE WHETHER THE OPERATOR IS TOLD, which is a statement about the queue this service
+ * already owns rather than about the discard. Exactly one member — `renewalRefused` — describes a
+ * boundary NOBODY ASKED FOR, and only that member raises {@link SESSION_ENDED_MESSAGE}. A sign-out
+ * needs no explanation because the operator pressed it, a sign-in and a tenant change are both
+ * outcomes of a deliberate act, and announcing any of the three would tell somebody something they
+ * had just done.
  */
 export type SessionResetReason =
   /** A sign-in established, or replaced, the identity. */
@@ -125,6 +133,28 @@ export type SessionResetReason =
   | 'renewalRefused'
   /** The signed-in identity's tenant changed. */
   | 'tenantChanged';
+
+/**
+ * What an operator is told when their session ends without their asking.
+ *
+ * ⚠ AUTHORED, WITH NO LEGACY COUNTERPART TO REPRODUCE. Forms authentication expired a cookie
+ * silently — `Website/release.config:L147` declares
+ * `<forms name=".DOTNETNUKE" protection="All" timeout="60" cookieless="UseCookies"/>` — and the next
+ * request was simply redirected to the sign-in page with nothing said. There is therefore no resource
+ * string to copy, and this sentence is recorded in `MIGRATION_NOTES.md` as a net addition rather than
+ * as parity.
+ *
+ * ⚠ IT NAMES THE EVENT AND THE REMEDY, AND NAMES NO INTERNAL MACHINERY. Measured in a browser before
+ * this constant existed, the sign-in screen presented the renewal's own problem document instead:
+ * `"Unauthorized"` over `"The refresh token is not valid."` over a bare correlation identifier. Every
+ * word of that is true and none of it is usable — it tells somebody who did nothing wrong that a
+ * credential they never knew existed has been rejected. So the wording deliberately mentions neither
+ * a token, nor a renewal, nor a status code.
+ *
+ * Exported so that the one production raise and every specification assert on the SAME string. A
+ * specification spelling it again would pass while the application said something else.
+ */
+export const SESSION_ENDED_MESSAGE = 'Your session has ended. Please sign in again to continue.';
 
 /**
  * The single place a session's local footprint is discarded.
@@ -140,7 +170,14 @@ export class SessionTeardownService {
   private readonly moduleStore = inject(ModuleStore);
 
   /**
-   * The queued notices, cleared with the rest.
+   * The queued notices — cleared with the rest, and the surface an unasked-for ending is
+   * explained through.
+   *
+   * The second role follows from the first rather than being bolted onto it. This service already
+   * decides what happens to the notice queue at a session boundary, and it is the only participant
+   * that knows WHICH boundary was crossed, so it is the only one that can clear the queue and then
+   * leave exactly one notice standing in it. See {@link SessionTeardownService.purge} for the ordering
+   * that makes clearing and raising compatible, and {@link SESSION_ENDED_MESSAGE} for the wording.
    *
    * ⚠ THIS SERVICE AND `session-lifecycle.service.ts` MUST DISCARD THE SAME FOOTPRINT, and the queue
    * is where they had drifted apart. Two entry points end a session: the operator pressing sign out,
@@ -232,8 +269,24 @@ export class SessionTeardownService {
    * cancels its own reads and writes as the first act of its own reset, which is why nothing is
    * cancelled here directly — a store knows what it has outstanding and this file must not need to.
    *
+   * ⚠ AND IT IS THE ONE PLACE AN UNASKED-FOR ENDING IS ANNOUNCED. Two entry points end a session
+   * without the operator asking, and both of them are already here: the bearer interceptor's terminal
+   * path, when a refused request could not be recovered by a renewal, and the authentication store's
+   * discard, when a renewal the navigation gate asked for was refused. Announcing from each of them
+   * instead would be two raises of one sentence, and a third path added later would silently join the
+   * silent majority. Announcing HERE makes it structural: any future caller that ends a session
+   * un-asked-for gets the explanation by construction, because the reason it must already pass is what
+   * selects it.
+   *
+   * The ORDER of the last three statements is load-bearing and is the reason they sit together.
+   * {@link NotificationService.clear} empties the queue AND the exemption set, so a notice raised
+   * before it would be discarded by it; and the shell sweeps transient notices on a completed
+   * navigation, so a notice that must outlive the navigation to the sign-in screen has to be exempted
+   * after it is queued. Hence clear, then raise, then exempt — never any other sequence.
+   *
    * @param reason Which boundary was crossed. RECORDED and published through
-   * {@link SessionTeardownService.lastReason}; it does not change what is discarded.
+   * {@link SessionTeardownService.lastReason}; it does not change what is discarded, and it decides
+   * only whether {@link SESSION_ENDED_MESSAGE} is raised.
    * @returns The generation now in force, so a caller starting fresh work can capture it.
    */
   purge(reason: SessionResetReason): number {
@@ -252,6 +305,22 @@ export class SessionTeardownService {
      * costs nothing.
      */
     this.notifications.clear();
+
+    /*
+     * ⚠ SAY WHY, BUT ONLY FOR THE ENDING NOBODY ASKED FOR. Measured in a browser: the teardown itself
+     * was complete and correct — credential cleared, every domain slice emptied, the operator returned
+     * to the sign-in screen with no residue — and both live regions were EMPTY, so somebody mid-task
+     * was returned to a sign-in form with no account, no work and no explanation, and a non-visual
+     * operator had nothing at all to go on.
+     *
+     * `warning` and deliberately not `error`: nothing failed on the operator's part, they were simply
+     * away longer than a credential lives. The severity also buys the longer on-screen lifetime that a
+     * message read on ARRIVAL at another screen needs, rather than one read where it was raised.
+     */
+    if (reason === 'renewalRefused') {
+      this.notifications.warning(SESSION_ENDED_MESSAGE);
+      this.notifications.retainAcrossNavigation();
+    }
 
     return this._generation();
   }

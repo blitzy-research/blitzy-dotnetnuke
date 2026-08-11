@@ -19,6 +19,39 @@ html {
   // Stops mobile Safari inflating text when the device is turned to landscape.
   // The ramp is deliberately compact, so silent inflation would break it.
   -webkit-text-size-adjust: var(--size-full);
+
+  // Reserves the scrollbar's track WHETHER OR NOT a scrollbar is showing, so that a modal
+  // confirmation locking background scroll cannot shift the page sideways underneath it.
+  //
+  // ⚠ THIS IS THE OTHER HALF OF THE SCROLL LOCK, and removing it reintroduces a jump rather
+  // than a scroll. `.dnn-scroll-locked` below hides the root overflow while a modal dialog is
+  // open, which removes the scrollbar and would otherwise give every element on the page an
+  // extra scrollbar's width - a visible sideways lurch at the exact moment a person is being
+  // asked to confirm a deletion. Reserving the gutter permanently costs nothing on the
+  // administration screens, every one of which is a list long enough to scroll, and it needs
+  // no measurement of the scrollbar in script.
+  scrollbar-gutter: stable;
+}
+
+// -----------------------------------------------------------------------------
+//  1a. Background scroll lock, applied only while a modal dialog is open
+// -----------------------------------------------------------------------------
+//  MIGRATION: a net addition with no legacy counterpart - the legacy confirmations were
+//  `window.confirm()` calls, which the browser blocks the whole page for.
+//
+//  A native `<dialog>` opened with `showModal()` makes the page inert to POINTER interaction
+//  and puts itself in the top layer, but it does NOT stop the page scrolling: runtime testing
+//  measured a real Page Down moving the page from 364 to 891 pixels while a confirmation was
+//  open, which scrolled the content the confirmation was about clean out of view and left the
+//  dialog floating over unrelated rows.
+//
+//  Applied to the root element rather than the body because `overflow: hidden` on the body
+//  alone is honoured inconsistently, and toggled by the dialog component through a depth
+//  counter so two nested dialogs cannot release the lock early. Declared here, globally,
+//  because a component stylesheet cannot reach the root element from inside its own
+//  encapsulation - and reaching for it with a piercing selector would be the deeper wrong.
+.dnn-scroll-locked {
+  overflow: hidden;
 }
 
 *,
@@ -268,4 +301,52 @@ textarea,
 summary,
 [tabindex]:not([tabindex='-1']) {
   @include mx.focus-ring;
+}
+
+// -----------------------------------------------------------------------------
+//  12. Interactive state transitions
+// -----------------------------------------------------------------------------
+//  ONE HOME FOR EVERY STATE INTERPOLATION IN THE APPLICATION. Measured before
+//  this rule: a CSSOM sweep of every stylesheet found `transition` declared zero
+//  times, so each hover, press and validity change - here, in _forms.scss and in
+//  every component that tints a control on `:active` - snapped instantly between
+//  two appearances.
+//
+//  WHY THIS FILE AND THIS SELECTOR LIST. `transition` is not inherited, so it has
+//  to be declared on the element whose own state changes, and those elements are
+//  spread across this partial (the anchor states in section 8), _forms.scss (the
+//  control and button states) and the component stylesheets (the `:active` tints).
+//  Declaring it once here on the element types themselves covers all three at the
+//  source without any of them restating the duration, and it is deliberately the
+//  SAME selector list as section 11 above: an element that needs a focus ring is
+//  exactly an element that carries interactive state.
+//
+//  ⚠ COLOUR-LIKE PROPERTIES ONLY, AND THE OMISSIONS ARE THE POINT.
+//    * `outline` is excluded, so a focus ring is always drawn immediately and can
+//      never fade in behind a keyboard user who has just arrived on the control.
+//    * Geometry and layout properties are excluded, so nothing here can animate a
+//      reflow, delay a measurement or slide a pointer target out from under a
+//      pointer that is already moving toward it - which would turn a motion
+//      refinement into a WCAG 2.2 target defect.
+//    * `transition-property` is enumerated rather than written as `all` for that
+//      reason: `all` would silently adopt every future property a component
+//      animates, including both of the above.
+//
+//  Wrapped in the shared reduced-motion guard, which is the mixin surface's stated
+//  contract for animation and transition alike. The unguarded presentation remains
+//  the instantaneous one, so a reader who has asked their system for less motion -
+//  or whose engine does not report the preference - keeps precisely the behaviour
+//  that shipped before this section existed.
+@include mx.motion-safe {
+  a,
+  button,
+  input,
+  select,
+  textarea,
+  summary,
+  [tabindex]:not([tabindex='-1']) {
+    transition-property: color, background-color, border-color;
+    transition-duration: var(--duration-state);
+    transition-timing-function: var(--easing-state);
+  }
 }

@@ -56,6 +56,10 @@
 //                                             on the current selector.
 //    visually-hidden                          Hides from sight, keeps in the
 //                                             accessibility tree.
+//    motion-safe           { ... }            Applies ONLY where the reader has not
+//                                             asked their system for less motion.
+//                                             Wrap every animation and transition
+//                                             in it; never animate outside it.
 //    visually-hidden-focusable                As above while NOT focus-visible,
 //                                             so it reveals itself on keyboard
 //                                             focus (skip links). Declare the
@@ -390,3 +394,85 @@ $_breakpoint-epsilon: 0.001rem;
     @include visually-hidden;
   }
 }
+
+// -----------------------------------------------------------------------------
+//  MOTION GUARD
+// -----------------------------------------------------------------------------
+//  Applies its content only where the reader has NOT asked their operating system
+//  for reduced motion.
+//
+//  ⚠ WHY THIS MIXIN EXISTS AT ALL, since the exported surface is deliberately
+//  closed. The header of this file states that a consumer needing any other
+//  at-rule - "a reduced-motion guard, a hover-capability query" - "must report the
+//  gap and degrade, never write the query itself". The progress indicator did
+//  exactly that: it recorded that it could not rotate because no such guard was
+//  exported and a component stylesheet may not author a feature query of its own,
+//  and it degraded to a static glyph. A static indeterminate indicator does not
+//  report progress, so the gap was reported and is now CLOSED HERE, in the one file
+//  permitted the query, rather than worked around at the call site.
+//
+//  ⚠ `no-preference` AND NOT `not (reduce)`. The guard admits motion only on an
+//  explicit absence of preference, so a browser that reports the feature as
+//  unsupported gets the STATIC presentation. Choosing the negated form would treat
+//  "unknown" as consent, which is the wrong default for an accessibility
+//  preference: nobody is harmed by a still indicator, and a reader who cannot
+//  tolerate movement is harmed by an unexpected one.
+//
+//  The static presentation therefore remains the base state and this only ever
+//  ADDS movement, which is also why no `animation: none` counterpart is needed.
+@mixin motion-safe {
+  @media (prefers-reduced-motion: no-preference) {
+    @content;
+  }
+}
+// ---------------------------------------------------------------------------------
+//  MOTION
+// ---------------------------------------------------------------------------------
+//  MIGRATION: A NET ADDITION, and it is added here rather than in a component for the
+//  same reason every media query lives in this file: a component stylesheet may not
+//  author a raw `@media`, so a component that needs motion cannot guard it and must
+//  therefore be given a guard to use. Without one the only compliant choice was to
+//  ship no motion at all - which is what happened, and what left the application's
+//  primary asynchronous affordance conveying nothing: runtime measurement found ZERO
+//  `@keyframes` rules in the whole bundle, so the "spinner" was a static ring that
+//  never moved while a request was in flight.
+//  The legacy portal declared no motion vocabulary, so nothing is being diverged FROM
+//  here; a spinner that spins is a net addition in the same sense as the spacing scale.
+//  The guard is what makes it admissible: `motion-safe` wraps a declaration so that it
+//  is applied only when the reader has NOT asked their system to reduce motion, which
+//  means the reduced-motion presentation is the DEFAULT and the movement is the
+//  enhancement - the safe direction, since a reader who expresses no preference is the
+//  one the media query treats as `no-preference`.
+/// The duration of the one repeating indicator this application animates.
+///
+/// Deliberately a single value rather than a scale. One component animates, so a scale
+/// would be three unused tokens and an invitation to animate more.
+$_motion-duration-indicator: 900ms;
+/// Wraps declarations that must only apply when motion is welcome.
+///
+/// @content Declarations applied when the reader has not requested reduced motion.
+@mixin motion-safe {
+  @media (prefers-reduced-motion: no-preference) {
+    @content;
+  }
+}
+
+/// Applies the indeterminate rotation to the element it is included on.
+///
+/// The rotation itself is declared once, here, so that the keyframes are defined a
+/// single time in the bundle and a component cannot invent a second, differently-timed
+/// spin. `will-change` is deliberately absent: a compositor hint for a 24 px element is
+/// a cost, not an optimisation.
+@mixin indeterminate-spin {
+  @include motion-safe {
+    animation: dnn-indeterminate-spin $_motion-duration-indicator linear infinite;
+  }
+}
+
+//  ⚠ THE @keyframes BLOCK ITSELF IS NOT DECLARED HERE. It lives in `styles.scss`, once.
+//  Sass modules are per-compilation, and every component stylesheet is its own
+//  compilation, so a top-level at-rule in this partial is emitted into the CSS of EVERY
+//  file that `@use`s it - measured at 33 consuming stylesheets and 35 copies of one
+//  keyframes block in the built bundle. Keyframe names are global regardless of view
+//  encapsulation, so one global declaration is both correct and sufficient; this mixin
+//  only REFERENCES the name.

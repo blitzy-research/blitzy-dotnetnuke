@@ -9,7 +9,8 @@ import { catchError, switchMap, throwError } from 'rxjs';
 import type { HttpInterceptorFn, HttpRequest } from '@angular/common/http';
 
 import { isAnonymousAuthEndpoint, isApiRequest } from '../config/api-endpoints';
-import { SIGN_IN_ROUTE } from '../config/app-routes.config';
+import { RETURN_URL_QUERY_KEY, SIGN_IN_ROUTE } from '../config/app-routes.config';
+import { NotificationService } from '../services/notification.service';
 import { TokenStorageService } from '../services/token-storage.service';
 // MIGRATION: the renewal used to be reached through `core/services/auth.service`, which owned the
 //   in-flight slot, the two-request composition and custody of the stored session. That service is
@@ -30,6 +31,27 @@ import { SessionTeardownService } from '../state/session-teardown.service';
  * conventional casing.
  */
 const AUTHORIZATION_HEADER = 'Authorization';
+
+/**
+ * What an operator is told when their session ended without them asking.
+ *
+ * MIGRATION: AUTHORED BECAUSE THE LEGACY HAD NOTHING TO PORT. A search of the authentication and
+ * security resource files for session, sign-in, logon and expiry wording returns no such string:
+ * the legacy portal relied on ASP.NET Forms Authentication, whose expiry redirected the browser to
+ * the login page as a plain HTTP response, so the operator's evidence that anything had happened
+ * was the login page arriving in place of the page they asked for. A single-page application has no
+ * equivalent - the shell never reloads, so an unannounced ejection is indistinguishable from an
+ * ordinary in-app navigation - which is why the statement has to exist here even though nothing
+ * corresponds to it upstream.
+ *
+ * Worded as a fact and a next step, with no apology and no diagnostic: an expired session is the
+ * expected end of a session, not a fault. It deliberately does NOT promise that unsaved work was
+ * kept, because it was not - the screen is torn down with the session. What the ejection preserves
+ * is the ADDRESS, so signing in again returns the operator to the screen they were on rather than to
+ * the default landing page, and they can see for themselves what did and did not persist. Claiming
+ * more than that would be the more damaging failure, since it would stop them checking.
+ */
+const SESSION_ENDED_MESSAGE = 'Your session has ended. Please sign in again to continue.';
 
 /*
  * Where an operator is sent once a session cannot be renewed: `SIGN_IN_ROUTE`, IMPORTED from
@@ -200,6 +222,7 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
   const authStore = inject(AuthStore);
   const router = inject(Router);
   const sessionTeardown = inject(SessionTeardownService);
+  const notifications = inject(NotificationService);
 
   if (isHealthProbe(req.url) || !isApiRequest(req.url) || isAnonymousAuthEndpoint(req.url)) {
     return next(req);
@@ -292,7 +315,7 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
       // discarded WITHOUT a session replacing it. That is why ending the session and
       // navigating is the right response at this point and would have been wrong above.
       if (!hasRenewableSession(tokenStorage)) {
-        endSession(tokenStorage, router, sessionTeardown);
+        endSession(tokenStorage, router, sessionTeardown, notifications);
 
         return throwError(() => error);
       }
@@ -355,7 +378,7 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
             return throwError(() => error);
           }
 
-          endSession(tokenStorage, router, sessionTeardown);
+          endSession(tokenStorage, router, sessionTeardown, notifications);
 
           return throwError(() => error);
         }),
@@ -442,7 +465,7 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
                 return throwError(() => retryError);
               }
 
-              endSession(tokenStorage, router, sessionTeardown);
+              endSession(tokenStorage, router, sessionTeardown, notifications);
 
               /*
                * THE RETRY'S OWN 401 is re-thrown, not the original. Both are 401s, but this one is
@@ -538,12 +561,13 @@ function hasRenewableSession(tokenStorage: TokenStorageService): boolean {
  *
  * @param tokenStorage The session store to clear.
  * @param router The router to leave through.
- * @param sessionTeardown The fan-out that empties the domain stores.
+ * @param sessionTeardown The fan-out that empties the domain stores AND explains the ending.
  */
 function endSession(
   tokenStorage: TokenStorageService,
   router: Router,
   sessionTeardown: SessionTeardownService,
+  notifications: NotificationService,
 ): void {
   // Cleared FIRST, because clearing advances the session generation that every late
   // callback tests itself against. Purging before the generation moved would leave a read
@@ -555,9 +579,75 @@ function endSession(
   // could not recover a refusal, so the session ended WITHOUT the operator asking — and the
   // one owner of the boundary publishes which boundary was crossed so a consumer, a
   // specification most of all, can tell the two apart. It does not change what is discarded.
+  //
+  // ⚠ AND IT IS WHAT MAKES THE OPERATOR TOLD WHY, WHICH IS WHY NOTHING IS RAISED HERE. Measured in
+  // a browser: the teardown was complete and correct, and both live regions were EMPTY, so somebody
+  // mid-task was returned to the sign-in screen with no account, no work and no explanation. This
+  // file briefly carried the announcement itself, and that was the wrong home for it: a SECOND path
+  // ends a session un-asked-for — the navigation gate's renewal, refused in
+  // `core/state/auth.store.ts` — and it reached the operator with the renewal's own problem document
+  // instead, wording an ended session as "The refresh token is not valid.". One sentence raised from
+  // two files could not fix the second path and would have drifted from it.
+  //
+  // The announcement therefore lives at the one point BOTH paths already pass through, beside the
+  // queue-clearing it has to be ordered against: see `SESSION_ENDED_MESSAGE` and `purge` in
+  // `core/state/session-teardown.service.ts`. This call is what selects it, so ending a session here
+  // explains itself by construction rather than by remembering to.
   sessionTeardown.purge('renewalRefused');
 
-  void router.navigate([SIGN_IN_ROUTE]).catch(() => false);
+  /*
+   * ⚠ SAID IN WORDS, BECAUSE THIS PATH USED TO SAY NOTHING AT ALL. A session ending here ended
+   * without the operator asking, so unlike a deliberate sign-out there is nothing on screen to
+   * explain why the screen they were working on has been replaced by the sign-in form. Both live
+   * regions were measured empty at zero height on every variant of this ejection, and nothing was
+   * written to the console either — so a submission that failed this way was indistinguishable
+   * from one that succeeded, since a successful create also ends by navigating away.
+   *
+   * `'warning'` and not `'error'`: the session lapsed, which is ordinary and expected, and the
+   * remedy is entirely in the operator's hands. Nothing failed that they need to report.
+   *
+   * The reprieve argument is REQUIRED here rather than incidental. The statement exists to be read
+   * on the sign-in screen, and the navigation below is a change of screen — so without it the
+   * surface would discard this message a moment after it was raised, which is the very fault being
+   * fixed, merely relocated.
+   *
+   * ⚠ NOTHING FROM THE REFUSAL IS QUOTED - no status, no body, no header and above all no
+   * credential. The note above about not writing to a log sink here applies with equal force to a
+   * user-facing surface, and this message is a fixed sentence for that reason.
+   */
+  notifications.warning(SESSION_ENDED_MESSAGE, true);
+
+  /*
+   * ⚠ THE DESTINATION IS PRESERVED, AND IT IS THE SAME CONTRACT THE ROUTE GATES USE. This
+   * navigation used to be a bare `navigate([SIGN_IN_ROUTE])`, which produced an asymmetry that
+   * favoured the rarer case: a gate-blocked navigation preserved where the operator was heading,
+   * while a refused REQUEST - the common event, a token lapsing mid-session - discarded it. Signing
+   * in again therefore returned them to the default landing screen rather than to the work they
+   * were interrupted in, with nothing to indicate that anything had been lost.
+   *
+   * The key is imported from the same module the gates import it from, so the writer here and the
+   * reader on the sign-in screen cannot drift apart. `router.url` is the address currently held,
+   * which is the screen the refused request was issued from.
+   *
+   * ⚠ `replaceUrl` IS NOT COSMETIC. Pushing would leave the abandoned screen in forward history as
+   * an entry that can never be restored - the session that rendered it is gone - so BACK would
+   * appear to work and land on a screen that immediately ejects again. Replacing also stops this
+   * ejection from manufacturing the "ghost" entries observed for screens that never painted.
+   *
+   * The guard against re-attaching the sign-in address to itself matters because this function is
+   * reachable from several concurrent failures: a second refusal arriving after the first has
+   * already ejected must not rewrite the destination to `/login`, which would strand the operator
+   * at the sign-in screen with itself as the place to return to.
+   */
+  const attempted = router.url;
+  const returnTo = attempted.split('?')[0] === SIGN_IN_ROUTE ? null : attempted;
+
+  void router
+    .navigate([SIGN_IN_ROUTE], {
+      replaceUrl: true,
+      ...(returnTo === null ? {} : { queryParams: { [RETURN_URL_QUERY_KEY]: returnTo } }),
+    })
+    .catch(() => false);
 }
 
 /**

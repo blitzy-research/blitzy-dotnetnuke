@@ -3,12 +3,12 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 
-import { AuthStore } from './auth.store';
+import { AuthStore, REVOCATION_FAILED_MESSAGE, SIGNED_OUT_MESSAGE } from './auth.store';
 import { ModuleStore } from './module.store';
 import { PortalStore } from './portal.store';
 import { RoleStore } from './role.store';
 import { SessionLifecycleService } from './session-lifecycle.service';
-import { SessionTeardownService } from './session-teardown.service';
+import { SESSION_ENDED_MESSAGE, SessionTeardownService } from './session-teardown.service';
 import { UserStore } from './user.store';
 import { AUTH_ENDPOINTS } from '../config/api-endpoints';
 import { authInterceptor } from '../interceptors/auth.interceptor';
@@ -309,13 +309,41 @@ describe('cross-session isolation', () => {
 
       sufferTerminalRefusal();
 
-      expect(visibleRecordCounts()).toEqual({
-        portals: 0,
-        users: 0,
-        roles: 0,
-        modules: 0,
-        notifications: 0,
-      });
+      // ⚠ ONE NOTIFICATION REMAINS, AND IT IS NOT A SURVIVOR - IT IS A REPLACEMENT. The
+      // teardown clears the queue, and the interceptor then states why the session ended, in
+      // that order, so what is left cannot be the message the first operator was shown. This
+      // count used to be zero and the change is deliberate: an operator returned to sign-in
+      // with both live regions empty had no way to tell what had happened.
+      //
+      // That entry is not a leak, and the assertions below are what establish it rather than
+      // assume it: the statement is a FIXED sentence that quotes nothing from the refusal - no
+      // status, no response body, no header, no credential - and nothing from any record the
+      // previous operator could see. Checking its exact text, and then checking it against the
+      // first operator's own data, is a STRONGER isolation guarantee than the bare count it
+      // replaces, which would have been satisfied by announcing nothing at all.
+      expect(visibleRecordCounts())
+        .withContext('every record slice the first operator could see is gone')
+        .toEqual({
+          portals: 0,
+          users: 0,
+          roles: 0,
+          modules: 0,
+          notifications: 1,
+        });
+
+      const remaining = notifications.notifications();
+
+      expect(remaining.length)
+        .withContext('and the one thing left is the statement that the session ended')
+        .toBe(1);
+      expect(remaining[0]?.message).toBe(SESSION_ENDED_MESSAGE);
+      // THE ISOLATION CLAIM, ASSERTED DIRECTLY: the surviving message names nothing about the
+      // operator whose session just ended. A message that had merely been left in place would
+      // fail here even though the count matched.
+      expect(remaining[0]?.message).not.toContain(OPERATOR_A.username);
+      expect(remaining[0]?.message).not.toContain('Ann');
+      expect(remaining[0]?.reference).toBeNull();
+
       expect(navigate).toHaveBeenCalled();
     });
 
@@ -431,13 +459,28 @@ describe('cross-session isolation', () => {
       session.signOut().subscribe({ error: () => undefined });
       httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
 
-      expect(visibleRecordCounts()).toEqual({
-        portals: 0,
-        users: 0,
-        roles: 0,
-        modules: 0,
-        notifications: 0,
-      });
+      /*
+       * The same treatment the terminal-refusal case above already applies, and for the same reason:
+       * a deliberate sign-out now confirms itself, so the queue is not empty afterwards and a bare
+       * `notifications: 0` would fail. It would also be the WEAKER statement — satisfied by saying
+       * nothing at all, which is how a confirmation that lived 10 ms and never rendered went
+       * unnoticed. The record slices are asserted empty; the queue is asserted by CONTENT.
+       */
+      const recordCounts: Record<string, number> = { ...visibleRecordCounts(), notifications: 0 };
+
+      expect(recordCounts)
+        .withContext('every record slice the first operator could see is gone')
+        .toEqual({ portals: 0, users: 0, roles: 0, modules: 0, notifications: 0 });
+
+      const announced = notifications.notifications();
+
+      expect(announced.map((entry) => entry.message))
+        .withContext('the only survivor is the fixed confirmation that the sign-out happened')
+        .toEqual([SIGNED_OUT_MESSAGE]);
+      // `loadRecordsFor('Ann')` queues a notice naming that operator, so this is a real exclusion
+      // rather than a formality: the survivor carries nothing from the session that ended.
+      expect(announced[0].message).not.toContain('Ann');
+      expect(announced[0].message).not.toContain(OPERATOR_A.username);
 
       signIn(OPERATOR_B);
       loadRecordsFor('Bob');
@@ -457,13 +500,29 @@ describe('cross-session isolation', () => {
         .expectOne(AUTH_ENDPOINTS.logout)
         .flush(null, { status: 500, statusText: 'Server Error' });
 
-      expect(visibleRecordCounts()).toEqual({
-        portals: 0,
-        users: 0,
-        roles: 0,
-        modules: 0,
-        notifications: 0,
-      });
+      const recordCounts: Record<string, number> = { ...visibleRecordCounts(), notifications: 0 };
+
+      expect(recordCounts)
+        .withContext('every record slice the first operator could see is gone')
+        .toEqual({ portals: 0, users: 0, roles: 0, modules: 0, notifications: 0 });
+
+      /*
+       * TWO survivors on this path, and both are fixed sentences: the sign-out is confirmed, and the
+       * un-revoked credential is reported as its own statement rather than folded into the first.
+       * Both facts are true and the operator needs both — they are signed out on this device, and a
+       * refresh credential may still be live on the server.
+       */
+      const announced = notifications.notifications();
+
+      expect(announced.map((entry) => entry.message)).toEqual([
+        SIGNED_OUT_MESSAGE,
+        REVOCATION_FAILED_MESSAGE,
+      ]);
+      expect(announced.some((entry) => entry.message.includes('Ann')))
+        .withContext('neither names the operator whose session it was')
+        .toBeFalse();
+      expect(announced.some((entry) => entry.message.includes(OPERATOR_A.username))).toBeFalse();
+
       expect(tokens.accessToken()).toBeNull();
 
       signIn(OPERATOR_B);

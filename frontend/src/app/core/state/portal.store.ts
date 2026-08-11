@@ -123,6 +123,7 @@ import {
   isValidationProblemDetails,
   problemSeverity,
   problemSupportReference,
+  transportProblem,
 } from '../utils/form-errors.util';
 
 
@@ -168,16 +169,42 @@ import type { ConflictCode, ProblemSeverity } from '../utils/form-errors.util';
  */
 export interface PortalFailure {
   /**
-   * The RFC 7807 document as received, or `null` when the failure carried none -
-   * which is what a request that never reached the server looks like.
+   * The RFC 7807 document for this failure. NEVER `null`: a failure that carried no
+   * document - a request that never reached the server, or a response whose body is not a
+   * problem document - is given one composed from its status by `transportProblem`.
    *
-   * Held whole and unaltered. That is what preserves `traceId` and
-   * `correlationId` for an operator: the two are independent identifiers in two
-   * different formats, the second being the support reference that also appears
-   * on the response header and in the server's own log, and discarding either
+   * A document received from the server is held whole and unaltered. That is what
+   * preserves `traceId` and `correlationId` for an operator: the two are independent
+   * identifiers in two different formats, the second being the support reference that also
+   * appears on the response header and in the server's own log, and discarding either
    * would leave a browser-side report with no join key to a server-side one.
+   *
+   * ⚠ THE NON-NULLABILITY IS LOAD-BEARING FOR THE CONSUMER'S TEMPLATE. It is what lets a
+   * screen present every failure through the one shared banner - severity word, title,
+   * detail, field errors and support reference - instead of falling through to a bare
+   * sentence for the two modes that carry no body, which is what runtime testing found
+   * happening and could not tell apart.
    */
-  readonly problem: ProblemDetails | null;
+  readonly problem: ProblemDetails;
+
+  /**
+   * Whether {@link PortalFailure.problem} was COMPOSED from the transport status rather than
+   * published by the server.
+   *
+   * ⚠ A CONSUMER WITH ITS OWN WORDING FOR THIS OPERATION MUST CHECK THIS BEFORE PREFERRING
+   * THE DOCUMENT'S DETAIL. A composed document carries a truthful but generic sentence
+   * derived from the status alone, so a screen that has the wording its legacy predecessor
+   * used - "An error was encountered during the creation of your portal…" - has something
+   * strictly better to show and should show it. A document the server published always wins,
+   * because it knows something this code does not.
+   *
+   * The flag is carried here rather than inferred from the document because the obvious
+   * inference is wrong: `type: 'about:blank'` is what RFC 7807 §4.2 designates for a problem
+   * with no semantics beyond its status, and this API's own error handler legitimately sends
+   * exactly that for several refusals - so keying on it would treat real server documents as
+   * composed ones.
+   */
+  readonly synthesised: boolean;
 
   /**
    * The status to classify by: the document's own status where it carried one, and
@@ -266,6 +293,25 @@ export interface PortalSort {
 
   /** The direction to apply, or `null` for the server's default. */
   readonly sortDir: SortDirection | null;
+}
+
+/**
+ * A COMPLETE listing query: which page, how large, filtered how, ordered how.
+ *
+ * Applied as one unit by {@link PortalStore.applyListQuery}, which is why it is an interface
+ * rather than four arguments - the four coordinates are restored together when a screen keeps
+ * them in its address, and applying them one at a time would issue one request per coordinate
+ * and reset the page index three times on the way.
+ */
+export interface PortalListQuery extends PortalSort {
+  /** The page to read, counted from nought. */
+  readonly pageIndex: number;
+
+  /** The size to ask for, or `null` to express no preference and take the server's default. */
+  readonly pageSize: number | null;
+
+  /** The name filter, or `null` for no filter. Forwarded byte for byte. */
+  readonly name: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -379,13 +425,24 @@ function classifyFailure(cause: unknown): PortalFailure {
 
   const code: string | null = failureCode(problem);
 
+  // A FAILURE ALWAYS CARRIES A DOCUMENT FROM HERE ON, even when the transport gave none.
+  // Two failure modes arrive with no RFC 7807 body - a response whose body is not a problem
+  // document, and a request that never completed - and a null document left every consumer
+  // with a second, poorer presentation for them: runtime measurement found both collapsing
+  // to one unstyled `<p role="status">`, byte-identical to each other, with no severity
+  // word, no title, no support reference and no retry. `transportProblem` composes a
+  // truthful document from the status so that the shared banner is the ONLY failure
+  // presentation this store's consumers ever need.
+  const document: ProblemDetails = problem ?? transportProblem(effectiveStatus);
+
   return {
-    problem,
+    problem: document,
+    synthesised: problem === null,
     status: effectiveStatus,
     severity: problemSeverity(effectiveStatus),
     conflictCode: isConflictCode(code) ? code : null,
     validation: isValidationProblemDetails(problem) ? problem : null,
-    supportReference: problemSupportReference(problem),
+    supportReference: problemSupportReference(document),
   };
 }
 
@@ -621,6 +678,15 @@ export class PortalStore implements OnDestroy {
 
   /** The last listing failure, classified, or `null` when the last attempt succeeded. */
   private readonly _listFailure = signal<PortalFailure | null>(null);
+
+  /**
+   * Whether a listing read has ever COMPLETED for this store instance.
+   *
+   * A plain boolean rather than a signal, deliberately: nothing renders it and no derivation
+   * depends on it, so a signal would add a dependency edge for no reader. Read only by
+   * {@link PortalStore.reloadPortals}, which explains why it exists.
+   */
+  private listingRead = false;
 
   // -------------------------------------------------------------------------
   // SELECTED PORTAL
@@ -1299,6 +1365,7 @@ export class PortalStore implements OnDestroy {
         next: (received: PortalListPage) => {
           this._page.set(received);
           this._listLoading.set(false);
+          this.listingRead = true;
         },
         error: (cause: unknown) => {
           this._listFailure.set(classifyFailure(cause));
@@ -1315,9 +1382,85 @@ export class PortalStore implements OnDestroy {
    * call site that means "refresh" reads better than one that means "load", and because
    * the write commands below use it and their behaviour should be legible from their
    * own bodies.
+   *
+   * UNCONDITIONAL, and used by the three write commands that create, replace or remove a
+   * PORTAL. Those are host-account operations reached from the listing itself, so the
+   * listing is on screen by construction and the re-read is always wanted. A caller that
+   * cannot make that guarantee wants {@link PortalStore.refreshListingIfRead} instead.
    */
   reloadPortals(): void {
     this.loadPortals();
+  }
+
+  /**
+   * Re-reads the listing ONLY when a listing read has already completed.
+   *
+   * ⚠ THE MEASURED DEFECT THIS EXISTS TO CLOSE. The settings save used to call the
+   * unconditional refresh above, so every save issued `GET /api/v1/portals?pageIndex=0` -
+   * measured six times for six saves, an exact one-for-one pairing. A PORTAL
+   * ADMINISTRATOR IS NOT PERMITTED TO READ THE PORTAL LISTING, so each of those answered
+   * 403, and each 403 produced a console error and a warning notification reading "You do
+   * not have access to this content." That notification is raised globally by the failure
+   * interceptor, so it landed on whatever screen the operator had navigated to by the time
+   * the response arrived - a permission complaint about a listing they never asked for, on
+   * a screen with nothing to do with portals, immediately after a save that had actually
+   * SUCCEEDED. That is the worst available reading of a successful write.
+   *
+   * REFRESHING SOMETHING NEVER READ IS MEANINGLESS, which is what makes this a correction
+   * rather than a workaround. The re-read exists to keep a listing ALREADY IN HAND
+   * coherent with a write - the settings projection carries the portal name, the expiry
+   * date, the host fee and the host space, each also a listing column - and where no
+   * listing has been read there is no coherence to maintain and nothing on screen to
+   * refresh.
+   *
+   * The flag records a COMPLETED read rather than an attempted one, so a caller who was
+   * refused the listing once is not asked to request it again after every subsequent
+   * write. `loadPortals` itself is deliberately NOT guarded either: a screen that means
+   * "load the listing" is entitled to try, and its failure belongs to that screen's own
+   * surface.
+   */
+  refreshListingIfRead(): void {
+    if (!this.listingRead) {
+      return;
+    }
+    this.loadPortals();
+  }
+
+  /**
+   * Folds a stored settings projection back into the selected portal, when it is the same one.
+   *
+   * ⚠ THE MEASURED DEFECT THIS EXISTS TO CLOSE. A settings save updated the settings slice
+   * and re-read the listing, and left the DETAIL slice holding what it had read before the
+   * write. The settings screen shows the portal's name beside its title, and it reads that
+   * name from the detail slice — so renaming a portal and saving it produced a success
+   * notification while the heading beside it still announced the OLD name, and it stayed
+   * wrong until the route was entered again. Any other reader of the detail slice was equally
+   * stale; the heading is simply where it was visible.
+   *
+   * The same argument that governs {@link PortalStore.refreshListingIfRead} governs this: a
+   * slice ALREADY IN HAND has to stay coherent with a write, and a slice never read has
+   * nothing to reconcile. Hence the null guard rather than a fetch — this method never issues
+   * a request, so it costs nothing on a screen that holds no detail.
+   *
+   * THE MERGE IS TOTAL RATHER THAN A LIST OF FIELDS. Every one of the settings projection's
+   * members is also a member of the detail, so spreading the projection over the held detail
+   * updates all of them and invents none. A hand-written field list would be the thing that
+   * rots: the next column added to the projection would silently stay stale here.
+   *
+   * The identity guard is not ceremonial. A save can complete after the operator has already
+   * selected a different portal, and writing one portal's values onto another's detail is a
+   * worse outcome than leaving the first one stale.
+   *
+   * @param stored The projection the server echoed back from the write.
+   */
+  private reconcileSelectedPortal(stored: PortalSettings): void {
+    const held: PortalDetail | null = this._selectedPortal();
+
+    if (held === null || held.portalId !== stored.portalId) {
+      return;
+    }
+
+    this._selectedPortal.set({ ...held, ...stored });
   }
 
   /**
@@ -1408,6 +1551,44 @@ export class PortalStore implements OnDestroy {
   /** Returns the listing to the server's own ordering and reads the first page. */
   clearSort(): void {
     this.setSort({ sortBy: null, sortDir: null });
+  }
+
+  /**
+   * Adopts a COMPLETE listing query - page, size, filter and ordering together - and issues
+   * exactly ONE read for it.
+   *
+   * ⚠ THIS EXISTS BECAUSE THE FOUR SINGLE-COORDINATE COMMANDS CANNOT BE COMBINED, AND THE
+   * ALTERNATIVE WAS MEASURED RATHER THAN IMAGINED. Each of {@link PortalStore.goToPage},
+   * {@link PortalStore.setPageSize}, {@link PortalStore.setNameFilter} and
+   * {@link PortalStore.setSort} reads as its last act, which is right when an operator changes
+   * one thing - and wrong when a whole query arrives at once, because four calls would issue
+   * four requests for the same page and the first three answers would be discarded on arrival.
+   * Three of them would also have reset the page index that the fourth was trying to restore.
+   *
+   * The caller for this is a screen that keeps its listing state in the ADDRESS: on entry, and
+   * on every back or forward, the whole query arrives together and must be applied together.
+   * That also makes the address the one place a stale filter can live, which is what stops a
+   * root-provided store from replaying a previous visit's filter over a fresh navigation - the
+   * defect this member closes. A screen that does NOT keep its state in the address is
+   * unaffected and keeps using the single-coordinate commands.
+   *
+   * The page index is adopted VERBATIM rather than reset, which is the opposite of what the
+   * single-coordinate commands do and is correct here for the same reason they are: they reset
+   * it because a coordinate CHANGED under the operator, whereas this member is told what the
+   * page is as part of the query being restored. Resetting it would make a reload of page four
+   * land on page one, which is precisely the round trip this exists to make work.
+   *
+   * @param query The whole listing query. Every member is adopted exactly as given; nothing is
+   * clamped, defaulted or validated here, because the address is parsed by the screen that owns
+   * it and an out-of-range page is the server's to refuse with a field-level message.
+   */
+  applyListQuery(query: PortalListQuery): void {
+    this._pageIndex.set(query.pageIndex);
+    this._requestedPageSize.set(query.pageSize);
+    this._nameFilter.set(query.name);
+    this._sortBy.set(query.sortBy);
+    this._sortDir.set(query.sortDir);
+    this.loadPortals();
   }
 
   // =========================================================================
@@ -1716,9 +1897,17 @@ export class PortalStore implements OnDestroy {
    * the portal is already named by the path - and it is forwarded exactly as the form
    * composed it, quota members and all, then released rather than retained.
    *
-   * The listing is re-read afterwards because the projection carries the portal name,
-   * the expiry date, the host fee and the host space, every one of which is also a
-   * column of the listing row.
+   * The listing is re-read afterwards - but ONLY when a listing has actually been read -
+   * because the projection carries the portal name, the expiry date, the host fee and the
+   * host space, every one of which is also a column of the listing row. This screen is
+   * reachable by a portal administrator who may not read the listing at all, which is why
+   * the conditional variant is used here and the unconditional one is not. See
+   * {@link PortalStore.refreshListingIfRead}.
+   *
+   * The DETAIL slice is reconciled under the same argument and the same condition: it carries
+   * every member the projection carries, so a screen holding it would otherwise go on showing
+   * pre-save values after a write that succeeded. See
+   * {@link PortalStore.reconcileSelectedPortal}.
    *
    * @param portalId The portal to write.
    * @param request The complete settings state to store.
@@ -1739,7 +1928,8 @@ export class PortalStore implements OnDestroy {
         next: (stored: PortalSettings) => {
           this._settings.set(stored);
           this._settingsLoading.set(false);
-          this.reloadPortals();
+          this.reconcileSelectedPortal(stored);
+          this.refreshListingIfRead();
 
           outcome.next(stored);
           outcome.complete();
@@ -1949,12 +2139,29 @@ export class PortalStore implements OnDestroy {
     this.track(
       this.portalApi.createAlias(portalId, request).subscribe({
         next: (created: PortalAlias) => {
-          this._aliases.update((held: readonly PortalAlias[] | null) =>
-            held === null ? null : [...held, created],
-          );
           this._aliasDetail.set(created);
           this._selectedAliasId.set(created.portalAliasId);
           this._aliasLoading.set(false);
+
+          // ⚠ THE LISTING IS RE-READ RATHER THAN APPENDED TO, so that both write paths on this
+          // resource leave the collection in the same state. Creation used to splice the 201
+          // body onto the held array while {@link PortalStore.updateAlias} re-read the
+          // collection, and the reason for the split was a difference in the CONTRACTS rather
+          // than a decision: `POST` answers with the created resource and `PUT` answers with no
+          // body, so update had nothing to merge and had to ask again.
+          //
+          // That is an explanation and not a justification. A spliced row is the client's OWN
+          // idea of where the record belongs: it lands at the end of the array regardless of the
+          // order the collection endpoint applies, and it carries only the members the create
+          // response happened to include. Re-reading makes the listing the server's answer in
+          // both cases, so the order is the server's order and no row can be assembled here from
+          // a partial view of it.
+          //
+          // The response body is still used - it is recorded as the detail and as the selection
+          // above, both of which concern the record just written rather than the collection - so
+          // nothing about the created resource is discarded, and the cost is one GET on a write
+          // the operator has just waited for.
+          this.loadAliases(portalId);
 
           outcome.next(created);
           outcome.complete();
@@ -2060,6 +2267,17 @@ export class PortalStore implements OnDestroy {
             this._aliasDetail.set(null);
           }
 
+          // ⚠ REMOVAL IS APPLIED LOCALLY AND IS NOT RE-READ, WHICH IS A DELIBERATE ASYMMETRY WITH
+          // {@link PortalStore.createAlias}. The two are not the same problem. An INSERTION has to
+          // decide WHERE the new record belongs and WHICH of its members are known, and the client
+          // can be wrong about both - it appends to the end regardless of the order the collection
+          // endpoint applies, and it holds only the members the create response carried. Neither
+          // question arises when removing: the row to drop is named by the identifier the caller
+          // just deleted, its position is whatever it was, and no member of it is needed. Filtering
+          // it out therefore reaches exactly the state a re-read would, without the request.
+          //
+          // Recorded here so the asymmetry reads as a decision rather than as the inconsistency
+          // that creation genuinely was.
           this._aliasLoading.set(false);
 
           outcome.next();

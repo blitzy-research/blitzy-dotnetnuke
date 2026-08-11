@@ -22,6 +22,16 @@ describe('NotificationListComponent', () => {
     return Array.from(host().querySelectorAll<HTMLElement>('div.notification-list__item'));
   }
 
+  /** The overflow count sentence, or an empty string when none is rendered. */
+  function overflowText(): string {
+    return host().querySelector('p.notification-list__overflow')?.textContent?.trim() ?? '';
+  }
+
+  /** The clear-everything control, or null when it is not offered. */
+  function clearAllButton(): HTMLButtonElement | null {
+    return host().querySelector<HTMLButtonElement>('button.notification-list__clear-all');
+  }
+
   /** The severity word of one row. */
   function severityWordOf(item: HTMLElement): string {
     return item.querySelector('p.notification-list__severity')?.textContent?.trim() ?? '';
@@ -159,15 +169,27 @@ describe('NotificationListComponent', () => {
       expect(items()[0]?.getAttribute('data-severity')).toBe('warning');
     });
 
-    it('renders two identical messages as two rows, because the service does not de-duplicate', () => {
+    it('renders an immediate repetition as ONE row, because the service collapses it', () => {
       notifications.error('The request could not be completed.');
       notifications.error('The request could not be completed.');
       fixture.detectChanges();
 
-      // Tracked by the service's never-reissued identifier rather than by the text. Tracking
-      // by text would collapse these into one row and silently drop a message the
-      // application deliberately raised twice.
-      expect(items().length).toBe(2);
+      // ⚠ THIS ROW COUNT IS THE SERVICE'S DECISION, NOT THE TEMPLATE'S. Rows are tracked by the
+      // service's never-reissued identifier rather than by their text - tracking by text would
+      // collapse two rows the application deliberately raised - and the service collapses an
+      // immediate repetition of its newest entry onto a fresh identifier. Runtime testing
+      // measured why: one fault was routinely reported twice at once, and the role membership
+      // screen raised three near-identical warnings for a single fault.
+      expect(items().length).toBe(1);
+    });
+
+    it('renders a repetition separated by another outcome as two rows', () => {
+      notifications.error('The request could not be completed.');
+      notifications.info('Something else happened.');
+      notifications.error('The request could not be completed.');
+      fixture.detectChanges();
+
+      expect(items().length).toBe(3);
     });
 
     it('renders markup in a message as inert text rather than as elements', () => {
@@ -254,4 +276,261 @@ describe('NotificationListComponent', () => {
       expect(region()).not.toBeNull();
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // THE BOUNDED SURFACE
+  // ---------------------------------------------------------------------------
+
+  describe('how much of the screen it may occupy', () => {
+    // ⚠ MEASURED, NOT PREFERRED. Unbounded and in flow, each entry cost 42 pixels and displaced
+    // everything below it: nine entries came to 442 pixels and moved the page heading from y=83 to
+    // y=515, which is 49 per cent of a 900-pixel viewport spent on notification chrome. The
+    // stylesheet takes the region out of flow, and the component renders only the newest few.
+
+    /** Queues `count` warnings, each distinguishable so none is collapsed as a repetition. */
+    function queueWarnings(count: number): void {
+      for (let index = 1; index <= count; index += 1) {
+        notifications.warning(`Refusal number ${index}.`);
+      }
+
+      fixture.detectChanges();
+    }
+
+    it('renders at most four entries, keeping the newest', () => {
+      queueWarnings(9);
+
+      const messages = items().map((item) => messageOf(item));
+
+      expect(messages.length).toBe(4);
+      expect(messages).toEqual([
+        'Refusal number 6.',
+        'Refusal number 7.',
+        'Refusal number 8.',
+        'Refusal number 9.',
+      ]);
+    });
+
+    it('keeps the rendered entries in the order the outcomes happened', () => {
+      queueWarnings(6);
+
+      // Painting order is reversed by the stylesheet so the newest sits nearest the corner, but the
+      // DOM stays oldest-first: that is the order they are announced in and the order Tab follows.
+      expect(items().map((item) => messageOf(item))).toEqual([
+        'Refusal number 3.',
+        'Refusal number 4.',
+        'Refusal number 5.',
+        'Refusal number 6.',
+      ]);
+    });
+
+    it('states how many are not shown rather than hiding them silently', () => {
+      queueWarnings(7);
+
+      expect(overflowText()).toBe('3 earlier not shown');
+    });
+
+    it('states nothing about overflow while every entry is on screen', () => {
+      queueWarnings(4);
+
+      expect(host().querySelector('p.notification-list__overflow')).toBeNull();
+    });
+
+    it('keeps every queued entry in the service, so nothing off screen is destroyed', () => {
+      queueWarnings(7);
+
+      expect(notifications.notifications().length).toBe(7);
+    });
+
+    it('offers a single control that clears all of them, from the second entry onwards', () => {
+      // Two DISTINCT messages: an immediate repetition of the same sentence is collapsed by the
+      // service onto one row, so repeating one here would never produce a second entry.
+      notifications.warning('Refusal number 1.');
+      fixture.detectChanges();
+      expect(clearAllButton()).withContext('one message needs no bulk control').toBeNull();
+
+      notifications.warning('Refusal number 2.');
+      fixture.detectChanges();
+      const control = clearAllButton();
+
+      expect(control?.textContent?.trim()).toBe('Dismiss all');
+
+      control?.click();
+      fixture.detectChanges();
+
+      expect(items().length).toBe(0);
+      expect(notifications.notifications().length).toBe(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // SELF-DISMISSAL
+  // ---------------------------------------------------------------------------
+
+  describe('entries that dismiss themselves', () => {
+    // ⚠ ONLY THE OUTCOMES THAT REQUIRE NOTHING OF THE READER. A success and an advisory are
+    // acknowledgements of something the operator just caused; leaving them until dismissed is what
+    // stranded a role-creation success on the Portals screen after the operator navigated away
+    // mid-save. A warning or an error reports something that did NOT happen and frequently carries
+    // the support reference an operator must quote, so removing it on a timer would destroy the
+    // only record of a failure.
+    //
+    // The interval is driven with Jasmine's own clock rather than a real wait, so the specification
+    // is deterministic and takes no wall-clock time.
+
+    const INTERVAL_MS = 8_000;
+
+    beforeEach(() => {
+      jasmine.clock().install();
+    });
+
+    afterEach(() => {
+      jasmine.clock().uninstall();
+    });
+
+    it('removes a success once the interval elapses', () => {
+      notifications.success('The role was created.');
+      fixture.detectChanges();
+      expect(items().length).toBe(1);
+
+      jasmine.clock().tick(INTERVAL_MS);
+      fixture.detectChanges();
+
+      expect(items().length).toBe(0);
+      expect(notifications.notifications().length).withContext('removed from the queue too').toBe(0);
+    });
+
+    it('removes an advisory once the interval elapses', () => {
+      notifications.info('The notification could not be sent.');
+      fixture.detectChanges();
+
+      jasmine.clock().tick(INTERVAL_MS);
+      fixture.detectChanges();
+
+      expect(items().length).toBe(0);
+    });
+
+    it('keeps a warning and an error indefinitely', () => {
+      notifications.warning('You are not permitted to view that.');
+      notifications.error('The request could not be completed.', 'reference-one');
+      fixture.detectChanges();
+
+      jasmine.clock().tick(INTERVAL_MS * 10);
+      fixture.detectChanges();
+
+      expect(items().length).withContext('a failure is not removed on a timer').toBe(2);
+    });
+
+    it('does not remove anything before the interval elapses', () => {
+      notifications.success('The role was created.');
+      fixture.detectChanges();
+
+      jasmine.clock().tick(INTERVAL_MS - 1);
+      fixture.detectChanges();
+
+      expect(items().length).toBe(1);
+    });
+
+    it('stops the countdown while the pointer is over the region', () => {
+      notifications.success('The role was created.');
+      fixture.detectChanges();
+
+      // Dispatched on the HOST because `mouseenter` does not bubble - and that is faithful rather
+      // than convenient: a browser fires the enter sequence along the DOM ancestor chain of the
+      // element the pointer reaches, so entering the painted row really does fire it here too.
+      host().dispatchEvent(new MouseEvent('mouseenter'));
+      fixture.detectChanges();
+
+      jasmine.clock().tick(INTERVAL_MS * 3);
+      fixture.detectChanges();
+
+      expect(items().length).withContext('a person is reading it').toBe(1);
+    });
+
+    it('gives the FULL interval again once the pointer leaves', () => {
+      notifications.success('The role was created.');
+      fixture.detectChanges();
+
+      host().dispatchEvent(new MouseEvent('mouseenter'));
+      fixture.detectChanges();
+      jasmine.clock().tick(INTERVAL_MS * 3);
+
+      host().dispatchEvent(new MouseEvent('mouseleave'));
+      fixture.detectChanges();
+
+      jasmine.clock().tick(INTERVAL_MS - 1);
+      fixture.detectChanges();
+      expect(items().length).withContext('not whatever was left of the first interval').toBe(1);
+
+      jasmine.clock().tick(1);
+      fixture.detectChanges();
+      expect(items().length).toBe(0);
+    });
+
+    it('stops the countdown while focus is inside the region', () => {
+      notifications.success('The role was created.');
+      fixture.detectChanges();
+
+      // This is the state a keyboard or screen-reader user is in for the whole time they are
+      // working through the messages, which is exactly when a timed removal would be worst.
+      region()?.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+      fixture.detectChanges();
+
+      jasmine.clock().tick(INTERVAL_MS * 3);
+      fixture.detectChanges();
+
+      expect(items().length).toBe(1);
+    });
+
+    it('keeps the countdown stopped while focus moves between controls inside the region', () => {
+      notifications.success('The role was created.');
+      notifications.info('One record could not be included.');
+      fixture.detectChanges();
+
+      region()?.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+      fixture.detectChanges();
+
+      const inside = items()[1];
+
+      region()?.dispatchEvent(
+        new FocusEvent('focusout', { bubbles: true, relatedTarget: inside }),
+      );
+      fixture.detectChanges();
+
+      jasmine.clock().tick(INTERVAL_MS * 2);
+      fixture.detectChanges();
+
+      expect(items().length).withContext('focus never left the region').toBe(2);
+    });
+
+    it('resumes the countdown when focus leaves the region entirely', () => {
+      notifications.success('The role was created.');
+      fixture.detectChanges();
+
+      region()?.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+      fixture.detectChanges();
+
+      region()?.dispatchEvent(
+        new FocusEvent('focusout', { bubbles: true, relatedTarget: document.body }),
+      );
+      fixture.detectChanges();
+
+      jasmine.clock().tick(INTERVAL_MS);
+      fixture.detectChanges();
+
+      expect(items().length).toBe(0);
+    });
+
+    it('cancels a pending removal when the surface itself is destroyed', () => {
+      notifications.success('The role was created.');
+      fixture.detectChanges();
+
+      fixture.destroy();
+      jasmine.clock().tick(INTERVAL_MS * 2);
+
+      // The entry survives in the service: a timer outliving the surface would remove a message
+      // after a route change, which is a removal nobody asked for.
+      expect(notifications.notifications().length).toBe(1);
+    });
+  });
+
 });

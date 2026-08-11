@@ -34,6 +34,7 @@
 //      .role-list__command              (button)
 //      .role-list__icon                 (svg)
 //      .role-list__action-label         (span)
+//      .role-list__row-action--danger   (button,   projected into app-data-table)
 //
 //  Two classes the template also emits carry NO rule here, deliberately, because
 //  the global element vocabulary already resolves them completely and restating a
@@ -166,7 +167,13 @@
 //  the resting rule beside it, which matters: with encapsulation the resting
 //  selector outweighs the global `a:hover`, so a colour set at rest and left to the
 //  global sheet to change would simply never change.
-.role-list__page-action,
+// ⚠ THE PAGE ACTION WAS REMOVED FROM THIS GROUP, AND THE UNDERLINE IS WHY. Measured across the six
+// screens that render a page action: this rule and its counterpart on the account listing re-added a
+// PERMANENT underline at class weight, so those two screens showed underlined actions at rest while the
+// other four showed none. The shared `page-action` rule reserves the underline for `:hover`, so on these
+// two screens hovering could not be perceived as a state change - the underline was already there. The
+// row action KEEPS it: it sits inside a data cell among plain values, where the underline is the only
+// cue separating a command from the text beside it.
 .role-list__row-action {
   color: var(--color-primary);
   text-decoration: underline;
@@ -174,6 +181,19 @@
   @include mx.hover {
     color: var(--color-primary-hover);
   }
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and
+  // suppression without replacement is what leaves a control with no visible response at
+  // all. `background-color: transparent` above weighs (0,1,0) while the global
+  // `button:active { background-color: var(--color-selected) }` weighs (0,1,1) — one class
+  // outranks one type selector, so the shared press tint was already losing before a
+  // pointer arrived. Measured: this control was BYTE-IDENTICAL in its pressed and resting
+  // states, and where the control is a link rather than a button there was no global rule
+  // to lose in the first place. The value is the shared selection tint, so the press reads
+  // the same here as on every other control in the console; nothing new is invented.
+  &:active {
+    background-color: var(--color-selected);
+  }
+
 }
 
 // -----------------------------------------------------------------------------
@@ -186,7 +206,17 @@
 .role-list__failure {
   display: grid;
   gap: var(--space-2);
-  justify-items: start;
+
+  // ⚠ THE BANNER STRETCHES; ONLY THE COMMAND IS HELD TO ITS CONTENT WIDTH. This region
+  // used to declare `justify-items: start`, which achieved the second of those and broke
+  // the first: a start-aligned grid item is sized to its content, so the shared error
+  // banner shrank to the width of its longest line - measured at 228px against the 1072px
+  // the identical component occupies on a screen that renders it outside a grid. One
+  // component was therefore rendering at two widths for no reason a reader could see, and
+  // a framed surface that stops short of the content it belongs to reads as a stray box
+  // rather than as the screen's error state. Alignment now belongs to the ONE item that
+  // needed it and is declared on that item, so another item added to this region cannot
+  // silently inherit a width constraint that was never meant for it.
 }
 
 // -----------------------------------------------------------------------------
@@ -224,6 +254,20 @@
   flex-wrap: wrap;
   gap: var(--space-2);
   align-items: end;
+
+  // ⚠ THE SELECT'S OWN CLAMP IS NOT ENOUGH, BECAUSE THIS WRAPPER HAS ONE TOO. The select below
+  // already takes a fluid share from a zero basis and is capped, which stops one long group name
+  // setting the width of the row - but this wrapper is itself a flex item of `.role-list__filter`
+  // and kept the default `min-width: auto`, whose automatic minimum is its own min-content
+  // contribution. So the select shrank and the box around it did not.
+  //
+  // Measured at exactly 768px, the width at which the shell docks its sidebar and pushes this
+  // row's origin from x=16 to x=392.9: this wrapper computed 375px wide and reached x=767.9
+  // against a 753px content box - 15px of document overflow, the last md-boundary regression of
+  // the four list screens. Clamping the select alone changed nothing; clamping this took it to
+  // nought. The 375px came from a fifty-character seeded group name, so the intrinsic width is
+  // real data rather than a test artefact.
+  min-inline-size: 0;
 }
 
 //  A select sized by its widest option would let one long group name set the width
@@ -252,9 +296,30 @@
 .role-list__command,
 .role-list__row-action,
 .role-list__failure-retry {
+  // Held to its content width inside the stretching failure region above.
+  justify-self: start;
+
   display: inline-flex;
   gap: var(--space-1);
   align-items: center;
+}
+
+//  ⚠ THE ROW COMMANDS ALSO WRAP, AND THIS IS THE SECOND HALF OF HOLDING THEM INSIDE
+//  THEIR OWN COLUMN. Letting the label stack its words was necessary but not
+//  sufficient: the glyph beside it never shrinks, so the command's irreducible width
+//  stayed glyph + gap + the longest single word, measured at 11 + 4 + 36.14 = 51.14
+//  against a 45.33 content box, and the remaining 5.81 still painted 1.81 into the
+//  Name column. Allowing THIS line to break lets the glyph and the label stack, which
+//  drops the floor to the label's own 36.14 and clears the column with room to spare.
+//  Centring keeps the two stacked parts under one another rather than ragged.
+//
+//  Only the row commands. The filter commands, the editor's submit and cancel and the
+//  retry all sit in regions that reflow, so none of them is squeezed by a fixed
+//  column and none needs this - and wrapping them would let a glyph part company with
+//  its label for no reason.
+.role-list__row-action {
+  flex-wrap: wrap;
+  justify-content: center;
 }
 
 //  A colour change only, and specifically the accessible danger ink rather than the
@@ -264,7 +329,7 @@
 //  fill shifts from the global button hover intact, so the control still answers a
 //  pointer without the error colour being animated away.
 .role-list__filter-action--danger {
-  color: var(--color-danger);
+  color: var(--color-danger-text);
 }
 
 //  MIGRATION: the legacy affordances were raster images — `~/images/edit.gif` and
@@ -280,13 +345,81 @@
   block-size: var(--font-size-md);
 }
 
-//  The label beside that glyph stays visible and unwrapped. Clipping it would leave a
-//  16-unit icon carrying the entire meaning of a command, one of which destroys a
-//  record — and the legacy delete affordance reached assistive technology with no
-//  accessible name at all, which is the one gap on this screen worth closing rather
-//  than reproducing.
+//  The label beside that glyph stays VISIBLE. Clipping it would leave a 16-unit icon
+//  carrying the entire meaning of a command, one of which destroys a record — and the
+//  legacy delete affordance reached assistive technology with no accessible name at all,
+//  which is the one gap on this screen worth closing rather than reproducing.
+//
+//  ⚠ IT MAY NOW WRAP, AND THAT IS A CORRECTION WITH A MEASUREMENT BEHIND IT. Held on one
+//  line, "Manage Users" measured 65.03px inside a command column of 53.33px, and the shared
+//  grid leaves a cell's overflow visible — so the surplus painted straight over the Name
+//  column in every row: 30.70px of overlap at a 320-wide viewport and still 16.22px at 1024,
+//  with the first row reading "Manage Ad|ministrators" to the eye. The command was legible
+//  and the record's own name was not.
+//
+//  ⚠ AND A COLUMN WIDTH CANNOT FIX IT, WHICH IS WHY THE LABEL IS WHAT CHANGES. The shared
+//  grid is `table-layout: fixed` over a fixed table measure, and under fixed layout an
+//  intrinsic keyword on a column is not a definite track size: declaring `min-content` on
+//  the two command columns left the browser splitting the measure equally all the same —
+//  verified in a real browser, all twelve columns still resolving to 53.33px with the
+//  keyword present in the markup. A percentage would be honoured but would pin a
+//  text-sized control to a proportion of the table, which drifts with the column count.
+//  Letting the two words stack is what actually holds the command inside its own column,
+//  at every width, with no width authored anywhere: measured afterwards as the cell's
+//  scroll width and client width agreeing.
+//
+//  The words stack; neither word breaks mid-word, because the shared cell rule already
+//  breaks only at permitted opportunities.
 .role-list__action-label {
-  white-space: nowrap;
+  @include mx.visually-hidden;
+}
+
+//  The words behind a decorative mark, and the expansion of a stored frequency character. Both are
+//  clipped rather than removed, so they stay in the accessibility tree while contributing nothing to the
+//  painted cell — which is the entire point of both: the cell must look exactly as it did.
+.role-list__absent-value {
+  @include mx.visually-hidden;
+}
+
+//  With the wording clipped, each command is a bare 16-unit glyph — and a 16-unit target is
+//  far below the floor. The box is floored on BOTH axes, for the reason the form vocabulary
+//  gives: a single-glyph command has almost no intrinsic width, and the inline floor matters as
+//  much as the block one. `_forms.scss` floors `button` but does not reach `a`, so stating it
+//  here is what makes the two anchors match the button beside them. Each of the three sits in
+//  its own command column carrying exactly one command, so nothing competes for the width, and
+//  44 fits inside the 53-unit track the fixed layout gives at the narrowest measured step.
+//
+//  The box grows; the glyph inside it does not, and the centring keeps it optically where it
+//  was. No fill, no boundary and no padding is introduced, so the commands still read as the
+//  bare image columns the legacy grid rendered — they are merely reachable by a finger.
+.role-list__row-action {
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
+  justify-content: center;
+}
+
+//  MIGRATION: THE DESTRUCTIVE COMMAND CARRIES NO SURFACE EITHER, which is what makes the three
+//  read alike. It has to be a `button` — removing a role changes state and addresses nothing —
+//  and left with the global button chrome it alone would acquire a fill, a hairline boundary, a
+//  corner radius and generous padding, measuring far wider than its two anchor siblings inside a
+//  fixed-layout track and reading as a different KIND of affordance in the same row. This is the
+//  same substitution the account listing makes, for the same measured reason.
+//
+//  It is then distinguished by INK ALONE, and specifically the accessible danger ink rather than
+//  the raw legacy error hue, which does not clear the contrast threshold as text. Colour is a
+//  REDUNDANT cue and never the message: the command's accessible name and its `title` both read
+//  "Delete", and it opens a confirmation that states what will happen. A reader who cannot
+//  distinguish the hue loses nothing.
+.role-list__row-action--danger {
+  padding: 0;
+  color: var(--color-danger-text);
+  background: none;
+  border: 0;
+  border-radius: 0;
+
+  @include mx.hover {
+    color: var(--color-danger-text);
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -382,3 +515,19 @@
 //  colours, so headings inherit the brand ink the element ramp already gives them.
 //  No fallback argument is written into any `var()` above, because a fallback is a
 //  hardcoded value wearing a token's clothes.
+
+// The 24px floor for the page actions, stated as its OWN rule rather than added to the
+// shared `.role-list__page-action, .role-list__row-action` block above. Two reasons, both load-bearing:
+//   • `.role-list__row-action` is reached by the global `td a` floor already and measured
+//     compliant, so it needs nothing; changing its `display` would alter its layout inside
+//     a table cell for no benefit.
+//   • `.role-list__row-action` is ALREADY a flex container carrying `flex-wrap: wrap` — the fix that stops its icon and label overpainting the Name column at 1024px. Forcing `display: inline-flex` onto the shared group would rewrite that container and regress it, so the row action is deliberately left alone here.
+// `min-block-size` HAS NO EFFECT on a non-replaced INLINE element, so `display` is changed
+// alongside it — declaring the floor alone would have been inert. Measured before this rule:
+// "Add New Role" reported 70.33 x 16.50, short of the minimum. These are standalone action affordances
+// in an action bar, not links inside a sentence, so SC 2.5.8's inline exception does not apply.
+.role-list__page-action {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--target-size-min);
+}

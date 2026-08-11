@@ -171,6 +171,31 @@ public sealed class PermissionService : IPermissionService
     private const string TabNotFoundCode = "permission.tab_not_found";
 
     /// <summary>
+    /// Reason code reported when the addressed module EXISTS but belongs to a different tenant than the one
+    /// the request acts on.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ DISTINCT FROM <see cref="ModuleNotFoundCode"/> ON PURPOSE, AND THE DISTINCTION IS A TENANT-ISOLATION
+    /// BOUNDARY RATHER THAN A NICETY. One consumer - the API's permission authorisation handler - is allowed
+    /// to let a request through when the item genuinely does not exist, so that the endpoint can answer 404
+    /// like every other entity in this API instead of a misleading "not permitted". Letting a request through
+    /// on THIS code would let a tenant administrator read another tenant's row, which is precisely the
+    /// guarantee the isolation tests pin. Collapsing the two codes back together reintroduces that hole
+    /// silently, because both look like "not found" from the outside.
+    /// </remarks>
+    private const string ModuleForeignTenantCode = "permission.module_foreign_tenant";
+
+    /// <summary>
+    /// Reason code reported when the addressed page EXISTS but belongs to a different tenant than the one the
+    /// request acts on.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="TabNotFoundCode"/> for the reason given on
+    /// <see cref="ModuleForeignTenantCode"/>.
+    /// </remarks>
+    private const string TabForeignTenantCode = "permission.tab_foreign_tenant";
+
+    /// <summary>
     /// Reported when the named caller does not exist.
     /// </summary>
     private const string UserNotFoundCode = "permission.user_not_found";
@@ -843,11 +868,18 @@ public sealed class PermissionService : IPermissionService
             .GetByIdAsync(moduleId, cancellationToken)
             .ConfigureAwait(false);
 
-        if (module is null || !BelongsToPortal(module.PortalId, portalId))
+        if (module is null)
         {
             return Result<bool>.Failure(
                 ModuleNotFoundCode,
-                FormattableString.Invariant($"Module {moduleId} does not exist in portal {portalId}."));
+                FormattableString.Invariant($"Module {moduleId} does not exist."));
+        }
+
+        if (!BelongsToPortal(module.PortalId, portalId))
+        {
+            return Result<bool>.Failure(
+                ModuleForeignTenantCode,
+                FormattableString.Invariant($"Module {moduleId} does not belong to portal {portalId}."));
         }
 
         // THE TWO FORMS OF ADDRESS ARE RECONCILED HERE, FOR EVERY KEY, and the placement is where that has
@@ -994,11 +1026,18 @@ public sealed class PermissionService : IPermissionService
         }
 
         Tab? tab = await _tabs.GetByIdAsync(tabId, cancellationToken).ConfigureAwait(false);
-        if (tab is null || !BelongsToPortal(tab.PortalId, portalId))
+        if (tab is null)
         {
             return Result<bool>.Failure(
                 TabNotFoundCode,
-                FormattableString.Invariant($"Page {tabId} does not exist in portal {portalId}."));
+                FormattableString.Invariant($"Page {tabId} does not exist."));
+        }
+
+        if (!BelongsToPortal(tab.PortalId, portalId))
+        {
+            return Result<bool>.Failure(
+                TabForeignTenantCode,
+                FormattableString.Invariant($"Page {tabId} does not belong to portal {portalId}."));
         }
 
         CallerIdentity caller = await ResolveCallerAsync(portalId, userId, cancellationToken)

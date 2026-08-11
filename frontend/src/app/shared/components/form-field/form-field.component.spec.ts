@@ -126,6 +126,22 @@ function queryOrFail<T extends Element>(root: ParentNode, selector: string): T {
   return found;
 }
 
+/**
+ * The identifiers one ARIA reference attribute names, split the way ARIA defines.
+ *
+ * Split rather than compared as a string so that an expectation states WHICH regions are referenced and in
+ * what order, without also asserting the exact spacing a consumer happened to write.
+ */
+function referencesOf(element: Element, attribute: string): readonly string[] {
+  const value = element.getAttribute(attribute);
+
+  if (value === null) {
+    return [];
+  }
+
+  return value.split(/\s+/).filter((token) => token.length > 0);
+}
+
 function queryAll<T extends Element>(root: ParentNode, selector: string): readonly T[] {
   return Array.from(root.querySelectorAll<T>(selector));
 }
@@ -264,7 +280,7 @@ function applyInputs(fixture: ComponentFixture<FormFieldComponent>, inputs: Fiel
       [help]="help"
       [error]="error"
     >
-      <input [attr.id]="controlId.length > 0 ? controlId : null" type="text" />
+      <input [attr.id]="controlId.length > 0 ? controlId : null" type="text" [disabled]="controlDisabled" />
       @if (showFrequency) {
         <select [attr.aria-label]="frequencyName">
           <option value="M">Month</option>
@@ -283,6 +299,8 @@ class FormFieldHostComponent {
   public help = '';
 
   public error: string | readonly string[] | null = null;
+
+  public controlDisabled = false;
 
   public showFrequency = false;
 
@@ -311,7 +329,7 @@ class FormFieldHostComponent {
   standalone: true,
   imports: [FormFieldComponent],
   template: `
-    <app-form-field [label]="label" [for]="controlId">
+    <app-form-field [label]="label" [for]="controlId" [error]="error">
       <select [attr.id]="controlId"></select>
       <span id="probe-custom-name">Frequency</span>
       @if (showEditLink) {
@@ -344,6 +362,9 @@ class FormFieldHostComponent {
 })
 class FormFieldRichHostComponent {
   public label = LABEL_ALREADY_UNPUNCTUATED;
+
+  /** Drives the failure state, so the per-control wiring can be exercised on these control shapes. */
+  public error: string | readonly string[] | null = null;
 
   public controlId = 'cbo-role-groups';
 
@@ -446,9 +467,27 @@ describe('FormFieldComponent', () => {
     return element;
   }
 
-  function labelOf(root: ParentNode): HTMLLabelElement {
+  /**
+   * The field's caption, whichever element the component chose for it.
+   *
+   * Selects on the CLASS rather than on the element name, because the component renders the caption as a
+   * `<label for>` when the caller names a control and as a `<span>` when it does not - a `<label>` can only
+   * associate through `for` or by wrapping its control, and this component projects controls into a sibling
+   * element, so with no `for` a `<label>` would name nothing at all. Every assertion about the caption's
+   * WORDING, its `id` or its required marker holds in both forms, so those use this helper; the assertions
+   * about the element itself use {@link labelElementOf} and are stated per branch.
+   */
+  function captionOf(root: ParentNode): HTMLElement {
+    return queryOrFail<HTMLElement>(root, '.form-field__label');
+  }
+
+  /** The caption in its `<label>` form. Fails the test when the caption is not a label element. */
+  function labelElementOf(root: ParentNode): HTMLLabelElement {
     return queryOrFail<HTMLLabelElement>(root, 'label.form-field__label');
   }
+
+  /** Alias kept so the many tests that only read the caption's text or attributes read naturally. */
+  const labelOf = captionOf;
 
   function slotOf(root: ParentNode): HTMLElement {
     return queryOrFail<HTMLElement>(root, '.form-field__control');
@@ -481,22 +520,159 @@ describe('FormFieldComponent', () => {
   // control associated wording with a control, so the replacement must keep it.
 
   describe('the label', () => {
-    it('renders a real label element, which is how the legacy control associated wording', () => {
-      const label = labelOf(rootOf(createField({ label: LABEL_WITHOUT_SUFFIX })));
+    it('renders a real label element when the caller names a control, which is how the legacy control associated wording', () => {
+      const label = captionOf(rootOf(createField({ label: LABEL_WITHOUT_SUFFIX, for: CONTROL_ID })));
 
       expect(label.tagName.toLowerCase())
-        .withContext('`labelcontrol.ascx:L2` is a native label, not a styled span')
+        .withContext('`labelcontrol.ascx:L2` is a native label wherever there is a control to name')
         .toBe('label');
+      expect(label.getAttribute('for')).toBe(CONTROL_ID);
+    });
+
+    it('renders a SPAN when the caption names no control, because a label would label nothing', () => {
+      // ⚠ THIS CASE WAS INVERTED, AND THE INVERSION WAS A REPORTED DEFECT. The component emitted a
+      // `<label>` unconditionally, so three surfaces that use it for a caption with no associated
+      // control — the two read-only credential facts on the password screen, the group captions on
+      // the portal settings screen, and one caption on the module create screen — each emitted a
+      // label with no `for` and no nested control. The browser reports that as an error ("No label
+      // associated with a form field") and it is meaningless to assistive technology.
+      //
+      // LEGACY IS NOT THE AUTHORITY AGAINST THIS. `labelcontrol.ascx:L2` is a raw
+      // `<label id=label runat="server">` and NEITHER that markup NOR its code-behind ever sets `for`
+      // or `AssociatedControlID` — so every label the measured control produced was unassociated.
+      // Setting `for` when a control IS named already improves on the measurement; declining to emit
+      // a label when none is named is that same improvement carried to its conclusion.
+      const root = rootOf(createField({ label: LABEL_WITHOUT_SUFFIX }));
+      const caption = captionOf(root);
+
+      expect(caption.tagName.toLowerCase()).toBe('span');
+
+      // No label element at all, so there is nothing for the browser to report.
+      expect(root.querySelector('label'))
+        .withContext('no unassociated label is emitted')
+        .toBeNull();
+
+      // The caption is otherwise identical: the class is what the appearance rests on, and the `id`
+      // is what every ARIA reference to it resolves through.
+      expect(caption.classList.contains('form-field__label')).toBeTrue();
+      expect(caption.id.length).toBeGreaterThan(0);
+      expect(caption.hasAttribute('for')).toBeFalse();
+      expect(caption.textContent ?? '').toContain(LABEL_WITHOUT_SUFFIX);
+    });
+
+    it('renders the caption as a span when the caller names NO control, so no label associates with nothing', () => {
+      // The accessibility correction this component owns. A `<label>` associates with a control in exactly
+      // two ways - through `for`, or by wrapping the control - and neither is available when the caller
+      // supplies no control id, because controls are projected into the sibling `.form-field__control`
+      // element rather than inside the caption. The `<label>` therefore named nothing, focused nothing and
+      // forwarded no click, and Chrome reports it as "No label associated with a form field". Measured on
+      // the built application, that was one dangling label on `/portals/new` (the "Portal Type" radio
+      // group) and one on `/modules/new` (the "Visibility" radio group).
+      const root = rootOf(createField({ label: LABEL_WITHOUT_SUFFIX, for: '' }));
+      const caption = captionOf(root);
+
+      expect(caption.tagName.toLowerCase())
+        .withContext('a caption with no control to point at must not be expressed as a label')
+        .toBe('span');
+      expect(isAbsent(root, 'label.form-field__label'))
+        .withContext('no label element may survive anywhere in the field')
+        .toBeTrue();
+    });
+
+    it('switches the caption element when a control identifier arrives after the first render', () => {
+      // The `for` input is not fixed at construction: a caller may resolve a control id asynchronously, and
+      // the caption must become a real label at that point rather than staying a span for the rest of the
+      // field's life.
+      const fixture = createField({ label: LABEL_WITHOUT_SUFFIX, for: '' });
+
+      expect(captionOf(rootOf(fixture)).tagName.toLowerCase()).toBe('span');
+
+      applyInputs(fixture, { for: CONTROL_ID });
+
+      const label = labelElementOf(rootOf(fixture));
+
+      expect(label.tagName.toLowerCase()).toBe('label');
+      expect(attributeOrFail(label, 'for')).toBe(CONTROL_ID);
+    });
+
+    it('carries the published caption identifier in BOTH element forms, so no reference dangles', () => {
+      // Both `groupLabelledBy` and the per-control fallback point at whatever `labelId` publishes, so the
+      // rendered element must carry exactly that value in either form. The value itself legitimately changes
+      // with the control id - the component derives its identifier stem from the control it names, falling
+      // back to its own instance counter - so the assertion is against the published value at each point,
+      // never against a remembered one.
+      const fixture = createField({ label: LABEL_WITHOUT_SUFFIX, for: '' });
+
+      expect(attributeOrFail(captionOf(rootOf(fixture)), 'id'))
+        .withContext('the span form must carry the published identifier')
+        .toBe(fixture.componentInstance.labelId());
+
+      applyInputs(fixture, { for: CONTROL_ID });
+
+      expect(attributeOrFail(captionOf(rootOf(fixture)), 'id'))
+        .withContext('and so must the label form, after the switch')
+        .toBe(fixture.componentInstance.labelId());
+    });
+
+    it('renders the required marker in the span form as well as in the label form', () => {
+      const root = rootOf(createField({ label: LABEL_WITHOUT_SUFFIX, for: '', required: true }));
+      const marker = queryOrFail<HTMLElement>(root, '.form-field__required');
+
+      expect(captionOf(root).contains(marker))
+        .withContext('the marker joins the accessible name in both forms, or a required field loses it')
+        .toBeTrue();
+    });
+
+    it('captions with a span INSTEAD when there is no control to name, so no label captions nothing', () => {
+      // ⚠ MIGRATION - a legacy markup defect reversed rather than reproduced. `LabelControl.vb:L292-L295`
+      // guards the `for` assignment with `If Not String.IsNullOrEmpty(ControlName)`, so the 5 of 186
+      // legacy declarations with no association rendered a `label` element captioning nothing. Six fields
+      // in this application are that case - three radio groups on the portal screens, one on the module
+      // form, and two read-only values on the password screen, which have no control at all - and
+      // reproducing the legacy shape made them the application's ONLY form-label diagnostic.
+      //
+      // Nothing about the accessible name changes: the caption keeps the same class and the same id, the
+      // control group still points at it, and the per-control fallback still points at it. What changes is
+      // one computed property on six fields, `cursor`, and losing it is itself a correction - a pointer
+      // cursor on a caption that focuses nothing promises an interaction that does not exist.
+      const caption = captionOf(rootOf(createField({ label: LABEL_WITHOUT_SUFFIX })));
+
+      expect(caption.tagName.toLowerCase()).toBe('span');
+      expect(caption.hasAttribute('for'))
+        .withContext('a span cannot carry a control association, and must not pretend to')
+        .toBeFalse();
+      // The caption is still a caption: same wording, same identifier to be named from.
+      expect(collapsedText(caption)).toBe(LABEL_WITHOUT_SUFFIX);
+      expect((caption.getAttribute('id') ?? '').length).toBeGreaterThan(0);
+    });
+
+    it('switches between the two caption elements as the control identifier comes and goes', () => {
+      // The discriminating test for the rule above: one field, driven both ways, so neither branch can
+      // pass by accident of the fixture it happens to be given.
+      const fixture = createField({ label: LABEL_WITHOUT_SUFFIX, for: CONTROL_ID });
+
+      expect(captionOf(rootOf(fixture)).tagName.toLowerCase()).toBe('label');
+
+      applyInputs(fixture, { for: '' });
+
+      expect(captionOf(rootOf(fixture)).tagName.toLowerCase()).toBe('span');
+
+      applyInputs(fixture, { for: OTHER_CONTROL_ID });
+
+      const restored = captionOf(rootOf(fixture));
+
+      expect(restored.tagName.toLowerCase()).toBe('label');
+      expect(restored.getAttribute('for')).toBe(OTHER_CONTROL_ID);
     });
 
     it('renders the supplied wording', () => {
-      const label = labelOf(rootOf(createField({ label: LABEL_WITHOUT_SUFFIX })));
+      const label = captionOf(rootOf(createField({ label: LABEL_WITHOUT_SUFFIX })));
 
       expect(collapsedText(label)).toBe(LABEL_WITHOUT_SUFFIX);
     });
 
     it('carries the projected control identifier as its `for`', () => {
-      const label = labelOf(rootOf(createField({ label: LABEL_WITHOUT_SUFFIX, for: CONTROL_ID })));
+      const label = labelElementOf(rootOf(createField({ label: LABEL_WITHOUT_SUFFIX, for: CONTROL_ID })));
 
       expect(attributeOrFail(label, 'for')).toBe(CONTROL_ID);
     });
@@ -506,17 +682,18 @@ describe('FormFieldComponent', () => {
 
       applyInputs(fixture, { for: OTHER_CONTROL_ID });
 
-      expect(attributeOrFail(labelOf(rootOf(fixture)), 'for')).toBe(OTHER_CONTROL_ID);
+      expect(attributeOrFail(labelElementOf(rootOf(fixture)), 'for')).toBe(OTHER_CONTROL_ID);
     });
 
-    it('omits the `for` attribute ENTIRELY when no control identifier is supplied', () => {
+    it('emits NO `for` attribute at all when no control identifier is supplied', () => {
       // A measured legacy shape rather than a defensive nicety: `controlname` is absent on 5 of the 186
       // in-scope `<dnn:label>` declarations, and `plRSVPCode` at `editroles.ascx` carries no resource key
       // either. Rendering `for=""` would turn each of those into a reference that names nothing, so the
-      // attribute must be ABSENT and not merely empty.
-      const label = labelOf(rootOf(createField({ label: LABEL_WITHOUT_SUFFIX, for: '' })));
+      // attribute must be ABSENT and not merely empty - and because the caption is a `span` in that case,
+      // it is absent for the stronger reason that the element cannot carry one meaningfully.
+      const caption = captionOf(rootOf(createField({ label: LABEL_WITHOUT_SUFFIX, for: '' })));
 
-      expect(label.hasAttribute('for'))
+      expect(caption.hasAttribute('for'))
         .withContext('an empty control identifier must remove the attribute, not blank it')
         .toBeFalse();
     });
@@ -524,14 +701,14 @@ describe('FormFieldComponent', () => {
     it('renders unconditionally, keeping the field shape when no wording is supplied', () => {
       // `labelcontrol.ascx` renders its label element with no condition attached, so a field with no wording
       // keeps the same shape rather than collapsing.
-      const label = labelOf(rootOf(createField({ label: '' })));
+      const label = captionOf(rootOf(createField({ label: '' })));
 
       expect(collapsedText(label)).toBe('');
     });
 
     it('carries an identifier so other elements can name themselves from it', () => {
       const fixture = createField({ label: LABEL_WITHOUT_SUFFIX, for: CONTROL_ID });
-      const label = labelOf(rootOf(fixture));
+      const label = captionOf(rootOf(fixture));
 
       expect(attributeOrFail(label, 'id'))
         .withContext('the component publishes this identifier as `labelId`')
@@ -544,7 +721,7 @@ describe('FormFieldComponent', () => {
 
   describe('label punctuation', () => {
     function renderedLabel(text: string): string {
-      return collapsedText(labelOf(rootOf(createField({ label: text }))));
+      return collapsedText(captionOf(rootOf(createField({ label: text }))));
     }
 
     it('strips a colon that arrived through the suffix attribute', () => {
@@ -823,7 +1000,7 @@ describe('FormFieldComponent', () => {
     });
 
     it('is removed from the label as well as from a message', () => {
-      const label = labelOf(
+      const label = captionOf(
         rootOf(createField({ label: `<br>${LABEL_WITH_DECLARED_SUFFIX}` })),
       );
 
@@ -902,7 +1079,7 @@ describe('FormFieldComponent', () => {
     });
 
     it('shows markup in a LABEL as characters and creates no element', () => {
-      const label = labelOf(rootOf(createField({ label: '<b>Role Name</b>' })));
+      const label = captionOf(rootOf(createField({ label: '<b>Role Name</b>' })));
 
       expect(label.querySelector('b')).toBeNull();
       expect(collapsedText(label)).toBe('<b>Role Name</b>');
@@ -930,7 +1107,7 @@ describe('FormFieldComponent', () => {
       // names. The un-nested arrangement is not invented to fix that: the legacy codebase already ships it
       // in `Website/controls/helpbuttoncontrol.ascx`.
       const root = rootOf(createField({ label: LABEL_WITHOUT_SUFFIX, help: HELP_TEXT }));
-      const label = labelOf(root);
+      const label = captionOf(root);
       const toggle = toggleOf(root);
 
       expect(label.querySelector('button'))
@@ -1095,7 +1272,7 @@ describe('FormFieldComponent', () => {
 
     it('sits OUTSIDE the label rather than inside it', () => {
       const root = revealedField();
-      const label = labelOf(root);
+      const label = captionOf(root);
 
       expect(label.querySelector('.form-field__help')).toBeNull();
       expect(label.contains(helpRegionOf(root))).toBeFalse();
@@ -1106,7 +1283,7 @@ describe('FormFieldComponent', () => {
       // row's own next sibling - which is the faithful translation of the legacy file where the panel on L9
       // follows the closing label tag on L7.
       const root = revealedField();
-      const position = labelOf(root).compareDocumentPosition(helpRegionOf(root));
+      const position = captionOf(root).compareDocumentPosition(helpRegionOf(root));
 
       expect(position & Node.DOCUMENT_POSITION_FOLLOWING)
         .withContext('help must be met after the label it explains')
@@ -1200,7 +1377,10 @@ describe('FormFieldComponent', () => {
       expect(target === null ? '' : collapsedText(target))
         .withContext('and that element must be the visible label')
         .toBe(LABEL_WITH_PARENTHESES);
+      // The rich host names a control, so its caption is the `label` branch. Asserted rather than
+      // assumed, because the element a group is named FROM is the thing under test here.
       expect(target === null ? '' : target.tagName.toLowerCase()).toBe('label');
+      expect(target === null ? '' : target.className).toContain('form-field__label');
     });
 
     it('is not named when there is no label wording to name it with', () => {
@@ -1563,6 +1743,55 @@ describe('FormFieldComponent', () => {
   // convention exists anywhere in the legacy label markup. Being new, the marker must meet the current
   // standard rather than the legacy one: the meaning cannot rest on a glyph and a colour alone.
 
+  describe('the unavailable state', () => {
+    /*
+     * ⚠ THE STYLING FOR THIS STATE EXISTED AND WAS UNREACHABLE. The stylesheet declares a
+     * `:host(.form-field--disabled)` rule that mutes the label and shows a not-allowed cursor, but
+     * nothing ever set that class - the component contained no reference to a disabled state at all.
+     * A disabled field was measured rendering its label at the ordinary brand ink, bold, with
+     * `cursor: pointer`, indistinguishable from an enabled one; the only signal was the user agent's
+     * own 13x13 checkbox glyph, measuring roughly 1.38:1 against the surface.
+     */
+    it('marks the host unavailable when the projected control is disabled', () => {
+      const fixture = createHost();
+
+      expect(hostRootOf(fixture).querySelector('.form-field--disabled'))
+        .withContext('an enabled field is not marked')
+        .toBeNull();
+
+      fixture.componentInstance.controlDisabled = true;
+      fixture.detectChanges();
+
+      expect(hostRootOf(fixture).querySelector('.form-field--disabled'))
+        .withContext('a disabled field is marked, so the existing rule applies')
+        .not.toBeNull();
+    });
+
+    it('stops marking it once the control becomes available again', () => {
+      // Read on every content check rather than once, because a control can be enabled or disabled at
+      // any time after projection - which is exactly what a cross-field rule does.
+      const fixture = createHost();
+
+      fixture.componentInstance.controlDisabled = true;
+      fixture.detectChanges();
+      fixture.componentInstance.controlDisabled = false;
+      fixture.detectChanges();
+
+      expect(hostRootOf(fixture).querySelector('.form-field--disabled')).toBeNull();
+    });
+
+    it('does NOT mark a field that projects no control at all', () => {
+      // Several screens use this component to present a read-only value, projecting a paragraph rather
+      // than a control. Nothing there is unavailable, so nothing may be muted.
+      const fixture = TestBed.createComponent(FormFieldComponent);
+
+      fixture.componentRef.setInput('label', 'Password Expires');
+      fixture.detectChanges();
+
+      expect(rootOf(fixture).classList.contains('form-field--disabled')).toBeFalse();
+    });
+  });
+
   describe('the required marker', () => {
     it('is absent by default', () => {
       const root = rootOf(createField({ label: LABEL_WITHOUT_SUFFIX }));
@@ -1606,7 +1835,7 @@ describe('FormFieldComponent', () => {
       const root = rootOf(createField({ label: LABEL_WITHOUT_SUFFIX, required: true }));
       const marker = queryOrFail<HTMLElement>(root, '.form-field__required');
 
-      expect(labelOf(root).contains(marker))
+      expect(captionOf(root).contains(marker))
         .withContext('so the wording travels with the group and the control references')
         .toBeTrue();
     });
@@ -1614,7 +1843,7 @@ describe('FormFieldComponent', () => {
     it('does not disturb the label wording itself', () => {
       const root = rootOf(createField({ label: LABEL_WITH_DECLARED_SUFFIX, required: true }));
 
-      expect(collapsedText(labelOf(root)).startsWith(LABEL_WITHOUT_SUFFIX)).toBeTrue();
+      expect(collapsedText(captionOf(root)).startsWith(LABEL_WITHOUT_SUFFIX)).toBeTrue();
     });
   });
 
@@ -1724,8 +1953,8 @@ describe('FormFieldComponent', () => {
       // metadata is inspected to obtain it.
       const fixture = createField({ label: LABEL_WITHOUT_SUFFIX });
 
-      expect(collapsedText(labelOf(rootOf(fixture)))).toBe(LABEL_WITHOUT_SUFFIX);
-      expect(collapsedText(labelOf(hostRootOf(createHost())))).toBe(LABEL_WITH_PARENTHESES);
+      expect(collapsedText(captionOf(rootOf(fixture)))).toBe(LABEL_WITHOUT_SUFFIX);
+      expect(collapsedText(captionOf(hostRootOf(createHost())))).toBe(LABEL_WITH_PARENTHESES);
     });
 
     it('renders every input change pushed in through the component reference', () => {
@@ -1743,8 +1972,8 @@ describe('FormFieldComponent', () => {
 
       const root = rootOf(fixture);
 
-      expect(collapsedText(labelOf(root)).startsWith(LABEL_WITHOUT_SUFFIX)).toBeTrue();
-      expect(attributeOrFail(labelOf(root), 'for')).toBe(CONTROL_ID);
+      expect(collapsedText(captionOf(root)).startsWith(LABEL_WITHOUT_SUFFIX)).toBeTrue();
+      expect(attributeOrFail(captionOf(root), 'for')).toBe(CONTROL_ID);
       expect(isAbsent(root, '.form-field__required')).toBeFalse();
       expect(isAbsent(root, 'button.form-field__help-toggle')).toBeFalse();
       expect(errorTexts(root)).toEqual([ERROR_WITHOUT_LEADING_BREAK]);
@@ -1844,7 +2073,7 @@ describe('FormFieldComponent', () => {
 
       const root = rootOf(fixture);
 
-      expect(collapsedText(labelOf(root)))
+      expect(collapsedText(captionOf(root)))
         .withContext('an unreadable value renders as nothing, never as its own text')
         .toBe('');
       expect(isAbsent(root, 'button.form-field__help-toggle'))
@@ -1881,4 +2110,258 @@ describe('FormFieldComponent', () => {
         .toBe(0);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // THE FAILURE STATE ON THE CONTROL ITSELF
+  // ---------------------------------------------------------------------------
+
+  describe('the failure state written onto projected controls', () => {
+    // ⚠ ARIA DESCRIPTIONS ARE NOT INHERITED. The composite group carries `aria-describedby` for the
+    // field as a whole, and that reference is announced when the group is entered - not when the control
+    // inside it is reached, which is the moment a person needs to be told what is wrong with the box they
+    // are sitting in. Runtime testing measured the consequence on the real account and profile forms:
+    // `aria-invalid`, `aria-describedby` and `aria-errormessage` were ALL null on every invalid control,
+    // so the error text was on screen with nothing connecting it to the control it was about, and the
+    // form was silently unsubmittable.
+    //
+    // All three attributes are asserted together because they only work together: `aria-errormessage` is
+    // ignored by assistive technology unless `aria-invalid` is set, and its support is uneven enough that
+    // the well-supported `aria-describedby` has to carry the same text for the readers that do not
+    // honour it.
+
+    it('marks the control invalid and points it at the message when a failure is reported', () => {
+      const fixture = createHost();
+
+      fixture.componentInstance.error = ERROR_WITHOUT_LEADING_BREAK;
+      fixture.detectChanges();
+
+      const root = hostRootOf(fixture);
+      const control = queryOrFail<HTMLInputElement>(root, 'input[type="text"]');
+      const region = errorRegionOf(root);
+
+      expect(control.getAttribute('aria-invalid')).toBe('true');
+      expect(control.getAttribute('aria-errormessage')).toBe(region.id);
+      expect(referencesOf(control, 'aria-describedby')).toContain(region.id);
+    });
+
+    it('withdraws all three the moment the field becomes valid again', () => {
+      const fixture = createHost();
+
+      fixture.componentInstance.error = ERROR_WITHOUT_LEADING_BREAK;
+      fixture.detectChanges();
+
+      fixture.componentInstance.error = null;
+      fixture.detectChanges();
+
+      const control = queryOrFail<HTMLInputElement>(hostRootOf(fixture), 'input[type="text"]');
+
+      // Removed rather than set to "false": a control that is no longer in error is not making a
+      // statement about its validity, and a dangling reference to a region that has left the document is
+      // worse than no reference at all.
+      expect(control.hasAttribute('aria-invalid')).toBeFalse();
+      expect(control.hasAttribute('aria-errormessage')).toBeFalse();
+      expect(control.hasAttribute('aria-describedby')).toBeFalse();
+    });
+
+    it('describes the control with the help region while the disclosure is open', () => {
+      const fixture = createHost();
+
+      fixture.componentInstance.help = HELP_TEXT;
+      fixture.detectChanges();
+
+      const control = queryOrFail<HTMLInputElement>(hostRootOf(fixture), 'input[type="text"]');
+
+      expect(control.hasAttribute('aria-describedby'))
+        .withContext('a closed disclosure is not in the document, so nothing may reference it')
+        .toBeFalse();
+
+      toggleOf(hostRootOf(fixture)).click();
+      fixture.detectChanges();
+
+      expect(referencesOf(control, 'aria-describedby')).toEqual([
+        helpRegionOf(hostRootOf(fixture)).id,
+      ]);
+    });
+
+    it('reads help then error, in the order they are seen', () => {
+      const fixture = createHost();
+
+      fixture.componentInstance.help = HELP_TEXT;
+      fixture.componentInstance.error = ERROR_WITHOUT_LEADING_BREAK;
+      fixture.detectChanges();
+      toggleOf(hostRootOf(fixture)).click();
+      fixture.detectChanges();
+
+      const root = hostRootOf(fixture);
+      const control = queryOrFail<HTMLInputElement>(root, 'input[type="text"]');
+
+      expect(referencesOf(control, 'aria-describedby')).toEqual([
+        helpRegionOf(root).id,
+        errorRegionOf(root).id,
+      ]);
+    });
+
+    it('describes every control of a composite field, not just the first', () => {
+      // `editroles.ascx` L98-L115 puts a text box AND a drop-down list under one label, and the
+      // resource entry says so outright - 'These two fields are used in conjunction to enter a Billing
+      // Period'. A failure belongs to both halves.
+      const fixture = createHost();
+
+      fixture.componentInstance.showFrequency = true;
+      fixture.componentInstance.frequencyName = 'Billing Frequency';
+      fixture.componentInstance.error = ERROR_WITHOUT_LEADING_BREAK;
+      fixture.detectChanges();
+
+      const root = hostRootOf(fixture);
+      const region = errorRegionOf(root);
+
+      for (const control of [
+        queryOrFail<HTMLElement>(root, 'input[type="text"]'),
+        queryOrFail<HTMLElement>(root, 'select'),
+      ]) {
+        expect(control.getAttribute('aria-invalid')).toBe('true');
+        expect(referencesOf(control, 'aria-describedby')).toContain(region.id);
+      }
+    });
+
+    it('leaves a link and a command button out of it entirely', () => {
+      // `roles.ascx` L5-L16 projects a drop-down list, an Edit link and a Delete image button under one
+      // label. The field's failure is about the list; describing Delete with it would be a lie, and
+      // `aria-invalid` on a link means nothing at all.
+      const fixture = createRichHost();
+
+      fixture.componentInstance.showEditLink = true;
+      fixture.componentInstance.showSubmit = true;
+      fixture.componentInstance.error = ERROR_WITHOUT_LEADING_BREAK;
+      fixture.detectChanges();
+
+      const root = richRootOf(fixture);
+      const link = queryOrFail<HTMLAnchorElement>(root, 'a.probe-link');
+
+      expect(link.hasAttribute('aria-invalid')).toBeFalse();
+      expect(link.hasAttribute('aria-describedby')).toBeFalse();
+
+      // The submit input IS a form control and does carry the state - `input` is describable, and a
+      // submit button inside the field slot is projected content the field genuinely owns.
+      expect(queryOrFail<HTMLElement>(root, 'select').getAttribute('aria-invalid')).toBe('true');
+    });
+
+    it("keeps a consumer's own description and adds to it, then withdraws only its own", () => {
+      const fixture = createRichHost();
+
+      const control = queryOrFail<HTMLElement>(richRootOf(fixture), 'select');
+
+      control.setAttribute('aria-describedby', 'probe-custom-name');
+
+      fixture.componentInstance.error = ERROR_WITHOUT_LEADING_BREAK;
+      fixture.detectChanges();
+
+      const region = errorRegionOf(richRootOf(fixture));
+
+      expect(referencesOf(control, 'aria-describedby')).toEqual(['probe-custom-name', region.id]);
+
+      fixture.componentInstance.error = null;
+      fixture.detectChanges();
+
+      expect(referencesOf(control, 'aria-describedby'))
+        .withContext("the consumer's own reference is not collateral damage")
+        .toEqual(['probe-custom-name']);
+    });
+
+    it("never overwrites a consumer that states validity itself, but still names the message", () => {
+      const fixture = createRichHost();
+
+      const control = queryOrFail<HTMLElement>(richRootOf(fixture), 'select');
+
+      control.setAttribute('aria-invalid', 'false');
+
+      fixture.componentInstance.error = ERROR_WITHOUT_LEADING_BREAK;
+      fixture.detectChanges();
+
+      const region = errorRegionOf(richRootOf(fixture));
+
+      // The consumer's statement stands - it may know something this component does not. The
+      // MESSAGE reference is contributed regardless, because seventy consumer templates in this
+      // application bind `aria-invalid` themselves and none binds `aria-errormessage`: withholding
+      // the reference wherever a consumer had set the state would penalise the careful ones.
+      expect(control.getAttribute('aria-invalid')).toBe('false');
+      expect(control.getAttribute('aria-errormessage')).toBe(region.id);
+      expect(referencesOf(control, 'aria-describedby')).toContain(region.id);
+    });
+
+    // ⚠ THIS TRIO GUARDS A DEFECT MEASURED IN A REAL BROWSER, NOT A HYPOTHETICAL.
+    //
+    // Withdrawal used to be unconditional: whenever this field had no error of its own it called
+    // `removeAttribute('aria-errormessage')` on every projected control, whoever had written the
+    // attribute. The account creation screen writes it — both password boxes point at a GROUP error
+    // that screen renders, because the password rule spans two inputs and belongs to neither field,
+    // so each field's own error is permanently empty and the withdrawal branch ran on every check.
+    // Measured on the built application: `hasAttribute('aria-errormessage')` false on BOTH inputs,
+    // zero occurrences of `errormessage` anywhere in the accessibility tree, while the same screen's
+    // `aria-invalid` survived because that branch already asked who owned it. A declarative binding
+    // does not heal: Angular rewrites an attribute only when the bound value changes, so one removal
+    // stands for as long as the message does.
+    it("never withdraws a message reference the consumer wrote for a rule this field does not own", () => {
+      const fixture = createRichHost();
+
+      const control = queryOrFail<HTMLElement>(richRootOf(fixture), 'select');
+
+      // What a consumer with a group rule does: name its own region, on a field whose own error is
+      // empty because the rule is not about this one control.
+      control.setAttribute('aria-errormessage', 'probe-group-rule');
+      control.setAttribute('aria-invalid', 'true');
+
+      fixture.componentInstance.error = null;
+      fixture.detectChanges();
+
+      expect(control.getAttribute('aria-errormessage'))
+        .withContext('the reference this component never wrote is not this component to remove')
+        .toBe('probe-group-rule');
+      expect(control.getAttribute('aria-invalid'))
+        .withContext("and the consumer's own state stands with it")
+        .toBe('true');
+    });
+
+    it('still withdraws the reference it wrote itself once its own region has gone', () => {
+      const fixture = createRichHost();
+
+      const control = queryOrFail<HTMLElement>(richRootOf(fixture), 'select');
+
+      fixture.componentInstance.error = ERROR_WITHOUT_LEADING_BREAK;
+      fixture.detectChanges();
+
+      expect(control.getAttribute('aria-errormessage')).toBe(errorRegionOf(richRootOf(fixture)).id);
+
+      fixture.componentInstance.error = null;
+      fixture.detectChanges();
+
+      // A dangling reference is worse than no reference, and this one names a region that has left
+      // the document. Ownership is what distinguishes this case from the one above.
+      expect(control.hasAttribute('aria-errormessage'))
+        .withContext('a reference to a region that no longer exists is withdrawn')
+        .toBeFalse();
+    });
+
+    it("leaves a consumer's group reference in place even when this field develops an error of its own", () => {
+      const fixture = createRichHost();
+
+      const control = queryOrFail<HTMLElement>(richRootOf(fixture), 'select');
+
+      control.setAttribute('aria-errormessage', 'probe-group-rule');
+
+      fixture.componentInstance.error = ERROR_WITHOUT_LEADING_BREAK;
+      fixture.detectChanges();
+
+      // `aria-errormessage` takes ONE identifier, so the two cannot both be named through it and a
+      // choice has to be made. The consumer's stands, for the same reason its `aria-invalid` stands:
+      // it may know something this component does not. Nothing is lost by the choice - this field's
+      // own message is still reached through `aria-describedby`, which takes a LIST and is additive,
+      // so a reader hears both.
+      expect(control.getAttribute('aria-errormessage')).toBe('probe-group-rule');
+      expect(referencesOf(control, 'aria-describedby'))
+        .withContext("this field's own message is still described")
+        .toContain(errorRegionOf(richRootOf(fixture)).id);
+    });
+  });
+
 });

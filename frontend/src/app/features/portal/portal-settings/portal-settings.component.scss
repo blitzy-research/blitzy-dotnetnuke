@@ -20,6 +20,7 @@
 //  entry below was checked against the template rather than assumed:
 //
 //      .portal-settings
+//      .portal-settings__aliases-link
 //      .portal-settings__tablist
 //      .portal-settings__tab
 //      .portal-settings__tab:hover
@@ -30,6 +31,7 @@
 //      .portal-settings__section
 //      .portal-settings__grid
 //      .portal-settings__grid > app-form-field
+//      .portal-settings__field--wide
 //      .portal-settings__control
 //      .portal-settings__control--medium
 //      .portal-settings__control--narrow
@@ -105,7 +107,25 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   font-family: var(--font-family-base);
   font-size: var(--font-size-md);
   line-height: var(--line-height-tight);
+
+  // ⚠ THE SCREEN'S MEASURE LIVES HERE, ON THE ONE REGION EVERY PART OF THE SCREEN IS INSIDE.
+  // The note on `.portal-settings__panel` records why the panel and the tab strip were capped
+  // together - two regions of one screen at different widths read as unrelated - and capping
+  // them individually left the HEADER out by exactly that argument. Runtime measurement at
+  // 1920x1080 found the panel spanning x 226.88 to 1250.88 while the header spanned 226.88 to
+  // 1889.00: aligned on the leading edge, 638.12px apart on the trailing one, with the screen's
+  // single header action stranded 530.03px past the body's right edge across an empty band of
+  // the same width. The divergence begins at a viewport of 1282 - the first width at which a
+  // 1024px cap binds at all - and grows one pixel per pixel above it, so it is invisible at
+  // 1280 and unmistakable beyond it.
+  //
+  // Stating the measure ONCE here rather than on each part is what makes the alignment
+  // structural instead of coincidental: a region added to this screen tomorrow inherits it,
+  // where under three sibling caps it would have to remember to ask. It also costs less than
+  // the three declarations it replaces, in a stylesheet that sits against its size budget.
+  max-inline-size: mx.breakpoint('lg');
 }
+
 
 //  TAB STRIP — the two surviving top-level groups
 // The strip's own rule reproduces the `<hr noshade size="1">` that every
@@ -117,6 +137,17 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   flex-wrap: wrap;
   gap: var(--space-1);
   border-block-end: var(--border-width) var(--border-style) var(--color-text-muted);
+
+  // ⚠ #24 — NO CAP IS DECLARED HERE ANY MORE, AND THAT IS THE FIX RATHER THAN ITS LOSS. The
+  // strip once carried its own copy of the panel's measure so the two would share an edge;
+  // both copies now come from the one cap on `.portal-settings`, which every part of the
+  // screen - this strip, the panel, the failure surface and the page header - is inside. The
+  // measurement that made the cap necessary is worth keeping: before it the strip ran to
+  // 1070px at 1280 and 1714px at 1920 while the panel stopped at 480px, and the strip's
+  // underline, which reproduces the legacy section-head rule, ran two to three times further
+  // than the fields beneath it and read as a rule belonging to the page rather than to the
+  // group. No `min-inline-size` floor is needed either: this is a WRAPPING flex container, so
+  // it has no unshrinkable min-content contribution of its own to be pinned by.
 }
 
 // A tab is a `<button>`, so its type, padding, radius and cursor already come from
@@ -127,6 +158,18 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   background-color: transparent;
   border-color: transparent;
   font-size: var(--font-size-lg);
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and
+  // suppression without replacement is what leaves a control with no visible response at
+  // all. `background-color: transparent` above weighs (0,1,0) while the global
+  // `button:active { background-color: var(--color-selected) }` weighs (0,1,1) — one class
+  // outranks one type selector, so the shared press tint was already losing before a
+  // pointer arrived. Measured: this control was BYTE-IDENTICAL in its pressed and resting
+  // states. The value is the shared selection tint, so the press reads the same here as on
+  // every other control in the console; nothing new is invented.
+  &:active {
+    background-color: var(--color-selected);
+  }
+
 }
 
 // Declared flatly rather than inside a hover-capability query. The shared mixin
@@ -244,20 +287,65 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 // the mixin here is deliberate and free of side effects — it is documented
 // idempotent — and it keeps the ring attached to these two affordances even if the
 // template renders either of them as something other than a native element.
+// One selector list rather than two expansions of the mixin: it emits a whole `:focus-visible` block
+// at each call site, so a second expansion is a second copy of the same rule - and giving both
+// affordances the identical ring is also the point, since a reader should not be able to tell them
+// apart by their focus treatment.
+//
+// ⚠ THE HOST-NAME LISTING LINK IS NOT IN THIS LIST, and needs nothing here. It is a page action, so
+// the shared `.page-action` rule gives it its metrics and its target-size floor, and the global reset
+// gives every anchor the same ring this mixin draws. Styling it again here would restate an affordance
+// the shared rules already own.
 .portal-settings__tab,
 .portal-settings__toggle {
   @include mx.focus-ring;
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and
+  // suppression without replacement is what leaves a control with no visible response at
+  // all. `background-color: transparent` above weighs (0,1,0) while the global
+  // `button:active { background-color: var(--color-selected) }` weighs (0,1,1) — one class
+  // outranks one type selector, so the shared press tint was already losing before a
+  // pointer arrived. Measured: this control was BYTE-IDENTICAL in its pressed and resting
+  // states. The value is the shared selection tint, so the press reads the same here as on
+  // every other control in the console; nothing new is invented.
+  &:active {
+    background-color: var(--color-selected);
+  }
+
 }
 
 //  TAB PANEL
-// The legacy group bodies were fixed at width="525" inside a width="560" wrapper.
-// No width token exists, so the measure snaps to the smallest declared breakpoint
-// step — the helper is exported for exactly this use. A shade narrower than the
-// legacy table, and a deliberate snap to the scale rather than a pixel match.
+//
+// ⚠ #24 — THE MEASURE WAS THE DEFECT, AND THE FIX IS A MEASURED WIDENING, NOT A REMOVAL.
+//
+// The legacy group bodies were fixed at width="525" inside a width="560" wrapper, and this
+// rule snapped that to the smallest declared breakpoint step, 30rem = 480px. That snap was
+// wrong in ONE respect that runtime measurement made unmistakable: the step is a
+// BREAKPOINT — a viewport threshold — and using it as a content measure pinned the panel to
+// 480px at EVERY viewport. Measured consequences at 1280 the panel used 480 of 1280 and
+// left 62.5% of the width empty; at 1920 it left 75% empty; and the tab strip that CONTROLS
+// the panel, which carried no cap at all, rendered 2.23x wider at 1280 and 3.57x wider at
+// 1920 than the panel it labels — so the two read as unrelated regions and the operator
+// could not tell which control governed which fields.
+//
+// The measure is therefore raised to the LARGE step, 64rem = 1024px, and it is declared ONCE
+// on `.portal-settings` so that every part of the screen shares it - this panel, the tab strip
+// that controls it, the failure surface and the page header alike. A measure does remain: an
+// uncapped form measure is its own accessibility defect (WCAG 1.4.8 asks for no more than 80
+// characters per line) and the legacy screen was capped, so removing the cap outright would
+// trade one measured fault for another. What changed is the number, where it is stated, and
+// the alignment that follows from stating it in one place.
+//
+// Visual continuity is preserved where it is real: the field grid below still lays a single
+// column out to the medium step, so at the widths a legacy operator's screen actually was
+// the arrangement is the arrangement they had.
 .portal-settings__panel {
   display: grid;
   gap: var(--space-4);
-  max-inline-size: mx.breakpoint('sm');
+
+  // Grid item hardening, for the same reason the shared grid and the shared field carry it:
+  // an item's automatic minimum size is its own min-content contribution, so an unshrinkable
+  // descendant would pin this panel wider than the shell track and push the page sideways.
+  min-inline-size: 0;
 }
 
 // The per-group help paragraph, BasicSettingsHelp / AdvancedSettingsHelp in
@@ -278,6 +366,40 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   gap: var(--space-3);
 }
 
+// A COLLAPSED SECTION IS A HEADING, NOT A GROUPING BOUNDARY.
+//
+// The global layer paints every `fieldset` with a border, a radius and padding, because a
+// fieldset normally wraps controls and the line marks where the grouping starts and stops.
+// When one of these sections is closed its body is not in the DOM at all, so that line
+// enclosed nothing: the section rendered as a bordered box holding a legend and a block of
+// empty padding. Two of them sit next to each other on the Advanced tab, and both were
+// closed by default, so the tab opened on two empty frames.
+//
+// MIGRATION: THE LEGACY SCREEN HAD NO BOX HERE AT ALL. `sectionheadcontrol.ascx` renders
+//   an icon-and-label `<div>` followed by an optional `<hr>`, and the body it toggles is a
+//   SEPARATE SIBLING `<table>` named by its `Section` attribute — `sitesettings.ascx:L14`
+//   heads `tblBasic` declared at L29, L131 heads `tblAppearance` at L133, L204 heads the
+//   Advanced group, and the Other and Host tables at L387 and L422 carry `cellspacing` and
+//   `cellpadding` but no border. So a closed legacy section showed its head row and its
+//   rule and nothing else. Suppressing the box when closed is the parity-correct state, not
+//   a cosmetic preference.
+//
+// The head keeps its own bottom rule either way — that lives on the toggle — so a closed
+// section still reads as a titled, underlined row that can be opened. Only the trailing
+// margin is kept, and it is reduced: consecutive closed heads need separating from each
+// other, not the full gap that followed a populated group.
+.portal-settings__section--collapsed {
+  // `border-color` rather than `border-width`, deliberately. Removing the width would change
+  // the box by two pixels on each axis every time a section is opened or closed, nudging
+  // every section below it; making the same border invisible keeps the geometry identical
+  // through the toggle. The padding is what has to go — an invisible frame around a block of
+  // empty padding still reads as an empty box.
+  border-color: transparent;
+  border-radius: 0;
+  padding: 0;
+  margin-block-end: var(--space-3);
+}
+
 // The section head: an icon-and-title row followed by a rule
 // (Website/controls/sectionheadcontrol.ascx). The button chrome is stripped so the
 // head reads as a heading, and the rule is reinstated as its own bottom edge so it
@@ -286,6 +408,29 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 // disclosure marker, which is a non-colour cue for the expanded state and worth
 // more than the alignment it would buy.
 .portal-settings__toggle {
+  // ⚠ A COLLAPSED SECTION MUST BE DISTINGUISHABLE FROM AN EMPTY ONE, AND IT WAS NOT.
+  // `--collapsed` above removes this section's frame and padding so a closed group does not read
+  // as an empty box, but that left the head itself as nothing but a bold underlined title - and a
+  // reviewer measuring this screen read the two closed groups as "two completely empty fieldsets",
+  // reporting 0 form controls and 26px of height, because there was no sighted cue that they open
+  // at all. `aria-expanded` carried the state, so assistive technology was told and a sighted
+  // operator was not.
+  //
+  // THE LEGACY HEAD CARRIED EXACTLY SUCH A CUE, AND IT WAS DROPPED IN THE PORT.
+  // `Website/controls/sectionheadcontrol.ascx` composes an `imgIcon` image button followed by an
+  // `lblTitle` label, and `Library/Controls/SectionHeadControl.vb` L60-L61 declares that image as
+  // `images/plus.gif` while collapsed and `images/minus.gif` while expanded, wired at `:L304`
+  // through `EnableMinMax`. So the state indicator beside a CONSTANT title is the legacy pattern,
+  // not an addition - the title never changed wording, which is why the caret is introduced here
+  // rather than alternating the heading text between "Show" and "Hide".
+  //
+  // The raster pair is not carried across, in keeping with every other affordance on this screen;
+  // the substitute is the same inline caret `user-form.component.scss` already uses for its own
+  // disclosures, so the console has ONE disclosure vocabulary rather than two.
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  text-align: start;
   background-color: transparent;
   border-color: transparent;
   border-block-end-color: var(--color-text-muted);
@@ -293,10 +438,54 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-bold);
   color: var(--color-primary);
-  text-align: start;
+
+  // The caret declares `viewBox="0 0 8 8"` and no width or height, which is the correct authoring
+  // form - CSS owns the size. `--space-2` is 0.5rem and matches the 8-unit view box one-to-one, so
+  // the diagonal lands on whole pixels; `flex: none` stops it absorbing free space.
+  svg {
+    flex: none;
+    inline-size: var(--space-2);
+    block-size: var(--space-2);
+  }
+
+  // Collapsed the caret points along the inline axis, expanded it points down the block axis. The
+  // state is read from the `aria-expanded` attribute the template already binds, so the rotation
+  // cannot drift out of step with what assistive technology is told.
+  &[aria-expanded='true'] svg {
+    transform: rotate(var(--rotate-quarter-turn));
+  }
   cursor: pointer;
 }
 
+// ⚠ Pf-M6 - THE COLLAPSED STATE MUST LOOK COLLAPSED. THIS IS THE WHOLE OF THE FINDING.
+//
+// Reported as "Advanced Settings shows two visibly empty fieldsets". Runtime diagnosis found the
+// fieldsets are NOT empty - "Other Settings" holds two controls and "Host Settings" holds five - they
+// are collapsed disclosures whose bodies are removed from the DOM rather than hidden. What made them
+// read as broken is that a collapsed head was PIXEL-IDENTICAL to an expanded one: the two collapsed
+// heads measured 69px against 197.75px and 206px for their expanded siblings, with nothing on the
+// head to suggest anything was behind it.
+//
+// THE INDICATOR IS THE INLINE `<svg>` THE TEMPLATE RENDERS, and it is deliberately the only one.
+// The rule is declared once, on the toggle above, and its rotation is keyed off `aria-expanded`
+// rather than off a class, so the painted state and the announced state are driven by ONE attribute
+// and cannot disagree - the failure mode a separate class would reintroduce. A generated-content
+// marker was the alternative and it is NOT used: two indicators would then paint on every head,
+// because the glyph and the artwork answer the same question.
+//
+// ⚠ THE MARKER IS EXCLUDED FROM THE ACCESSIBLE NAME, and that needed proving rather than
+// assuming. Marker content DOES contribute to a control's accessible name: an earlier revision left
+// it exposed and the accessibility tree then reported the four heads as "▸ Security Settings",
+// "▸ Page Management", "▸ Other Settings" and "▸ Host Settings" - measured, not supposed. Worse,
+// the announced marker was always the UNROTATED one, because a name is built from content while the
+// direction comes from the transform, so a reader met the same triangle in both states. The shipped
+// artwork carries `aria-hidden="true"` and `focusable="false"`, which keeps it out of the name
+// entirely and leaves the state where it belongs, on `aria-expanded`.
+//
+// ⚠ `aria-controls` IS DELIBERATELY ABSENT WHILE COLLAPSED, and that is not this finding.
+// The body is REMOVED when collapsed, so there is no element for the attribute to reference and a
+// dangling reference is worse than none - the same decision, for the same reason, that the shared form
+// field records for its own help disclosure. `aria-expanded` carries the state in both cases.
 //  SECTION-HEAD STATES
 //
 //  This head previously declared no hover, press or unavailable treatment at all,
@@ -406,6 +595,52 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   min-inline-size: 0;
 }
 
+// ⚠ #24 — THE TWO-COLUMN ARRANGEMENT, declared in ONE media block for both rules.
+//
+// TWO COLUMNS ONCE THERE IS ROOM, one below that. Stated rather than derived from `auto-fit`,
+// which was rejected deliberately: `auto-fit` decides the count from the track floor alone and
+// would reach three or four columns at 1920 — an arrangement no legacy screen had, and one
+// that scatters a short labelled field across a very wide row. Two is the count the legacy
+// two-cell layout table implies and the count the widened panel measure affords.
+//
+// The floor is `minmax(0, 1fr)`, never a bare `1fr`: `1fr` is `minmax(auto, 1fr)`, whose
+// automatic minimum is the column's min-content contribution, so one long unbreakable value in
+// one field would pin the column and push the panel sideways — the exact mechanism measured on
+// the portals listing.
+//
+// A MULTI-LINE FIELD TAKES THE WHOLE ROW. Applied by an explicit modifier rather than by
+// matching on the control the field holds, because a relational selector would make this rule
+// depend on projected content, which is the caller's business. The two fields carrying it are
+// the site description and the search keywords, both of which the legacy screen gave a
+// three-row text area; halving their measure to fit a column would undo the width reclaimed
+// above. Declared only inside this block, so the single-column arrangement is unaffected.
+// ⚠ #24 — THE THRESHOLD IS THE LARGE STEP, NOT THE MEDIUM ONE, AND THAT WAS MEASURED.
+//
+// It was `md` (48rem = 768px viewport) for one revision, and runtime measurement at exactly 768
+// showed why that is the wrong threshold: the shell's sidebar takes 210px, so a 768px VIEWPORT
+// leaves the panel only 510px and each of two columns only 236px. The shared field lays its label
+// out in a 150px track beside its control, so a 236px column leaves the control 70px - the site
+// title rendered as a 68px box showing a truncated "QA010", and the GUID's longest unbreakable
+// run (105px of min-content) pushed 6px of real horizontal scroll onto the whole document.
+//
+// The threshold therefore has to be stated in terms of the space the PANEL gets, not the space the
+// VIEWPORT has, and `lg` (64rem = 1024px viewport) is the first declared step where it does: the
+// panel reaches roughly 790px there, so a column is ~383px and a control ~219px, and at 1280 the
+// panel is 1022px for ~330px controls. Below the threshold the arrangement is a single column,
+// which is exactly what every viewport had before this change.
+@include mx.respond-above('lg') {
+  .portal-settings__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  // Keyed on the modifier ALONE rather than on the descendant chain, because the modifier is only ever
+  // applied to a field inside this grid and the shorter selector is the one that keeps this stylesheet
+  // inside the workspace's per-component size budget.
+  .portal-settings__field--wide {
+    grid-column: 1 / -1;
+  }
+}
+
 // A grid rather than a plain block so the control it holds stretches to the track
 // instead of falling back to its intrinsic size — which is what the legacy pixel
 // widths were compensating for — and so a control paired with a notice stacks
@@ -413,6 +648,13 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 .portal-settings__control {
   display: grid;
   gap: var(--space-1);
+
+  // ⚠ #24 — GRID-ITEM HARDENING. This wrapper is the item the shared field's control track places,
+  // so its automatic minimum size is its own min-content contribution: without this floor, a value
+  // with a long unbreakable run pins the track wider than the column and the excess propagates all
+  // the way out to the document. Measured at 768 before this rule: this box resolved 105.05px
+  // inside a 70.06px track and pushed the page 6px sideways.
+  min-inline-size: 0;
 }
 
 // The two narrow steps. Applied to the wrapper, so whichever control it holds is
@@ -447,6 +689,18 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   margin-block: 0;
   color: var(--color-text-muted);
   font-weight: var(--font-weight-normal);
+
+  // ⚠ #24 — BREAK ANYWHERE, because one instance of this class is the GUID READOUT and a GUID has
+  // no break opportunity in it at all. `overflow-wrap: break-word` is deliberately NOT used: the CSS
+  // Text specification is explicit that `break-word` does not reduce an element's min-content
+  // contribution, so it would still pin the track. Only `anywhere` does, which is the same rule and
+  // the same remedy the portals listing needed for its long host names.
+  //
+  // Measured before this rule, at 768: the readout's longest unbreakable run `AD77F0F4BEBB` gave it
+  // 105.05px of min-content inside a 70.06px track. Nothing about the painted value changes - a GUID
+  // that fits on one line still renders on one line. No separate `min-inline-size` floor is needed:
+  // collapsing the min-content contribution IS the floor, and it is the durable half of the pair.
+  overflow-wrap: anywhere;
 }
 
 //  ACTION BAR

@@ -1,6 +1,8 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
+  ElementRef,
   TemplateRef,
   ViewChild,
   computed,
@@ -9,7 +11,23 @@ import {
   signal,
   untracked,
 } from '@angular/core';
-import { RouterLink } from '@angular/router';
+import { NgTemplateOutlet } from '@angular/common';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+
+import {
+  addressStatesQuery,
+  FILTER_PARAM,
+  firstPageParameter,
+  PAGE_PARAM,
+  parsePageIndex,
+  parseSortDirection,
+  parseSortKey,
+  SORT_BY_PARAM,
+  SORT_DIR_PARAM,
+} from '../../../core/utils/list-query.util';
+
+import type { ParamMap, Params } from '@angular/router';
 
 import { ModuleVisibility } from '../../../core/models/module.model';
 import { NotificationService } from '../../../core/services/notification.service';
@@ -21,6 +39,7 @@ import { ErrorBannerComponent } from '../../../shared/components/error-banner/er
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 import { PaginationComponent } from '../../../shared/components/pagination/pagination.component';
 import { SearchInputComponent } from '../../../shared/components/search-input/search-input.component';
+import { HasPermissionDirective } from '../../../shared/directives/has-permission.directive';
 import { DateDisplayPipe } from '../../../shared/pipes/date-display.pipe';
 import { YesNoPipe } from '../../../shared/pipes/yes-no.pipe';
 
@@ -117,8 +136,83 @@ const PAGE_ACTION_LABEL = Object.freeze({
   import: 'Import Module',
 });
 
-/** Title of the removal confirmation. Matches the shared dialog's own default. */
-const REMOVE_CONFIRM_TITLE = 'Confirm Delete';
+/**
+ * The glyph painted where a module has no title of its own.
+ *
+ * The em dash is the mark this application already uses for a value that is absent rather than zero
+ * or empty - the same one the role listing paints in its period and fee columns and the portal
+ * listing paints in its tally columns. It is `aria-hidden`, with {@link ABSENT_TITLE_DESCRIPTION}
+ * carrying the meaning for a reader who cannot see it.
+ */
+const ABSENT_TITLE_MARK = '\u2014';
+
+/**
+ * What the absent-title mark means, for assistive technology only.
+ *
+ * MIGRATION: AUTHORED, because the legacy screen could not express this. `Modules.ModuleTitle` is
+ * nullable and the legacy settings screen declared no presence validator on `txtTitle`
+ * (`Website/admin/Modules/modulesettings.ascx`), so a module with no title is ordinary data rather
+ * than a fault - and the legacy admin area had no module listing at all in which to show it.
+ */
+const ABSENT_TITLE_DESCRIPTION = 'no title recorded';
+
+/**
+ * Builds the phrase that identifies one module inside a command's accessible name.
+ *
+ * ⚠ THIS EXISTS BECAUSE THE DESTRUCTIVE COMMAND ANNOUNCED ITSELF AS `"Delete "`. Measured at
+ * runtime: module 10 stores the EMPTY STRING as its title, the four row commands were named by
+ * concatenating a verb with that title, and Chrome's accessibility tree consequently computed
+ * `link "Edit "`, `link "Settings "`, `link "Export "` and `button "Delete "` - each with a trailing
+ * U+0020 that Chrome does not trim. In a screen reader's control list none of them said which module
+ * they acted on, and the one that destroys a placement said least of all. The row carried no
+ * `<th scope="row">` to supply the context either.
+ *
+ * THE FALLBACK IS THE LEGACY'S OWN. `Library/Components/ControlPanel/ControlPanelBase.vb:192-196`
+ * reads
+ *
+ *   `If title = "" Then`
+ *   `    objModule.ModuleTitle = objModuleDefinition.FriendlyName`
+ *   `Else`
+ *   `    objModule.ModuleTitle = title`
+ *   `End If`
+ *
+ * - it tests THE EMPTY STRING, exactly the condition measured here, and substitutes the module
+ * definition's friendly name. So the first fallback is not invented; it is what the legacy platform
+ * itself put in the field when no title was supplied. `ModuleController.vb:452-453` supplies the
+ * ordering of the next one: a template's `<moduledefinition>` element carries
+ * `ModuleDefinitionInfo.FriendlyName` while `<definition>` carries `DesktopModuleInfo.ModuleName`, so
+ * the friendly name is the finer identifier and the package name the coarser.
+ *
+ * THE IDENTITY IS APPENDED WHENEVER A FALLBACK IS USED, and that is a deliberate addition rather
+ * than a copy of the legacy substitution. A definition name is shared by every module instantiated
+ * from it - the measured fixture has three definitions across two hundred and fifty modules - so the
+ * friendly name alone would still not distinguish one row from another. The module's own identifier
+ * is what makes the name unique, and `Modules.ModuleID` is `IDENTITY(0, 1)`, so nought is a
+ * legitimate value and is never treated as absent.
+ *
+ * A TITLED ROW IS LEFT EXACTLY AS IT WAS. Its title already identifies it, appending an identifier
+ * to two hundred and forty-nine names would add noise a reader must hear on every one of them, and
+ * this function exists to close a gap rather than to restyle what already worked.
+ *
+ * @param row The module placement as the listing holds it.
+ * @returns A non-empty phrase naming the module.
+ */
+function describeModule(row: ModuleListItem): string {
+  const title: string = (row.moduleTitle ?? '').trim();
+
+  if (title.length > 0) {
+    return title;
+  }
+
+  // Both fall back to the definition, and both are trimmed: the measured fixture holds a definition
+  // whose friendly name ends in a space (`QA010 日本語テスト 中文测试 `), which would otherwise put a
+  // stray space in front of the identifier.
+  const derived: string = ((row.friendlyName ?? '').trim() || (row.moduleName ?? '').trim()).trim();
+
+  return derived.length > 0
+    ? `${derived} (module ${row.moduleId})`
+    : `module ${row.moduleId}`;
+}
 
 /**
  * Body of the removal confirmation.
@@ -246,6 +340,85 @@ const SORTABLE_KEY = Object.freeze({
   startDate: 'startDate',
   endDate: 'endDate',
 });
+
+/**
+ * The column the endpoint orders by when the request names none.
+ *
+ * ⚠ THIS IS AN OBSERVED SERVER BEHAVIOUR, NOT A CHOICE MADE HERE, and it is recorded because the
+ * screen has to tell the reader the truth about what they are looking at. A request carrying no sort
+ * parameter returns the collection ordered by title ascending: measured by comparing a bare arrival
+ * read against an explicit ascending read and finding the ten rows identical in identical positions.
+ * The grid therefore reports this ordering when nothing else has been asked for, so its headings
+ * announce the order that is actually rendered.
+ *
+ * It is deliberately NOT written into the request or into the address. Sending it would be sending
+ * the server its own default back, and writing it to the address would make the screen navigate to
+ * correct itself on arrival.
+ */
+const DEFAULT_SORT_KEY: string = SORTABLE_KEY.moduleTitle;
+
+/** The direction {@link DEFAULT_SORT_KEY} is applied in by the endpoint's own default ordering. */
+const DEFAULT_SORT_DIRECTION: SortDirection = 'Ascending';
+
+/**
+ * The search term, ordering and page this listing is showing, as the address states them.
+ *
+ * Held as one object because they are restored TOGETHER on entry: applying them one at a time would issue
+ * one read per coordinate, and both the search and the ordering reset the page on their way through, which
+ * would discard the page the address had just asked for.
+ */
+interface ModuleListAddressQuery {
+  /** The search term, or `null` for none. Carried byte for byte; the server is the one that trims. */
+  readonly query: string | null;
+
+  /** The page to read, counted from nought. */
+  readonly pageIndex: number;
+
+  /** The column to order by, or `null` for the server's own ordering. */
+  readonly sortBy: string | null;
+
+  /** The direction, or `null` for the server's default. Always `null` when there is no column. */
+  readonly sortDir: SortDirection | null;
+}
+
+/**
+ * Reads the whole listing query out of an address.
+ *
+ * @param address The route's query parameters.
+ * @returns The query to apply, with every unusable value resolved to its default.
+ */
+function parseModuleListQuery(address: ParamMap): ModuleListAddressQuery {
+  // The admitted set is the ENDPOINT'S, and it is the same object the columns are keyed by, so a column
+  // cannot become sortable without the address accepting its key in the same change.
+  const sortBy: string | null = parseSortKey(address.get(SORT_BY_PARAM), Object.values(SORTABLE_KEY));
+
+  return {
+    query: address.get(FILTER_PARAM),
+    pageIndex: parsePageIndex(address.get(PAGE_PARAM)),
+    sortBy,
+    // A direction with no column to apply it to is dropped rather than kept, so the address cannot carry
+    // half an ordering. A column with no direction is kept: the endpoint has a default.
+    sortDir: sortBy === null ? null : parseSortDirection(address.get(SORT_DIR_PARAM)),
+  };
+}
+
+/**
+ * Writes a listing query back out as address parameters.
+ *
+ * A default coordinate is emitted as `null`, which the router REMOVES from the address rather than writing
+ * as an empty value - so an unsearched, unordered first page is the bare path.
+ *
+ * @param query The query in force.
+ * @returns The parameters to merge into the address.
+ */
+function serialiseModuleListQuery(query: ModuleListAddressQuery): Params {
+  return {
+    [FILTER_PARAM]: query.query,
+    [PAGE_PARAM]: firstPageParameter(query.pageIndex),
+    [SORT_BY_PARAM]: query.sortBy,
+    [SORT_DIR_PARAM]: query.sortBy === null || query.sortDir === null ? null : query.sortDir,
+  };
+}
 
 /**
  * Route addresses this screen links to.
@@ -396,7 +569,7 @@ const ROUTE = Object.freeze({
 @Component({
   selector: 'app-module-list',
   standalone: true,
-  // Nine members, and every one of them is used by the sibling template.
+  // Eleven members, and every one of them is used by the sibling template.
   //
   // `RouterLink` is REQUIRED even though no `<a routerLink>` appears in this file: the row commands
   // are declared as an `ng-template` here and CONTENT-PROJECTED into the shared table, and the shared
@@ -408,20 +581,25 @@ const ROUTE = Object.freeze({
   // are the shared spinner and empty-state components, which the table renders itself from its own
   // imports and which would be duplicated if they appeared here.
   //
-  // This screen's template renders the row commands unconditionally, so neither
-  // `NgTemplateOutlet` nor `HasPermissionDirective` is listed: Angular reports an import a
-  // template never uses, and declaring one for a gate this markup does not apply would be a
-  // claim the template contradicts.
+  // `NgTemplateOutlet` and `HasPermissionDirective` are the two members the row-command GATE needs,
+  // and both are genuinely used by the sibling template rather than declared speculatively. The
+  // template renders the commands through `@if (holdsAdministration())` with the directive as the
+  // second arm, and the command markup itself is declared once in a separate `ng-template` that both
+  // arms render through the outlet — so removing either import breaks the gate rather than merely
+  // silencing a warning.
   //
-  // ⚠ THE SHARED DIRECTIVE NOW HAS NO FEATURE CONSUMER AT ALL, and that is the correct outcome
-  // rather than an orphaning. Every affordance that once took it addressed a route declared under
-  // the `PortalAdministrator` POLICY, which is answered from `Portals.AdministratorRoleId` and not
-  // from a persisted grant row — so those screens gate on the store's tenant-administration
-  // determination instead. The directive remains the shared library's documented instrument for the
-  // four PERSISTED keys (`VIEW`, `EDIT`, `READ`, `WRITE`), which are grants over a module or page
-  // INSTANCE, and this screen's row commands are the one place where that vocabulary genuinely
-  // applies — they are `ModuleEdit` on the API, answered from `ModulePermissions`.
+  // ⚠ THIS SCREEN IS THE SHARED DIRECTIVE'S ONE CORRECT FEATURE CONSUMER, and that is why the gate
+  // lives here and nowhere else. Every OTHER affordance that might appear to want it addresses a
+  // route declared under the `PortalAdministrator` POLICY, which the API answers from
+  // `Portals.AdministratorRoleId` rather than from a persisted grant row — those screens therefore
+  // gate on the store's tenant-administration determination alone, and applying the directive to
+  // them would test a grant vocabulary their endpoints never consult. The directive is the shared
+  // library's documented instrument for the four PERSISTED keys (`VIEW`, `EDIT`, `READ`, `WRITE`),
+  // which are grants over a module or page INSTANCE, and these row commands are the one place that
+  // vocabulary genuinely applies — they are `ModuleEdit` on the API, answered from
+  // `ModulePermissions`. See `holdsAdministration` below for why the key cannot be the only arm.
   imports: [
+    NgTemplateOutlet,
     RouterLink,
     PageHeaderComponent,
     SearchInputComponent,
@@ -429,6 +607,7 @@ const ROUTE = Object.freeze({
     PaginationComponent,
     ConfirmDialogComponent,
     ErrorBannerComponent,
+    HasPermissionDirective,
     YesNoPipe,
     DateDisplayPipe,
   ],
@@ -452,6 +631,15 @@ export class ModuleListComponent implements OnInit {
 
   /** The single source of truth for the listing, its filters and its failures. */
   private readonly store = inject(ModuleStore);
+
+  /** The address this screen reads its search, ordering and page from, and writes them back to. */
+  private readonly route = inject(ActivatedRoute);
+
+  /** Used to write the listing coordinates into the address rather than holding them privately. */
+  private readonly router = inject(Router);
+
+  /** Ties the address subscription to this component's lifetime. */
+  private readonly destroyRef = inject(DestroyRef);
 
   /** The transient-message channel. */
   private readonly notifications = inject(NotificationService);
@@ -528,6 +716,52 @@ export class ModuleListComponent implements OnInit {
   /** The three per-row links and the removal command. */
   @ViewChild('rowCommands', { static: true })
   private rowCommandsTemplate?: TemplateRef<DataTableCellContext<ModuleListItem>>;
+
+  /**
+   * The failure banner, so a new failure can be brought into view.
+   *
+   * ⚠ THE BANNER RATHER THAN THE COMMANDS BESIDE IT, and the difference was measured. Anchoring on
+   * the command region scrolled the commands flush to the top of the viewport and left the banner at
+   * top −130.5 / bottom −32.5 — wholly above it — so the operator was shown two buttons and no
+   * reason for them. The banner is always in the DOM (null is its documented empty state), so this
+   * query needs no `static: false` special case and resolves once for the component's whole life.
+   */
+  @ViewChild('failureBanner', { read: ElementRef })
+  private failureBanner?: ElementRef<HTMLElement>;
+
+  /**
+   * The shared search control, so the box can be reconciled with the filter in force.
+   *
+   * `static: true` because the reconciling effect in the constructor runs before the first change
+   * detection completes, and a control resolved later would miss the filter it arrived with.
+   */
+  @ViewChild(SearchInputComponent, { static: true })
+  private searchControl?: SearchInputComponent;
+
+  /**
+   * The query this screen last asked for, or `undefined` when it has asked for none yet.
+   *
+   * ⚠ THIS IS AN ECHO GUARD AND REMOVING IT WOULD ERASE THE OPERATOR'S KEYSTROKES. The reconciling
+   * effect writes the filter in force into the search box, and adopting a term also CANCELS whatever
+   * emission the box has pending. That is exactly right when the filter changed somewhere else - a
+   * back navigation, a fresh arrival - and exactly wrong for the echo of the box's own emission,
+   * because by the time the store has settled the operator may already be typing the next word:
+   * adopting `"ab"` back into a box that now reads `"abc"` would delete the `"c"` and cancel the
+   * query it had started. Recording what this screen asked for lets the echo be recognised and
+   * ignored.
+   */
+  private ownQueryRequest: string | null | undefined = undefined;
+
+  /**
+   * The instance title, rendered so that its ABSENCE is visible rather than blank.
+   *
+   * Measured before this template existed: the cell's `innerHTML` and `textContent` were both `"  "`
+   * - two literal spaces, one text node, no element children - and Chrome's accessibility tree
+   * reported the cell as unnamed with no children. Nothing on screen distinguished "no title" from a
+   * rendering fault.
+   */
+  @ViewChild('titleCell', { static: true })
+  private titleCellTemplate?: TemplateRef<DataTableCellContext<ModuleListItem>>;
 
   /** The all-pages flag, rendered through the shared yes/no pipe. */
   @ViewChild('allTabsCell', { static: true })
@@ -610,6 +844,19 @@ export class ModuleListComponent implements OnInit {
    * one spanning row, and lets loading win over empty. Neither is rendered directly by this screen and
    * no custom empty wording is supplied: the table's own wording is the design system's.
    */
+  /**
+   * Whether there is a result COUNT worth stating, which is what mounts the shared pager.
+   *
+   * ⚠ WIDER THAN "MORE THAN ONE PAGE", AND NARROWER THAN "ALWAYS". The pager decides its own shape - the
+   * range summary alone when everything fits on one page, the summary plus the steps when it does not -
+   * so mounting it on navigability would remove the only on-screen confirmation of how many records
+   * matched, which runtime testing measured happening on every list screen. Mounting it unconditionally
+   * would instead leave an empty custom element in the document on a zero-result screen, where the
+   * empty-state component already says what happened in words. Counting from one upwards is the
+   * condition that gives both statements a place to live.
+   */
+  protected readonly hasResults: Signal<boolean> = computed(() => this.meta().totalCount > 0);
+
   protected readonly listLoading = this.store.listLoading;
 
   /**
@@ -653,15 +900,36 @@ export class ModuleListComponent implements OnInit {
   });
 
   /**
-   * The key the listing is currently ordered by, or an absent value for the server's own ordering.
+   * The key the listing is currently ordered by.
    *
-   * Typed exactly as the shared table's input accepts, so it passes through with no reshaping. Blank
-   * text and omission mean the same thing to both sides.
+   * ⚠ FALLS BACK TO THE SERVER'S OWN ORDER RATHER THAN TO NOTHING, AND THAT IS THE POINT. When
+   * nothing has been asked for, the endpoint does not return the collection unordered - it returns
+   * it by title, ascending. Reporting an absent key in that state made the grid announce itself as
+   * unsorted while rendering sorted rows, which runtime measurement caught twice over: every
+   * sortable heading read `aria-sort="none"` and drew no indicator, yet the ten rendered rows were
+   * row-for-row identical to those an explicit ascending request returns; and pressing the title
+   * heading once changed nothing visible except adding the arrow, because the shared table starts a
+   * fresh column at ascending and ascending is what was already showing.
+   *
+   * Declaring the order the reader is actually looking at fixes both at once: the announcement
+   * becomes true, the indicator appears where the ordering is, and the first press on that heading
+   * now REVERSES it, because the shared table flips the direction of a column it is told is already
+   * sorted.
+   *
+   * This is presentation state and nothing more. The store's query is untouched, so the request
+   * still carries no sort parameter and the server still applies its own default; and the address is
+   * untouched, so an address that asked for nothing continues to say nothing. Writing the default
+   * into either would mean the screen navigating to correct its own address on arrival, which is a
+   * shape this feature set has already been burned by.
+   *
+   * Typed exactly as the shared table's input accepts, so it passes through with no reshaping.
    */
-  protected readonly sortBy = computed(() => this.store.query().sortBy);
+  protected readonly sortBy = computed(() => this.store.query().sortBy ?? DEFAULT_SORT_KEY);
 
-  /** The direction {@link sortBy} is applied in, or an absent value for the server's default. */
-  protected readonly sortDir = computed(() => this.store.query().sortDir);
+  /** The direction {@link sortBy} is applied in, defaulting with it to the server's own order. */
+  protected readonly sortDir = computed(
+    () => this.store.query().sortDir ?? DEFAULT_SORT_DIRECTION,
+  );
 
   /** The column descriptors, assembled in {@link ngOnInit} once the cell templates exist. */
   protected readonly columns = this.columnSet.asReadonly();
@@ -688,11 +956,14 @@ export class ModuleListComponent implements OnInit {
   /** @see COMMAND_LABEL */
   protected readonly commandLabel = COMMAND_LABEL;
 
+  /** @see ABSENT_TITLE_MARK */
+  protected readonly absentTitleMark = ABSENT_TITLE_MARK;
+
+  /** @see ABSENT_TITLE_DESCRIPTION */
+  protected readonly absentTitleDescription = ABSENT_TITLE_DESCRIPTION;
+
   /** @see PAGE_ACTION_LABEL */
   protected readonly pageActionLabel = PAGE_ACTION_LABEL;
-
-  /** @see REMOVE_CONFIRM_TITLE */
-  protected readonly removeConfirmTitle = REMOVE_CONFIRM_TITLE;
 
   /** @see REMOVE_CONFIRM_MESSAGE */
   protected readonly removeConfirmMessage = REMOVE_CONFIRM_MESSAGE;
@@ -737,6 +1008,77 @@ export class ModuleListComponent implements OnInit {
    * transient message for the same event.
    */
   constructor() {
+    // Keeps the search box showing the filter that is actually in force.
+    //
+    //  ⚠ WITHOUT THIS THE GRID LIES ABOUT WHAT IT IS SHOWING. Measured: search for a term, leave to
+    //  another screen and come back, and the box reads the empty string while the grid is still
+    //  filtered - `" 1–10 of 248 "` against a collection of 250, with two rows silently withheld and
+    //  the return request still carrying `query=…`. The stores are `providedIn: 'root'` singletons, so
+    //  the FILTER survives the screen while the CONTROL is rebuilt empty. A scan of the accessibility
+    //  tree for a clear, reset or show-all affordance found none, so there was no cue that a filter
+    //  was in force and no way to discover it. The filter could in fact be cleared, but only by
+    //  submitting an already-blank box - a recovery that looks like a no-op and that nobody would try
+    //  without first knowing there was something to clear.
+    //
+    //  Reads the STORE rather than the address, because the store is what the grid is drawn from, so
+    //  the box agrees with the ROWS even while a navigation is still settling. The write is
+    //  `untracked` and goes through the control's adopt-without-emitting path, so it neither
+    //  re-enters this effect nor issues a query for a filter that has already been applied.
+    //
+    //  This is the same defect, and the same remedy, as on the portals listing; the echo guard below
+    //  is why it needs a member rather than being a one-line assignment.
+    effect(() => {
+      // The store's `query` signal is the whole request shape, so the search term is the member of
+      // that name inside it rather than the signal itself.
+      const inForce: string | null = this.store.query().query ?? null;
+
+      untracked(() => {
+        if (this.ownQueryRequest !== undefined && this.ownQueryRequest === inForce) {
+          // The echo of this screen's own request. The box already holds the operator's text - possibly
+          // with more typed since - so it is left entirely alone.
+          return;
+        }
+
+        this.ownQueryRequest = undefined;
+        this.searchControl?.cancelPendingSearch(inForce ?? '');
+      });
+    });
+
+    // Brings a newly recorded failure into view.
+    //
+    //  ⚠ WITHOUT THIS A SIGHTED OPERATOR SEES NOTHING AT ALL. Measured: with the page scrolled down to
+    //  reach the pager (`scrollY` 1162) a failed page change rendered its banner at document top
+    //  265.5, which is a viewport rect of y −896.5 — eight hundred and twenty-five pixels ABOVE the
+    //  top of the viewport — and nothing scrolled it in. The rows correctly stayed as they were, the
+    //  pager correctly did not advance, and so the entire visible result of the failure was that
+    //  nothing happened. A screen-reader user was served, because the banner is an assertive
+    //  `role="alert"` and is announced wherever it sits; a sighted user was not, which is the reverse
+    //  of the usual asymmetry and easy to miss in testing precisely because the announcement works.
+    //
+    //  `block: 'nearest'` deliberately: it scrolls only as far as it must, so a failure that is
+    //  ALREADY visible does not move the page under the reader. `behavior: 'auto'` rather than
+    //  `smooth`, because a reader who has just lost their result does not need it animated, and an
+    //  animation would also outlast the read that follows a retry.
+    effect(() => {
+      const failed: ModuleStoreFailure | null = this.failure();
+
+      if (failed === null) {
+        return;
+      }
+
+      untracked(() => {
+        // Deferred one turn, because the region is created by the very change this effect is
+        // reacting to and does not exist in the DOM until that change has been rendered.
+        queueMicrotask(() => {
+          this.failureBanner?.nativeElement.scrollIntoView({
+            block: 'nearest',
+            inline: 'nearest',
+            behavior: 'auto',
+          });
+        });
+      });
+    });
+
     effect(() => {
       const awaited: ModuleListItem | null = this.awaitedRemoval();
       const inFlight: boolean = this.store.saving();
@@ -771,6 +1113,24 @@ export class ModuleListComponent implements OnInit {
   }
 
   // ---------------------------------------------------------------------------------------------------
+  /**
+   * How a row identifies itself to the shared grid, so a re-read of the page already shown reuses its row
+   * elements instead of rebuilding them.
+   *
+   * ⚠ THE DATABASE KEY, NOT THE ARRAY POSITION AND NOT THE OBJECT. The grid's own fallback is the row
+   * OBJECT, which is a correct key only while the same objects stay in play; every read from the server
+   * decodes fresh objects, so without this a refetch of the same page presents entirely new keys and the
+   * whole body is rebuilt to display records that never changed. `tabModuleId` is unique by definition, being
+   * the record's own identifier, which is what `@for` requires - a repeated key is an error there.
+   *
+   * Declared as a bound field rather than an inline arrow so the reference is stable across change
+   * detection; a new function each redraw would set the grid's input every time and defeat its purpose.
+   *
+   * @param row The row about to be rendered.
+   * @returns The record's identifier.
+   */
+  protected readonly moduleRowKey = (row: ModuleListItem): number => row.tabModuleId;
+
   // LIFECYCLE
   // ---------------------------------------------------------------------------------------------------
 
@@ -790,7 +1150,51 @@ export class ModuleListComponent implements OnInit {
    */
   ngOnInit(): void {
     this.columnSet.set(this.buildColumns());
-    this.store.loadModules();
+
+    // ⚠ THE ADDRESS ISSUES THE READ, AND THIS IS THE ONLY PLACE IT IS ISSUED ON ENTRY. Subscribing emits
+    // immediately with the address in hand, so the first page is read from that emission rather than from a
+    // separate call here - two calls would issue two reads of the same page on every arrival.
+    //
+    // It also settles the stale-state defect at its root. This store is provided at the application root and
+    // therefore OUTLIVES this route, so a previous visit's search, ordering and page are all still held when
+    // an operator returns. Applying the whole query from the address means a bare `/modules` restores the
+    // defaults and a `/modules?filter=x&sortby=moduleTitle&currentpage=4` restores exactly that view, in both
+    // directions, for a reload and for back and forward alike.
+    this.route.queryParamMap
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((address: ParamMap): void => {
+        const query: ModuleListAddressQuery = parseModuleListQuery(address);
+
+        // An address that says something unusable is CORRECTED rather than obeyed silently, so that what is
+        // on screen and what is in the address never disagree. The correction REPLACES the entry rather than
+        // adding one - an operator pressing back should reach where they came from, not the uncorrected form
+        // of where they already are - and it returns without reading, because the replacement navigation
+        // emits again and that emission does the read.
+        if (!addressStatesQuery(address, serialiseModuleListQuery(query))) {
+          void this.router.navigate([], {
+            relativeTo: this.route,
+            queryParams: serialiseModuleListQuery(query),
+            queryParamsHandling: 'merge',
+            replaceUrl: true,
+          });
+
+          return;
+        }
+
+        // ⚠ THE ECHO GUARD IS NOT ARMED HERE, AND ARMING IT HERE WOULD DISABLE THE SEARCH BOX'S
+        // RECONCILIATION ENTIRELY. Only the box's own handler knows that a term came from the box; every
+        // OTHER route to this line - a back navigation, a typed address, a correction - is a term the box has
+        // not seen and must be shown.
+        // ⚠ THE PAGE IS SET LAST, AND THE ORDER IS LOAD-BEARING. Both `setQuery` and `setSort` return the
+        // listing to the first page, which is right when an operator has just searched or re-ordered and
+        // wrong when the address is naming all three at once - either of them running after `setPageIndex`
+        // would silently discard the page the address asked for. Every setter is silent, so this costs one
+        // read however many coordinates changed.
+        this.store.setQuery(query.query);
+        this.store.setSort(query.sortBy, query.sortDir);
+        this.store.setPageIndex(query.pageIndex);
+        this.store.loadModules();
+      });
   }
 
   // ---------------------------------------------------------------------------------------------------
@@ -888,27 +1292,102 @@ export class ModuleListComponent implements OnInit {
    * The store resets the page coordinate to the first page for us, because a coordinate measured
    * against one match set does not address the same rows once the set changes.
    *
+   * ⚠ SUBMITTING A QUERY THE ADDRESS ALREADY STATES ISSUES NO REQUEST, AND THAT IS DELIBERATE - the same
+   * measured behaviour the sibling portal listing records at its own `onSearch`, for the same reason. On the
+   * bare, unfiltered first page with an empty box, a proven-delivered press of Search produced ZERO requests
+   * to `/api/v1/modules`: the shared control emitted, this method called `router.navigate` with a target
+   * identical to the current address, and Angular's default `onSameUrlNavigation: 'ignore'` dropped it. Since
+   * the address is the only thing that asks the store to read, a submit that changes no part of the address
+   * asks for nothing - and what it would have asked for is already on screen.
+   *
+   * The case the report actually raised is unaffected and verified working: clearing a filter that IS in
+   * force changes the address, so it navigates and re-reads.
+   *
    * @param term The text the shared search control emitted, already debounced and trimmed by it.
    */
   protected onSearch(term: string): void {
-    this.store.setQuery(term.length === 0 ? null : term);
-    this.store.loadModules();
+    const wanted: string | null = term.length === 0 ? null : term;
+
+    // Recorded BEFORE the store is written, because writing it runs the reconciling effect
+    // synchronously and the guard has to be in place by the time that effect reads it. See
+    // {@link ownQueryRequest} for what goes wrong without it.
+    this.ownQueryRequest = wanted;
+
+    // ⚠ THE ADDRESS IS WRITTEN AND THE STORE IS NOT TOUCHED. The subscription in `ngOnInit` applies the term
+    // and issues the read, so writing the address is the whole of the change here. Calling the store as well
+    // would apply it twice and read twice. The echo guard above is still set BEFORE the navigation, because
+    // the reconciling effect must not write this screen's own term back into the box being typed in.
+    //
+    // The page is cleared alongside it: a different search yields a different result set in which the page
+    // the operator was on has no counterpart. The reset now lives in the address rather than only in the
+    // store command, so it survives a reload with the term it belongs to.
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { [FILTER_PARAM]: wanted, [PAGE_PARAM]: null },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /**
+   * Whether this module has no title of its own, so the cell must say so.
+   *
+   * Treats a whitespace-only title as absent as well as an empty one, because a title of spaces is
+   * indistinguishable from no title once rendered and the legacy field had no presence validator to
+   * prevent either.
+   *
+   * @param row The module placement.
+   * @returns `true` when nothing meaningful is stored in the title.
+   */
+  protected isTitleAbsent(row: ModuleListItem): boolean {
+    return (row.moduleTitle ?? '').trim().length === 0;
+  }
+
+  /**
+   * The accessible name for one row command.
+   *
+   * Composed rather than concatenated in the template, so that the verb and the identifying phrase
+   * are joined in ONE place and cannot drift between the four commands. The phrase itself, and the
+   * legacy authority for the fallback it applies, are on {@link describeModule}.
+   *
+   * @param verb The command's own wording.
+   * @param row The module placement the command acts on.
+   * @returns The verb followed by a phrase that identifies the module.
+   */
+  protected commandName(verb: string, row: ModuleListItem): string {
+    return `${verb} ${describeModule(row)}`;
   }
 
   /**
    * Applies the reader's ordering and re-reads from the first page.
    *
-   * The key is the column's own key, which IS the sort name the endpoint accepts - only the four
-   * columns keyed by a permitted name declare themselves sortable, so no control here can produce a
-   * rejected request. The direction arrives in the server's own spelling and needs no translation.
+   * The key is the column's own key, which IS the sort name the endpoint accepts - only the columns
+   * keyed by a permitted name declare themselves sortable, so no control here can produce a rejected
+   * request. The direction arrives in the server's own spelling and needs no translation.
    *
-   * @param change The key and direction the shared table reported.
+   * A NULL DIRECTION CLEARS THE ORDERING RATHER THAN DEFAULTING IT. The shared table's cycle has a
+   * third step that asks for no ordering at all, which is the state this screen arrives in - the store
+   * initialises both coordinates to null and the request omits both parameters - so the key is cleared
+   * alongside the direction and the server chooses again. Substituting a direction of this screen's own
+   * here would silently make that third step a no-op and the arrival order permanently unreachable.
+   *
+   * @param change The key the reader activated and the direction to apply, or null to stop ordering.
    */
   protected onSortChange(change: DataTableSortChange): void {
-    const direction: SortDirection = change.direction;
+    const direction: SortDirection | null = change.direction;
 
-    this.store.setSort(change.key, direction);
-    this.store.loadModules();
+    // THE ORDERING GOES INTO THE ADDRESS, and the third step of the cycle clears the KEY as well as
+    // the direction: a request carrying a key with no direction would be a different question asked of
+    // the server, and the reader who pressed a third time asked for no ordering at all. The page is
+    // dropped alongside it, because which page a record falls on depends on the ordering.
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        [SORT_BY_PARAM]: direction === null ? null : change.key,
+        [SORT_DIR_PARAM]: direction,
+        [PAGE_PARAM]: null,
+      },
+      queryParamsHandling: 'merge',
+    });
   }
 
   /**
@@ -928,8 +1407,14 @@ export class ModuleListComponent implements OnInit {
    * ordinary value.
    */
   protected onPageChange(pageIndex: number): void {
-    this.store.setPageIndex(pageIndex);
-    this.store.loadModules();
+    // A page turn is a PUSHED history entry, not a replaced one: runtime testing found that pressing back
+    // from page three was not possible because paging created no entry at all, and returning to the page you
+    // came from is the ordinary meaning of that button.
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { [PAGE_PARAM]: firstPageParameter(pageIndex) },
+      queryParamsHandling: 'merge',
+    });
   }
 
   // ---------------------------------------------------------------------------------------------------
@@ -993,6 +1478,23 @@ export class ModuleListComponent implements OnInit {
    */
   protected onCancelDelete(): void {
     this.pendingRemoval.set(null);
+  }
+
+  /**
+   * Re-issues the listing read after a reported failure.
+   *
+   * The failure is cleared FIRST and the read issued second, so a second failure produces a fresh
+   * report rather than being indistinguishable from the one still on screen, and the awaited removal
+   * is dropped for the same reason the dismissal drops it: nothing may be left waiting on an outcome
+   * that will never arrive.
+   *
+   * The store carries the current filter, sort and page, so this repeats the request that failed
+   * rather than resetting the screen - which is what makes it a retry rather than a reload.
+   */
+  protected onRetryRead(): void {
+    this.awaitedRemoval.set(null);
+    this.store.clearFailure();
+    this.store.loadModules();
   }
 
   /**
@@ -1129,15 +1631,21 @@ export class ModuleListComponent implements OnInit {
 
       // 3. The primary label - the INSTANCE title, mirroring `portals.ascx:L30`. Sortable, and it is
       //    also the server's default ordering. Nullable on the contract, which is ordinary data rather
-      //    than a defect: the legacy settings screen declared no presence validator on the field. The
-      //    shared table renders an absent value as empty text and never as the word "null".
+      //    than a defect: the legacy settings screen declared no presence validator on the field.
+      //
+      //    ⚠ RENDERED THROUGH A TEMPLATE RATHER THAN A BARE FIELD, so that an absent title is VISIBLE.
+      //    A bare `field` binding renders an absent value as empty text, which is correct for a value
+      //    that is merely blank but not for one an operator has to act on: measured, the cell's whole
+      //    content was two literal spaces and the accessibility tree reported it unnamed, so nothing
+      //    distinguished "this module has no title" from "this cell failed to render".
       {
+        kind: 'template',
         key: SORTABLE_KEY.moduleTitle,
         label: COLUMN_LABEL.moduleTitle,
         sortable: true,
         headerAlign: 'center',
         bodyAlign: 'start',
-        field: 'moduleTitle',
+        cellTemplate: this.requireTemplate(this.titleCellTemplate, 'titleCell'),
       },
 
       // 4. The DEFINITION's display name - the legacy `'Module:'` label. NOT sortable, and that is the
@@ -1145,6 +1653,12 @@ export class ModuleListComponent implements OnInit {
       //    the page has been taken, so ordering by it would order the page rather than the collection.
       {
         key: 'friendlyName',
+        // The row's NAME. Emitted as `<th scope="row">` so a screen reader announces which record
+        // each cell belongs to - without it, traversing a row gives the column name and the value
+        // and never the record's identity. This column is the one a person would read aloud to say
+        // which row they mean. No visual change: the shared stylesheet restores a body row
+        // header's normal weight.
+        rowHeader: true,
         label: COLUMN_LABEL.friendlyName,
         headerAlign: 'center',
         bodyAlign: 'start',

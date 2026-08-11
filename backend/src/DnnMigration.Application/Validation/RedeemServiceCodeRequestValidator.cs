@@ -55,12 +55,25 @@ public class RedeemServiceCodeRequestValidator : AbstractValidator<RedeemService
     /// Reported when the submission carries no code.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Wording recovered from the legacy help text, which called the value an "RSVP Code"
     /// (<c>plRSVPCode.Text</c> in <c>Website/admin/Users/App_LocalResources/MemberServices.ascx.resx</c>
     /// reads "Enter RSVP Code:"). The message says what is missing and nothing about what would have
     /// matched.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this sentence NAMES THE FIELD THE WAY THE FIELD IS LABELLED, and that is the whole
+    /// point of it. It previously read "An invitation code is required." while the control above it read
+    /// "Enter RSVP Code:", so one value carried two names and an operator had to infer that the refusal
+    /// was even about the box they had just filled in. The mismatch contradicted the very remark above,
+    /// which had already recorded the legacy name as "RSVP Code". Nothing in the legacy forced either
+    /// wording - the legacy guard was SILENT and had no message at all to recover - so the field's own
+    /// label is the only authority available, and both sides now follow it. The browser copy is held at
+    /// <c>member-services.component.ts</c> and is kept word-for-word identical, so the same situation is
+    /// never described two different ways depending on which side noticed it.
+    /// </para>
     /// </remarks>
-    internal const string CodeRequiredMessage = "An invitation code is required.";
+    internal const string CodeRequiredMessage = "An RSVP Code is required.";
 
     /// <summary>
     /// Initialises a new instance of the <see cref="RedeemServiceCodeRequestValidator"/> class and

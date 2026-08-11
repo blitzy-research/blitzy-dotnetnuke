@@ -216,7 +216,12 @@ const UPDATE_USER_ROLE_LABEL = 'Update User Role';
 const DELETE_LABEL = 'Delete';
 const CANCEL_LABEL = 'Cancel';
 const CONFIRM_REMOVAL_MESSAGE = 'Are You Sure You Wish To Delete This Item?';
-const NO_MATCHING_USERS = 'No accounts match that name.';
+const NO_MATCHING_USERS =
+  "No account's login name starts with that. The search matches the beginning of the login " +
+  'name, not the display name.';
+const MATCHES_LABEL = 'Matching accounts';
+const MATCHES_SELECTOR = 'ul.role-assignment__matches';
+const MATCH_ACTION_SELECTOR = 'button.role-assignment__match-action';
 const ROLE_UNRESOLVED = 'No security role was addressed, so no memberships can be shown.';
 const USER_HELP = 'Enter The User Name and click Validate to confirm';
 const USER_CHOICE_HELP = 'Choose an account from every account in this site.';
@@ -226,6 +231,21 @@ const ACCOUNT_CHOICES_UNAVAILABLE =
   'Every account in this site could not be listed, so the name box is offered instead.';
 const ACCOUNT_POLICY_UNAVAILABLE =
   "This site's preferred account selector could not be read, so the name box is offered.";
+
+/**
+ * The measured legacy threshold, mirrored rather than imported because the component keeps it
+ * module-private. `UserModuleBase.vb:L178-L183` defaulted an ABSENT `Security_UsersControl` to the
+ * name box above one thousand accounts and to the drop-down at or below it.
+ */
+const LEGACY_ACCOUNT_LISTING_CEILING = 1000;
+
+const ACCOUNT_POLICY_DEFAULTED_BY_SIZE =
+  "This site's preferred account selector could not be read, and the site holds more than " +
+  `${LEGACY_ACCOUNT_LISTING_CEILING} accounts, so the name box is offered rather than a list of ` +
+  'every one of them.';
+
+/** The page size the count probe asks for: one record, because the answer wanted is the total. */
+const ACCOUNT_COUNT_PROBE_PAGE_SIZE = '1';
 
 /**
  * The three validator messages, as the resource file holds them AFTER the shared field wrapper has
@@ -464,6 +484,9 @@ function role(roleId = 0, overrides: Partial<Role> = {}): Role {
     autoAssignment: false,
     rsvpCode: null,
     iconFile: null,
+    // Served with every role detail; this screen carries it nowhere, because it performs no role
+    // update. Declared so the fixture is a whole `Role` rather than a near-one.
+    concurrencyToken: 'revision-1',
     ...overrides,
   };
 }
@@ -524,6 +547,10 @@ function account(overrides: Partial<UserListItem> = {}): UserListItem {
  */
 function membershipSettings(overrides: Partial<MembershipSettings> = {}): MembershipSettings {
   return {
+    // ⚠ #5/#6 — stated rather than left to the override, so a specification that says nothing about
+    // provenance still gets a policy claiming to be stored. Provenance-sensitive specifications pass
+    // `isStored: false` explicitly.
+    isStored: true,
     columnFirstName: true,
     columnLastName: true,
     columnDisplayName: true,
@@ -766,16 +793,52 @@ describe('RoleAssignmentComponent', () => {
     totalCount: number = accounts.length,
     pageIndex = 0,
   ): TestRequest {
+    // ⚠ THE PAGE SIZE IS PART OF THE MATCH, not decoration. The count probe is also a GET of this
+    // address with no name and page index zero, so a matcher that ignored the size would consume
+    // whichever request happened to be pending and the two would be indistinguishable.
     const call = httpMock.expectOne(
       (candidate) =>
         candidate.method === 'GET' &&
         candidate.url === USERS_URL &&
         candidate.params.get('userName') === null &&
+        candidate.params.get('pageSize') === LOOKUP_PAGE_SIZE &&
         candidate.params.get('pageIndex') === String(pageIndex),
       `the account list, page ${pageIndex}`,
     );
 
     call.flush(pageOf(accounts, totalCount, pageIndex, Number(LOOKUP_PAGE_SIZE)));
+    fixture.detectChanges();
+
+    return call;
+  }
+
+  /**
+   * Answers the account-count probe the fallback rule issues, or refuses it.
+   *
+   * Matched on its page size, which is what distinguishes it from the drop-down walk's first page.
+   *
+   * @param totalCount The count to report, or `null` to refuse the probe.
+   */
+  function answerAccountCount(totalCount: number | null): TestRequest {
+    const call = httpMock.expectOne(
+      (candidate) =>
+        candidate.method === 'GET' &&
+        candidate.url === USERS_URL &&
+        candidate.params.get('pageSize') === ACCOUNT_COUNT_PROBE_PAGE_SIZE,
+      'the account-count probe',
+    );
+
+    if (totalCount === null) {
+      call.flush(
+        { type: 'about:blank', title: 'Server error', status: 500 },
+        { status: 500, statusText: 'Server Error' },
+      );
+    } else {
+      // One record is what the probe asked for, so one is what a real server would answer with -
+      // and the case must not be able to pass because the probe read a page it never requested.
+      call.flush(pageOf(totalCount > 0 ? [account()] : [], totalCount, 0, 1));
+    }
+
     fixture.detectChanges();
 
     return call;
@@ -1277,7 +1340,7 @@ describe('RoleAssignmentComponent', () => {
 
   /** The cells of one painted row, in document order. */
   function cellsOf(row: HTMLTableRowElement): readonly string[] {
-    return Array.from(row.querySelectorAll('td')).map((cell) => textIn(cell).trim());
+    return Array.from(row.querySelectorAll('td,th')).map((cell) => textIn(cell).trim());
   }
 
   /**
@@ -1788,6 +1851,10 @@ describe('RoleAssignmentComponent', () => {
       expect(searchMember(call.request.body, 'sortBy')).toBe(LOOKUP_SORT_FIELD);
       expect(searchMember(call.request.body, 'sortDir')).toBe(LOOKUP_SORT_DIRECTION);
 
+      // ⚠ AND THE ORDER, which is what makes an exact match reachable in one request. Ascending by
+      // LOGIN NAME over a prefix-matched set puts the shortest match first, and the shortest match
+      // is the typed name itself. The listing's own default orders by DISPLAY name — unrelated to
+      // what was searched for — which is precisely how an exact match ended up unreachable.
       call.flush(pageOf([account()], 1, 0, 10));
       fixture.detectChanges();
 
@@ -1806,6 +1873,128 @@ describe('RoleAssignmentComponent', () => {
       expect(textIn(query('.role-assignment__no-matches')).trim()).toBe(
         NO_MATCHING_USERS,
       );
+    });
+
+    it('re-runs an identical search on an explicit submit, rather than answering from memory', () => {
+      // MIGRATION: the legacy Validate button re-queried on every press, because a postback had no
+      // memory of the previous one. A change gate on the shared control's submit path made a second
+      // press silently do nothing, which is at its worst exactly here: an operator who has just
+      // created the account they are looking for presses Search again and is told, from a cached
+      // answer, that no such login name exists.
+      arrive(0, []);
+
+      lookUp('ada');
+      answerLookup([]);
+
+      expect(component().showNoMatchingUsers()).toBeTrue();
+
+      // The same term again, through the same rendered control - not the handler behind it, because
+      // the gate that had to be removed lived in the control.
+      lookUp('ada');
+
+      const repeat = expectRequest('POST', USERS_SEARCH_URL, 'the repeated lookup');
+
+      expect(lookupBody(repeat)['userName']).toBe('ada');
+
+      // And the stale answer was cleared at dispatch rather than left standing while the repeat was
+      // in flight, so the screen never shows a refusal beside a search that has not failed.
+      expect(component().showNoMatchingUsers()).toBeFalse();
+
+      repeat.flush(pageOf([account()], 1, 0, 100));
+      fixture.detectChanges();
+
+      expect(component().userMatches()).toHaveSize(1);
+      expect(component().showNoMatchingUsers()).toBeFalse();
+    });
+
+    it('explains that the search matches the beginning of the LOGIN name when nothing is found', () => {
+      // The wording is the remedy for a working lookup that looked broken: the filter is a prefix on
+      // the login name, so 'Admin' finds nothing on a site whose administrator logs in as
+      // 'runtime_admin' - an account named in every button this control offers.
+      arrive(0, []);
+
+      lookUp('Admin');
+      answerLookup([]);
+
+      const note = textIn(query('.role-assignment__no-matches')).trim();
+
+      expect(note).toBe(NO_MATCHING_USERS);
+      expect(note).withContext('it names the field searched').toContain('login');
+      expect(note).withContext('and the part of it matched').toContain('beginning');
+    });
+
+    it('names the list of offered matches, so its purpose is announced and not merely its length', () => {
+      arrive(0, []);
+      lookUp('ada');
+      answerLookup([account()]);
+
+      const list = query<HTMLElement>(MATCHES_SELECTOR);
+
+      // A list announced by role and length alone says how many things there are and nothing
+      // about what they are.
+      expect(list).not.toBeNull();
+      expect(list?.getAttribute('aria-label')).toBe(MATCHES_LABEL);
+    });
+
+    it('offers each match as a real toggle button rather than as a listbox option', () => {
+      arrive(0, []);
+      lookUp('ada');
+      answerLookup([account()]);
+
+      const list = query<HTMLElement>(MATCHES_SELECTOR);
+      const actions = queryAll<HTMLButtonElement>(MATCH_ACTION_SELECTOR);
+
+      expect(actions).toHaveSize(1);
+
+      // ⚠ THE ABSENCES ARE THE POINT, and each one is a conformance claim rather than a
+      // preference. `role="option"` would replace the button role on these controls, and
+      // `option` does not support `aria-pressed` — so the pair would be invalid, not merely
+      // unconventional. A listbox is additionally a composite widget with a mandatory
+      // keyboard contract this screen does not implement, and the matches are inline content
+      // rather than a popup, so neither `listbox` nor `combobox` describes them.
+      expect(list?.getAttribute('role')).toBeNull();
+      for (const action of actions) {
+        expect(action.tagName.toLowerCase()).toBe('button');
+        expect(action.type).toBe('button');
+        expect(action.getAttribute('role')).toBeNull();
+        expect(action.getAttribute('aria-selected')).toBeNull();
+        expect(action.getAttribute('aria-pressed')).toBe('false');
+        expect(action.getAttribute('tabindex')).toBeNull();
+      }
+      expect(query('datalist')).toBeNull();
+      expect(query('[role="listbox"]')).toBeNull();
+      expect(query('[role="combobox"]')).toBeNull();
+      expect(query('[role="option"]')).toBeNull();
+    });
+
+    it('carries the selection on the control itself once a match is chosen', () => {
+      arrive(0, []);
+      lookUp('ada');
+      answerLookup([account()]);
+      chooseAccount('Ada Lovelace');
+
+      const action = query<HTMLButtonElement>(MATCH_ACTION_SELECTOR);
+
+      // The state a reader hears and the state the stylesheet paints are one attribute, so
+      // they cannot disagree; and it stays a button, so releasing it needs no extra key.
+      expect(action?.getAttribute('aria-pressed')).toBe('true');
+      expect(action?.tagName.toLowerCase()).toBe('button');
+    });
+
+    it('names the lookup field once, with the caption the legacy screen carried', () => {
+      arrive(0, []);
+
+      const field = query<HTMLInputElement>('input.search-input__field');
+      const labels = Array.from(field?.labels ?? []);
+
+      // The shared lookup withholds its own generic 'Search:' caption here, because this
+      // field already carries `plUsers.Text`. Two labels would give the control a composite
+      // accessible name in which the caption nearest the box is no longer the whole name —
+      // the SC 2.5.3 Label in Name mismatch.
+      expect(field).not.toBeNull();
+      expect(labels).toHaveSize(1);
+      expect(labels[0]?.textContent?.trim()).toBe(USER_LABEL);
+      expect(query('label.search-input__label')).toBeNull();
     });
 
     it('prefills the window from an existing membership when one is chosen', () => {
@@ -2343,18 +2532,135 @@ describe('RoleAssignmentComponent', () => {
       expect(nameBox()).withContext('the name box, once the policy arrived').not.toBeNull();
     });
 
-    it('falls back to the name box when the policy cannot be read, and says why', () => {
-      // The name box needs no tenant-wide read, so it is the affordance that survives an unreadable
-      // policy. Saying why matters: without it the operator sees a control the site's own settings
-      // may say should not be there and has no way to know the difference.
+    it('applies the legacy account-count default when the policy cannot be read, offering the DROPDOWN', () => {
+      // ⚠ THIS CASE PREVIOUSLY ASSERTED THE NAME BOX, AND THE ASSERTION WAS THE DEFECT. It reasoned
+      // that the name box is the affordance that survives an unreadable policy, which is true of the
+      // read but not of the DECISION: `UserModuleBase.vb:L178-L183` resolved an absent
+      // `Security_UsersControl` from the tenant's account count and defaulted to the drop-down at or
+      // below one thousand accounts. `GET /api/v1/users/settings` answers 404 permanently on a tenant
+      // with no User Accounts module instance, so the screen offered the wrong control on every visit
+      // to such a site — not once, and not transiently.
       create('0', { usersControl: null });
       answerRole(role(0));
       answerMemberships(0, []);
+
+      // The count is asked for FIRST, which is the whole point of the ordering: the threshold exists
+      // so that a site larger than it is never enumerated to fill a select.
+      answerAccountCount(2);
+
+      expect(component().usersControlMode()).toBe('combo');
+
+      // And then the list is walked, exactly as a tenant that had asked for the drop-down would.
+      answerAccountChoicesPage([account({ userId: 7, displayName: 'Ada Lovelace' })], 1);
+
+      expect(choices()).withContext('the dropdown the legacy would have chosen').not.toBeNull();
+      expect(nameBox()).withContext('and not the name box').toBeNull();
+
+      // Nothing is explained, because nothing was degraded.
+      expect(query('.role-assignment__lookup-note')).toBeNull();
+    });
+
+    it('falls back to the name box when the site is too large to enumerate, and says so', () => {
+      // The other half of the same legacy rule, and the reason the count is read rather than assumed.
+      create('0', { usersControl: null });
+      answerRole(role(0));
+      answerMemberships(0, []);
+
+      answerAccountCount(LEGACY_ACCOUNT_LISTING_CEILING + 1);
+
+      expect(component().usersControlMode()).toBe('lookup');
+      expect(nameBox()).not.toBeNull();
+      expect(textIn(query('.role-assignment__lookup-note')).trim()).toBe(
+        ACCOUNT_POLICY_DEFAULTED_BY_SIZE,
+      );
+
+      // ⚠ AND THE LIST IS NEVER WALKED. A site of this size is precisely what the threshold protects,
+      // so a walk here would defeat the rule it is implementing.
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'GET' && candidate.url === USERS_URL,
+      );
+    });
+
+    it('treats the threshold itself as within reach, matching the legacy comparison exactly', () => {
+      // ⚠ THE BOUNDARY. The legacy test was `> 1000`, so a site holding exactly one thousand accounts
+      // got the drop-down. An off-by-one here would change which control a real site is offered.
+      create('0', { usersControl: null });
+      answerRole(role(0));
+      answerMemberships(0, []);
+
+      answerAccountCount(LEGACY_ACCOUNT_LISTING_CEILING);
+
+      expect(component().usersControlMode()).toBe('combo');
+
+      answerAccountChoicesPage([account()], 1);
+
+      expect(choices()).not.toBeNull();
+    });
+
+    it('falls back to the name box when the count itself cannot be read, and says why', () => {
+      // The decision cannot be made at all, which is the one case where the operator is looking at a
+      // control the site's own settings may say should not be there. That is what the sentence
+      // explains, and it is a different sentence from the size one because nothing is broken there.
+      create('0', { usersControl: null });
+      answerRole(role(0));
+      answerMemberships(0, []);
+
+      answerAccountCount(null);
 
       expect(component().usersControlMode()).toBe('lookup');
       expect(nameBox()).not.toBeNull();
       expect(textIn(query('.role-assignment__lookup-note')).trim()).toBe(
         ACCOUNT_POLICY_UNAVAILABLE,
+      );
+
+      // A refusal must not be retried on every notification: the probe fires once.
+      component().onUserSearch('');
+      fixture.detectChanges();
+      httpMock.match(
+        (candidate) => candidate.method === 'POST',
+      ).forEach((call) => call.flush(pageOf([], 0, 0, 100)));
+      fixture.detectChanges();
+
+      httpMock.expectNone(
+        (candidate) =>
+          candidate.method === 'GET' &&
+          candidate.url === USERS_URL &&
+          candidate.params.get('pageSize') === ACCOUNT_COUNT_PROBE_PAGE_SIZE,
+      );
+    });
+
+    it('offers NEITHER control while the fallback count is outstanding', () => {
+      // The policy has answered - with nothing - so the count is what decides, and until it settles
+      // the answer is genuinely unknown. Holding the field is what stops a control being offered and
+      // then exchanged for the other underneath an operator already typing into it.
+      create('0', { usersControl: null });
+      answerRole(role(0));
+      answerMemberships(0, []);
+
+      expect(component().accountPolicyPending()).toBeTrue();
+      expect(nameBox()).withContext('the name box').toBeNull();
+      expect(choices()).withContext('the dropdown').toBeNull();
+
+      answerAccountCount(2);
+      answerAccountChoicesPage([account()], 1);
+
+      expect(component().accountPolicyPending()).toBeFalse();
+      expect(choices()).not.toBeNull();
+    });
+
+    it('probes no count at all when the tenant policy answered', () => {
+      // The count decides nothing once the tenant has said which control it wants, so asking would be
+      // a request whose answer is discarded.
+      create('0', { usersControl: USERS_CONTROL_TEXT_BOX });
+      answerRole(role(0));
+      answerMemberships(0, []);
+
+      expect(component().usersControlMode()).toBe('lookup');
+      httpMock.expectNone(
+        (candidate) =>
+          candidate.method === 'GET' &&
+          candidate.url === USERS_URL &&
+          candidate.params.get('pageSize') === ACCOUNT_COUNT_PROBE_PAGE_SIZE,
       );
     });
 
@@ -2726,7 +3032,16 @@ describe('RoleAssignmentComponent', () => {
 
       expect(rows()).withContext('the row STILL EXISTS').toHaveSize(1);
       expect(component().assignments()[0]?.userRoleId).toBe(11);
-      expect(cellsOf(rows()[0])[3]).toBe(BACKDATED_EXPIRY_RENDERED);
+
+      // ⚠ THE ASSERTION WAS `toBe(BACKDATED_EXPIRY_RENDERED)` AND IS NOW `toContain`, BECAUSE R-M24
+      // ADDED A QUALIFIER TO EXACTLY THIS CASE — and that makes the case stronger rather than weaker.
+      // A back-dated bound is the clearest example of the state R-M24 exists to reveal: the row is
+      // still present and the account no longer holds the role, which is a distinction the legacy grid
+      // could not draw at all. The DATE is still asserted exactly, so the formatter is still pinned.
+      expect(cellsOf(rows()[0])[3]).toContain(BACKDATED_EXPIRY_RENDERED);
+      expect(cellsOf(rows()[0])[3])
+        .withContext('a bound the server put behind us reads as lapsed, not as ordinary')
+        .toContain('Expired');
     });
 
     it('sends nothing when the confirmation is dismissed', () => {
@@ -2862,9 +3177,14 @@ describe('RoleAssignmentComponent', () => {
      * cases above also exist: the tenant facts this rule needs are inputs, and when they are absent
      * the command is offered and the write is refused with a machine-readable code.
      *
-     * ⚠ ASSERTED ON THE ACCESSIBLE NAME — the global `cmdDelete.Text` — AND ON THE ELEMENT, never on a
-     * CSS class. A class is a styling decision that may be renamed without changing behaviour; the
-     * name a person hears is the contract.
+     * ⚠ ASSERTED ON THE VISIBLE WORD — the global `cmdDelete.Text` — AND ON THE ELEMENT, never on a
+     * CSS class. A class is a styling decision that may be renamed without changing behaviour.
+     *
+     * This comment used to call the assertion below an accessible-name check. It is not, and the
+     * distinction became load-bearing once the command gained an `aria-label`: `textContent` is the
+     * PAINTED word, and an `aria-label` replaces the accessible name without touching it. Both are
+     * contracts and both are now asserted — the painted word here, the accessible name in the test that
+     * follows.
      */
     it('hides the command on the protected row of a two-row listing, and keeps the other', () => {
       arrive(
@@ -2893,12 +3213,129 @@ describe('RoleAssignmentComponent', () => {
       expect(component().canRemove(component().assignments()[1])).toBeTrue();
     });
 
+    it('names each removal command after the account it removes, so two are never confusable', () => {
+      /*
+       * ⚠ THE DEFECT THIS PINS WAS MEASURED FROM THE ACCESSIBILITY TREE, not inferred. Both removal
+       * commands on the fixture computed the byte-identical name "Delete", with `aria-label`, `title` and
+       * `aria-describedby` all null, so a screen-reader user heard "Delete, button ... Delete, button" and
+       * could not tell which membership each one ended — on an action that cannot be undone.
+       *
+       * This application already names row commands after their subject everywhere else it renders one: the
+       * roles listing computes "Delete Administrators", the portals listing "Delete FIX010 Verify Portal".
+       * This screen was the exception, which made it an inconsistency rather than a considered choice, and
+       * the review named the class explicitly — two control pairs sharing one label in a way an automated
+       * checker cannot detect.
+       *
+       * THE PAINTED WORD MUST NOT CHANGE. The legacy button read the global `cmdDelete.Text` and still
+       * does; only the accessible name is qualified. Both halves are asserted, because a fix that silently
+       * rewrote the visible label would be a different and unwanted change.
+       */
+      arrive(
+        0,
+        [
+          membership({ userRoleId: 11, userId: 42, displayName: 'Ada Lovelace' }),
+          membership({
+            userRoleId: 12,
+            userId: 7,
+            username: 'grace',
+            displayName: 'Grace Hopper',
+          }),
+        ],
+        {},
+      );
+
+      const commands: readonly (HTMLElement | null)[] = rows().map((row) =>
+        row.querySelector<HTMLElement>('button'),
+      );
+
+      expect(commands).toHaveSize(2);
+
+      const names: readonly string[] = commands.map(
+        (command) => command?.getAttribute('aria-label') ?? '',
+      );
+
+      expect(names).toEqual([`${DELETE_LABEL} Ada Lovelace`, `${DELETE_LABEL} Grace Hopper`]);
+
+      // The point of the change, stated as its own assertion rather than left implicit in the pair above.
+      expect(names[0]).not.toBe(names[1]);
+
+      // ...and the painted word is untouched on both, so nothing about the row looks different.
+      for (const command of commands) {
+        expect(textIn(command).trim()).toBe(DELETE_LABEL);
+      }
+    });
+
     it('withholds the command for the registered-users role', () => {
       // Every authenticated account holds this role, so removing anybody from it would take their
       // authentication away; the legacy rule refused it for the same reason.
       arrive(1, [membership({ userId: 42, roleId: 1 })], { registeredRoleId: 1 });
 
       expect(button(DELETE_LABEL)).withContext('withheld for registered users').toBeUndefined();
+    });
+
+    /**
+     * ⚠ R-M24: THE WHOLE COLUMN GOES, NOT JUST THE COMMANDS INSIDE IT.
+     *
+     * `RoleController.vb:L745` forbids removal from the registered-users role for EVERY account, so
+     * leaving the column in place produced a heading over a hundred and twenty empty cells — measured
+     * at runtime. The heading is CLIPPED rather than painted, so a sighted reader saw an unexplained
+     * empty track while a screen-reader user was told the listing has a `Delete` column that never
+     * holds a command.
+     *
+     * Withholding a column outright is THIS SCREEN'S OWN LEGACY BEHAVIOUR:
+     * `SecurityRoles.ascx.vb:L245` is `Columns(2).Visible = False`, dropping the security-role column
+     * in exactly this mode because every row belonged to the one role already named in the heading.
+     */
+    it('emits no removal column at all on a role whose memberships cannot be removed', () => {
+      arrive(1, [membership({ userId: 42, roleId: 1 })], { registeredRoleId: 1 });
+
+      const headers: readonly string[] = queryAll<HTMLTableCellElement>(
+        'th.data-table__header',
+      ).map((cell) => textIn(cell).trim());
+
+      expect(headers)
+        .withContext('three columns, and no heading for a command that cannot exist')
+        .toEqual(['User Name', 'Effective Date', 'Expiry Date']);
+      expect(headers).not.toContain(DELETE_LABEL);
+      expect(cellsOf(rows()[0])).toHaveSize(3);
+    });
+
+    /**
+     * ⚠ AND THE ABSENCE IS EXPLAINED. An operator who has removed accounts from every other role
+     * would otherwise find the affordance simply gone, with nothing stating whether that is a rule or
+     * a fault. The sibling role editor states the reason for its own protected-role state on exactly
+     * this footing, because the legacy disabled its controls silently and left a sighted user with
+     * greyed fields and no reason for them.
+     */
+    it('states why no account can be removed from that role', () => {
+      arrive(1, [membership({ userId: 42, roleId: 1 })], { registeredRoleId: 1 });
+
+      const notice: Element | null = query('p.role-assignment__notice');
+
+      expect(notice).withContext('the reason is stated, not left to be inferred').not.toBeNull();
+      expect(textIn(notice)).toContain('cannot be removed from this role');
+    });
+
+    /**
+     * ⚠ THE COLUMN MUST SURVIVE A ROLE WHERE ONLY *ONE* ROW IS PROTECTED. The designated-administrator
+     * rule withholds a single command on the administrators role, so the column still has commands and
+     * must still be emitted — and the notice must NOT appear, because removal is available there.
+     * Conflating the row-level rule with the role-level one would take the affordance away from every
+     * other member of that role.
+     */
+    it('keeps the column and stays silent when only one row is protected', () => {
+      arrive(
+        0,
+        [membership({ userId: 1, roleId: 0 }), membership({ userId: 42, roleId: 0 })],
+        { administratorUserId: 1, administratorRoleId: 0, registeredRoleId: 1 },
+      );
+
+      expect(cellsOf(rows()[0]))
+        .withContext('four columns: the command column is still emitted')
+        .toHaveSize(4);
+      expect(query('p.role-assignment__notice')).toBeNull();
+      expect(button(DELETE_LABEL)).withContext('the unprotected row still offers it').not
+        .toBeUndefined();
     });
 
     it('offers the command when no protection applies', () => {
@@ -3078,6 +3515,86 @@ describe('RoleAssignmentComponent', () => {
       expect(cells.join('|')).not.toContain(SENTINEL_DATE_MISRENDERED);
       expect(cells.join('|')).not.toContain(INVALID_DATE_TEXT);
       expect(cells.join('|')).not.toContain('0001');
+    });
+
+    /**
+     * ⚠ R-M24: A LAPSED MEMBERSHIP SAYS SO, AND A PENDING ONE SAYS SO.
+     *
+     * Neither `securityroles.ascx` nor `SecurityRoles.ascx.vb` compares either bound against the clock
+     * anywhere, so a membership that lapsed years ago, one that begins years hence and one in force
+     * today were drawn identically — same colour, same weight, no other mark — on the one screen whose
+     * purpose is administering who holds a role. Runtime testing measured exactly that.
+     * `Website/admin/Users/MemberServices.ascx.vb:L172-L186` is the in-scope screen that DOES own a
+     * clock and it supplies both the test and the word `Expired`.
+     *
+     * The bounds are set relative to the moment the component captured, so the case cannot drift with
+     * the calendar. THE DATE IS STILL PAINTED: the qualifier is added beside it, not in place of it,
+     * because an administrator needs to know WHEN a membership lapsed as well as that it has.
+     */
+    it('qualifies a lapsed membership and leaves its date intact', () => {
+      const lastYear = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString();
+
+      arrive(0, [membership({ effectiveDate: null, expiryDate: lastYear })]);
+
+      const cells = cellsOf(rows()[0]);
+
+      expect(cells[3]).withContext('the qualifier joins the date, never replaces it').toContain(
+        'Expired',
+      );
+      expect(cells[3]).withContext('and the date itself survives').toMatch(/\d/);
+      expect(cells[2]).withContext('the effective bound claims nothing').toBe('');
+    });
+
+    it('qualifies a membership whose effective bound has not yet arrived', () => {
+      const nextYear = new Date(Date.now() + 400 * 24 * 60 * 60 * 1000).toISOString();
+
+      arrive(0, [membership({ effectiveDate: nextYear, expiryDate: null })]);
+
+      const cells = cellsOf(rows()[0]);
+
+      expect(cells[2]).toContain('Pending');
+      expect(cells[3]).withContext('the expiry bound claims nothing').toBe('');
+    });
+
+    /**
+     * ⚠ THE QUALIFIERS MUST NOT WIDEN INTO AN ORDINARY MEMBERSHIP. Most memberships are in force and
+     * carry no bounds at all; a mark on those would be noise on every row and would train a reader to
+     * ignore it on the rows that matter. A membership with NO bounds is `current` by definition — it
+     * has neither lapsed nor is it waiting to start.
+     */
+    it('marks a membership in force with nothing at all', () => {
+      const lastYear = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString();
+      const nextYear = new Date(Date.now() + 400 * 24 * 60 * 60 * 1000).toISOString();
+
+      arrive(0, [
+        membership({ userId: 1, effectiveDate: null, expiryDate: null }),
+        membership({ userId: 2, effectiveDate: lastYear, expiryDate: nextYear }),
+      ]);
+
+      for (const row of rows()) {
+        const cells = cellsOf(row);
+
+        expect(cells.join('|')).not.toContain('Expired');
+        expect(cells.join('|')).not.toContain('Pending');
+      }
+    });
+
+    /**
+     * ⚠ A SENTINEL BOUND MUST NOT ACQUIRE A QUALIFIER. `Null.vb` spells an unset date as
+     * `Date.MinValue`, which is in the year one and therefore very much in the past — so a naive clock
+     * comparison would stamp `Expired` on every membership with no expiry at all, which is the exact
+     * opposite of what an unset bound means. Both the emptiness and the qualifier are decided by the
+     * SAME parser, which is what makes this impossible rather than merely unlikely.
+     */
+    it('never qualifies a bound the cell renders as empty', () => {
+      arrive(0, [membership({ effectiveDate: SENTINEL_DATE, expiryDate: SENTINEL_DATE })]);
+
+      const cells = cellsOf(rows()[0]);
+
+      expect(cells[2]).toBe('');
+      expect(cells[3]).toBe('');
+      expect(cells.join('|')).not.toContain('Expired');
+      expect(cells.join('|')).not.toContain('Pending');
     });
 
     it('renders a sentinel carrying a NON-ZERO TIME as an empty cell as well', () => {
@@ -3440,14 +3957,24 @@ describe('RoleAssignmentComponent', () => {
 
     /**
      * The legacy grid was UNPAGED — `securityroles.ascx:L56` declares no `AllowPaging`, no pager style
-     * and no footer style — so a role whose members fit on one page must render exactly what it
-     * rendered: the bare grid, with no pager in sight. The pager is drawn on the tenant-wide
-     * predicate, more memberships than fit on one page, and on nothing else.
+     * and no footer style — so a role whose members fit on one page offers NO STEP: there is nowhere to
+     * step to, and four disabled buttons would say otherwise. What it does state is HOW MANY ACCOUNTS
+     * HOLD THE ROLE, which is the one place on this screen that figure appears, and which runtime
+     * testing found missing on every list because the count had been tied to navigability.
      */
-    it('renders no pager for a role whose members fit on one page', () => {
+    it('offers no step for a role whose members fit on one page, and states the membership count', () => {
       arrive(0, [membership()]);
 
       expect(component().pagerRequired()).withContext('nothing to move through').toBeFalse();
+      expect(query('app-pagination')).withContext('mounted for its count').not.toBeNull();
+      expect((query('.pagination__status')?.textContent ?? '').trim()).toContain('of 1');
+      expect(queryAll('.pagination__button')).withContext('no steps').toHaveSize(0);
+    });
+
+    it('mounts no pager at all for a role with no members', () => {
+      arrive(0, []);
+
+      // Nothing to count, so nothing is mounted — not an emptied container and not a hidden one.
       expect(query('app-pagination')).withContext('not mounted').toBeNull();
       expect(query('.pagination')).toBeNull();
     });
@@ -3535,18 +4062,83 @@ describe('RoleAssignmentComponent', () => {
     });
 
     /**
-     * `securityroles.ascx:L56` declares no `AllowSorting`, so the legacy grid could not be reordered.
-     * The shared grid emits a sort request but never performs one, and leaving every column unsortable
-     * is what keeps the two in step. There is no alternating-item style to reproduce either, so no
-     * striping is asserted — and the shared grid refuses a column that is both sortable and
-     * heading-hidden, which is a second reason the commands column carries no sort.
+     * ⚠ THE SORTABLE SET IS THE ENDPOINT'S, AND THIS SPEC USED TO ASSERT THE EMPTY SET ON A LEGACY GROUND
+     * THAT DOES NOT DISTINGUISH THIS SCREEN.
+     *
+     * `securityroles.ascx:L56` declares no `AllowSorting`, which is true - and a case-insensitive census
+     * across BOTH legacy trees finds the attribute exactly ONCE in either of them, in
+     * `Website/admin/Files/filemanager.ascx`, a screen the AAP places out of scope. Not one in-scope legacy
+     * grid could be reordered, INCLUDING the module listing that has offered sorting since it was written,
+     * so the census says the same thing about every grid in this application.
+     *
+     * `SortableFields.RoleUsers` in `backend/src/DnnMigration.Application/Validation/SortableFields.cs`
+     * bounds it instead: ACCOUNT fields only, and it records that the two assignment dates the projection
+     * carries are DELIBERATELY excluded. So exactly one column offers a control - the account - and the two
+     * dates must not, which is the half of this spec that still asserts an absence and matters most,
+     * because a control on either would compose a name the boundary refuses. The commands column carries no
+     * sort for a second, independent reason: the shared grid refuses a column that is both sortable and
+     * heading-hidden.
      */
-    it('marks no column sortable and handles no sort request', () => {
+    it('offers a sort on the account column alone, and on neither assignment date', () => {
       arrive(0, [membership()]);
 
-      expect(queryAll('button.data-table__sort')).toHaveSize(0);
-      expect(queryAll('th[aria-sort]')).toHaveSize(0);
-      expect(queryAll('.data-table__sort-indicator')).toHaveSize(0);
+      const controls = queryAll<HTMLButtonElement>('button.data-table__sort');
+
+      expect(controls).toHaveSize(1);
+      // Named by its action while keeping the visible heading text, per WCAG 2.5.3.
+      expect(controls[0].getAttribute('aria-label')).toBe('Sort by User Name');
+      expect(controls[0].getAttribute('aria-label') ?? '').toContain(
+        (controls[0].textContent ?? '').trim(),
+      );
+
+      // `aria-sort` appears on the sortable column and NOWHERE else: announcing "none" on an unsortable
+      // column would claim it can be reordered.
+      expect(queryAll('th[aria-sort]')).toHaveSize(1);
+      expect(queryAll('th[aria-sort]')[0].getAttribute('aria-sort')).toBe('none');
+
+      // Nothing is sorted yet, so no direction glyph is PAINTED - and the box that would hold one is
+      // still there. ⚠ THE ELEMENT'S PRESENCE IS THE FIX, NOT A LEAK. The indicator used to be added
+      // and removed with the ordering, which changed the heading's measure at the moment it was pressed
+      // - Start Date jumped 70.859 -> 86.750 px - so a control could move out from under the finger that
+      // pressed it. It is now always present at a fixed measure and EMPTY until there is a direction to
+      // show, carrying `aria-hidden` so an empty box contributes nothing to the accessible name.
+      const indicators = queryAll('.data-table__sort-indicator');
+
+      expect(indicators).toHaveSize(1);
+      expect((indicators[0].textContent ?? '').trim())
+        .withContext('present, reserving its space, and painting nothing')
+        .toBe('');
+    });
+
+    /**
+     * ⚠ THE TRANSMITTED FIELD IS `DisplayName`, NOT THE COLUMN KEY `userName`. Both are members of the
+     * permitted set, and they are DIFFERENT account fields: the cell renders the display name, so ordering
+     * by the sign-in name would produce a sequence the reader cannot explain from the column in front of
+     * them. Only a request-level assertion can tell the two apart, because either spelling looks correct in
+     * the template and both are accepted by the server.
+     */
+    it('orders the membership listing by the field the column actually shows', () => {
+      arrive(0, [membership()]);
+
+      queryAll<HTMLButtonElement>('button.data-table__sort')[0].click();
+      fixture.detectChanges();
+
+      const ordered = httpMock.expectOne(
+        (candidate) => candidate.method === 'GET' && candidate.url === membersUrl(0),
+        'the ordered membership read',
+      );
+
+      expect(ordered.request.params.get('sortBy')).toBe('DisplayName');
+      expect(ordered.request.params.get('sortDir')).toBe('Ascending');
+      expect(ordered.request.params.get('pageIndex'))
+        .withContext('a record page depends on the ordering')
+        .toBe('0');
+
+      ordered.flush(pageOf([membership()], 1, 0, DEFAULT_PAGE_SIZE));
+      fixture.detectChanges();
+
+      // The heading announces it, which proves the projection back from the stored field to the column key.
+      expect(queryAll('th[aria-sort]')[0].getAttribute('aria-sort')).toBe('ascending');
     });
 
     /**
@@ -3799,6 +4391,7 @@ describe('RoleAssignmentComponent (store delegation)', () => {
     autoAssignment: false,
     rsvpCode: null,
     iconFile: null,
+    concurrencyToken: 'revision-1',
   };
 
   /** One membership row. */
@@ -3863,6 +4456,12 @@ describe('RoleAssignmentComponent (store delegation)', () => {
    * The account policy is answered with the NAME-BOX value, so this block exercises the account
    * lookup rather than the drop-down. Which control the tenant asks for is not what these cases are
    * about; that it is asked at all is why the read has to be settled here.
+   *
+   * ⚠ ANSWERED THROUGH THE SHARED FACTORY, not through a payload written out here. The policy
+   * decoder requires every member, including the provenance flag that says whether the tenant stored
+   * a policy at all, and a hand-written payload that omits one is REFUSED rather than partially
+   * accepted. A refused policy reads as absent, which sends this screen down its fallback path and
+   * issues a tenant-wide count probe no case here answers - measured, as nine failures in this block.
    */
   function render(): void {
     fixture = TestBed.createComponent(RoleAssignmentComponent);
@@ -3881,35 +4480,7 @@ describe('RoleAssignmentComponent (store delegation)', () => {
       .match(
         (request) => request.method === 'GET' && request.url === API_ENDPOINTS.users.membershipSettings(),
       )
-      .forEach((read) =>
-        read.flush({
-          data: {
-            columnFirstName: true,
-            columnLastName: true,
-            columnDisplayName: true,
-            columnAddress: true,
-            columnTelephone: true,
-            columnEmail: true,
-            columnCreatedDate: true,
-            columnLastLogin: true,
-            columnAuthorized: true,
-            displayMode: 0,
-            displaySuppressPager: false,
-            recordsPerPage: 10,
-            profileDefaultVisibility: 2,
-            profileDisplayVisibility: true,
-            profileManageServices: false,
-            redirectAfterLogin: null,
-            redirectAfterRegistration: null,
-            redirectAfterLogout: null,
-            securityEmailValidation: '',
-            securityRequireValidProfile: false,
-            securityRequireValidProfileAtLogin: false,
-            securityUsersControl: 1,
-            securityDisplayNameFormat: '',
-          },
-        }),
-      );
+      .forEach((read) => read.flush(envelope(membershipSettings())));
 
     fixture.detectChanges();
   }

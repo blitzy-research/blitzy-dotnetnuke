@@ -17,6 +17,10 @@
 //     .portal-list__aliases
 //     .portal-list__alias
 //     .portal-list__new-context
+//     .portal-list__absent-tally
+//     .portal-list__expired
+//     .portal-list__fee--negative
+//     .portal-list__fee-qualifier
 //
 // ZERO HARDCODED VALUES. Every declaration resolves to a design token, a shared mixin or
 // one of the permitted keywords - 0, none, auto, inherit, currentColor and transparent.
@@ -100,6 +104,26 @@
 //   in one inspectable token instead of in two empty elements that a screen reader must skip.
 .portal-list {
   display: grid;
+
+  // THE EXPLICIT FLUID TRACK, and it is load-bearing rather than decorative. An implicit
+  // single-column track carries an AUTOMATIC MINIMUM of `min-content`, so the widest
+  // descendant sets the track width and every sibling is stretched to it. The shared grid
+  // declares `min-inline-size: 40rem` on the table itself, so the implicit track resolved to
+  // 642px, this region inflated from the 288px its parent offered, and the table container's
+  // own `overflow-x: auto` had nothing left to clip — measured at a 320px viewport as
+  // `documentElement.scrollWidth` 658 against `innerWidth` 320, a container whose
+  // `scrollWidth` EQUALLED its `clientWidth` with a maximum `scrollLeft` of 0, and an `h1`
+  // for the seven-character word "Portals" boxed at 642px. The whole page scrolled sideways
+  // and the A–Z letters from M, the "All" reset and the Search submit went off screen.
+  //
+  // The token resolves to a `minmax()` whose ZERO floor lets the track yield completely, which
+  // returns the overflow to the element that causes it and re-arms the container's scroll
+  // affordance. `_tokens.scss` names this exact failure mode on the token and states that the
+  // guarantee "cannot be lost by one call site omitting the minimum"; `_layout.scss` applies it
+  // to the document grid and the sibling list screens apply it to theirs. This was that
+  // omitted call site.
+  grid-template-columns: var(--grid-track-fluid);
+
   gap: var(--space-4);
   font-family: var(--font-family-base);
   font-size: var(--font-size-md);
@@ -118,6 +142,13 @@
   gap: var(--space-3);
   align-items: center;
   justify-content: space-between;
+
+  // Belt and braces with the fluid track above, and it costs nothing: this row is a grid item, so
+  // its `auto` minimum is its min-content contribution, and it was measured forcing the track
+  // 32.36px wider than the viewport allowed. The track is clamped now, but a row that can also
+  // shrink on its own account cannot reopen the problem if a later author declares an explicit
+  // template here.
+  min-inline-size: 0;
 }
 
 // MIGRATION: THE CHIP SEPARATOR IS A FLEXBOX GAP, NOT A PAIR OF NON-BREAKING SPACES.
@@ -139,11 +170,23 @@
   flex-wrap: wrap;
   gap: var(--space-2);
   align-items: center;
-  justify-content: center;
 
-  @include mx.respond-above('md') {
-    justify-content: start;
-  }
+  // ⚠ START-ALIGNED AT EVERY WIDTH, AND CENTRING BELOW `md` WAS A MEASURED OPERABILITY DEFECT
+  // RATHER THAN A TASTE QUESTION. Centring only ever moves content, so it is safe exactly while
+  // the row fits the viewport - and when the row is WIDER than the viewport it moves content off
+  // BOTH edges, where the left overhang cannot be reached by scrolling at all. Measured at a
+  // 320px viewport: fourteen of the twenty-six letters lay entirely outside the viewport, the
+  // `All` entry - the only reset - sat at x=417 and needed 273px of horizontal scroll, and the
+  // letter at the boundary was clipped to 12 of its 21px. Start alignment cannot do that: the
+  // first entry is always at the inline start, and wrapping puts the rest on further lines.
+  //
+  // The legacy panel did declare `HorizontalAlign="Center"` (`portals.ascx:L4`), and that is
+  // recorded rather than reproduced. It was the right treatment for a server-rendered table
+  // whose width the browser could not narrow below its content, on a screen no narrow viewport
+  // ever reached; it is the wrong one for a wrapping row that must stay operable at 320px. The
+  // divergence is one of ALIGNMENT ONLY - every entry, its order, its wording and its behaviour
+  // are unchanged - and it is noted in the migration notes.
+  justify-content: start;
 }
 
 // One entry of the strip. A button reset rather than a button restyle: the control is a
@@ -175,6 +218,19 @@
     font-weight: var(--font-weight-bold);
     background-color: var(--color-selected);
   }
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and
+  // suppression without replacement is what leaves a control with no visible response at
+  // all. `background-color: transparent` above weighs (0,1,0) while the global
+  // `button:active { background-color: var(--color-selected) }` weighs (0,1,1) — one class
+  // outranks one type selector, so the shared press tint was already losing before a
+  // pointer arrived. Measured: this control was BYTE-IDENTICAL in its pressed and resting
+  // states, and where the control is a link rather than a button there was no global rule
+  // to lose in the first place. The value is the shared selection tint, so the press reads
+  // the same here as on every other control in the console; nothing new is invented.
+  &:active {
+    background-color: var(--color-selected);
+  }
+
 }
 
 // The name filter takes the remaining inline space once the row is wide enough to share.
@@ -219,10 +275,62 @@
 .portal-list__alias > a {
   @include mx.focus-ring;
 
-  @include mx.hover {
+  // ⚠ UNGATED, and the pointer-capability guard was REMOVED after a measurement showed it
+  // silently disabled the hover treatment on this screen while leaving it working on others.
+  //
+  // Component styles are emitted with an attribute scope, so this rule weighs
+  // class + attribute + pseudo-class and outranks the shared `.page-action:hover`. While it was
+  // gated behind `(hover: hover) and (pointer: fine)` it withheld that treatment wherever the
+  // condition is false - and the screen did NOT then fall back to the shared rule, because
+  // `.portal-list__action`'s own resting block below re-declares `color` and `text-decoration`
+  // at class + attribute weight, which TIES `.page-action:hover` and wins on document order
+  // (Angular injects component styles after the linked stylesheet). Measured in a browser
+  // reporting the condition false: hovering "Add New Portal" produced a byte-identical
+  // screenshot - no colour change, no underline, no pixel altered anywhere - while the same
+  // action on /users and /roles underlined correctly, because those components declare only
+  // `min-block-size` and never re-specify the appearance.
+  //
+  // Ungating restores parity without weakening anything. All three selectors here are anchors
+  // or buttons, so `a:hover` and `button:hover` in the global layer already apply to them
+  // unguarded; this introduces no state that was not already reachable, and it makes the two
+  // `<button>` row commands agree with their `<a>` siblings in the same column, which the guard
+  // had also split apart.
+  &:hover {
     color: var(--color-primary-hover);
     text-decoration: underline;
   }
+}
+
+// ⚠ THE COMPACT TARGET STEP, NOT THE COMFORTABLE ONE, AND THE CHOICE IS ARITHMETIC RATHER THAN
+// PREFERENCE. `_tokens.scss` states the rule these links were breaking - "nothing in the application
+// is permitted below the compact step" - and measurement found them 15.00 px tall with a 4 px grid
+// gap, a 19 px pitch, so a 24 px circle centred on one intersected its neighbour's. The compact step
+// closes that: 24 px tall with the existing gap gives a 28 px pitch, which clears.
+//
+// The COMFORTABLE step is deliberately declined here, and the reason is what these elements are. They
+// are not command affordances; they are content hyperlinks rendered one per stored host name, and the
+// legacy screen rendered exactly that - `Website/admin/Portal/Portals.ascx.vb:L282` appends
+// `<a href="...">alias</a><BR>` per alias, so the legacy pitch was the bare line height with no
+// spacing at all and the delivered 4 px gap already exceeds it. A portal may hold many aliases: the
+// runtime fixture tenant holds sixteen, so the comfortable step would make one grid cell 704 px tall
+// and push every following row off the first viewport. AAP 0.3.5 ranks visual continuity with the
+// legacy portal above accessibility heuristics, and 44 px per content link is a layout change that
+// continuity cannot absorb, whereas 24 px is the WCAG 2.5.8 floor and absorbs into a list row.
+//
+// `inline-block`, NOT `inline-flex`, and this one is load-bearing. A flex container would turn the
+// host name into an anonymous flex item whose `min-width: auto` resolves to its automatic minimum
+// size - the min-content contribution of its longest unbreakable run - which is precisely the
+// mechanism that made this column force the whole grid wider than its container. The breaking
+// declared on `.portal-list__alias` only works because nothing between it and the text re-floors the
+// intrinsic width.
+//
+// Text stays at the top of the box rather than centred. For a transparent text link there is no
+// painted control edge to disagree with, so the extra hit area below the glyphs is invisible - and
+// keeping the baseline where it was is what preserves the legacy appearance while the target grows.
+.portal-list__alias > a {
+  display: inline-block;
+  min-inline-size: var(--target-size-compact);
+  min-block-size: var(--target-size-compact);
 }
 
 // -----------------------------------------------------------------------------
@@ -239,17 +347,64 @@
 // Projected content keeps the style scoping of the component that DECLARES it, which is why
 // these rules live here rather than in the page-header or empty-state stylesheets: this
 // component declares the actions, so this component styles them.
-.portal-list__action {
-  display: inline-block;
+// ⚠ THIS CLASS IS WORN BY BOTH AN ANCHOR AND A BUTTON, AND THAT IS WHY IT NEEDS THE FLOOR
+// DECLARED HERE. `.portal-list__action` dresses the page-level "Add New Portal" ANCHOR, the
+// empty-state action ANCHOR and the failure affordances' Retry/Dismiss BUTTONS. The global form
+// partial states the comfortable target floor through the bare `button` element selector, so the
+// buttons inherited it and the anchors did not - two affordances wearing one class, sitting in one
+// action row, measured 44.00 px and 25.50 px tall respectively. A rule enforced by ELEMENT TYPE is
+// not enforced at all, so the floor is restated here where the ROLE is declared.
+//
+// `inline-flex` with centring rather than `inline-block` plus a minimum height: a minimum height on
+// an inline-block box leaves the text at the top and the remainder is dead space, so the control
+// would MEASURE 44 px and still LOOK 25 px. Inline-level is retained deliberately - these actions are
+// projected into the page header's and the empty state's action slots, which lay their children out
+// in a row, and a block-level box would break that row.
+// ⚠ ONE RULE FOR BOTH COMMAND FAMILIES, AND THE MERGE IS WHAT PAYS FOR THE TARGET FLOOR. The two
+// classes had grown to fourteen identical declarations, and this stylesheet lives against a 4 kB
+// component budget that is never raised to accommodate duplication - stating them once is what keeps
+// the floor affordable. Each class keeps only what actually differs, immediately below.
+.portal-list__action,
+.portal-list__row-command {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
   padding-block: var(--space-1);
   padding-inline: var(--space-2);
   color: var(--color-primary);
   font: inherit;
+
+  // Pinned here as well as on the shared `page-action` rule, and this is not a duplicated
+  // value for its own sake. The `font` shorthand above sets line-height too, and at
+  // class + attribute weight it outranks the shared rule - so without this line the shared
+  // pin is silently defeated on this screen and the height falls back to whatever the
+  // wrapper happens to declare. Today that is the same tight value, so THIS DECLARATION
+  // CHANGES NO MEASURED VALUE: the action measures 24.00px either way. It exists so that the
+  // shared rule's guarantee is actually a guarantee rather than a coincidence of the two
+  // rules agreeing, and so that the standalone commands wearing this class - the failure
+  // region's and the empty state's, which carry no `page-action` - get the same line box.
+  line-height: var(--line-height-tight);
+
   text-decoration: none;
   background-color: transparent;
   border: none;
   border-radius: var(--radius-sm);
   cursor: pointer;
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and
+  // suppression without replacement is what leaves a control with no visible response at
+  // all. `background-color: transparent` above weighs (0,1,0) while the global
+  // `button:active { background-color: var(--color-selected) }` weighs (0,1,1) — one class
+  // outranks one type selector, so the shared press tint was already losing before a
+  // pointer arrived. Measured: this control was BYTE-IDENTICAL in its pressed and resting
+  // states, and where the control is a link rather than a button there was no global rule
+  // to lose in the first place. The value is the shared selection tint, so the press reads
+  // the same here as on every other control in the console; nothing new is invented.
+  &:active {
+    background-color: var(--color-selected);
+  }
+
 }
 
 // -----------------------------------------------------------------------------
@@ -265,19 +420,31 @@
 //   commands reached assistive technology as unnamed graphics. Text closes that gap outright,
 //   and each command additionally carries an accessible name qualified by the row's own title
 //   because the commands repeat down the column.
+//
+// ⚠ THE TARGET FLOOR IS DECLARED HERE, AND IT HAS TO BE. The global form partial applies
+// `--target-size-min` through the bare `button` element selector, so a row command that is a
+// `<button>` inherits it and one that is an `<a>` does not — the floor was being enforced by
+// ELEMENT TYPE rather than by ROLE. These two commands sit side by side in one cell, so the
+// omission was visible as well as wrong: runtime measurement found the "Settings" anchor at
+// 62.98 x 24.25 against its "Delete" sibling at 53.58 x 44, identical at 320, 375, 768 and
+// 1280 — 19.75px short of the floor the token vocabulary names for row actions specifically.
+// The floor is therefore restated on this class, which covers both the anchor and the button.
+//
+// `inline-flex` rather than `inline-block`, because a minimum height on an inline-block box
+// leaves its text at the top of the box: the control would measure 44px and still LOOK 24px,
+// with the extra height as dead space below the words. Centring on both axes puts the label in
+// the middle of the target it now occupies. The box stays INLINE-level so the shared grid's
+// column alignment continues to position the group, which is the reasoning that stylesheet
+// records for its own commands wrapper.
+//
+// No row grows as a result: the destructive sibling already held every actions cell at 44px,
+// so the anchor is growing into height the row had already reserved.
 .portal-list__row-command {
-  display: inline-block;
-  padding-block: var(--space-1);
-  padding-inline: var(--space-2);
-  color: var(--color-primary);
-  font: inherit;
+  // Everything shared with the page-level action is stated once above. Only the two properties that
+  // genuinely differ live here: a row command is set one step smaller than a page action, and it
+  // refuses to break its label across lines so a command never reads as two.
   font-size: var(--font-size-sm);
   white-space: nowrap;
-  text-decoration: none;
-  background-color: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
 
   // Disabled while a deletion is in flight. Both cues are non-colour - the pointer changes
   // and interaction is refused - so the state does not rely on the reduced contrast alone.
@@ -286,12 +453,25 @@
     text-decoration: none;
     cursor: not-allowed;
   }
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and
+  // suppression without replacement is what leaves a control with no visible response at
+  // all. `background-color: transparent` above weighs (0,1,0) while the global
+  // `button:active { background-color: var(--color-selected) }` weighs (0,1,1) — one class
+  // outranks one type selector, so the shared press tint was already losing before a
+  // pointer arrived. Measured: this control was BYTE-IDENTICAL in its pressed and resting
+  // states, and where the control is a link rather than a button there was no global rule
+  // to lose in the first place. The value is the shared selection tint, so the press reads
+  // the same here as on every other control in the console; nothing new is invented.
+  &:active {
+    background-color: var(--color-selected);
+  }
+
 }
 
 // The destructive command. Colour is a reinforcement and never the only signal: the command
 // reads "Delete", its accessible name names the portal, and it opens a confirmation.
 .portal-list__row-command--danger {
-  color: var(--color-danger);
+  color: var(--color-danger-text);
 
   // ⚠ THE HOVER KEEPS THE SAME COLOUR, AND CHANGING IT IS WHAT BROKE THE CONTRAST. This text sits
   // below the large-text threshold, so it needs 4.5:1, and the bright danger token
@@ -308,7 +488,7 @@
     // on `.portal-list__row-command:hover`, which has exactly this selector's specificity, so
     // omitting the colour here does not "keep" the danger colour - it hands the destructive command
     // the ordinary action's blue on hover. Naming it makes the intent true rather than merely stated.
-    color: var(--color-danger);
+    color: var(--color-danger-text);
     text-decoration: underline;
   }
 
@@ -331,6 +511,15 @@
   margin-block: 0;
   padding-inline-start: 0;
   list-style: none;
+
+  // ⚠ LOAD-BEARING, AND OMITTING IT RE-OPENS THE OVERFLOW BELOW. A grid item's `min-width`
+  // resolves to `auto`, and `auto` on a grid item is the AUTOMATIC MINIMUM SIZE - the item's
+  // own min-content contribution - so each host-name entry would floor this track at the
+  // width of its longest unbreakable run no matter what the entry itself declares. Flooring
+  // the track at nought lets the entries' own breaking (declared on `.portal-list__alias`)
+  // actually take effect, because a track that refuses to shrink makes a breakable child
+  // pointless.
+  min-inline-size: 0;
 }
 
 // A host name can be long and the column shares its track with nine others, so it is allowed
@@ -348,7 +537,27 @@
 // is deliberately NOT edited - this list is layout, not prose, so it opts out here.
 .portal-list__alias {
   list-style: none;
-  overflow-wrap: break-word;
+
+  // ⚠ `anywhere`, NOT `break-word`, AND THE DIFFERENCE IS THE ENTIRE DEFECT. The two keywords
+  // break identically once a line is being laid out; they differ in what they contribute to
+  // INTRINSIC SIZING, and intrinsic sizing is what a table column is built from. Per CSS Text,
+  // `overflow-wrap: break-word` explicitly does NOT affect the min-content contribution, so a
+  // long host name still asked for its full unbroken width when the column was measured;
+  // `anywhere` DOES reduce it, to the widest single character.
+  //
+  // Measured on the seeded tenant whose alias carries a 200-character sub-domain, at a 1280px
+  // viewport before this rule changed: fourteen `li.portal-list__alias` each computed
+  // 992.3px wide and reached x=1617.3 inside a 107px `<td>`, escaping the scroll container's
+  // right edge (x=1264) by 353.3px, and the document reported `scrollWidth 1617` against a
+  // 1280 client width. The escape grew as the viewport narrowed - 857px over at 412px, 949px
+  // over at 320px, where it also pushed the letter strip and the search submit out of reach -
+  // because the offending contribution is a fixed pixel demand that does not scale down.
+  //
+  // `min-inline-size: 0` is the second half of the same fix: this `<li>` is a grid item of
+  // `.portal-list__aliases`, whose `auto` minimum is content-based, so the breaking permitted
+  // above would otherwise be overridden by the item's own refusal to shrink.
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
 
   > a {
     color: var(--color-primary);
@@ -356,8 +565,60 @@
   }
 }
 
-// The new-context announcement beside each host name: present for assistive technology, absent from the
-// drawing, so the cell looks exactly as it did.
-.portal-list__new-context {
+// -----------------------------------------------------------------------------
+//  TALLIES AND EXPIRY
+// -----------------------------------------------------------------------------
+// EVERY ANNOUNCED-BUT-UNPAINTED SPAN THIS SCREEN EMITS, in one rule.
+//
+// Grouped rather than declared three times over, because the mixin expands to the full
+// visually-hidden pattern at each call site and three copies pushed the compiled stylesheet past
+// this workspace's per-component budget. One selector list, one expansion.
+//
+//  __absent-tally    the words behind the absent-integer mark in the two tally columns
+//  __new-context     the new-window announcement beside each host name
+//  __fee-qualifier   ⚠ MINOR (money differentiation) - the word behind the negative-fee mark, so
+//                    the sign is not carried by colour alone (WCAG 1.4.1)
+//
+// Their MARKS carry no style at all: each is ordinary cell text in the cell's own colour and
+// weight, so a tally column still reads as one column.
+.portal-list__absent-tally,
+.portal-list__new-context,
+.portal-list__fee-qualifier {
   @include mx.visually-hidden;
+}
+
+// THE TWO ANOMALIES THIS SCREEN MARKS, in one rule and therefore in one vocabulary.
+//
+//  __expired          the qualifier beside a lapsed expiry date
+//  __fee--negative    ⚠ MINOR (money differentiation) - a hosting fee below zero. Runtime
+//                     measurement found `-125.50`, `0.00` and `4321.99` sharing colour, weight and
+//                     size, so a loss was distinguishable only by one minus glyph. Zero and
+//                     positive are deliberately left alone: free hosting is the ordinary state
+//                     here, and marking it would be noise. This is a DISCLOSURE, not an objection -
+//                     `Website/admin/Portal/sitesettings.ascx` gives the fee a currency comparison
+//                     with no lower bound, so a negative fee is legal and stays legal.
+//
+// In both cases the WORD is the state and the colour is a second cue for a reader who can use it,
+// never the only one - which is what keeps this out of "colour alone" territory. The accessible
+// danger token is used rather than the accent one because both are TEXT: `--color-danger` measures
+// 3.99:1 on white and 3.44:1 on the striped row and fails both, while `--color-danger-text`
+// measures 7.20:1 and 6.21:1.
+.portal-list__expired,
+.portal-list__fee--negative {
+  color: var(--color-danger-text);
+  font-weight: var(--font-weight-bold);
+}
+
+// Only the expiry qualifier follows a value in the same cell, so only it needs the gap - and only it
+// may refuse to wrap.
+//
+// ⚠ THE FEE MARK MUST NOT BE `nowrap`, and that was measured rather than reasoned. A revision of this
+// file applied `white-space: nowrap` to both marks together, and at 1280 the smallest representable
+// fee in the dataset, `-922337203685477.63`, then rendered 130.86px wide inside a 102px cell and
+// OVERPRINTED the neighbouring Expires column by 32.86px. The word `Expired` is nine characters and
+// wrapping it mid-word would read as a different word, so it keeps the rule; a number is read
+// digit by digit and wraps harmlessly, so it does not.
+.portal-list__expired {
+  margin-inline-start: var(--space-1);
+  white-space: nowrap;
 }

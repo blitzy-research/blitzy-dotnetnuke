@@ -125,6 +125,8 @@ import { FormFieldComponent } from '../../../shared/components/form-field/form-f
 import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 import { DateDisplayPipe } from '../../../shared/pipes/date-display.pipe';
+import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
+import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
 
 // ---------------------------------------------------------------------------
 // THE POLICY, PRESERVED VERBATIM AND DELIBERATELY NOT TIGHTENED
@@ -576,6 +578,8 @@ function parseRouteUserId(value: unknown): number {
   // module is listed because the template binds a form group; the five shared components
   // and the one pipe are the whole of the shared surface this screen renders.
   imports: [
+    FocusFirstInvalidDirective,
+    SubmitGuardDirective,
     ReactiveFormsModule,
     PageHeaderComponent,
     FormFieldComponent,
@@ -583,6 +587,7 @@ function parseRouteUserId(value: unknown): number {
     LoadingSpinnerComponent,
     ConfirmDialogComponent,
     DateDisplayPipe,
+    FocusFirstInvalidDirective,
   ],
   templateUrl: './user-password.component.html',
   // Singular, which is the current spelling. The plural form is the legacy one and is
@@ -1228,6 +1233,52 @@ export class UserPasswordComponent {
   );
 
   /**
+   * The caption of the one credential section.
+   *
+   * ⚠ THE SAME SIGNAL AS THE SUBMIT LABEL, ALIASED RATHER THAN RECOMPUTED, so the caption and the
+   * command it contains cannot come to name different operations. That is not a convenience: the
+   * defect this replaces was precisely a caption naming one operation above the boxes belonging to
+   * another, with the command naming a third possibility at the foot of the form.
+   *
+   * MIGRATION: sharing one source reproduces what the legacy markup did per panel. `Password.ascx`
+   * L30 captioned the change panel with `resourcekey="ChangePassword"` and its button at L46 carried
+   * the SAME key; the reset section head at L53 and its button at L69 likewise shared
+   * `ResourceKey="ResetPassword"`. One key per panel, caption and command together.
+   */
+  readonly sectionHeading: Signal<string> = this.submitLabel;
+
+  /**
+   * Every help sentence that applies to the operation being performed, in reading order.
+   *
+   * A LIST RATHER THAN A STRING, because a reset legitimately has two things to say and both are
+   * measured resource wording: what the operation does, and how to supply the replacement. Merging
+   * them into one paragraph or dropping one to fit a single slot would lose text the legacy screen
+   * showed - the legacy stated them in two different panels, which is exactly why there were two.
+   *
+   * ⚠ ORDER IS WHAT MAKES IT READ CORRECTLY: the operation is described before the instruction for
+   * carrying it out.
+   *
+   * MIGRATION: for a change there is one sentence, and which one is itself measured -
+   * `Password.ascx.vb` L150-L155 chose between telling the account holder that the credential in
+   * force is needed as well, and telling an administrator merely to enter and confirm a replacement.
+   * That choice is preserved by {@link changeHelpText}; this member only decides how many sentences
+   * apply, never rewrites one.
+   */
+  readonly sectionHelp: Signal<readonly string[]> = computed(() => {
+    const change: string = this.changeHelpText();
+
+    if (this.plannedOperation() !== OPERATION_RESET) {
+      return [change];
+    }
+
+    const reset: string = this.resetHelpText();
+
+    // The reset sentence is empty for a caller the reset panel was hidden from, and an empty
+    // paragraph would render as a blank line rather than as nothing.
+    return reset === '' ? [change] : [reset, change];
+  });
+
+  /**
    * The instant the credential was last changed, for the template to render through the
    * `dateDisplay` pipe. Null when no account has been read.
    *
@@ -1339,10 +1390,12 @@ export class UserPasswordComponent {
   /** `plNewConfirm.Help`. */
   readonly confirmPasswordHelp = CONFIRM_PASSWORD_HELP;
 
-  /** `ChangePassword.Text`, for the section heading. */
-  readonly changeSectionHeading = CHANGE_PASSWORD_TEXT;
-
-  /** `ResetPassword.Text`, for the administrative section heading and the dialog title. */
+  /**
+   * `ResetPassword.Text`, for the confirmation dialog's title and its confirming control.
+   *
+   * NOT the section caption: that is {@link sectionHeading}, which resolves from the operation being
+   * performed so the caption and the command always agree. This member names the dialog alone.
+   */
   readonly resetSectionHeading = RESET_PASSWORD_TEXT;
 
   /**
@@ -1732,7 +1785,16 @@ export class UserPasswordComponent {
    * events in the legacy base control were in-process notifications between controls.
    */
   private announceSuccess(): void {
-    this.notifications.notify('success', PASSWORD_CHANGED_TEXT);
+    /*
+     * ⚠ WHETHER THIS SCREEN IS ABOUT TO BE LEFT IS DECIDED ONCE, HERE, and used for both the
+     * statement and the departure below. The two must agree: a confirmation that outlives a change
+     * of screen it never makes would sit over an unrelated screen, and one that does NOT outlive a
+     * departure it does make would be erased before it could be read. Computing the condition twice
+     * would leave them free to disagree.
+     */
+    const leavingForRemediation = this.accountDetailWithheld() && this.isSelf();
+
+    this.notifications.notify('success', PASSWORD_CHANGED_TEXT, null, leavingForRemediation);
 
     // Returns every control to the empty string rather than to null, which is the whole
     // point of constructing them non-nullable, and returns the group to pristine and
@@ -1743,7 +1805,7 @@ export class UserPasswordComponent {
     this._submitAttempted.set(false);
     this._resetConfirmOpen.set(false);
 
-    if (this.accountDetailWithheld() && this.isSelf()) {
+    if (leavingForRemediation) {
       this.concludeRemediation();
     }
   }
@@ -1776,7 +1838,12 @@ export class UserPasswordComponent {
     // Not awaited, and its rejection absorbed, matching how every other screen in this
     // application navigates: a navigation the router refuses is not something this screen can
     // act on, and an unhandled rejection would be reported as an application fault.
-    void this.router.navigateByUrl('/').catch(() => false);
+    //
+    // ⚠ REPLACES: a completed credential change must not sit in BACK history, and
+    // `core/guards/unsaved-changes.guard.ts` reads this flag to recognise a departure the
+    // application initiated. Pushing would make the gate offer to discard a password change that
+    // had already succeeded.
+    void this.router.navigateByUrl('/', { replaceUrl: true }).catch(() => false);
   }
 
   // -------------------------------------------------------------------------

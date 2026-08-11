@@ -190,7 +190,7 @@ describe('MemberServicesComponent', () => {
   /** The body cells of the grid, row by row, as trimmed text. */
   function bodyRows(): readonly (readonly string[])[] {
     return queryAll('tbody tr').map((row) =>
-      Array.from(row.querySelectorAll('td')).map((cell) => cell.textContent?.trim() ?? ''),
+      Array.from(row.querySelectorAll('td,th')).map((cell) => cell.textContent?.trim() ?? ''),
     );
   }
 
@@ -720,7 +720,7 @@ describe('MemberServicesComponent', () => {
       // The API refuses an empty code with a reason of its own; the local rule exists so an
       // obvious mistake costs no round trip, and the wording reads the way the server's does.
       expect(outstandingRequestCount()).toBe(0);
-      expect(host().textContent).toContain('An invitation code is required.');
+      expect(host().textContent).toContain('An RSVP Code is required.');
     });
 
     it('refuses a code longer than the stored column and sends nothing', () => {

@@ -201,6 +201,63 @@ export function parseRouteId(value: unknown): number | null {
  * @param value A candidate identifier from any source.
  * @returns True when the value is a safe integer within the signed 32-bit range.
  */
+/**
+ * What a route parameter turned out to be, with ABSENT and UNREADABLE kept apart.
+ *
+ * ⚠ THE DISTINCTION THIS TYPE CARRIES IS A SECURITY-ADJACENT ONE, and collapsing it is what
+ * {@link parseRouteId} does by design — that function answers "what identifier is this?" and a
+ * single `null` is the right answer for both "there is no parameter" and "the parameter is not an
+ * identifier". Every caller that merely READS a record can use it safely.
+ *
+ * A caller that chooses a MODE from the same value cannot. An editing screen asks a different
+ * question — "am I editing, or creating?" — and for that question the two states are opposites: an
+ * absent parameter means create, while an unreadable one means the operator followed an address
+ * that names nothing. Answering both with `null` makes the screen fall through to its create
+ * branch, so an address such as `/portals/abc` presented a live tenant-provisioning form, complete
+ * with the six administrator-credential fields, under a heading offering to add a new portal. Three
+ * such screens did this and issued no request at all while doing it, so the server was never even
+ * asked whether the record existed.
+ *
+ * Modelled as a discriminated union rather than as a nullable number plus a boolean, so that the
+ * two cannot be read independently and get out of step, and so the compiler forces a caller to say
+ * which of the three it is handling.
+ */
+export type RouteIdReading =
+  /** The matched route declares no such parameter, so the caller is not addressing a record. */
+  | { readonly kind: 'absent' }
+  /** A parameter was supplied but does not spell a usable identifier. It names nothing. */
+  | { readonly kind: 'unreadable' }
+  /** A usable identifier. `0` and `-1` reach here, because both are real in this schema. */
+  | { readonly kind: 'identifier'; readonly id: number };
+
+/**
+ * Classifies a route parameter, distinguishing an absent one from an unusable one.
+ *
+ * The companion to {@link parseRouteId}, sharing its grammar and its bounds exactly — it is
+ * implemented in terms of that function precisely so the two can never disagree about what counts
+ * as an identifier. Use this one wherever the ANSWER CHANGES WHAT THE SCREEN DOES rather than only
+ * which record it fetches.
+ *
+ * Only `null` and `undefined` are absent. Anything else that fails the parse is unreadable,
+ * including the empty string: a matched parameterised route cannot produce an empty segment, so an
+ * empty value arriving here is a malformed address rather than a missing one, and reading it as
+ * "create" would be the same fall-through this type exists to prevent.
+ *
+ * Pure and total: it returns for every input, mutates nothing, and throws for none.
+ *
+ * @param value The raw route parameter, or null or undefined when the route carries none.
+ * @returns Which of the three states the parameter is in.
+ */
+export function readRouteId(value: unknown): RouteIdReading {
+  if (value === null || value === undefined) {
+    return { kind: 'absent' };
+  }
+
+  const parsed = parseRouteId(value);
+
+  return parsed === null ? { kind: 'unreadable' } : { kind: 'identifier', id: parsed };
+}
+
 export function isRouteId(value: unknown): value is number {
   return (
     typeof value === 'number' &&

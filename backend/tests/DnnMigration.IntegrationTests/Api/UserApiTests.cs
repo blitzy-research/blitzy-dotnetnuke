@@ -2527,7 +2527,7 @@ public sealed class UserApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task MembershipSettings_WithoutAUserAccountsModule_ReturnsNotFound()
+    public async Task MembershipSettings_WithoutAUserAccountsModule_ReadsDefaultsAndRefusesTheWrite()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
@@ -2536,15 +2536,30 @@ public sealed class UserApiTests
         IsolatedPortal isolated = await CreateIsolatedPortalAsync(client);
         using HttpClient isolatedClient = await _fixture.CreateHostClientAsync(isolated.Alias);
 
+        // THE READ ANSWERS 200 WITH THE LEGACY DEFAULTS, FLAGGED AS UNSTORED. It used to answer 404, which was
+        // untrue - the tenant exists, so its settings resource does - and runtime testing measured the damage:
+        // four screens that read this document only to decide which columns to render put a screen-level "not
+        // found" alert above healthy content, and the settings screen disabled its own save control against a
+        // healthy server. The legacy reader applied a measured default for every absent key, so defaults are
+        // the behaviour-preserving answer; the absence of a STORE now travels inside the document.
         using HttpResponseMessage read = await isolatedClient.GetAsync(MembershipSettingsRoute(isolated.PortalId));
-        read.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        read.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        ApiResponse<MembershipSettingsDto>? document =
+            await read.Content.ReadFromJsonAsync<ApiResponse<MembershipSettingsDto>>(ApiTestFixture.Json);
+
+        document!.Data!.IsStored.Should().BeFalse("this tenant has no settings source");
+        document.Data.RecordsPerPage.Should().Be(10, "the measured legacy default applies");
 
         using HttpResponseMessage written = await isolatedClient.PutAsJsonAsync(
             MembershipSettingsRoute(isolated.PortalId),
             new MembershipSettingsDto(),
             ApiTestFixture.Json);
 
-        written.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        // THE WRITE ANSWERS 409, NOT 404, because the read for this very address answers 200: a caller cannot
+        // act on an API that says a resource both exists and does not. What is absent is the store, which is a
+        // state conflict the operator can repair, and the detail names the repair.
+        written.StatusCode.Should().Be(HttpStatusCode.Conflict);
 
         string body = await written.Content.ReadAsStringAsync();
         body.Should().Contain(MembershipSettingsDto.UserAccountsModuleDefinitionName);

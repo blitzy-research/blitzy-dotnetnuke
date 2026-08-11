@@ -559,6 +559,23 @@ describe('PortalAliasListComponent', () => {
   }
 
   /**
+   * Consumes the collection re-read that a CREATION now triggers, answering with `rows`.
+   *
+   * ⚠ WHY A CREATION ISSUES A SECOND REQUEST AT ALL. Creation used to splice the 201 body onto
+   * the array already in hand, while an update re-read the collection because its `PUT` answers
+   * with no body. Both write paths now take the collection from the server, so a created row
+   * cannot land in an order the collection endpoint did not choose, and cannot carry only the
+   * members the create response happened to include. The response body is still used for the
+   * record just written - the selection and the detail both come from it.
+   *
+   * @param rows The collection the server answers the re-read with.
+   */
+  function settleCreateReread(rows: readonly PortalAlias[]): void {
+    expectRequest('GET', aliasesUrl(-1)).flush(envelope(rows));
+    settle();
+  }
+
+  /**
    * Settles the view and runs any pending reaction.
    *
    * `TestBed.flushEffects()` is the effect-flushing member the installed framework exposes; there
@@ -809,7 +826,7 @@ describe('PortalAliasListComponent', () => {
       call.flush(envelope([alias(7, 'localhost')]));
       settle();
 
-      expect(textOf('td.data-table__cell')).toContain('localhost');
+      expect(textOf('td.data-table__cell,th.data-table__cell')).toContain('localhost');
     });
 
     it('reads the aliases of portal 0, which is an ordinary portal and not an absence', () => {
@@ -824,7 +841,66 @@ describe('PortalAliasListComponent', () => {
       call.flush(envelope([alias(11, 'example.com', 0)]));
       settle();
 
-      expect(textOf('td.data-table__cell')).toContain('example.com');
+      expect(textOf('td.data-table__cell,th.data-table__cell')).toContain('example.com');
+    });
+
+    it('offers the way back to this portal\u2019s settings, built from the same identifier', () => {
+      // ⚠ THIS SCREEN HAD NO ROUTE ONWARDS OR BACK. It was reachable only by typing an address -
+      // nothing in the console linked to it - and it linked nowhere itself, so an operator who
+      // arrived left the portal feature entirely and returned through the listing. Its sibling
+      // settings screen now links here, and this links there, which makes the pair navigable from
+      // either end.
+      //
+      // MIGRATION: `SiteSettings.ascx.vb:L484-L489` reads the referring address specifically to
+      // detect arrival FROM this module, which is direct evidence the legacy console had operators
+      // moving between the two. It reached them from an administration menu, which this console
+      // has no equivalent of.
+      arrive([alias(7, 'localhost')], '-1');
+
+      const links = queryAll<HTMLAnchorElement>('app-page-header a');
+
+      expect(links).toHaveSize(1);
+      expect(links[0]?.getAttribute('href')).toBe('/portals/-1/settings');
+      expect(textOf('app-page-header a')).toEqual(['Site Settings']);
+    });
+
+    it('composes that address for portal 0 as readily as for the negative seed', () => {
+      arrive([alias(11, 'example.com', 0)], '0');
+
+      expect(queryAll<HTMLAnchorElement>('app-page-header a')[0]?.getAttribute('href')).toBe(
+        '/portals/0/settings',
+      );
+    });
+
+    it('mounts the shared header as a direct child of the root, with nothing constraining it', () => {
+      // ⚠ THE MEASURED MISALIGNMENT. The header used to sit inside a `space-between` flex row that
+      // held it as its ONLY child - so it was placed at the start and sized to its CONTENT, and the
+      // shared header's own right-alignment had no free space to distribute. Measured, this screen
+      // rendered its header actions inline beside the title at x≈338 and x≈464 while the sibling
+      // settings screen right-aligned its action at x≈1506: two screens in one feature disagreeing
+      // about where a page action lives.
+      //
+      // The wrapper made sense when the create affordance sat OUTSIDE the header and the row had two
+      // children to separate. Once it moved into the header's own action slot the row had one child
+      // and nothing left to do. Asserted structurally rather than by measuring a pixel, because the
+      // property that matters is that nothing sits between the root and the shared component.
+      arrive();
+
+      const root = query<HTMLElement>('.portal-alias-list');
+      const header = query<HTMLElement>('app-page-header');
+
+      expect(root).not.toBeNull();
+      expect(header).not.toBeNull();
+      expect(header?.parentElement).toBe(root as HTMLElement);
+    });
+
+    it('keeps the create action first, so navigation cannot displace it', () => {
+      arrive();
+
+      expect(textOf('app-page-header button, app-page-header a')).toEqual([
+        'Add New HTTP Alias',
+        'Site Settings',
+      ]);
     });
 
     it('binds the parameter through an input named exactly portalId', () => {
@@ -851,7 +927,14 @@ describe('PortalAliasListComponent', () => {
       // The setter issues the read and the lifecycle hook guards against issuing it again. Two
       // reads would double every request this screen makes for the rest of its life.
       answerAliases([alias(7, 'localhost')]);
-      httpMock.expectNone((candidate) => candidate.url === aliasesUrl(-1));
+
+      // Counted rather than asserted through `expectNone`, which throws and therefore records no
+      // expectation: the emptiness of what `match` returns is the claim that the lifecycle hook did not
+      // issue a second read. The predicate names this tenant's address alone, so the teardown's
+      // `verify()` still guards anything else.
+      expect(httpMock.match((candidate) => candidate.url === aliasesUrl(-1)))
+        .withContext('the setter read; the lifecycle hook did not read again')
+        .toEqual([]);
     });
 
     it('re-reads when the route names a different portal, and not when it repeats one', () => {
@@ -869,8 +952,8 @@ describe('PortalAliasListComponent', () => {
       settle();
       answerAliases([alias(11, 'example.com', 0)], 0);
 
-      expect(textOf('td.data-table__cell')).toContain('example.com');
-      expect(textOf('td.data-table__cell')).not.toContain('localhost');
+      expect(textOf('td.data-table__cell,th.data-table__cell')).toContain('example.com');
+      expect(textOf('td.data-table__cell,th.data-table__cell')).not.toContain('localhost');
     });
 
     it('sends nothing at all for an unusable route parameter, and says why', () => {
@@ -981,19 +1064,99 @@ describe('PortalAliasListComponent', () => {
       expect(rowEditCommand(0)).withContext('an ordinary row offers the command').not.toBeUndefined();
       expect(rowEditCommand(1)).withContext('the current row withholds it').toBeUndefined();
 
-      // An invisible server control emitted nothing at all, so the withheld cell is EMPTY rather
-      // than carrying substitute text.
-      expect((paintedRows()[1]?.textContent ?? '').trim()).toBe('localhost:4200');
+      // ⚠ Pf-M2 — THE COMMAND IS STILL ABSENT AND THE CELL IS NO LONGER EMPTY.
+      //
+      // This assertion was rewritten. It previously required the whole row to read exactly the host
+      // name, on the authority that an invisible server control emits nothing - which remains true
+      // of the COMMAND and is still asserted immediately above, where the row offers no button. What
+      // it also required, unintentionally, was that the cell hold no text of any kind, and runtime
+      // measurement showed the cost of that: an entirely empty cell collapsed the row to 20.5px
+      // against its neighbours' 31.75px, so the one row an operator most needs explained read as a
+      // rendering fault, with no explanation anywhere until the row itself was pressed.
+      //
+      // The note is text, not a control: there is still no button, still nothing in the tab order and
+      // still nothing announced as a command. Rule T5 is satisfied because no behaviour changed - the
+      // command was unavailable before and is unavailable now - and only the silence is filled.
+      expect(rowEditCommand(1)).withContext('still no command on the current row').toBeUndefined();
+      expect((paintedRows()[1]?.textContent ?? '').trim()).toBe('In use localhost:4200');
     });
 
-    it('renders an alias held as an absent string as an empty cell rather than as text', () => {
+    // ⚠ Pf-M1 — THIS SPECIFICATION WAS REWRITTEN AND ITS OLD ASSERTION WAS VACUOUS.
+    //
+    // It asserted `toContain('')` over the cell texts, which every non-empty array satisfies, so it
+    // passed whatever the cell rendered and proved nothing at all. Runtime testing then measured what
+    // the cell actually did: two rows whose entire text content was two spaces, indistinguishable
+    // from a rendering failure and offering nothing to read or press.
+    //
+    // The premise it was defending is kept and is still correct - a stored null and a stored empty
+    // string mean the same thing here, because the legacy reader collapsed the first into the second
+    // through `Convert.ToString` before the grid ever saw it - which is why BOTH are asserted below
+    // and both answer the same way. What changes is only that the display layer stops painting the
+    // shared meaning as nothing, exactly as Rule T7 asks: the contract still publishes null and the
+    // empty string distinctly, and the row is still shown, because an operator cannot delete a row
+    // they cannot see.
+    it('marks an absent host name rather than painting an empty cell, for null and for empty alike', () => {
       arrive([alias(7, null)]);
 
-      // The column is nullable and the legacy absent-string marker was the EMPTY STRING rather than
-      // a null reference (`Library/Components/Shared/Null.vb` returns `""`), so the two mean the
-      // same thing and are rendered the same way. Neither is rewritten into the other.
-      expect(textOf('td.data-table__cell')).toContain('');
+      const nullRow = (paintedRows()[0]?.textContent ?? '').trim();
+
+      expect(nullRow).withContext('a stored null is marked').toContain('\u2014');
+      expect(nullRow)
+        .withContext('and the mark carries its words for a reader')
+        .toContain('no host name recorded');
       expect(bannerText()).withContext('and it is not a failure').toBe('');
+
+      // The mark is painted and unannounced; the words are announced and unpainted. Asserted as the
+      // pair rather than as one element, because either alone would be a defect - a mark with no
+      // words says nothing to a reader, and words with no mark leave the cell looking empty.
+      const mark = query('span[aria-hidden="true"]');
+      expect(mark?.textContent?.trim()).toBe('\u2014');
+      expect(query('.portal-alias-list__absent-host-description')?.textContent?.trim()).toBe(
+        'no host name recorded',
+      );
+
+      // A stored EMPTY STRING is answered identically, which is the premise above made explicit.
+      arrive([alias(8, '')]);
+
+      expect((paintedRows()[0]?.textContent ?? '').trim()).toContain('\u2014');
+    });
+
+    // ⚠ Pf-M3 — the row-qualified accessible name.
+    it('qualifies each edit command with the row it acts on, so two blank rows are distinguishable', () => {
+      arrive([alias(7, 'first.example'), alias(8, null), alias(9, '')]);
+
+      const commands = paintedRows().map((row) => row.querySelector('button'));
+
+      // The VISIBLE text stays the measured resource value on every row, so nothing about the screen
+      // looks different. Runtime testing measured fifteen commands on one screen all reaching
+      // assistive technology as the bare word.
+      expect(commands.map((command) => command?.textContent?.trim())).toEqual([
+        'Edit',
+        'Edit',
+        'Edit',
+      ]);
+
+      // The ACCESSIBLE name names the row. The two rows with no host name would otherwise be
+      // indistinguishable from each other as well as from every other row.
+      expect(commands[0]?.getAttribute('aria-label')).toBe('Edit first.example');
+      expect(commands[1]?.getAttribute('aria-label')).toBe('Edit no host name recorded');
+      expect(commands[2]?.getAttribute('aria-label')).toBe('Edit no host name recorded');
+
+      // WCAG 2.5.3: every accessible name OPENS with the visible word, so speech input still matches.
+      for (const command of commands) {
+        expect(command?.getAttribute('aria-label')?.startsWith('Edit')).toBeTrue();
+      }
+    });
+
+    // ⚠ Pf-M4 — requiredness reaches the CONTROL, not only the label beside it.
+    it('marks the host-name control itself as required, not merely the field around it', () => {
+      arrive([alias(7, 'localhost')]);
+      press(ADD_ACTION_LABEL);
+
+      // The field's own `required` input is presentational - it paints a marker and cannot make a
+      // control required - so a reader focused on the input learned nothing from it. The control now
+      // carries the state itself.
+      expect(entryField().getAttribute('aria-required')).toBe('true');
     });
   });
 
@@ -1100,6 +1263,7 @@ describe('PortalAliasListComponent', () => {
 
       call.flush(envelope(alias(21, longest)), { status: 201, statusText: 'Created' });
       settle();
+      settleCreateReread([alias(7, 'localhost'), alias(21, longest)]);
 
       expect(fieldMessages()).toHaveSize(0);
     });
@@ -1148,115 +1312,103 @@ describe('PortalAliasListComponent', () => {
   });
 
   // ---------------------------------------------------------------------------------------------------
-  // PROOF 4 — NORMALISATION, WHICH RUNS BEFORE JUDGEMENT AND IS REFLECTED BACK
+  // PROOF 4 — THE ENTRY IS JUDGED AND SENT VERBATIM, AND A PREFIX IS REFUSED RATHER THAN STRIPPED
   // ---------------------------------------------------------------------------------------------------
+  //
+  // ⚠ THIS BLOCK PREVIOUSLY PROVED THE OPPOSITE, AND IT WAS THE SPECIFICATION THAT WAS WRONG. It
+  // asserted that a scheme-prefixed entry was stripped, written back into the control and transmitted
+  // as the remainder - a faithful reproduction of `EditPortalAlias.ascx.vb:L209-L215`. The target
+  // server refuses such an entry: measured against the running API, `POST` of
+  // `http://blitzy-p4-scheme.example.com` answered `400` with `HttpAlias` set to the same sentence
+  // this screen renders for a shape failure, a `\\`-prefixed value answered `400` identically, and a
+  // plain host answered `201`. So the strip was not preserving legacy behaviour, it was concealing a
+  // server refusal AND submitting a value the operator had not entered on the field that binds a host
+  // name to a tenant. The rules changed; these expectations follow the rules rather than pinning the
+  // behaviour that was corrected.
 
-  describe('normalising an entry', () => {
-    it('strips a secure protocol prefix, sends the remainder and shows what will be saved', () => {
+  describe('judging an entry exactly as typed', () => {
+    it('refuses a secure protocol prefix, reports it and sends nothing', () => {
       arrive([alias(7, 'localhost')]);
       press(ADD_ACTION_LABEL);
 
       type(withScheme(SECURE_SCHEME, 'example.com'));
       submit();
 
-      const call = expectRequest('POST', aliasesUrl(-1));
+      // The message the screen already promised. It is the server's own sentence, so the operator is
+      // told the same thing whichever side notices.
+      expect(fieldMessages()).toContain(
+        'An HTTP alias must be a host name, an IP address or a server name, optionally followed by ' +
+          'a port and a path, and must not include a protocol prefix.',
+      );
 
-      // The legacy handler removed everything up to and including the separator —
-      // `Website/admin/Portal/EditPortalAlias.ascx.vb:L210-L212` tests
-      // `strAlias.IndexOf("://") <> -1` and removes `IndexOf("://") + 3` characters — and this
-      // reproduces it exactly.
-      expect(transmittedAlias(call)).toBe('example.com');
+      // ⚠ AND THE ENTRY IS STILL THERE, UNALTERED. This is the half of the defect that mattered most:
+      // the old behaviour replaced what the operator typed with something else. Nothing may rewrite it.
+      expect(entryField().value).toBe(withScheme(SECURE_SCHEME, 'example.com'));
 
-      // ⚠ AND IT IS REFLECTED BACK INTO THE CONTROL, which the legacy screen never did: an operator
-      // must see the value that will be stored rather than the one they typed.
-      expect(entryField().value).toBe('example.com');
-
-      call.flush(envelope(alias(21, 'example.com')), { status: 201, statusText: 'Created' });
-      settle();
+      httpMock.expectNone((candidate) => candidate.method === 'POST');
     });
 
-    it('strips an insecure protocol prefix too, because the strip is on the separator', () => {
+    it('refuses an insecure protocol prefix on the same rule, not on a list of schemes', () => {
       arrive([alias(7, 'localhost')]);
       press(ADD_ACTION_LABEL);
 
       type(withScheme(INSECURE_SCHEME, 'example.com'));
       submit();
 
-      const call = expectRequest('POST', aliasesUrl(-1));
-
-      // The legacy test was on the literal `://` and never on a scheme name, so every scheme is
-      // stripped identically and no list of schemes exists to fall out of date.
-      expect(transmittedAlias(call)).toBe('example.com');
-      expect(entryField().value).toBe('example.com');
-
-      call.flush(envelope(alias(21, 'example.com')), { status: 201, statusText: 'Created' });
-      settle();
+      // The rule tests the separator and never a scheme name, so every scheme is refused identically
+      // and there is no list of schemes to fall out of date.
+      expect(fieldMessages()).not.toHaveSize(0);
+      expect(entryField().value).toBe(withScheme(INSECURE_SCHEME, 'example.com'));
+      httpMock.expectNone((candidate) => candidate.method === 'POST');
     });
 
-    it('strips a share prefix of exactly two characters', () => {
+    it('refuses a share prefix, because the backslash is a forbidden character', () => {
       arrive([alias(7, 'localhost')]);
       press(ADD_ACTION_LABEL);
 
-      // MIGRATION: VB `"\\"` IS A TWO-CHARACTER LITERAL, AND THIS IS THE MOST DANGEROUS LINE IN THE
-      //   WHOLE PORT. `Website/admin/Portal/EditPortalAlias.ascx.vb:L213-L215` tests
-      //   `strAlias.IndexOf("\\") <> -1` and then removes `IndexOf("\\") + 2` characters. VB string
-      //   literals have NO escape sequences, so that literal is a backslash followed by a backslash,
-      //   and the `+ 2` offset is the proof: a one-character literal would have been removed with
-      //   `+ 1`. TypeScript DOES have escape sequences, so the fixture below is written with FOUR
-      //   backslashes to produce TWO — writing two would produce one and would silently test the
-      //   wrong strip.
-      //
-      // ⚠ THIS CASE DISCRIMINATES BETWEEN THE TWO READINGS RATHER THAN MERELY DEMONSTRATING ONE.
-      // A two-character strip yields `MYSERVER`, which the shape rule accepts and which is therefore
-      // sent; a one-character strip would yield a value still carrying a backslash, which the shape
-      // rule refuses outright, and no request would be made at all.
+      // MIGRATION: VB `"\\"` IS A TWO-CHARACTER LITERAL. `EditPortalAlias.ascx.vb:L213-L215` removes
+      //   `IndexOf("\\") + 2` characters, and that `+ 2` is the proof: a one-character literal would
+      //   have been removed with `+ 1`. TypeScript DOES have escape sequences, so the fixture below is
+      //   written with FOUR backslashes to produce TWO. The strip is gone, but the reading still
+      //   matters - it is why this entry carries two backslashes rather than one.
       type('\\\\MYSERVER');
       submit();
 
-      const call = expectRequest('POST', aliasesUrl(-1));
-
-      expect(transmittedAlias(call)).toBe('MYSERVER');
-      expect(entryField().value).toBe('MYSERVER');
-
-      call.flush(envelope(alias(21, 'MYSERVER')), { status: 201, statusText: 'Created' });
-      settle();
+      expect(fieldMessages()).not.toHaveSize(0);
+      expect(entryField().value).toBe('\\\\MYSERVER');
+      httpMock.expectNone((candidate) => candidate.method === 'POST');
     });
 
-    it('strips the protocol prefix first and the share prefix second, in that order', () => {
+    it('refuses an entry carrying both prefixes', () => {
       arrive([alias(7, 'localhost')]);
       press(ADD_ACTION_LABEL);
 
-      // The legacy order is protocol then share (`EditPortalAlias.ascx.vb:L210-L215`), and the order
-      // is preserved because it is observable: reversing it would leave the separator in place for an
-      // entry carrying both.
       type(withScheme(SECURE_SCHEME, '\\\\MYSERVER'));
       submit();
 
-      const call = expectRequest('POST', aliasesUrl(-1));
-
-      expect(transmittedAlias(call)).toBe('MYSERVER');
-
-      call.flush(envelope(alias(21, 'MYSERVER')), { status: 201, statusText: 'Created' });
-      settle();
+      expect(fieldMessages()).not.toHaveSize(0);
+      httpMock.expectNone((candidate) => candidate.method === 'POST');
     });
 
-    it('treats normalisation as normalisation and not as validation', () => {
+    it('transmits an acceptable entry byte for byte, altering nothing', () => {
       arrive([alias(7, 'localhost')]);
       press(ADD_ACTION_LABEL);
 
-      // ⚠ THE DISTINCTION IS LOAD-BEARING. Normalisation runs BEFORE judgement, so a value that
-      // needed only normalising must SUCCEED rather than be refused — the legacy screen accepted a
-      // scheme-prefixed entry and stored the host name alone, so refusing it now would break parity
-      // for an entry an operator could previously make.
-      type(withScheme(SECURE_SCHEME, 'example.com'));
+      // The positive control, and the assertion that closes the defect: what the operator sees is what
+      // is sent. A host with a port and a path exercises every optional part of the shape rule at once.
+      type('example.com:8443/child');
       submit();
 
-      expect(fieldMessages()).withContext('nothing is reported against it').toHaveSize(0);
+      expect(fieldMessages()).withContext('nothing is reported against an acceptable entry').toHaveSize(0);
 
       const call = expectRequest('POST', aliasesUrl(-1));
 
-      call.flush(envelope(alias(21, 'example.com')), { status: 201, statusText: 'Created' });
+      expect(transmittedAlias(call)).toBe('example.com:8443/child');
+      expect(entryField().value).toBe('example.com:8443/child');
+
+      call.flush(envelope(alias(21, 'example.com:8443/child')), { status: 201, statusText: 'Created' });
       settle();
+      settleCreateReread([alias(7, 'localhost'), alias(21, 'example.com:8443/child')]);
 
       expect(notifications()).toEqual([{ severity: 'success', message: SAVED_MESSAGE }]);
     });
@@ -1311,14 +1463,19 @@ describe('PortalAliasListComponent', () => {
 
       call.flush(envelope(alias(21, 'example.com')), { status: 201, statusText: 'Created' });
       settle();
+      settleCreateReread([alias(7, 'localhost'), alias(21, 'example.com')]);
 
       expect(notifications()).toEqual([{ severity: 'success', message: SAVED_MESSAGE }]);
-      expect(textOf('td.data-table__cell')).toContain('example.com');
+      expect(textOf('td.data-table__cell,th.data-table__cell')).toContain('example.com');
       expect(query('form')).withContext('and the form closes').toBeNull();
 
-      // ⚠ A CREATION IS ANSWERED WITH THE CREATED ROW, so the listing is refreshed by APPENDING it
-      // and no second read is issued. Asserting the absence is what makes the difference from the
-      // replacement path below a measured fact rather than an assumption.
+      // ⚠ A CREATION NOW RE-READS THE COLLECTION, and this block used to assert the opposite -
+      // that the created row was APPENDED and "no second read is issued". The reasoning was that
+      // the server had answered with the created row, which is true of the ROW and not of the
+      // COLLECTION: an appended row sits where the client put it rather than where the collection
+      // endpoint would, and carries only the members the create response included. Update already
+      // re-read, for a contract reason, so one resource had two write paths leaving two different
+      // states. Both take the collection from the server now.
       httpMock.expectNone((candidate) => candidate.method === 'GET');
     });
 
@@ -1345,7 +1502,7 @@ describe('PortalAliasListComponent', () => {
       answerAliases([alias(7, 'example.com')]);
 
       expect(notifications()).toEqual([{ severity: 'success', message: SAVED_MESSAGE }]);
-      expect(textOf('td.data-table__cell')).toContain('example.com');
+      expect(textOf('td.data-table__cell,th.data-table__cell')).toContain('example.com');
     });
 
     it('treats a 200 answer to a replacement exactly as it treats a 204', () => {
@@ -1365,7 +1522,7 @@ describe('PortalAliasListComponent', () => {
       answerAliases([alias(7, 'example.com')]);
 
       expect(notifications()).toEqual([{ severity: 'success', message: SAVED_MESSAGE }]);
-      expect(textOf('td.data-table__cell')).toContain('example.com');
+      expect(textOf('td.data-table__cell,th.data-table__cell')).toContain('example.com');
     });
 
     it('removes at the row address, answers 204 and drops the row from the listing', () => {
@@ -1383,9 +1540,16 @@ describe('PortalAliasListComponent', () => {
       call.flush(null, { status: 204, statusText: 'No Content' });
       settle();
 
-      expect(notifications()).toEqual([{ severity: 'info', message: DELETED_MESSAGE }]);
-      expect(textOf('td.data-table__cell')).not.toContain('localhost');
-      expect(textOf('td.data-table__cell')).toContain('localhost:4200');
+      // ⚠ SUCCESS, NOT INFORMATION, AND THIS EXPECTATION USED TO SAY INFORMATION. A completed
+      // deletion was the only finished mutation in the console announced at the quiet
+      // informational severity; every other one, including the portal deletion and the settings
+      // deletion, announces success, and so does this screen's own save. The severity selects
+      // the band, and the bands differ in surface as well as in the word they state, so the
+      // outlier made a successful removal look less conclusive than a successful save of the
+      // same record.
+      expect(notifications()).toEqual([{ severity: 'success', message: DELETED_MESSAGE }]);
+      expect(textOf('td.data-table__cell,th.data-table__cell')).not.toContain('localhost');
+      expect(textOf('td.data-table__cell,th.data-table__cell')).toContain('localhost:4200');
 
       // A removal is exact for an unpaged collection, so the row is dropped in place and nothing is
       // re-read.
@@ -1406,7 +1570,7 @@ describe('PortalAliasListComponent', () => {
 
       answerAliases([alias(7, 'localhost'), alias(8, 'renamed.example.com'), alias(9, '127.0.0.1')]);
 
-      expect(textOf('td.data-table__cell')).toContain('renamed.example.com');
+      expect(textOf('td.data-table__cell,th.data-table__cell')).toContain('renamed.example.com');
     });
 
     it('clears the selection when an entry is abandoned, so the next add is not a replace', () => {
@@ -1428,6 +1592,7 @@ describe('PortalAliasListComponent', () => {
         statusText: 'Created',
       });
       settle();
+      settleCreateReread([alias(7, 'localhost'), alias(21, 'example.com')]);
 
       expect(notifications()).toEqual([{ severity: 'success', message: SAVED_MESSAGE }]);
     });
@@ -1447,6 +1612,7 @@ describe('PortalAliasListComponent', () => {
         statusText: 'Created',
       });
       settle();
+      settleCreateReread([alias(7, 'localhost'), alias(21, 'example.com')]);
     });
 
     it('shows the wait while a read is outstanding, and only then', () => {
@@ -1505,6 +1671,39 @@ describe('PortalAliasListComponent', () => {
       expect(bannerText()).withContext('and it is not repeated in the banner').not.toContain(
         DUPLICATE_ALIAS_MESSAGE,
       );
+    });
+
+    it('keeps the server sentence and the support reference for a duplicate host name', () => {
+      // ⚠ THE DEFECT: the screen used to WITHHOLD the banner whenever it had already put a message
+      // beside the alias control, which meant the duplicate refusal - the one an operator hits most
+      // often - discarded both the server's own sentence and the reference a support conversation is
+      // conducted through. The field message and the banner are complementary here: the field says
+      // WHICH control to change, in this screen's resource wording, and the banner says what the
+      // server reported and how to quote it.
+      arrive([alias(7, 'localhost')]);
+      press(ADD_ACTION_LABEL);
+      type('localhost');
+      submit();
+
+      expectRequest('POST', aliasesUrl(-1)).flush(
+        problemDocument(
+          DUPLICATE_ALIAS_CODE,
+          409,
+          "The host name 'localhost' is already bound to a portal.",
+        ),
+        { status: 409, statusText: 'Conflict' },
+      );
+      settle();
+
+      // The field attribution is unchanged - this is an addition, not a replacement.
+      expect(fieldMessages()).toEqual([DUPLICATE_ALIAS_MESSAGE]);
+
+      // The server's sentence names the host name it refused, which this screen's own wording does
+      // not, so it carries information that was previously thrown away.
+      expect(bannerText()).toContain("The host name 'localhost' is already bound to a portal.");
+
+      // And the reference survives, exactly as it does for every failure with no field to sit beside.
+      expect(textOf('.error-banner__trace').join(' ')).toContain(CORRELATION_ID);
     });
 
     it('reports a duplicate host name beside the field on a replacement as well', () => {
@@ -1663,7 +1862,7 @@ describe('PortalAliasListComponent', () => {
       // reported as a refused reading.
       expect(notifications()).toEqual([{ severity: 'warning', message: DELETE_DENIED_MESSAGE }]);
       expect(bannerSeverity()).toBe('Warning');
-      expect(textOf('td.data-table__cell'))
+      expect(textOf('td.data-table__cell,th.data-table__cell'))
         .withContext('and nothing was removed')
         .toContain('localhost');
     });
@@ -1781,7 +1980,155 @@ describe('PortalAliasListComponent', () => {
   // PROOF 7 — THE REMOVAL GUARDS AND THE CONFIRMATION
   // ---------------------------------------------------------------------------------------------------
 
+  // ---------------------------------------------------------------------------------------------------
+  // PROOF 6b — WHERE THE FORM SITS, AND WHERE FOCUS GOES
+  // ---------------------------------------------------------------------------------------------------
+  //
+  // ⚠ NOTHING MANAGED FOCUS ACROSS THIS FORM, AND THE FORM RENDERED AFTER THE WHOLE GRID. Measured,
+  // the editor appeared at y≈550 while the row that opened it sat at y≈496, and reaching it from
+  // that row by keyboard took twenty-two tab stops - every remaining cell and command of the table
+  // came first. On closing, focus was dropped to `document.body`, so the next Tab restarted from the
+  // top of the document and the operator lost their place in the listing.
+  //
+  // MIGRATION: there is no legacy placement or legacy focus behaviour to be faithful to here. The
+  // legacy console EDITED ON A SEPARATE PAGE - `PortalAlias.ascx.vb:L90` navigated to the edit
+  // control with the portal in the query string - so both the inline arrangement and its focus
+  // handling are this migration's own.
+
+  describe('where the form sits and where focus goes', () => {
+    it('renders the form BEFORE the listing it edits', () => {
+      arrive([alias(7, 'localhost'), alias(8, 'localhost:4200')]);
+      editRow(0);
+
+      const form = query<HTMLElement>('form.portal-alias-list__edit');
+      const table = query<HTMLElement>('app-data-table');
+
+      expect(form).not.toBeNull();
+      expect(table).not.toBeNull();
+
+      // Document order, asserted through the DOM's own comparison rather than by counting elements:
+      // `DOCUMENT_POSITION_FOLLOWING` on the form means the table comes after it.
+      const relation: number = form?.compareDocumentPosition(table as Node) ?? 0;
+
+      expect(relation & Node.DOCUMENT_POSITION_FOLLOWING)
+        .withContext('the listing follows the form, so the form is not behind the whole table')
+        .toBeGreaterThan(0);
+    });
+
+    it('moves focus into the entry box when a row is opened for editing', () => {
+      arrive([alias(7, 'localhost'), alias(8, 'localhost:4200')]);
+      editRow(0);
+
+      expect(document.activeElement).toBe(entryField());
+    });
+
+    it('moves focus into the entry box when the create action is pressed', () => {
+      arrive();
+      press(ADD_ACTION_LABEL);
+
+      expect(document.activeElement).toBe(entryField());
+    });
+
+    it('hands focus back to the control that opened the form when it is cancelled', () => {
+      arrive([alias(7, 'localhost'), alias(8, 'localhost:4200')]);
+
+      // Focused explicitly, because a synthetic `click()` does not run the focusing steps a real
+      // pointer press does - so without this the invoker would be `body` and the case would prove
+      // only the fallback.
+      const invoker = rowEditCommand(0);
+
+      expect(invoker).not.toBeUndefined();
+      invoker?.focus();
+      editRow(0);
+
+      expect(document.activeElement).toBe(entryField());
+
+      press(CANCEL_LABEL);
+
+      expect(document.activeElement)
+        .withContext('back to the row command, not dropped to the document body')
+        .toBe(invoker as Element);
+      expect(document.activeElement).not.toBe(document.body);
+    });
+
+    it('falls back to the create action when the invoker has left the document', () => {
+      // A save re-reads the collection, so the row that was edited is replaced and the remembered
+      // element is detached. Focusing a detached element is a silent no-op that leaves focus on
+      // `body` - the very outcome the restoration exists to prevent - so the fallback is the create
+      // action in the header, which is present in every state of this screen and never detached.
+      arrive([alias(7, 'localhost'), alias(8, 'localhost:4200')]);
+
+      const invoker = rowEditCommand(0);
+
+      invoker?.focus();
+      editRow(0);
+      type('renamed.example.com');
+      submit();
+
+      expectRequest('PUT', aliasUrl(-1, 7)).flush(envelope(alias(7, 'renamed.example.com')));
+      settle();
+
+      expectRequest('GET', aliasesUrl(-1)).flush(envelope([alias(7, 'renamed.example.com')]));
+      settle();
+
+      expect(document.activeElement)
+        .withContext('somewhere usable rather than the document body')
+        .not.toBe(document.body);
+      expect((document.activeElement?.textContent ?? '').trim()).toBe(ADD_ACTION_LABEL);
+    });
+
+    it('says nothing about the entry while a removal is pending', () => {
+      // ⚠ THE INTERACTION THE FOCUS MOVE CREATED, AND THE REASON THE GUARD IS WHERE IT IS. Pressing
+      // Delete only OPENS the prompt; the blur arrives one render later, when the confirmation opens
+      // modally and the platform moves focus onto its Cancel button. The value accessor marks the
+      // control touched from that blur, and the message gate opens - so an operator asking to
+      // destroy a row was told the box they had never typed in was required. Clearing the messages
+      // inside the command was measured and was too early.
+      arrive([alias(7, 'localhost'), alias(8, 'localhost:4200')]);
+      editRow(0);
+      type('');
+
+      press(DELETE_LABEL);
+
+      expect(dialogue()).withContext('the question is asked').not.toBeNull();
+      expect(fieldMessages()).toHaveSize(0);
+    });
+  });
+
   describe('the removal guards', () => {
+    it('gives the inline removal command the destructive treatment', () => {
+      // ⚠ THE MEASURED DEFECT. Delete sat between Update and Cancel as a BARE button,
+      // indistinguishable from either, while the confirmation it opens paints its own Delete with a
+      // red border and a danger label. One screen therefore carried two treatments for one
+      // destructive act - and an operator meets the WEAKER one first, at the moment the decision is
+      // actually taken, since the dialog only confirms it.
+      //
+      // Asserted as a computed colour so the claim is about what renders rather than about which
+      // class is present: the global button rule sets a colour too, and a modifier that lost the
+      // specificity contest would still satisfy a class-name assertion.
+      arrive([alias(7, 'localhost'), alias(8, 'localhost:4200')]);
+      editRow(0);
+
+      const remove = button(DELETE_LABEL);
+
+      expect(remove).withContext('the removal command is offered').not.toBeUndefined();
+
+      if (remove === undefined) {
+        return;
+      }
+
+      expect(getComputedStyle(remove).color)
+        .withContext('#FF0000, the danger token, as on the listing row commands')
+        .toBe('rgb(255, 0, 0)');
+
+      const cancel = button(CANCEL_LABEL);
+
+      expect(cancel).not.toBeUndefined();
+      expect(getComputedStyle(remove).color)
+        .withContext('and distinguishable from the non-destructive command beside it')
+        .not.toBe(cancel === undefined ? '' : getComputedStyle(cancel).color);
+    });
+
     it('withholds removal while a portal has only one alias', () => {
       arrive([alias(7, 'localhost')]);
 
@@ -1865,7 +2212,16 @@ describe('PortalAliasListComponent', () => {
       const open = dialogue();
 
       expect(open).not.toBeNull();
-      expect(textOf('.confirm-dialog__message')).toContain(DELETE_CONFIRM_MESSAGE);
+
+      // ⚠ THE QUESTION, AND THEN WHICH HOST NAME IT MEANS. The body used to be the bare sentence,
+      // which named nothing at all - and this dialog is modal and covers the table it was raised
+      // from, measured obscuring four alias rows INCLUDING the one being destroyed. A portal here
+      // holds ten host names differing by a port or a digit, so confirming which one was about to
+      // be unbound was impossible from the prompt. The legacy wording is unchanged; the identity is
+      // appended to it.
+      expect(textOf('.confirm-dialog__message')).toEqual([
+        `${DELETE_CONFIRM_MESSAGE} localhost`,
+      ]);
 
       // The dialogue is opened MODALLY, which is what confines focus natively — the trap is the
       // platform's rather than hand-rolled, and this is the observable proof that it is in force.
@@ -1900,7 +2256,7 @@ describe('PortalAliasListComponent', () => {
 
       expect(dialogue()).toBeNull();
       httpMock.expectNone((candidate) => candidate.method === 'DELETE');
-      expect(textOf('td.data-table__cell')).toContain('localhost');
+      expect(textOf('td.data-table__cell,th.data-table__cell')).toContain('localhost');
     });
 
     it('removes only once the question is answered', () => {
@@ -1918,7 +2274,7 @@ describe('PortalAliasListComponent', () => {
 
       expect(dialogue()).withContext('the question is closed').toBeNull();
       expect(query('form')).withContext('and the form with it').toBeNull();
-      expect(notifications()).toEqual([{ severity: 'info', message: DELETED_MESSAGE }]);
+      expect(notifications()).toEqual([{ severity: 'success', message: DELETED_MESSAGE }]);
       expect(paintedRows()).toHaveSize(1);
     });
   });
@@ -1991,7 +2347,7 @@ describe('PortalAliasListComponent', () => {
       httpMock.expectNone((candidate) => candidate.method === 'GET');
     });
 
-    it('forwards a creation to the store with the portal from the address and the normalised value', () => {
+    it('forwards a creation to the store with the portal from the address and the entry verbatim', () => {
       arrive([alias(7, 'localhost')]);
 
       // ⚠ THE FAKE MUST RETURN A TICKET, and `EMPTY` is the faithful stand-in rather than a
@@ -2003,7 +2359,14 @@ describe('PortalAliasListComponent', () => {
       const createSpy = spyOn(store, 'createAlias').and.returnValue(EMPTY);
 
       press(ADD_ACTION_LABEL);
-      type(withScheme(SECURE_SCHEME, 'example.com'));
+
+      // ⚠ A PLAIN HOST, NOT A SCHEME-PREFIXED ONE. This case previously typed `https://example.com`
+      // and expected `example.com` to be forwarded — it was the second reader of the strip that
+      // PROOF 4 retired. A scheme-bearing entry no longer reaches the store at all, because the
+      // validator refuses it, so continuing to type one here would have proved nothing about
+      // forwarding: the expectation would fail for the right reason and hide the wrong one. The value
+      // typed below is one the screen accepts, which is the only kind that can exercise this path.
+      type('example.com');
       submit();
 
       // `jasmine.objectContaining` rather than a whole-object comparison, so the assertion is about
@@ -2011,6 +2374,10 @@ describe('PortalAliasListComponent', () => {
       // the exact member set is proved on the wire by {@link isAliasWriteBody}.
       // Two arguments now, not three: the trailing continuation is gone from the contract, and
       // asserting the exact arity is what would catch a callback creeping back in.
+      //
+      // The forwarded value is the entry itself. That is now a claim about the ABSENCE of a transform
+      // between the control and the command, and it is worth asserting here as well as on the wire:
+      // this is the seam the strip used to sit in.
       expect(createSpy).toHaveBeenCalledWith(
         -1,
         jasmine.objectContaining({ httpAlias: 'example.com' }),

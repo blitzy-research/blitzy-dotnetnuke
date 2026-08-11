@@ -392,12 +392,16 @@ function createRequest(overrides: Partial<CreateModuleRequest> = {}): CreateModu
 /**
  * A replacement request carrying the page it edits, exactly as the contract requires.
  *
- * The update endpoint takes NO placement selector: the page is named by the required `tabId` member of
- * the body itself, which the server uses to select the placement being edited.
+ * The update endpoint takes NO placement selector in the URL: the page is named by the required `tabId`
+ * member of the body itself, which the server uses to select the placement being edited. A relocation is a
+ * SEPARATE member, `moveToTabId`, so that the key identifying the row and the page the row is moving to
+ * cannot be confused for one another - naming a destination through the key selects a placement that does
+ * not exist and the save is refused.
  */
 function updateRequest(overrides: Partial<UpdateModuleRequest> = {}): UpdateModuleRequest {
   return {
     tabId: 0,
+    moveToTabId: null,
     moduleTitle: '',
     allTabs: false,
     header: '',
@@ -883,6 +887,89 @@ describe('ModuleStore', () => {
   // which is exactly what the legacy recycle bin read. Whether such a row still appears is the LISTING
   // endpoint's decision, expressed through its inclusion flag, and it is not this slice's to infer.
   describe('removal is soft and requires a re-read', () => {
+    /**
+     * Loads a settings bag into the store, which is the state a settings screen leaves behind.
+     *
+     * @param moduleId The module the bag describes.
+     */
+    function cacheSettingsFor(moduleId: number): void {
+      store.loadSettings(moduleId);
+      expectRequest('GET', `/api/v1/modules/${moduleId}/settings`).flush(
+        envelope(settingsBag({ moduleId })),
+      );
+    }
+
+    /** Answers the re-read the removal issues, so no request is left outstanding. */
+    function answerReread(): void {
+      expectRequest('GET', '/api/v1/modules').flush(pagedBody([]));
+    }
+
+    /**
+     * ⚠ THE STATE-DEPENDENT CRITICAL DEFECT. This store is `providedIn: 'root'`, so a settings bag read
+     * for one screen outlives it. Measured: remove a placement, then reach `/modules/{id}` for the same
+     * identifier in the SAME session, and the editor rendered the DELETED module's data in a fully
+     * populated form with Update, Cancel and Delete all ENABLED, beneath an inline Not-Found alert
+     * saying the record could not be read — the only surface that permitted a second, doomed removal of
+     * something already gone. A COLD navigation to the same address correctly rendered no controls,
+     * which is what made the defect state-dependent: the request fails identically either way, and what
+     * differed was whether this signal still held an answer for the form to hydrate from.
+     */
+    it('discards the cached record of the module it removed', () => {
+      loadListWith([listRow({ moduleId: 0, tabModuleId: 1 })]);
+      cacheSettingsFor(0);
+
+      expect(store.settings()?.moduleId).withContext('cached before the removal').toBe(0);
+
+      store.deleteModule(0);
+      expectRequest('DELETE', '/api/v1/modules/0').flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+      answerReread();
+
+      expect(store.settings())
+        .withContext('nothing is left for a form to hydrate a deleted module from')
+        .toBeNull();
+    });
+
+    /**
+     * The complement, and the reason the invalidation is scoped by identifier rather than clearing the
+     * slice outright: a bag describing some OTHER module is still a truthful answer about that module,
+     * and discarding it would make the next screen read it again for no reason.
+     */
+    it('keeps a cached record that belongs to a different module', () => {
+      loadListWith([listRow({ moduleId: 0, tabModuleId: 1 })]);
+      cacheSettingsFor(7);
+
+      store.deleteModule(0);
+      expectRequest('DELETE', '/api/v1/modules/0').flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+      answerReread();
+
+      expect(store.settings()?.moduleId).withContext('untouched').toBe(7);
+    });
+
+    /**
+     * Module ZERO is a real module — `Modules.ModuleID` is `IDENTITY(0, 1)` — so the comparison must be
+     * on the identifier and never on truthiness. A truthiness-guarded invalidation would silently skip
+     * exactly this row, which is also the row the sibling specs in this block use.
+     */
+    it('invalidates module ZERO, which a truthiness test would skip', () => {
+      loadListWith([listRow({ moduleId: 0, tabModuleId: 1 })]);
+      cacheSettingsFor(0);
+
+      store.deleteModule(0);
+      expectRequest('DELETE', '/api/v1/modules/0').flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+      answerReread();
+
+      expect(store.settings()).toBeNull();
+    });
+
     it('issues the removal and then a SECOND request that re-reads the listing', () => {
       loadListWith([listRow({ moduleId: 0, tabModuleId: 1 })]);
 
@@ -2095,9 +2182,28 @@ describe('ModuleStore', () => {
 
       // No create route and no delete route exists, so addressing one would be addressing something the
       // API does not serve.
-      httpMock.expectNone((candidate) => candidate.method === 'POST' && candidate.url === '/api/v1/tabs');
-      httpMock.expectNone((candidate) => candidate.method === 'DELETE' && candidate.url.startsWith('/api/v1/tabs'));
-      httpMock.expectNone((candidate) => candidate.method === 'PUT' && candidate.url.startsWith('/api/v1/tabs'));
+      //
+      // Counted rather than asserted through `expectNone`, which throws and so records no expectation at
+      // all - a spec that claims three absences would otherwise be reported as claiming nothing. Each
+      // predicate is scoped to one verb, so `match` removes only what that verb matched (nothing), and the
+      // `verify()` in the teardown still guards every other request this slice might have issued.
+      expect(httpMock.match((candidate) => candidate.method === 'POST' && candidate.url === '/api/v1/tabs'))
+        .withContext('no page is created through this slice')
+        .toEqual([]);
+      expect(
+        httpMock.match(
+          (candidate) => candidate.method === 'DELETE' && candidate.url.startsWith('/api/v1/tabs'),
+        ),
+      )
+        .withContext('no page is removed through this slice')
+        .toEqual([]);
+      expect(
+        httpMock.match(
+          (candidate) => candidate.method === 'PUT' && candidate.url.startsWith('/api/v1/tabs'),
+        ),
+      )
+        .withContext('no page is replaced through this slice')
+        .toEqual([]);
     });
 
     it('never reads an individual page at /api/v1/tabs/0, because it reads them by portal', () => {
@@ -3576,10 +3682,33 @@ describe('ModuleStore', () => {
       const failure = store.failure();
 
       expect(failure?.operation).toBe('listModules');
-      expect(failure?.problem).toEqual({ status: 0 });
+
+      // ⚠ THE EXPECTED DOCUMENT CHANGED, AND THE REASON IS A SECOND MEASURED DEFECT. This used to
+      // assert `toEqual({ status: 0 })` — a document carrying the status and nothing else. That is
+      // safe but too poor to present: measured on the listing with the network unreachable, the
+      // banner rendered its severity word and its message but `.error-banner__title` matched
+      // NOTHING, because a status-only document has no title to render. The portal store already
+      // composed this exact condition through the shared `transportProblem` helper, so one offline
+      // failure was presented as `Error / Network error / The server could not be reached…` on one
+      // screen and with the title silently missing on another. The helper is now used here too.
+      //
+      // Nothing is invented: every member below is derived from the status the transport reported.
+      expect(failure?.problem?.status).toBe(0);
+      expect(failure?.problem?.title)
+        .withContext('the banner has a title to render')
+        .toBe('Network error');
+      expect(failure?.problem?.detail)
+        .withContext('and a sentence that says what happened')
+        .toBe('The server could not be reached. Check your connection and try again.');
+
+      // The ORIGINAL requirement, unchanged and still the point of this spec: a DOM `ProgressEvent`
+      // must never be mistaken for the problem document. Its `type` is the string `'error'`, so
+      // asserting the RFC 7807 default proves the event was not accepted as the body — which is a
+      // stronger assertion than the previous `toBeUndefined`, because it pins what the type IS
+      // rather than only that it is absent.
       expect(failure?.problem?.type)
         .withContext('a progress event type must never be published as a problem type')
-        .toBeUndefined();
+        .toBe('about:blank');
       expect(failure?.code)
         .withContext('an unreachable server publishes no application failure code')
         .toBeNull();

@@ -75,7 +75,7 @@ import { inject } from '@angular/core';
 import { Router } from '@angular/router';
 import type { ActivatedRouteSnapshot, CanActivateFn } from '@angular/router';
 
-import { SIGN_IN_ROUTE } from '../config/app-routes.config';
+import { RETURN_URL_QUERY_KEY, SIGN_IN_ROUTE } from '../config/app-routes.config';
 import { NotificationService } from '../services/notification.service';
 import { AuthStore } from '../state/auth.store';
 
@@ -170,10 +170,12 @@ const POLICY_DATA_KEY = 'permission';
 /**
  * The query parameter key carrying the address the caller was trying to reach.
  *
- * Identical to the key `core/guards/auth.guard.ts` uses, so the sign-in screen reads
- * one key whichever gate turned the caller away.
+ * IMPORTED, so that "identical to the key the session gate uses" is now true BY
+ * CONSTRUCTION rather than by assertion. This comment previously claimed the two matched and
+ * nothing compared them; the sign-in screen reads exactly one key, so a divergence here
+ * would have silently stranded every caller this gate turns away.
  */
-const RETURN_URL_KEY = 'returnUrl';
+const RETURN_URL_KEY = RETURN_URL_QUERY_KEY;
 
 /**
  * The route parameter a module-scoped policy is resolved from.
@@ -268,6 +270,29 @@ const ACCOUNT_SCOPE_PARAM = 'userId';
  * a uniform 403.
  */
 const ACCESS_REFUSED_MESSAGE = 'You do not have access to this content.';
+
+/*
+ * PROVENANCE OF THE WORDING AND OF THE SEVERITY, both measured rather than chosen, and recorded here
+ * because a review asked why a refused NAVIGATION reads differently from a refused REQUEST.
+ *
+ * `Website/admin/Security/App_LocalResources/AccessDenied.ascx.resx` holds the sentence
+ * `Either you are not currently logged in, or you do not have access to this content.` and
+ * `Website/admin/Security/AccessDenied.ascx.vb:45` presents it with
+ * `ModuleMessage.ModuleMessageType.YellowWarning` - the WARNING band of the legacy's measured
+ * three-level vocabulary, which is the severity the three call sites below use. The first clause is
+ * dropped deliberately: it covered the unauthenticated case, and an unauthenticated caller never
+ * reaches this guard's refusal - `authGuard` sends them to the sign-in screen carrying a return
+ * address instead - so reproducing it would state an alternative that cannot apply.
+ *
+ * The legacy also DELIVERED it the way this guard does: `AccessDenied` is a page the operator was sent
+ * TO, carrying its message, rather than a panel raised on the page they were refused. That is why a
+ * refusal here is announced through the shared channel and survives the navigation, while a server 403
+ * is rendered inline on the screen that issued the request. The two are not one event presented twice:
+ * a guard refusal is decided from the session's own claims with no request made, so it has no
+ * correlation reference to offer and no destination screen on which to anchor a panel, whereas a 403
+ * answers a request that was really issued, on a screen the operator legitimately reached, and carries
+ * a reference a support call can quote.
+ */
 
 /**
  * Whether a string is one of the eight registered policy names.
@@ -655,8 +680,36 @@ export const permissionGuard: CanActivateFn = (route, state) => {
    * opened with `Dim loginStatus As UserLoginStatus = UserLoginStatus.LOGIN_FAILURE`, so
    * refusal was the default outcome and only an affirmative result displaced it.
    */
+  /*
+   * ⚠ THIS GATE DELIBERATELY DOES NOT TOUCH FOCUS, and a reported defect saying it should was
+   * investigated and disproved. Runtime testing found `document.activeElement === document.body`
+   * after every permission denial and concluded that "focus is not returned to the trigger".
+   *
+   * Re-measured with focus genuinely on a real sidebar link — reached by six actual `Tab`
+   * presses, with `:focus-visible` matching and the element captured by reference beforehand — a
+   * refusal leaves focus EXACTLY where it was: `activeElement === savedLinkReference` compares
+   * `true` by identity, `activeElement === document.body` is false, and ZERO `focusin` events
+   * fire. The reported result was then reproduced as a controlled counterfactual by blurring to
+   * `body` first, which is what a scripted or address-typed arrival produces. It is an artefact of
+   * having no trigger, not a behaviour of this gate.
+   *
+   * Moving focus here would also be the wrong fix rather than a missing one. A refused navigation
+   * CANCELS: the operator stays on the screen they were already using, so their place in it is
+   * still valid and taking focus away from it would lose that place. The refusal reaches them
+   * through a polite live region instead, which is the mechanism a status message is supposed to
+   * use — announced without stealing focus. Escalating it to an assertive region was considered
+   * and rejected on the same authority that fixes the severity: `AccessDenied.ascx.vb` presents
+   * both of its branches as `YellowWarning`, so a refusal is a warning and not a fault.
+   */
   if (typeof declared !== 'string' || isPermissionPolicy(declared) === false) {
     notification.notify('warning', ACCESS_REFUSED_MESSAGE);
+
+    // ⚠ EXEMPTED FROM THE NAVIGATION SWEEP, and without this the refusal would be invisible.
+    // The shell discards stale notifications on a completed navigation, and this refusal is
+    // raised DURING the very navigation that follows it — so the message would be queued and
+    // swept inside one task, moving the operator with no explanation at all. Exempting it
+    // survives exactly that one navigation and no further.
+    notification.retainAcrossNavigation();
 
     return false;
   }
@@ -684,6 +737,13 @@ export const permissionGuard: CanActivateFn = (route, state) => {
 
   if (scopeName !== null && scopeId === null) {
     notification.notify('warning', ACCESS_REFUSED_MESSAGE);
+
+    // ⚠ EXEMPTED FROM THE NAVIGATION SWEEP, and without this the refusal would be invisible.
+    // The shell discards stale notifications on a completed navigation, and this refusal is
+    // raised DURING the very navigation that follows it — so the message would be queued and
+    // swept inside one task, moving the operator with no explanation at all. Exempting it
+    // survives exactly that one navigation and no further.
+    notification.retainAcrossNavigation();
 
     return false;
   }
@@ -734,6 +794,13 @@ export const permissionGuard: CanActivateFn = (route, state) => {
      * severity would misreport it.
      */
     notification.notify('warning', ACCESS_REFUSED_MESSAGE);
+
+    // ⚠ EXEMPTED FROM THE NAVIGATION SWEEP, and without this the refusal would be invisible.
+    // The shell discards stale notifications on a completed navigation, and this refusal is
+    // raised DURING the very navigation that follows it — so the message would be queued and
+    // swept inside one task, moving the operator with no explanation at all. Exempting it
+    // survives exactly that one navigation and no further.
+    notification.retainAcrossNavigation();
 
     return false;
   }

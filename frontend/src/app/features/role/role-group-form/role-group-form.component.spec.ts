@@ -87,6 +87,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Router, provideRouter } from '@angular/router';
 
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { RoleStore } from '../../../core/state/role.store';
 import { RoleGroupFormComponent } from './role-group-form.component';
@@ -711,25 +712,41 @@ describe('RoleGroupFormComponent', () => {
       expect(httpMock.match(() => true)).withContext('nothing sent').toHaveSize(0);
     });
 
-    it('sends nothing for a name longer than the column, silently and by design', () => {
+    it('explains a name longer than the column instead of refusing it silently', () => {
       create();
 
       type(NAME_CONTROL_ID, 'a'.repeat(NAME_MAX_LENGTH + 1));
 
       press(SUBMIT_LABEL);
 
-      // ⚠ THE REFUSAL IS SILENT, AND DELIBERATELY SO. This screen publishes wording for exactly ONE
-      // rule - the name requirement - plus whatever the server reports per field. There is no authored
-      // length sentence because the length state is UNREACHABLE THROUGH THE INTERFACE: the control's own
-      // bound stops typing and pasting at the column length, so a person cannot produce this value.
-      // Authoring a message for it would put a string on screen that no interaction can ever show, and
-      // asserting one here would demand that. What matters is that the over-long value is not SENT.
-      expect(httpMock.match(() => true)).withContext('nothing sent').toHaveSize(0);
+      // ⚠ THIS CASE PREVIOUSLY ASSERTED THE OPPOSITE, AND THE ASSERTION WAS THE DEFECT. It demanded
+      // that NO message appear, on the reasoning that the over-length state is "unreachable through
+      // the interface" because the control's own `maxlength` caps typing and pasting. The cap is real
+      // - it is asserted below and has not been removed - but the conclusion drawn from it was wrong
+      // in two ways.
+      //
+      // First, the state IS reachable: it was reproduced from outside, which is exactly what a tool,
+      // an autofill implementation or an assistive technology setting `.value` directly does, none of
+      // which passes through the browser's own editing path. Second, and regardless of how it is
+      // reached, what the operator met there was a dead end - the control was `ng-invalid`, the field
+      // rendered no error text, its error container was never created, `aria-invalid` stayed absent
+      // and pressing Update did nothing whatsoever, with nothing on screen to say why.
+      //
+      // The sibling role form has always reported this same violation, with `maxlength` on its inputs
+      // too - so the two screens of one feature described the identical violation two different ways.
+      // The message can only ever be seen in the state `maxlength` already prevents, so no ordinary
+      // entry produces new text; it simply removes the dead end when something else produces it.
       expect(fieldMessages())
-        .withContext('and no sentence is invented for a state a person cannot reach')
-        .toHaveSize(0);
+        .withContext('the length bound is now stated in words')
+        .toContain(`Enter at most ${String(NAME_MAX_LENGTH)} characters.`);
+
+      // Unchanged and still the load-bearing half: an over-long value is never SENT.
+      expect(httpMock.match(() => true)).withContext('nothing sent').toHaveSize(0);
+
+      // The control still bounds ordinary entry, so the message is a backstop rather than a substitute
+      // for the cap.
       expect(field<HTMLInputElement>(NAME_CONTROL_ID).getAttribute('maxlength'))
-        .withContext('because the control bounds the entry instead')
+        .withContext('because the control bounds the entry as well')
         .toBe(String(NAME_MAX_LENGTH));
     });
 
@@ -828,7 +845,61 @@ describe('RoleGroupFormComponent', () => {
       answerCatalogueReread();
 
       expect(notifications()).toEqual([{ severity: 'success', message: CREATED_MESSAGE }]);
-      expect(navigateSpy).toHaveBeenCalledOnceWith([ROLES_ROUTE]);
+      expect(navigateSpy).toHaveBeenCalledOnceWith([ROLES_ROUTE], { replaceUrl: true });
+
+      // ⚠ AND IT SURVIVES THE NAVIGATION IT IS RAISED WITH. The shell retires notifications on a
+      // completed navigation, so a confirmation announced in the same task as the departure was
+      // swept before it could be painted - the group was created and the operator was returned to
+      // the listing with nothing said. The queue is real here (`notify` is called through), so
+      // running the sweep is what proves the retention rather than asserting a method call.
+      const notificationService = TestBed.inject(NotificationService);
+      notificationService.clearOnNavigation();
+
+      expect(notificationService.notifications().map((entry) => entry.message))
+        .withContext('the confirmation belongs at the destination, as the legacy showed it')
+        .toEqual([CREATED_MESSAGE]);
+    });
+
+    it('settles the form on success, so nobody is asked to discard work that was saved', () => {
+      // ⚠ MEASURED IN A REAL BROWSER BEFORE THIS EXISTED. Creating a group succeeded, the
+      // confirmation painted at the listing, and the operator was then shown the native prompt 'You
+      // have unsaved changes on this page. Leave without saving and discard them?' about the very
+      // entry that had just been stored. The cause is a timing fact rather than an oversight in the
+      // guard: this screen's probe reads `dirty && saving() === false`, and by the time the success
+      // is handled the write has SETTLED, so `saving()` has already returned to false while the
+      // controls are still dirty from the typing.
+      create();
+
+      type(NAME_CONTROL_ID, 'Paid Services');
+      press(SUBMIT_LABEL);
+
+      const tracker = TestBed.inject(UnsavedChangesTracker);
+
+      expect(screen().form.dirty).withContext('typing made it dirty').toBeTrue();
+
+      expectRequest('POST', ROLE_GROUPS_URL).flush(envelope(roleGroup()));
+      fixture.detectChanges();
+      answerCatalogueReread();
+
+      expect(screen().form.pristine).withContext('the entry is stored, so it is not unsaved').toBeTrue();
+      expect(screen().form.untouched).toBeTrue();
+
+      // The decisive assertion: the REAL tracker, holding this screen's own real probe, is asked the
+      // same question the route guard asks. Asserting the form flags alone would not prove the guard
+      // stays quiet, because the probe combines them with the saving state.
+      expect(tracker.isDirty())
+        .withContext('the guard has nothing to ask about after a completed save')
+        .toBeFalse();
+      /*
+       * ⚠ REPLACES, and the option is asserted rather than ignored. The group exists now, so Back
+       * onto its creation form would invite a second identical creation. It is also what
+       * `core/guards/unsaved-changes.guard.ts` reads to recognise a departure the APPLICATION
+       * initiated: without it, the still-dirty form would be met with a prompt offering to discard
+       * the values that had just been saved.
+       *
+       * The CANCEL path deliberately still pushes and passes no options at all - asserted
+       * separately below - because an operator who changed their mind may change it back.
+       */
     });
 
     it('sends an omitted description as the empty string, not as null', () => {
@@ -869,11 +940,13 @@ describe('RoleGroupFormComponent', () => {
       answerCatalogueReread();
     });
 
-    it('sends the name exactly as typed, because nothing is trimmed on the way out', () => {
+    it('keeps the interior spacing of a name, which is the operator\u2019s own', () => {
       create();
 
-      // Interior spacing is meaningful in a name a person chose, and the rule only requires that a name
-      // is not ENTIRELY space — so a name that passed it travels byte for byte.
+      // ⚠ THIS CASE PREVIOUSLY CLAIMED THAT NOTHING IS TRIMMED ON THE WAY OUT, and half of that is
+      // no longer true: the padding at the edges IS now removed, for the reason recorded beside the
+      // tidy in the component. What it was really pinning survives and is the half that matters —
+      // spacing a person put INSIDE a name is part of the name and is never rewritten.
       type(NAME_CONTROL_ID, 'Paid  Services');
 
       press(SUBMIT_LABEL);
@@ -885,6 +958,44 @@ describe('RoleGroupFormComponent', () => {
       call.flush(envelope(roleGroup()), { status: 201, statusText: 'Created' });
       fixture.detectChanges();
       answerCatalogueReread();
+    });
+
+    it('tidies the padding off a name into the control, so what is shown is what is sent', () => {
+      create();
+
+      // MIGRATION: a deliberate divergence, and the same one the sibling role form makes. The
+      // legacy stored what was posted. It is trimmed here because the closed route set carries no
+      // role-group edit screen, so a group created with invisible leading spaces would keep them
+      // for good and would sort ahead of every other group in the scope filter this form fills.
+      type(NAME_CONTROL_ID, '  Paid Services  ');
+
+      press(SUBMIT_LABEL);
+
+      const call = expectRequest('POST', ROLE_GROUPS_URL);
+
+      expect(bodyRecord(call.request.body)['roleGroupName']).toBe('Paid Services');
+
+      // The control agrees with the payload, so nobody is left looking at an entry that differs
+      // from the one that was accepted.
+      expect(field<HTMLInputElement>(NAME_CONTROL_ID).value).toBe('Paid Services');
+
+      call.flush(envelope(roleGroup()), { status: 201, statusText: 'Created' });
+      fixture.detectChanges();
+      answerCatalogueReread();
+    });
+
+    it('leaves a refused whitespace-only name exactly as typed, rather than blanking the box', () => {
+      create();
+
+      // The refusal comes from the presence rule, which trims before judging and does not rewrite
+      // the value. A field that empties itself as you are told it is required reads as the screen
+      // having eaten the entry.
+      type(NAME_CONTROL_ID, '   ');
+
+      press(SUBMIT_LABEL);
+
+      expect(httpMock.match(() => true)).withContext('nothing sent').toHaveSize(0);
+      expect(field<HTMLInputElement>(NAME_CONTROL_ID).value).toBe('   ');
     });
 
     it('locks the submit control while the creation is outstanding', () => {

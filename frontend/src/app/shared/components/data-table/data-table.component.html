@@ -66,7 +66,31 @@
     pager is a sibling and reports the whole match set; a table must not claim knowledge
     of rows it was never handed.
   -->
-  <table class="data-table" [attr.aria-rowcount]="ariaRowCount()">
+  <!--
+    THE RESULT-SET REPORT, for a reader who cannot see the rows change.
+
+    Placed BEFORE the table and outside it, because a live region has to be in the document
+    before the change it reports - a region inserted at the same moment as its own text is
+    frequently not announced at all - and because no element but a row, a cell or a section
+    belongs inside a `<table>`.
+
+    ⚠ SEEN BY NOBODY, ANNOUNCED TO EVERYONE. It is visually hidden rather than merely empty, so
+    it adds no visible text and occupies no space, which is what lets the count be announced
+    without printing a second row count beside the one the pager already shows.
+
+    `role="status"` carries the announcement semantics and `aria-live` restates the polite value
+    it implies, the same pairing `notification-list.component.html` uses. POLITE and never
+    assertive: a filter result is not an interruption, and interrupting on every keystroke of a
+    debounced search would make the screen unusable with a reader running.
+
+    `aria-atomic="true"` re-reads the whole sentence rather than the changed words, because the
+    part that changes is the NUMBER and a partial re-read would announce a bare digit.
+  -->
+  <p class="data-table__result-status" role="status" aria-live="polite" aria-atomic="true">
+    {{ resultSummary() }}
+  </p>
+
+  <table class="data-table" [attr.aria-rowcount]="ariaRowCount()" [attr.aria-busy]="ariaBusy()">
     <!--
       The accessible name arrives by PROJECTION, not by an input. The public surface is
       closed at five inputs and every further affordance is projected, so a feature
@@ -157,8 +181,21 @@
                 and would still not be announced as a control. The explicit type stops
                 it submitting any form a feature wraps around the table.
 
-                Disabled while a request is in flight, which mirrors the component's own
-                refusal to queue a second ordering behind the first.
+                MARKED UNAVAILABLE WHILE A REQUEST IS IN FLIGHT, AND NOT NATIVELY DISABLED,
+                which is a correction rather than a preference. `[disabled]` was measured
+                dropping focus to the document body on every sort press: the platform blurs
+                an element the instant it becomes disabled, so activating a heading from the
+                keyboard reordered the table and then left the reader with no position in it
+                at all - and nothing to return to, because there is no focus to restore once
+                it has gone. `aria-disabled` announces the same state while keeping the
+                control focusable and in the tab order, which is the documented remedy for
+                exactly this case. The refusal itself lives in `activateSort`, which was
+                already guarding on the same flag, so the behaviour is unchanged: no second
+                ordering can be queued behind the first, by pointer or by key.
+
+                The attribute is emitted only while the flag holds - `null` otherwise, which
+                Angular omits - rather than being written as `aria-disabled="false"` on every
+                heading of every table.
 
                 THIS BUTTON'S FOCUS RING IS VISIBLE, and it takes two independent
                 decisions outside this file to keep it that way, both recorded here because
@@ -207,10 +244,38 @@
                 Structure needed no change for either decision - a real, natively focusable
                 button is already correct - and none was made.
               -->
+              <!--
+                `aria-label` STATES THE ACTION AND CONTAINS THE VISIBLE LABEL VERBATIM. The
+                heading text alone names the column and not what pressing it does, so a
+                reader landing here heard only "Module Title, button". The name is composed
+                in the component as "Sort by " plus the column's own label, which keeps it
+                compliant with WCAG 2.5.3 Label in Name - a voice-control user says the words
+                they can see, so a name that REPLACED the visible text rather than extending
+                it would break them. The current direction is deliberately not part of it:
+                the enclosing heading's `aria-sort` already announces that.
+                ⚠ `aria-disabled`, NOT `disabled`, AND THE DIFFERENCE IS A MEASURED DEFECT.
+                This control was `[disabled]="isLoading()"`, and runtime measurement showed what
+                that costs: activating a sort DESTROYED keyboard focus. A MutationObserver
+                watching with `attributeOldValue` recorded the exact sequence — `focusout` on the
+                button with `relatedTarget: null`, then `aria-busy null -> "true"` on the table,
+                then `disabled null -> ""` on all four sort buttons, and 34.1 ms later both
+                attributes removed again. Disabling the element that HAS focus ejects focus to
+                `BODY`, and nothing restores it when the attribute is withdrawn, so a
+                keyboard-only reader was dumped to the top of the document after every sort and a
+                freshly captured accessibility tree contained no focused node at all. Enter, Space
+                and a mouse click all lost focus identically. The sibling pagination controls are
+                not disabled and keep focus correctly, so the two halves of one table disagreed.
+                `aria-disabled` states the transient unavailability without removing the control
+                from the tab order or taking focus off it, which is what WCAG 2.1 asks for a state
+                that lasts 34 ms. The refusal itself moves into `activateSort`, so the guard the
+                native attribute used to provide is kept rather than lost — a second activation
+                mid-flight is still refused, it is now refused in code where it can be tested.
+              -->
               <button
                 class="data-table__sort"
                 type="button"
-                [disabled]="isLoading()"
+                [attr.aria-label]="cell.sortLabel"
+                [attr.aria-disabled]="isLoading() ? 'true' : null"
                 (click)="activateSort(cell)"
               >
                 <span [class.data-table__label--hidden]="cell.labelVisible === false">{{
@@ -222,16 +287,27 @@
                   hidden from assistive technology because the heading's sort state
                   already conveys the direction, and announcing the glyph as well would
                   state it twice.
+
+                  ⚠ THE SPAN IS RENDERED UNCONDITIONALLY AND ONLY ITS CONTENT IS CONDITIONAL,
+                  BECAUSE THE BOX HAS TO BE RESERVED. Measured with the span behind an `@if`:
+                  activating a sort grew the button under the pointer — the Title heading went
+                  44.000 -> 46.469 px and re-centred 1.234 px to the left, and Start Date went
+                  70.859 -> 86.750 px, a 15.891 px jump. A control that changes size and position
+                  at the moment it is pressed can move out from under the finger that pressed it,
+                  and on a second press the pointer is no longer over what it aimed at. Keeping
+                  the element present at a fixed measure means the glyph appears INSIDE a box that
+                  was always there, so the heading's geometry is identical sorted and unsorted.
+                  `aria-hidden` on an empty span contributes nothing to the accessible name.
                 -->
-                @if (cell.sorted) {
-                  <span class="data-table__sort-indicator" aria-hidden="true">
+                <span class="data-table__sort-indicator" aria-hidden="true">
+                  @if (cell.sorted) {
                     @if (cell.ariaSort === 'ascending') {
                       &#x25B2;
                     } @else {
                       &#x25BC;
                     }
-                  </span>
-                }
+                  }
+                </span>
               </button>
             } @else {
               <span [class.data-table__label--hidden]="cell.labelVisible === false">{{
@@ -279,7 +355,16 @@
         zero rather than testing the array for truthiness, because an empty array is
         truthy and the naive test would report 'empty' never.
       -->
-      @if (isLoading()) {
+      <!--
+        THE PLACEHOLDER REPLACES THE ROWS ONLY WHEN THERE ARE NO ROWS TO REPLACE. A read
+        that arrives while rows are on screen - a page turn, a sort, a filter change, the
+        re-read after a delete - keeps them and reports its progress through `aria-busy` on
+        the table instead. Showing the placeholder on every read tore the body down to one
+        spanning cell and rebuilt it, which is the mechanical cause of the zero-data row,
+        the pager jumping several hundred pixels, and the largest layout shift measured in
+        the application. See `showWaitingPlaceholder` for the trace.
+      -->
+      @if (showWaitingPlaceholder()) {
         <!--
           ONE SPANNING CELL rather than a skeleton row of empty cells, so a screen reader
           reads a single status instead of a row of blanks, the heading context stays on
@@ -385,7 +470,28 @@
           a space bar pressed on that checkbox reached the row handler, which cancelled
           the default and stopped the checkbox toggling.
         -->
-        @for (bodyRow of bodyRows(); track bodyRow.row) {
+        <!--
+          THE TWO SPACERS HOLD THE SCROLLABLE HEIGHT OF THE ROWS THAT ARE NOT RENDERED, so the
+          document keeps its true length and the scrollbar its true proportions while only the
+          rows near the viewport exist in the DOM. Each is a valid single-cell row spanning
+          every column, is hidden from assistive technology - it represents no record - and
+          collapses to nothing when windowing is not engaged, which is the ordinary case for
+          every paged screen in this application.
+        -->
+        @if (leadingSpacerHeight() > 0) {
+          <tr aria-hidden="true" class="data-table__spacer">
+            <td [attr.colspan]="columnSpan()" [style.block-size.px]="leadingSpacerHeight()"></td>
+          </tr>
+        }
+
+        <!--
+          ⚠ TRACKED THROUGH A METHOD SO A FEATURE CAN NAME ITS RECORD'S IDENTITY. The fallback inside
+          `trackBodyRow` is the row OBJECT, which is what this expression named directly before, so a
+          listing that supplies no `rowKey` renders exactly as it did. A listing that supplies one keeps
+          its row elements across a re-read of the page already shown - a resubmitted search, or the
+          refetch after a removal - instead of rebuilding every row to display nine of the same records.
+        -->
+        @for (bodyRow of renderedRows(); track trackBodyRow(bodyRow)) {
           <tr
             class="data-table__row"
             [attr.tabindex]="rowsSelectable() ? 0 : null"
@@ -494,14 +600,34 @@
                     is not selected by that press, and clicking the cell's own content
                     still selects the row.
                   -->
-                  <td class="data-table__cell" [attr.data-align]="cell.align">
-                    @if (cell.template !== null && cell.context !== null) {
-                      <ng-container
-                        [ngTemplateOutlet]="cell.template"
-                        [ngTemplateOutletContext]="cell.context"
-                      />
-                    }
-                  </td>
+                  <!--
+                    THE ROW HEADER SWITCH. A cell that IDENTIFIES its row is a `<th scope="row">`
+                    and every other cell is a `<td>`; the column declares which, and at most one
+                    column per set may. Two elements rather than one with a bound name because a
+                    template cannot compute an element name - and the alternative, hoisting the
+                    body into an `<ng-template>` and outletting it twice, would put an extra
+                    indirection between the outlet and the caller's own template for the sake of
+                    four repeated lines.
+                  -->
+                  @if (cell.rowHeader) {
+                    <th scope="row" class="data-table__cell" [attr.data-align]="cell.align">
+                      @if (cell.template !== null && cell.context !== null) {
+                        <ng-container
+                          [ngTemplateOutlet]="cell.template"
+                          [ngTemplateOutletContext]="cell.context"
+                        />
+                      }
+                    </th>
+                  } @else {
+                    <td class="data-table__cell" [attr.data-align]="cell.align">
+                      @if (cell.template !== null && cell.context !== null) {
+                        <ng-container
+                          [ngTemplateOutlet]="cell.template"
+                          [ngTemplateOutletContext]="cell.context"
+                        />
+                      }
+                    </td>
+                  }
                 }
                 @default {
                   <!--
@@ -526,15 +652,27 @@
                     and no sanitiser bypass appears anywhere in this file. Rich content
                     goes through the template column above instead.
                   -->
-                  <td class="data-table__cell" [attr.data-align]="cell.align">
-                    {{ cell.text }}
-                  </td>
+                  <!-- The row header switch; see the note in the template branch above. -->
+                  @if (cell.rowHeader) {
+                    <th scope="row" class="data-table__cell" [attr.data-align]="cell.align">
+                      {{ cell.text }}
+                    </th>
+                  } @else {
+                    <td class="data-table__cell" [attr.data-align]="cell.align">
+                      {{ cell.text }}
+                    </td>
+                  }
                 }
               }
             }
           </tr>
         }
       }
-    </tbody>
+        @if (trailingSpacerHeight() > 0) {
+          <tr aria-hidden="true" class="data-table__spacer">
+            <td [attr.colspan]="columnSpan()" [style.block-size.px]="trailingSpacerHeight()"></td>
+          </tr>
+        }
+      </tbody>
   </table>
 </div>

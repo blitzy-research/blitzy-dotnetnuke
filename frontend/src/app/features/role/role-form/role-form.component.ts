@@ -51,6 +51,7 @@ import {
   Component,
   computed,
   effect,
+  ElementRef,
   inject,
   input,
   signal,
@@ -60,11 +61,15 @@ import type { Signal, WritableSignal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
 import { Router } from '@angular/router';
+import { problemDetailsFieldErrors, problemDetailsMessage } from '../../../core/models/problem-details.model';
+import { failureCode } from '../../../core/utils/form-errors.util';
 import {
-  problemDetailsFieldErrors,
-  problemDetailsMessage,
-} from '../../../core/models/problem-details.model';
+  containedIconPathValidator,
+  ICON_NOT_CONTAINED_ERROR,
+  ICON_NOT_CONTAINED_MESSAGE,
+} from '../../../core/utils/icon-reference.util';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
+import { BILLING_FREQUENCY_NAMES } from '../../../core/models/role.model';
 import type {
   BillingFrequency,
   CreateRoleRequest,
@@ -73,10 +78,7 @@ import type {
   StoredBillingFrequency,
   UpdateRoleRequest,
 } from '../../../core/models/role.model';
-import {
-  NotificationService,
-  type NotificationSeverity,
-} from '../../../core/services/notification.service';
+import { NotificationService, type NotificationSeverity } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
 import { PortalStore } from '../../../core/state/portal.store';
 import { RoleStore } from '../../../core/state/role.store';
@@ -84,8 +86,18 @@ import type { RoleStoreFailure, RoleStoreOperation } from '../../../core/state/r
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
-import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
+import {
+  LoadingSpinnerComponent,
+} from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
+import {
+  FocusFirstInvalidDirective,
+  INVALID_CONTROL_SELECTOR,
+} from '../../../shared/directives/focus-first-invalid.directive';
+import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
+import { requiredText } from '../../../core/utils/required-text.validator';
+import { parseRouteId } from '../../../core/utils/route-id.util';
 
 // ---------------------------------------------------------------------------
 // FORM SHAPE
@@ -166,12 +178,17 @@ export interface RoleFormOption<TValue> {
  */
 export const BILLING_FREQUENCY_OPTIONS: readonly RoleFormOption<BillingFrequency>[] =
   Object.freeze<readonly RoleFormOption<BillingFrequency>[]>([
-    { value: 'N', label: 'None' },
-    { value: 'O', label: 'One Time' },
-    { value: 'D', label: 'Day' },
-    { value: 'W', label: 'Week' },
-    { value: 'M', label: 'Month' },
-    { value: 'Y', label: 'Year' },
+    // ⚠ THE ORDER IS THIS SCREEN'S AND THE WORDS ARE THE CONTRACT'S. The sequence below is the order
+    // `EditRoles.ascx.vb:L116-L125` bound, and it is declared here because a select's option order is
+    // presentation. The CAPTIONS come from `BILLING_FREQUENCY_NAMES` beside the contract, because the
+    // role listing needs the same words and two copies of user-facing wording is how two screens start
+    // disagreeing about what `M` is called. Each caption is read by key rather than spelled again.
+    { value: 'N', label: BILLING_FREQUENCY_NAMES['N'] ?? 'None' },
+    { value: 'O', label: BILLING_FREQUENCY_NAMES['O'] ?? 'One Time' },
+    { value: 'D', label: BILLING_FREQUENCY_NAMES['D'] ?? 'Day' },
+    { value: 'W', label: BILLING_FREQUENCY_NAMES['W'] ?? 'Week' },
+    { value: 'M', label: BILLING_FREQUENCY_NAMES['M'] ?? 'Month' },
+    { value: 'Y', label: BILLING_FREQUENCY_NAMES['Y'] ?? 'Year' },
   ]);
 
 /**
@@ -264,58 +281,11 @@ const RSVP_CODE_MAX_LENGTH = 50;
  */
 const ICON_FILE_MAX_LENGTH = 100;
 
-/** The error key the contained-path rule reports. */
-const ICON_NOT_CONTAINED_ERROR = 'iconNotContained';
-
-/**
- * The wording for an icon reference that escapes the portal's own folder.
- *
- * The API'S OWN SENTENCE, reproduced verbatim, because the rule is the API's: no legacy counterpart
- * exists at all, since `ctlIcon` was a picker that could only produce a path inside the portal and so
- * had nothing to validate. Replacing the picker with a text box is what made the rule necessary on the
- * client, and reproducing the server's sentence is what keeps one rule described one way.
- */
-const ICON_NOT_CONTAINED_MESSAGE =
-  "Icon File must be a relative path within the portal's own folder.";
-
-/**
- * Refuses an icon reference that is rooted, drive-qualified, or traverses upwards.
- *
- * Mirrors the API's containment rule EXACTLY, condition for condition and in the same order, because a
- * client that is stricter refuses a reference the server would store and one that is laxer spends a
- * round trip to learn what was knowable. The three conditions are:
- *
- * - a parent-directory segment ANYWHERE in the value, tested as a substring rather than per segment,
- *   which is what the server tests — so `a..b` is refused too, deliberately and identically;
- * - a leading separator of either kind, which makes the reference absolute on either platform;
- * - a colon anywhere, which turns the value into a drive-qualified path or a URI.
- *
- * The empty value is VALID and means "no icon chosen", which is what the legacy screens stored. The
- * value is not trimmed: the server tests what it is given, and trimming here would accept a reference
- * whose stored form the server would then refuse.
- *
- * @param control The icon control.
- * @returns The containment error, or `null`.
- */
-function containedIconPathValidator(control: AbstractControl<string>): ValidationErrors | null {
-  const value = control.value;
-
-  if (value.length === 0) {
-    return null;
-  }
-
-  if (value.includes('..')) {
-    return { [ICON_NOT_CONTAINED_ERROR]: true };
-  }
-
-  const first = value.charAt(0);
-
-  if (first === '/' || first === '\\' || value.includes(':')) {
-    return { [ICON_NOT_CONTAINED_ERROR]: true };
-  }
-
-  return null;
-}
+// The icon containment rule, its error key and its wording now live in `core/utils/icon-reference.util`
+// and are imported above rather than declared here. They were moved because the module form needed the
+// SAME rule, and a second private copy is exactly the failure the API side already suffered and recorded:
+// while its containment rule was private to one validator, the paths that lacked it accepted references
+// that one refused, and the weaker path defined the application's actual behaviour. One rule, one place.
 
 // ---------------------------------------------------------------------------
 // MESSAGES — the wording a user actually saw
@@ -348,6 +318,22 @@ function containedIconPathValidator(control: AbstractControl<string>): Validatio
  * A leading `<br>` is stripped from every value. Resource text is untrusted markup — one value in
  * this admin tree is a live remote `<script>` block — so no message is ever rendered as HTML.
  */
+
+/**
+ * The sentence shown when the address does not name a readable role.
+ *
+ * MIGRATION: AUTHORED, because the legacy screen had no such state to word. `EditRoles.ascx.vb`
+ * read the identifier with `Int32.Parse(Request.QueryString("RoleID"))` and no guard
+ * (`:L100-L101`), so a mistyped address raised a format exception that the page's own handler
+ * absorbed into its generic module error surface. Naming the outcome plainly is the same result
+ * without the exception, and it is emphatically NOT the same as treating the parameter as absent -
+ * which is what this screen used to do, and which offered to create a role instead.
+ *
+ * Worded to say what is wrong and what to do next, and deliberately not as a fault: following a
+ * stale link is an ordinary thing to do and nothing has broken.
+ */
+const UNREADABLE_ADDRESS_MESSAGE =
+  'This address does not name a role that can be read. Return to the role list and try again.';
 
 /** `valRoleName.Text`, `<br>` stripped. */
 const ROLE_NAME_REQUIRED_MESSAGE = 'You Must Enter a Valid Name';
@@ -392,12 +378,128 @@ const TRIAL_PERIOD_INVALID_MESSAGE = 'Trial Period Value Entered Is Not Valid';
 const TRIAL_PERIOD_NOT_POSITIVE_MESSAGE = 'Trial Period Must Be Greater Than Zero';
 
 /**
+ * The accessible name of the billing-frequency select.
+ *
+ * MIGRATION: AUTHORED, because the legacy had none to recover, and authored as an accessible name
+ * only - it changes not one rendered pixel. `editroles.ascx` L100-L101 declares ONE label,
+ * `plBillingPeriod` with `ControlName="txtBillingPeriod"`, and that label names the period TEXT BOX
+ * alone; `cboBillingFrequency` at L106 is named by nothing at all, and there is no `BillingFrequency`
+ * entry anywhere in `EditRoles.ascx.resx`. So the legacy screen presented an unnamed combo box.
+ *
+ * The shared field component improves on that by lending its caption to any projected control that
+ * has no name of its own - which is right in general and produced a new problem here, because this
+ * field projects TWO controls: both the period box and the frequency select came out named "Billing
+ * Period (Every)", so a screen reader announced two different controls identically and neither could
+ * be told from the other. That was reported as a defect and it is one.
+ *
+ * The name therefore keeps the measured caption, so the control is still announced as part of the
+ * billing period the operator sees, and adds the one word that says which half of it this control
+ * is. "Unit" is the field's own help text speaking: "These two fields are used in conjunction to
+ * enter a Billing Period. e.g 2 weeks, or 1 month" - the box holds the count and this holds the
+ * unit. The component leaves a consumer-supplied name alone, so supplying it here is what stops the
+ * caption being lent.
+ */
+const BILLING_FREQUENCY_ACCESSIBLE_NAME = 'Billing Period (Every) — unit';
+
+/**
+ * The accessible name of the trial-frequency select.
+ *
+ * Same reasoning as {@link BILLING_FREQUENCY_ACCESSIBLE_NAME}: `plTrialPeriod` names
+ * `txtTrialPeriod` only, `cboTrialFrequency` is named by nothing, and both controls were coming out
+ * as "Trial Period (Every)".
+ */
+const TRIAL_FREQUENCY_ACCESSIBLE_NAME = 'Trial Period (Every) — unit';
+
+/**
+ * Reported when an amount falls outside what the `money` column can hold.
+ *
+ * MIGRATION: NET-NEW WORDING — the legacy screen had no sentence for this because it had no rule.
+ * `Single.Parse` (`EditRoles.ascx.vb:L217,L227`) accepted any magnitude a `Single` could represent
+ * and the provider then failed on the insert, inside the blanket `Catch exc As Exception` at
+ * `:L271`, which showed a generic failure naming no field. The bound is the column's own, stated as
+ * such: REPRESENTABILITY, NOT A PRICE CEILING. Inventing a business maximum would refuse a fee some
+ * installation legitimately charges, and the API's own rule for these two members says the same
+ * thing in the same terms.
+ */
+const AMOUNT_OUT_OF_RANGE_MESSAGE =
+  'That amount is outside the range this site can store. Enter an amount between ' +
+  '-922,337,203,685,477.58 and 922,337,203,685,477.58.';
+
+/**
+ * Reported when an amount would reach the column with different digits from the ones typed.
+ *
+ * MIGRATION: NET-NEW WORDING, and net-new protection. The value travels as a JSON number, so an
+ * amount with more significant digits than a double carries is silently rewritten in transit —
+ * `123456789012345678901` was accepted, stored as `123456789012345680000`, and the substitution was
+ * reported nowhere. The legacy screen could not have had this defect in this form because its
+ * postback carried text to a `Single.Parse` on the server, but it had the same class of defect for
+ * the same reason: `Single` holds about seven significant digits, so `1234567.89` already lost the
+ * last place. Refusing the value is the only outcome that keeps the stored amount equal to the
+ * intended one.
+ */
+const AMOUNT_LOSES_PRECISION_MESSAGE =
+  'That amount has more digits than can be stored without rounding. Enter a shorter amount.';
+
+/**
+ * Reported when a period falls outside what the `int` column can hold.
+ *
+ * MIGRATION: NET-NEW WORDING. Without it the submission reached the API, failed to bind, and came
+ * back as `"request": ["The request field is required."]` — a message that names no field, points at
+ * nothing the person typed, and reads as though the whole request were missing. The legacy reached a
+ * comparable dead end through `Integer.Parse` throwing into `Catch exc As Exception` (`:L271`). The
+ * ceiling quoted is the column's, not a business rule: `RoleService`'s own date arithmetic clamps
+ * every offset it derives, so nothing beyond this bound is left unprotected by refusing it here.
+ */
+const PERIOD_OUT_OF_RANGE_MESSAGE =
+  'That number is outside the range this site can store. Enter a whole number between ' +
+  '-2,147,483,648 and 2,147,483,647.';
+
+/**
  * `DuplicateRole.Text`, verbatim.
  *
  * `EditRoles.ascx.vb:L256` raised it at `ModuleMessageType.RedError` after its own
  * lookup-then-insert check at `:L252` found a name collision.
  */
 const DUPLICATE_ROLE_MESSAGE = 'A role with the same name already exists. The role was not added.';
+
+/**
+ * The failure code the API publishes when the role changed between this screen's read and its write.
+ *
+ * Read through the shared {@link failureCode} reader rather than compared against `problem.type`
+ * directly, because the code arrives INSIDE the type URI and the reader owns that one parse. Keying on
+ * the code is what separates this conflict from the other `409` this screen can receive — a duplicate
+ * name — which needs a different response entirely: a duplicate is corrected by editing a field,
+ * whereas a stale read is corrected by reading again.
+ */
+const CONCURRENCY_CONFLICT_CODE = 'role.concurrency_conflict';
+
+/**
+ * Shown when a save is refused because someone else changed the role first.
+ *
+ * MIGRATION: NET-NEW, because the situation itself is net-new — the legacy had no conflict to report.
+ * `UpdateRole` carried no revision marker, so two administrators editing one role both saved their own
+ * complete snapshot and the later save silently discarded every change the earlier one had made. Used
+ * only as a fallback: the API's own `detail` names the role and states the remedy, and
+ * {@link problemDetailsMessage} prefers it.
+ */
+const CONCURRENCY_CONFLICT_MESSAGE =
+  'This role was changed by someone else after you opened it, so nothing was saved.';
+
+/**
+ * The recovery sentence beside the reload command.
+ *
+ * ⚠ THE COST OF RELOADING IS STATED, not glossed. Re-reading the role replaces every value on screen
+ * with the stored one, so unsaved edits are lost — and a person needs to know that BEFORE pressing the
+ * button, not after. It is offered anyway because the alternative is worse in a way that is not
+ * obvious: reloading the BROWSER would end the session outright, since the access token is held in
+ * memory only, and the person would be returned to the sign-in screen having lost the same edits.
+ */
+const CONCURRENCY_RECOVERY_MESSAGE =
+  'Read the role again to see the stored values, then apply your change to them. ' +
+  'Anything you have typed here and not saved will be replaced.';
+
+/** Caption of the command that re-reads a role after a conflict. */
+const CONCURRENCY_RELOAD_LABEL = 'Read this role again';
 
 /**
  * `DeleteItem.Text` from the global resources, verbatim.
@@ -556,13 +658,55 @@ function isBlank(value: unknown): boolean {
  * Grouping matters: the legacy populated the field with `Format(fee, "#,##0.00")`
  * (`EditRoles.ascx.vb:L147,L155`), which emits a thousands separator, so a loaded paid role showed
  * text like `1,234.56`. A validator that rejected the separator would mark a freshly loaded,
- * untouched form invalid. Groups are accepted in any position rather than strictly every three
- * digits, matching `Currency`'s own tolerance.
+ * untouched form invalid.
+ *
+ * ⚠ A GROUP IS EXACTLY THREE DIGITS, AND THAT PRECISION IS THE WHOLE POINT. This pattern
+ * previously read `\d{1,3}(?:,\d+)*` — a group of ANY length — which accepted `1,5`. The separator
+ * was then stripped and the value became `15`: a TEN-FOLD monetary error, reported as valid,
+ * persisted, and never shown to the person who typed it. `1,5` is not a number in any locale this
+ * screen writes; `#,##0.00` emits groups of three and nothing else, so accepting only groups of
+ * three still admits every value the screen itself produces while refusing the mistyped form
+ * outright. The refusal surfaces through `valServiceFee1`/`valTrialFee1`'s own resource wording —
+ * "Value Entered Is Not Valid" — so no new sentence is invented for a case the legacy already had
+ * words for.
+ *
+ * MIGRATION: this is stricter than the legacy `Type="Currency"` check, which delegated to
+ * `Decimal.TryParse` with `NumberStyles.Currency` and was equally lenient about group length. The
+ * divergence is deliberate and follows the precedent set for the portal alias substring match: a
+ * legacy accident that silently corrupts persisted money is corrected rather than reproduced, and
+ * the correction is recorded in `MIGRATION_NOTES.md`.
  */
-const MONEY_PATTERN = /^[+-]?(?:\d+|\d{1,3}(?:,\d+)*)(?:\.\d{1,2})?$/;
+const MONEY_PATTERN = /^[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d{1,2})?$/;
 
 /** Recognises what `Type="Integer"` accepted: an optional sign and digits, with no separators. */
 const WHOLE_NUMBER_PATTERN = /^[+-]?\d+$/;
+
+/**
+ * Bounds of the `int` columns behind the two period fields.
+ *
+ * `Roles.BillingPeriod` and `Roles.TrialPeriod` are `int NULL`, and the API's own request members
+ * are `int?`, so a value beyond this range cannot be bound at all: it is refused during
+ * deserialisation, BEFORE any validator runs, and the response names no field — it carries the
+ * bare `"request": ["The request field is required."]` that gives a person nothing to act on.
+ * Judging the range here turns that dead end into a message beside the field that caused it.
+ */
+const PERIOD_MINIMUM = -2_147_483_648;
+
+/** Upper bound of the `int` columns behind the two period fields. See {@link PERIOD_MINIMUM}. */
+const PERIOD_MAXIMUM = 2_147_483_647;
+
+/**
+ * Bounds of the `money` columns behind the two fee fields.
+ *
+ * `Roles.ServiceFee` and `Roles.TrialFee` are `money NULL`. The API states the identical rule as
+ * `SqlServerRange.CanStore`, and the wording below deliberately echoes the concept its message
+ * carries: what is refused is an amount the column cannot hold at all, never a business maximum
+ * the legacy screen never declared.
+ */
+const MONEY_MINIMUM = -922_337_203_685_477.5808;
+
+/** Upper bound of the `money` columns behind the two fee fields. See {@link MONEY_MINIMUM}. */
+const MONEY_MAXIMUM = 922_337_203_685_477.5807;
 
 /**
  * Parses a money field, returning `null` when it holds nothing parseable.
@@ -598,6 +742,64 @@ function parseWholeNumber(raw: string): number | null {
   }
   const parsed = Number.parseInt(text, 10);
   return Number.isInteger(parsed) ? parsed : null;
+}
+
+/**
+ * Reduces a decimal string to the digits it actually states, so two spellings of one value compare
+ * equal and two different values never do.
+ *
+ * Grouping separators, a leading `+`, leading zeros on the whole part and trailing zeros on the
+ * fraction all carry no information and are removed. A sign is kept only when some digit is
+ * non-zero, so `-0.00` and `0` agree — they are the same amount.
+ *
+ * This exists to answer ONE question truthfully: does the number that will be SENT still state
+ * every digit that was TYPED? A form control holds text; the wire carries a JSON number, which is
+ * an IEEE-754 double on the way out. `123456789012345678901` typed becomes
+ * `123456789012345680000` sent, and nothing in the value stream reveals the substitution. Comparing
+ * the canonical form of the typed text against the canonical form of the parsed number's own
+ * shortest round-trip rendering detects exactly that class of loss, with no arbitrary digit limit to
+ * justify and no locale assumption.
+ *
+ * @param text A decimal string that has already satisfied {@link MONEY_PATTERN}.
+ * @returns The canonical digits, with a sign only when the value is non-zero.
+ */
+function canonicalDecimal(text: string): string {
+  const trimmed = text.trim();
+  const negative = trimmed.startsWith('-');
+  const unsigned = trimmed.replace(/^[+-]/, '').replace(/,/g, '');
+  const separator = unsigned.indexOf('.');
+  const whole = separator === -1 ? unsigned : unsigned.slice(0, separator);
+  const fraction = separator === -1 ? '' : unsigned.slice(separator + 1);
+
+  // A whole part of "000" must reduce to "0", not to nothing, so the lookahead keeps a final digit.
+  const significantWhole = whole.replace(/^0+(?=\d)/, '');
+  const significantFraction = fraction.replace(/0+$/, '');
+  const digits =
+    significantFraction.length === 0
+      ? significantWhole
+      : `${significantWhole}.${significantFraction}`;
+
+  return negative && /[1-9]/.test(digits) ? `-${digits}` : digits;
+}
+
+/**
+ * True when an amount reaches the `money` column holding every digit that was typed.
+ *
+ * Two distinct failures are reported separately, because they call for different corrections: an
+ * amount OUTSIDE the column's range needs a smaller one, whereas an amount inside the range that
+ * cannot be carried exactly needs fewer digits. The range is tested first so that the round-trip
+ * comparison never has to reason about exponential notation, which `Number.prototype.toString`
+ * only reaches at 1e21 — far above {@link MONEY_MAXIMUM}.
+ *
+ * @param text The typed text, already known to satisfy {@link MONEY_PATTERN}.
+ * @param parsed The value {@link parseMoney} produced from it.
+ * @returns `'range'` or `'precision'` naming the failure, or `null` when the amount survives.
+ */
+function amountLoss(text: string, parsed: number): 'range' | 'precision' | null {
+  if (parsed < MONEY_MINIMUM || parsed > MONEY_MAXIMUM) {
+    return 'range';
+  }
+  return canonicalDecimal(text) === canonicalDecimal(parsed.toString()) ? null : 'precision';
 }
 
 /**
@@ -680,6 +882,62 @@ function wholeNumberPositive(message: string): ValidatorFn {
       return null;
     }
     return parsed <= 0 ? { wholeNumberPositive: message } : null;
+  };
+}
+
+/**
+ * Refuses an amount the `money` column cannot hold, or cannot hold with the digits that were typed.
+ *
+ * NET-NEW RULE with no legacy counterpart, added because both failures were previously silent: one
+ * surfaced as a server fault naming no field, the other did not surface at all and corrupted the
+ * stored amount. An unparseable value yields `null` here and defers to the data-type validator on
+ * the same control, so exactly one message is shown — the same single-message discipline the four
+ * ported validators already keep.
+ */
+function moneyStorable(): ValidatorFn {
+  return (control: AbstractControl): ValidationErrors | null => {
+    const raw: unknown = control.value;
+    if (isBlank(raw)) {
+      return null;
+    }
+    const text = String(raw);
+    const parsed = parseMoney(text);
+    if (parsed === null) {
+      return null;
+    }
+    const loss = amountLoss(text, parsed);
+    if (loss === null) {
+      return null;
+    }
+    return {
+      moneyStorable:
+        loss === 'range' ? AMOUNT_OUT_OF_RANGE_MESSAGE : AMOUNT_LOSES_PRECISION_MESSAGE,
+    };
+  };
+}
+
+/**
+ * Refuses a period the `int` column cannot hold.
+ *
+ * NET-NEW RULE with no legacy counterpart. `Number.isSafeInteger` is tested as well as the column
+ * bounds because `Number.parseInt` accepts a digit string of any length and answers the nearest
+ * double — `Number.isInteger` says `true` for it — so a twenty-one-digit period passed every earlier
+ * check and then failed to bind. Both conditions are stated rather than relying on the range test
+ * alone, so the guarantee does not depend on the bounds happening to sit inside the safe range.
+ */
+function wholeNumberStorable(): ValidatorFn {
+  return (control: AbstractControl): ValidationErrors | null => {
+    const raw: unknown = control.value;
+    if (isBlank(raw)) {
+      return null;
+    }
+    const parsed = parseWholeNumber(String(raw));
+    if (parsed === null) {
+      return null;
+    }
+    const storable =
+      Number.isSafeInteger(parsed) && parsed >= PERIOD_MINIMUM && parsed <= PERIOD_MAXIMUM;
+    return storable ? null : { wholeNumberStorable: PERIOD_OUT_OF_RANGE_MESSAGE };
   };
 }
 
@@ -864,18 +1122,41 @@ const SUPPRESSED_TERMS: ResolvedTerms = Object.freeze({
   selector: 'app-role-form',
   standalone: true,
   imports: [
+    FocusFirstInvalidDirective,
+    SubmitGuardDirective,
     ReactiveFormsModule,
     PageHeaderComponent,
     FormFieldComponent,
     ErrorBannerComponent,
     LoadingSpinnerComponent,
     ConfirmDialogComponent,
+    FocusFirstInvalidDirective,
   ],
   templateUrl: './role-form.component.html',
   styleUrl: './role-form.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class RoleFormComponent {
+
+  /**
+   * Registers this screen's unsaved-entry probe with the application's tracker.
+   *
+   * ⚠ WHY A REGISTRATION RATHER THAN A ROUTE-LEVEL READ. Leaving a screen happens two ways and
+   * only one of them is a router navigation: Cancel, an in-application link and the browser's Back
+   * button are navigations a route guard can refuse, while closing or reloading the tab is not, and
+   * only the browser's own unload prompt covers that - which needs the dirty state at an arbitrary
+   * moment rather than at a navigation. One tracker holding probes answers both, and the probe is
+   * released automatically when this screen is destroyed, so a screen that has gone can never hold
+   * a navigation up. Measured before this existed: a dirty form was discarded in silence by all
+   * four exits, with instrumented `confirm`, `alert` and `beforeunload` recording nothing at all.
+   *
+   * A form that is being SAVED is not dirty in the sense that matters here - the entry is on its
+   * way to the server, and prompting about it would ask the operator to confirm discarding work
+   * they have already committed.
+   */
+  private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
+    () => this.form.dirty && this.saving() === false,
+  );
   // -------------------------------------------------------------------------
   // ROUTE INPUTS
   // -------------------------------------------------------------------------
@@ -1005,6 +1286,15 @@ export class RoleFormComponent {
    * held its own copy of all three, and the store's listing could be left showing a role that had
    * just been renamed or removed - which is precisely what the review recorded.
    */
+  /**
+   * This component's own element, read only to find controls a rejected submit is complaining about.
+   *
+   * Needed because the fee and period fields live inside a `details` element that starts CLOSED, and
+   * a control inside closed disclosure content cannot take focus — `focus()` on it succeeds as a call
+   * and does nothing observable. See {@link revealFirstInvalidControl}.
+   */
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+
   private readonly roleStore = inject(RoleStore);
   private readonly notifications = inject(NotificationService);
   private readonly router = inject(Router);
@@ -1089,6 +1379,16 @@ export class RoleFormComponent {
     null,
   );
 
+  /**
+   * True once a save has been refused because the role changed after this screen read it.
+   *
+   * Held separately from {@link failure} because the two are answered differently. A refusal document
+   * is a message; THIS is a state the screen cannot leave by editing a field — every further save from
+   * the same snapshot carries the same stale marker and is refused identically, so without a way to
+   * re-read the role the form becomes permanently unsavable. The flag is what puts that way on screen.
+   */
+  private readonly staleRead: WritableSignal<boolean> = signal<boolean>(false);
+
   /** True once the user has asked to delete and before the dialog is settled. */
   private readonly deletePending: WritableSignal<boolean> = signal<boolean>(false);
 
@@ -1099,12 +1399,41 @@ export class RoleFormComponent {
   /**
    * The role form.
    *
-   * `roleName` carries `Validators.required` here because that is the CREATION state, which is
+   * `roleName` carries the presence rule here because that is the CREATION state, which is
    * what the legacy rendered when it had no role id. {@link applyMode} removes the rule in edit
    * mode, mirroring `valRoleName.Enabled = False` at `EditRoles.ascx.vb:L134`.
    *
+   * ⚠ THE PRESENCE RULE IS THE SHARED TRIM-AWARE ONE, NOT `Validators.required`, and the two are
+   * not interchangeable. `Validators.required` rejects only the empty string, so three spaces
+   * satisfy it — whereas an ASP.NET `RequiredFieldValidator` trimmed the value before comparing it
+   * to its initial value and refused exactly that entry, and `CreateRoleRequestValidator` declares
+   * `NotEmpty`, which treats a whitespace-only string as empty. Under `Validators.required` alone
+   * this screen therefore declared valid what both the legacy screen and this API refuse. The
+   * shared rule reports under the framework's own `required` key, so one message is outstanding
+   * rather than two, and it is the SAME rule the sibling role-group form carries — the two screens
+   * refuse a whitespace-only name at the same moment and in the same words.
+   *
    * `description` carries `Validators.maxLength` and NOTHING ELSE, because `txtDescription`
    * (`editroles.ascx:L39-L40`) carried no validator at all — only the browser-side `MaxLength`.
+   *
+   * ⚠ NO CHARACTER RULE ON THE NAME, AND THAT IS MEASURED RATHER THAN OVERLOOKED. `editroles.ascx`
+   * declares nine validators (L29-L31, L90-L96, L108-L114, L123-L128, L140-L146) and not one of
+   * them matches a pattern; no in-scope administration screen declares a pattern-matching validator
+   * of any kind. A character restriction here would refuse names the legacy accepted and that may
+   * already be stored — and, because `UpdateRole` cannot change a name, such a role could then
+   * never be saved again from this screen at all. It would also disagree with
+   * `CreateRoleRequestValidator`, which declares presence and a length bound and nothing else.
+   * Markup-bearing text is safe by a different mechanism: every value this application renders goes
+   * through Angular interpolation, which escapes it, so a name containing angle brackets is
+   * displayed as text and is never parsed as markup.
+   *
+   * The portal alias field is not a counter-example, and the difference is not that one screen was
+   * given more care. NO legacy administration screen validated an alias by pattern either; the
+   * alias vocabulary is measured from the help text the legacy printed beside that field
+   * (`Website/admin/Portal/App_LocalResources/EditPortalAlias.ascx.resx:L124`), which names the four
+   * forms it accepts because an alias is A HOST NAME resolved by the request pipeline — a value
+   * whose legal characters are defined outside this application. A role name is free text a person
+   * chose, and nothing outside this application constrains it.
    *
    * Each `maxLength` rule is declared here as well as being expressed as the template's
    * `maxlength` attribute, because the legacy `MaxLength` truncated in the browser and a rule is
@@ -1113,7 +1442,7 @@ export class RoleFormComponent {
   protected readonly form = new FormGroup<RoleFormModel>({
     roleName: new FormControl('', {
       nonNullable: true,
-      validators: [Validators.required, Validators.maxLength(ROLE_NAME_MAX_LENGTH)],
+      validators: [requiredText, Validators.maxLength(ROLE_NAME_MAX_LENGTH)],
     }),
     description: new FormControl('', {
       nonNullable: true,
@@ -1127,6 +1456,7 @@ export class RoleFormComponent {
       validators: [
         currencyDataType(SERVICE_FEE_INVALID_MESSAGE),
         moneyNotNegative(SERVICE_FEE_NEGATIVE_MESSAGE),
+        moneyStorable(),
       ],
     }),
     billingPeriod: new FormControl('', {
@@ -1134,6 +1464,7 @@ export class RoleFormComponent {
       validators: [
         wholeNumberDataType(BILLING_PERIOD_INVALID_MESSAGE),
         wholeNumberPositive(BILLING_PERIOD_NOT_POSITIVE_MESSAGE),
+        wholeNumberStorable(),
       ],
     }),
     billingFrequency: new FormControl<BillingFrequency>(NO_FREQUENCY, { nonNullable: true }),
@@ -1142,6 +1473,7 @@ export class RoleFormComponent {
       validators: [
         currencyDataType(TRIAL_FEE_INVALID_MESSAGE),
         moneyNotNegative(TRIAL_FEE_NEGATIVE_MESSAGE),
+        moneyStorable(),
       ],
     }),
     trialPeriod: new FormControl('', {
@@ -1149,6 +1481,7 @@ export class RoleFormComponent {
       validators: [
         wholeNumberDataType(TRIAL_PERIOD_INVALID_MESSAGE),
         wholeNumberPositive(TRIAL_PERIOD_NOT_POSITIVE_MESSAGE),
+        wholeNumberStorable(),
       ],
     }),
     trialFrequency: new FormControl<BillingFrequency>(NO_FREQUENCY, { nonNullable: true }),
@@ -1169,36 +1502,38 @@ export class RoleFormComponent {
   /**
    * The role id as a number, or `null` when this is the creation route.
    *
-   * The parse is guarded end to end: a radix is given explicitly, the result is checked with
-   * `Number.isInteger`, and the round trip back to text must match, so `"1abc"`, `"1.0"`, `"0x1"`
-   * and `"NaN"` are all REJECTED rather than silently truncated to a plausible-looking id. There is
-   * no `!`, no cast and no unary `+`.
+   * ⚠ THE SHARED PARSER, NOT A LOCAL ONE, AND REPLACING THE LOCAL ONE CLOSED TWO REAL DEFECTS.
+   * This computed used to parse inline, and the inline rules differed from the parser every other
+   * feature uses in exactly the two ways that matter:
    *
-   * Surrounding whitespace IS tolerated, and deliberately so. The legacy read the id with
-   * `Int32.Parse(Request.QueryString("RoleID"))` (`EditRoles.ascx.vb:L100-L101`), and
-   * `Int32.Parse` uses `NumberStyles.Integer`, which admits leading and trailing white space — so
-   * `" 1 "` was role 1 to the legacy screen. A URL segment can carry `%20`, which the router
-   * decodes to a space, so refusing it here would reject a request the legacy served. The trim
-   * reproduces that tolerance exactly and nothing else about the text is forgiven.
+   *  * NO RANGE CHECK. `2147483648` is a well-formed integer that round-trips as text, so it was
+   *    accepted and TRANSMITTED - `GET /api/v1/roles/2147483648` - where the API's own `int`
+   *    binding cannot represent it. Every identifier column in this schema is a SQL Server `int`,
+   *    so a value outside that range cannot name a record and the round trip was guaranteed to
+   *    fail. The portal and user screens refused it without a request; this one did not.
+   *  * A ROUND-TRIP TEST THAT REFUSED LEADING ZEROS. `String(parsed) !== text` rejects `"00001"`,
+   *    which is a well-formed decimal integer naming role 1 and which the API's own `int.TryParse`
+   *    accepts. The refusal was not even visible as a refusal: a null key means "creation route",
+   *    so `/roles/00001` silently rendered the CREATE form under an Edit heading. The portal and
+   *    user screens normalise it to 1.
    *
-   * A successful parse of `"0"` yields `0`, which is a REAL role id and must be treated as
-   * present. Nothing here tests the value for truthiness or for being positive.
+   * The shared parser refuses on grammar, on exactly-representable magnitude and on signed 32-bit
+   * range, and accepts a leading zero. It accepts `-1` and `0`, which are real identifiers in this
+   * schema - `Roles.RoleID` is seeded `IDENTITY(0, 1)` - so nothing here tests the value for
+   * truthiness or for being positive.
+   *
+   * ⚠ ONE TOLERANCE IS DELIBERATELY GIVEN UP: SURROUNDING WHITESPACE. The legacy read the id with
+   * `Int32.Parse(Request.QueryString("RoleID"))` (`EditRoles.ascx.vb:L100-L101`) under
+   * `NumberStyles.Integer`, which admits leading and trailing white space, so `" 1 "` was role 1 to
+   * the legacy screen; a URL segment carrying `%20` decodes to that. The shared parser refuses it,
+   * for a reason that applies to this screen as much as to the others: tolerating it makes several
+   * distinct addresses name one record, which multiplies the addresses a cache key, a browser
+   * history entry and a current-page comparison all have to treat as equal. The legacy identifier
+   * was query-string state on one page rather than a path segment, so no legacy address is being
+   * rejected here - and the divergence is now recorded once, in the shared module, rather than
+   * decided differently on each screen.
    */
-  protected readonly roleKey: Signal<number | null> = computed(() => {
-    const raw = this.roleId();
-    if (raw === undefined) {
-      return null;
-    }
-    const text = raw.trim();
-    if (text.length === 0) {
-      return null;
-    }
-    const parsed = Number.parseInt(text, 10);
-    if (!Number.isInteger(parsed) || String(parsed) !== text) {
-      return null;
-    }
-    return parsed;
-  });
+  protected readonly roleKey: Signal<number | null> = computed(() => parseRouteId(this.roleId()));
 
   /**
    * True when this is the edit form.
@@ -1209,9 +1544,45 @@ export class RoleFormComponent {
    */
   protected readonly isEditMode: Signal<boolean> = computed(() => this.roleKey() !== null);
 
-  /** The heading, which differs by mode. */
+  /**
+   * Whether the address carries something that is not a role identifier.
+   *
+   * ⚠ THE STATE THIS SCREEN PREVIOUSLY COULD NOT SEE, and the note on {@link isEditMode} above
+   * recorded the conflation without recognising it: `roleKey` is null when the route supplied no
+   * parameter OR supplied one that is not an integer, and `isEditMode` tested only that null. So
+   * `/roles/abc` reported itself as CREATE mode and rendered the whole role form with every control
+   * enabled. It was the most deceptive of the four screens that behaved this way, because the address
+   * and the submit command disagreed with each other: together they told the operator they were
+   * editing a role called `abc`, while submitting would have created one.
+   *
+   * Presence is tested on the RAW input and readability on the parsed key, so the two questions stay
+   * separate. Absent still means create - that is the legitimate `/roles/new` path - and unreadable
+   * now means the address names nothing, which the template reports instead of offering a form.
+   *
+   * ⚠ DELIBERATELY NOT USING THE SHARED ROUTE-IDENTIFIER READER, whose grammar refuses surrounding
+   * whitespace. This screen tolerates it for a legacy reason recorded on {@link roleKey}:
+   * `Int32.Parse` uses `NumberStyles.Integer`, which admits white space, so `" 1 "` was role 1 to the
+   * legacy screen, and a URL segment can carry `%20`. Adopting the shared grammar here would refuse
+   * an address the legacy served, so the local grammar is kept and only the CONFLATION is fixed.
+   */
+  protected readonly addressUnreadable: Signal<boolean> = computed(
+    () => this.roleId() !== undefined && this.roleKey() === null,
+  );
+
+  /** The sentence shown when the address does not name a readable role. */
+  protected readonly unreadableAddressMessage = UNREADABLE_ADDRESS_MESSAGE;
+
+  /**
+   * The heading, which differs by mode.
+   *
+   * ⚠ AN UNREADABLE ADDRESS TAKES THE EDIT HEADING. Without the second term, `/roles/abc` showed
+   * `Add New Role` above the sentence saying the address names no role, while the route's own
+   * document title said `Edit Security Roles` — three labels disagreeing on one screen, measured in
+   * a real browser. The heading's question is whether the address NAMES a role, not whether that
+   * role could be resolved: `/roles/abc` names one and fails, `/roles/new` names none.
+   */
   protected readonly heading: Signal<string> = computed(() =>
-    this.isEditMode() ? EDIT_TITLE : ADD_TITLE,
+    this.isEditMode() || this.addressUnreadable() ? EDIT_TITLE : ADD_TITLE,
   );
 
   /**
@@ -1246,6 +1617,12 @@ export class RoleFormComponent {
   );
 
   /** The six frequency codes, shared by both frequency selects. */
+  /** The accessible name of the billing-frequency select. */
+  protected readonly billingFrequencyAccessibleName = BILLING_FREQUENCY_ACCESSIBLE_NAME;
+
+  /** The accessible name of the trial-frequency select. */
+  protected readonly trialFrequencyAccessibleName = TRIAL_FREQUENCY_ACCESSIBLE_NAME;
+
   protected readonly frequencyOptions: readonly RoleFormOption<BillingFrequency>[] =
     BILLING_FREQUENCY_OPTIONS;
 
@@ -1267,6 +1644,15 @@ export class RoleFormComponent {
   /** The refusal to render in the shared error banner, or `null`. */
   protected readonly problem: Signal<ProblemDetails | null> = this.failure.asReadonly();
 
+  /** True while this screen is holding a snapshot the server has already refused. */
+  protected readonly conflicted: Signal<boolean> = this.staleRead.asReadonly();
+
+  /** The recovery sentence shown beside the re-read command. */
+  protected readonly conflictRecoveryMessage = CONCURRENCY_RECOVERY_MESSAGE;
+
+  /** Caption of the re-read command. */
+  protected readonly conflictReloadLabel = CONCURRENCY_RELOAD_LABEL;
+
   /** True when the delete confirmation dialog should be shown. */
   protected readonly confirmingDelete: Signal<boolean> = this.deletePending.asReadonly();
 
@@ -1278,6 +1664,57 @@ export class RoleFormComponent {
 
   /** The `cmdManage` caption, which IS locally keyed: `cmdManage.Text`. */
   protected readonly manageUsersLabel = 'Manage Users in this Role';
+
+  /**
+   * Qualifier appended to the accessible name of the COUNT half of a period pair.
+   *
+   * MIGRATION: NET-NEW WORDING, and the smallest addition that resolves a real ambiguity. The
+   * legacy screen put `txtBillingPeriod` and `cboBillingFrequency` under the SINGLE label
+   * `plBillingPeriod` (`editroles.ascx` L98-L115), and repeated the arrangement for the trial pair
+   * at L130-L147, so the second control of each pair carried no name of its own at all. The shared
+   * field reproduces the composite faithfully and names every otherwise-unnamed projected control
+   * from the field's visible label — which is correct as far as it goes and leaves BOTH members of
+   * a pair announcing the identical string. Runtime testing measured the consequence: eight
+   * controls on this form resolved to six distinct names.
+   *
+   * The qualifier is CLIPPED, so it is announced and never drawn: the visible label stays exactly
+   * the wording the resource file declares, which is what keeps this a naming change and not a
+   * visual one. It is APPENDED to the visible label rather than replacing it, so the visible text
+   * remains a prefix of the accessible name and WCAG 2.5.3 Label in Name still holds.
+   *
+   * The two words are drawn from the field's own help sentence — 'e.g 2 weeks, or 1 month' — which
+   * states the pair as a count followed by a unit. No new vocabulary is invented beyond naming the
+   * two halves that sentence already describes.
+   */
+  protected readonly periodCountQualifier = 'count';
+
+  /** Qualifier appended to the accessible name of the UNIT half of a period pair. See above. */
+  protected readonly periodUnitQualifier = 'unit';
+
+  /**
+   * The notice shown while the role name is holding as many characters as the column can store.
+   *
+   * ⚠ THIS EXISTS BECAUSE THE TRUNCATION IS OTHERWISE INVISIBLE. `maxlength` is declared on the
+   * control — faithfully, because `editroles.ascx:L31` declares `MaxLength="50"` and the legacy
+   * browser enforced it the same way — and a browser enforcing it DISCARDS the surplus characters
+   * silently. Runtime testing pasted a fifty-one character name, watched it become a fifty
+   * character name with no indication of any kind, and then received a duplicate-name refusal
+   * naming a role the operator had never typed: the shortened name collided with an existing one.
+   * The refusal was truthful and unintelligible at the same time, because the value it described
+   * was not the value that had been entered.
+   *
+   * The notice states the limit and that it has been reached. It is announced politely rather than
+   * assertively: reaching a limit is not an error — the value is valid — and interrupting on every
+   * keystroke at the boundary would be worse than saying nothing.
+   *
+   * MIGRATION: a NET ADDITION with no legacy counterpart. The legacy screen's only length rule was
+   * the `MaxLength` attribute itself, which reports nothing by design.
+   */
+  protected readonly nameAtLimitNotice =
+    `Maximum length reached. A role name may hold ${ROLE_NAME_MAX_LENGTH} characters, ` +
+    `and any further characters are not accepted.`;
+
+
 
   /**
    * True when this role is one of the two the portal protects.
@@ -1444,9 +1881,33 @@ export class RoleFormComponent {
         if (failure !== null && failure.operation === 'loadRole') {
           // `:L170-L172` treated an unreadable role as an attempt to reach an item outside the
           // module and bounced to the Security Roles page. A missing role does the same here.
+          //
+          // ⚠ AND IT IS DELIBERATELY NOT UNIFIED WITH THE PORTAL AND USER SCREENS, WHICH KEEP THE
+          // ADDRESS AND EXPLAIN IN PLACE. The three screens behave differently because the three
+          // legacy screens behaved differently, and each difference is in the source:
+          //
+          //   * ROLES redirect. `EditRoles.ascx.vb:L170-L172` is `Response.Redirect(NavigateURL(
+          //     "Security Roles"))`, under a comment naming it a security violation - an attempt to
+          //     reach an item outside the module. The address is discarded BECAUSE it was treated as
+          //     an address the operator should not have been at.
+          //   * USERS stay and warn. `ManageUsers.ascx.vb:L207,L214,L221,L273` call
+          //     `AddModuleMessage("NoUser"/"InvalidUser", YellowWarning, True)` and then
+          //     `DisableForm()`, leaving the operator where they were with the form inert.
+          //
+          // Making all three alike would therefore mean overriding measured legacy behaviour on at
+          // least one screen, which the migration discipline's behavioural-equivalence rule forbids
+          // without cause. The one thing added here is the MESSAGE: the legacy bounce was silent, and
+          // a silent redirect is indistinguishable from a broken link.
           if (failure.status === NOT_FOUND) {
-            this.notifications.notify('warning', ROLE_NOT_FOUND_MESSAGE);
-            this.navigateToList();
+            // ⚠ EXEMPTED FROM THE NAVIGATION SWEEP, WITHOUT WHICH THIS MESSAGE IS NEVER SEEN. The
+            // shell retires notifications on a completed navigation, and this one is raised in the
+            // same task as the navigation below - so it was raised and swept before it could be
+            // painted. Measured in a real browser: the destination's live region stayed empty and
+            // 226 consecutive frames after the listing painted were pixel-identical, so nothing
+            // appeared and nothing was dismissed. The message must survive exactly one navigation,
+            // which is what this marks.
+            this.notifications.notify('warning', ROLE_NOT_FOUND_MESSAGE, null, true);
+            this.navigateToList(true);
 
             return;
           }
@@ -1508,7 +1969,36 @@ export class RoleFormComponent {
           return;
         }
 
+        // ⚠ THE FORM IS SETTLED BEFORE LEAVING, OR THE UNSAVED-ENTRY GUARD ASKS ABOUT WORK THAT IS
+        // ALREADY SAVED - AND DESTROYS THE CONFIRMATION BELOW WHILE IT ASKS. The probe registered on
+        // this class reads `dirty && saving() === false`, and `saving()` is `awaitedMutation() !== null`,
+        // which the first line of this very block has just set to null - so from here on the probe sees
+        // a dirty form with no write in flight, and `afterMutation()` on the last line is a navigation
+        // it can refuse. Marking the form settled is the honest statement of what happened: every
+        // control's value is now what the server holds.
+        //
+        // The knock-on was worse than the prompt itself and is why this is not merely cosmetic.
+        // `window.confirm` blocks the JavaScript thread, so the auto-dismiss timer attached to the
+        // notification raised on the next line became due WHILE the dialog stood and fired the instant
+        // it was accepted - measured in a real browser with a MutationObserver, which recorded the
+        // success notice being emitted and then removed without ever having been painted. The
+        // confirmation on the delete path, which registers no such prompt, stayed visible throughout.
+        // So the guard was not just asking a redundant question, it was swallowing the answer to it.
+        //
+        // Marked for EVERY settled operation rather than only the two writes: after a deletion the
+        // role is gone, so entry still standing in the controls is work that can no longer be saved,
+        // and an operator who typed into the form and then deleted the role was asked the same
+        // redundant question. Marking an already-pristine form is a no-op, so one unconditional pair
+        // here is both narrower and safer than a per-operation test.
+        this.form.markAsPristine();
+        this.form.markAsUntouched();
+
+        // Exempted from the navigation sweep for the reason recorded on the not-found path above:
+        // `afterMutation` navigates in this same task, and the shell's sweep would otherwise discard
+        // this confirmation before it could be painted at the destination - which is exactly where
+        // the legacy showed it, since its update and delete handlers announced and then redirected.
         this.notifications.notify('success', MUTATION_SUCCESS_MESSAGE[awaited]);
+        this.notifications.retainAcrossNavigation();
         this.afterMutation();
       });
     });
@@ -1564,25 +2054,37 @@ export class RoleFormComponent {
 
     if (this.form.invalid) {
       this.form.markAllAsTouched();
+      this.revealFirstInvalidControl();
       return;
     }
 
-    // ⚠ THE NAME IS TIDIED INTO ITS OWN CONTROL AND THE FORM IS THEN RE-JUDGED, rather than
-    // tidied on the way into the request. The order is the whole point.
+    // ⚠ THE NAME IS TIDIED INTO ITS OWN CONTROL, NOT ON THE WAY INTO THE REQUEST, so the value
+    // that was VALIDATED and the value that is SENT are the same string. Tidying into the request
+    // made them different, and the difference was observable: the server refused a name the form
+    // had just declared valid.
     //
-    // Tidying into the request meant the value that was VALIDATED and the value that was SENT were
-    // different strings. `roleName` carries `required` and `maxLength` and nothing else, so a
-    // whitespace-only entry is a non-empty string that satisfies both — and was then trimmed to the
-    // EMPTY STRING on its way out. `CreateRoleRequestValidator` declares `NotEmpty`, which treats a
-    // whitespace-only string as empty, so the server refused what the screen had just declared
-    // valid and the operator was shown a server rejection for a field the form had raised no
-    // complaint about. `maxLength` cannot be newly breached by tidying, because trimming can only
-    // shorten — but shortening TO NOTHING is precisely what invalidates the value, which is why
-    // requiredness has to be re-asked and not merely assumed to have been settled above.
+    // WHAT REACHES HERE HAS NARROWED. The presence rule on this control is trim-aware, so a
+    // whitespace-only entry is already invalid and was refused by the check above without ever
+    // reaching this line. What survives to be tidied is a name that is genuinely present and
+    // merely PADDED, so the tidy can no longer change whether the value is acceptable - only what
+    // is stored.
+    //
+    // MIGRATION: trimming the padding is a deliberate divergence. The legacy stored what was
+    // posted, spaces and all, and its `RequiredFieldValidator` never rewrote the box. It is made
+    // because A ROLE NAME CANNOT BE CHANGED AFTERWARDS: `UpdateRole` has no `RoleName` parameter
+    // at all (`Library/Providers/MembershipProviders/DataProvider/SqlDataProvider.vb:L242-L243`),
+    // so a name stored with invisible padding at creation could never be corrected through any
+    // screen. The same reasoning is applied identically on the sibling role-group form.
     this.normaliseRoleName();
 
+    // Retained as defence in depth rather than as a live branch. Trimming can only shorten, so
+    // `maxLength` cannot be newly breached, and emptiness was settled above by a rule that
+    // already trimmed - so nothing should be able to fail here. It stays because that argument
+    // rests entirely on the presence rule remaining trim-aware, and a future change to the rule
+    // set must not be able to let an unvalidated value through in silence.
     if (this.form.invalid) {
       this.form.markAllAsTouched();
+      this.revealFirstInvalidControl();
 
       return;
     }
@@ -1599,7 +2101,7 @@ export class RoleFormComponent {
   }
 
   /**
-   * Trims the role name into its own control.
+   * Trims the padding off the role name, in its own control.
    *
    * `emitEvent: false` because this is a DISPLAY CORRECTION rather than an operator edit: it must
    * not be able to start a cascade through any listener on this form — and this form has two, the
@@ -1625,6 +2127,174 @@ export class RoleFormComponent {
     }
 
     control.setValue(trimmed, { emitEvent: false });
+  }
+
+  /**
+   * Reads the role again after a refused save, so the screen can hold a current revision.
+   *
+   * ⚠ WITHOUT THIS COMMAND A CONFLICT IS A DEAD END. The marker sent with an update comes from the
+   * role this screen read; a refusal does not change that role, so pressing Update again sends the
+   * same refused marker and is refused again, indefinitely. Nothing the person can type reaches the
+   * state that would let the save through.
+   *
+   * The obvious escape — reloading the browser — is worse than it looks on this application: the
+   * access token is held in memory only, so a document reload ends the session and returns the person
+   * to the sign-in screen, having lost the same unsaved edits AND their place. This command performs
+   * the re-read within the running application instead.
+   *
+   * `appliedRoleKey` MUST be cleared first, and that is the whole mechanism rather than a detail. It
+   * exists to stop a second arrival of the same role overwriting what someone has typed — which is
+   * exactly right for the store's echo after a successful save, and exactly wrong here, where
+   * replacing what has been typed is the entire purpose of the command. Clearing it converts the
+   * arrival from "ignore, already applied" into "apply".
+   */
+  protected onReloadAfterConflict(): void {
+    const key = this.roleKey();
+    if (key === null) {
+      return;
+    }
+
+    this.appliedRoleKey.set(null);
+    this.loadRole(key);
+  }
+
+  /**
+   * Opens the disclosure holding the first offending control, then focuses that control.
+   *
+   * ⚠ WITHOUT THIS, A REJECTED SUBMIT ON THIS SCREEN COULD REPORT NOTHING AT ALL. Four of the
+   * form's twelve controls — both fees and both periods — live inside the Advanced Settings
+   * `details`, which starts CLOSED. When one of them is the reason a submit is refused,
+   * `markAllAsTouched()` renders its message into content that is not being displayed, and the
+   * shared focus directive's `focus()` call lands on an element inside closed disclosure content,
+   * where it succeeds as a call and moves focus nowhere. The person is left on a button that has
+   * apparently done nothing, with the explanation sealed inside a section they were given no reason
+   * to open. A reader gets even less: the `role="alert"` region is inside the same hidden subtree.
+   *
+   * This is not a hypothetical. A role whose stored terms already break these rules loads straight
+   * into that state — `QA010 Negative Fee Role` carries a negative fee and negative periods, and
+   * every portal created through the API is seeded with three roles holding a zero billing period
+   * against a monthly frequency, faithfully reproducing what the legacy creation path wrote
+   * (`PortalService.BuildStockRole`). Editing any of those roles — even to change only the
+   * description — is refused by fields the person never touched and could not see.
+   *
+   * The disclosure is opened rather than the rule relaxed. The rules are `valServiceFee2`,
+   * `valBillingPeriod2`, `valTrialFee2` and `valTrialPeriod2` reproduced from
+   * `editroles.ascx:L96,L114,L128,L146`, and the API states each of them independently, so a stored
+   * value that breaks one genuinely must be corrected before the role can be saved. What was wrong
+   * was never the refusal — it was refusing in silence.
+   *
+   * ORDER-INDEPENDENT BY CONSTRUCTION. The shared directive listens on the same `submit` event as
+   * this handler and Angular does not guarantee which runs first. Either order reaches the same
+   * state: if the directive goes first its `focus()` is a no-op on hidden content and this method
+   * then opens the section and focuses; if this method goes first the directive finds its target is
+   * already the active element and declines. Nothing here duplicates a focus move or fights one.
+   *
+   * The selector is IMPORTED from the directive rather than restated, so the control this reveals is
+   * by definition the control the directive would have chosen. A hand-copied approximation would
+   * drift and the two would act on different elements.
+   */
+  private revealFirstInvalidControl(): void {
+    const target = this.host.nativeElement.querySelector<HTMLElement>(INVALID_CONTROL_SELECTOR);
+    if (target === null) {
+      return;
+    }
+
+    // `closest` walks every ancestor, so a control nested in more than one disclosure is reached by
+    // repeating the step rather than by assuming a single level.
+    for (
+      let section = target.closest('details');
+      section !== null;
+      section = section.parentElement?.closest('details') ?? null
+    ) {
+      if (!section.open) {
+        section.open = true;
+      }
+    }
+
+    if (target !== target.ownerDocument.activeElement) {
+      target.focus();
+    }
+  }
+
+  /**
+   * Shows a typed number back in the form this screen stores it in, once the person leaves the box.
+   *
+   * ⚠ THIS EXISTS TO MAKE NORMALISATION VISIBLE, NOT TO PERFORM IT. Normalisation was already
+   * happening and was already invisible: `007` was sent as `7`, `1234.5` as `1234.5` against a
+   * screen that displays `1,234.50`, and nothing told the person their entry had been reinterpreted.
+   * A value substituted behind someone's back is the same defect whether the substitution is
+   * harmless or not, because there is no way to tell which it was without being shown. Writing the
+   * canonical form into the control makes the entry and the submission the same string.
+   *
+   * MIGRATION: the legacy reached this outcome by round trip. Every postback re-rendered the fee
+   * boxes through `Format(fee, "#,##0.00")` (`EditRoles.ascx.vb:L147,L155`), so a person who typed
+   * `1234.5` and pressed any button saw `1,234.50` come back. That behaviour is reproduced here on
+   * blur rather than on postback, because there is no postback to carry it.
+   *
+   * Two conditions bound the rewrite, and both matter:
+   *
+   * - The value must PARSE. Text that fails its data-type rule is left exactly as typed, because
+   *   the person needs to see what they entered in order to correct it, and because there is no
+   *   canonical form of something that is not a number.
+   * - The control must be DIRTY. A loaded role's stored text is left alone when someone merely tabs
+   *   through it. Rewriting a pristine control would change the form's value without anyone editing
+   *   it, which would mark a form dirty that nobody has touched and would then have the
+   *   unsaved-changes guard challenge an exit no one initiated.
+   *
+   * ⚠ RANGE IS DELIBERATELY NOT A THIRD CONDITION, AND THE ASYMMETRY IS THE POINT. Typing `-5` and
+   * leaving the box yields `-5.00` while {@link moneyNotNegative} is simultaneously refusing it.
+   * That looks like the form reformatting something it has just rejected, and it was examined as a
+   * defect. It is not one, for four reasons:
+   *
+   * - The bound is that the value must PARSE, meaning it must be a NUMBER. {@link MONEY_PATTERN}
+   *   admits a leading sign precisely so that the range rule can speak for itself with its own
+   *   wording; folding range back into the data-type gate would collapse two questions that were
+   *   separated on purpose, and would leave one of the two messages unreachable.
+   * - `-5.00` is not a SUBSTITUTION. It is `-5` spelled the way this site stores money. The one
+   *   precedent for a third condition is the {@link amountLoss} guard above, and that guard exists
+   *   because its rewrite would change the DIGITS the person typed — a 21-digit entry reformatted
+   *   through a double shows different numbers. Range does not make a rewrite wrong, so
+   *   `amountLoss` is not a precedent for bounding on it.
+   * - THE LOAD PATH ALREADY FORMATS UNCONDITIONALLY. `formatMoney` is applied to the stored fee
+   *   when a role is patched in, with no range test, and negative fees EXIST in this database
+   *   because the legacy accepted them through the collation accident documented above. A stored
+   *   `-5` therefore already renders as `-5.00`. Bounding only the typed path on range would show
+   *   one value two different ways depending on how it arrived, which is a new inconsistency
+   *   bought for nothing.
+   * - NOTHING IS CONCEALED. The refusal is on screen, the control carries `aria-invalid`, the
+   *   submit is blocked, and the API compares numerically as well, so a canonically displayed
+   *   out-of-range amount cannot be mistaken for an accepted one by the person or by the server.
+   *
+   * @param field The numeric control that has just lost focus.
+   */
+  protected onNumericCommit(
+    field: 'serviceFee' | 'billingPeriod' | 'trialFee' | 'trialPeriod',
+  ): void {
+    const control = this.form.controls[field];
+    if (control.pristine || control.disabled) {
+      return;
+    }
+
+    const current: string = control.value;
+    const money = field === 'serviceFee' || field === 'trialFee';
+    const parsed = money ? parseMoney(current) : parseWholeNumber(current);
+    if (parsed === null) {
+      return;
+    }
+
+    // An amount this site cannot store is left as typed as well. Reformatting it would replace the
+    // digits the person entered with the ones a double happens to hold, which is the very
+    // substitution `moneyStorable` refuses to let through.
+    if (money && amountLoss(current, parsed) !== null) {
+      return;
+    }
+
+    const canonical = money ? formatMoney(parsed) : String(parsed);
+    if (canonical.length === 0 || canonical === current) {
+      return;
+    }
+
+    control.setValue(canonical, { emitEvent: false });
   }
 
   /**
@@ -1712,6 +2382,24 @@ export class RoleFormComponent {
    * @param field The control to report on.
    * @returns The message, or `null`.
    */
+  /**
+   * True while the role name control holds as many characters as the column can store.
+   *
+   * A METHOD rather than a computed signal, for the same reason {@link messageFor} is one: nothing
+   * on this form bridges `valueChanges` into a signal, and introducing a subscription for one
+   * notice would put a second, independently-updated copy of the control's text beside the control
+   * itself. Reading the control on each change-detection pass cannot disagree with what is drawn.
+   *
+   * `>=` rather than `===` because a value can arrive by routes the `maxlength` attribute does not
+   * govern — a load from the API, or a programmatic write — and a notice that appeared exactly AT
+   * the limit but fell silent beyond it would be precisely backwards.
+   *
+   * @returns Whether the length notice should be rendered.
+   */
+  protected nameAtLimit(): boolean {
+    return this.form.controls.roleName.value.length >= ROLE_NAME_MAX_LENGTH;
+  }
+
   protected messageFor(field: keyof RoleFormModel): string | null {
     const control = this.form.controls[field];
     if (!control.invalid || !(control.dirty || control.touched)) {
@@ -1723,13 +2411,20 @@ export class RoleFormComponent {
       return null;
     }
 
-    // The four hand-written validators, in the order the legacy declared them: the data-type check
-    // precedes the comparison on every one of the four numeric fields.
+    // The four ported validators first, in the order the legacy declared them: the data-type check
+    // precedes the comparison on every one of the four numeric fields. THE TWO STORABILITY RULES COME
+    // AFTER BOTH, deliberately — where a value breaks a legacy rule as well as a storability one, the
+    // legacy sentence is the one shown, because it is the wording this screen has always used and it
+    // names the correction the person must make. The storability messages therefore appear only when
+    // nothing the legacy declared applies, which is exactly the band that used to fail silently or
+    // fail on the server naming no field.
     for (const key of [
       'currencyDataType',
       'wholeNumberDataType',
       'moneyNotNegative',
       'wholeNumberPositive',
+      'moneyStorable',
+      'wholeNumberStorable',
       'serverError',
     ]) {
       const held: unknown = errors[key];
@@ -1778,7 +2473,7 @@ export class RoleFormComponent {
    * `objRoleInfo.RoleName = txtRoleName.Text`, which is the EMPTY STRING in edit mode because the
    * textbox is hidden — and it never mattered, because `UpdateRole` ignores the member.
    *
-   * The required rule MUST be lifted in edit mode. Leaving it in place on a control the user cannot
+   * The presence rule MUST be lifted in edit mode. Leaving it in place on a control the user cannot
    * edit would leave the edit form permanently invalid and its Update button permanently inert,
    * which is a parity break rather than a safety measure. `{ emitEvent: false }` keeps the change
    * out of the value stream, because the rule set changed and the value did not.
@@ -1790,7 +2485,7 @@ export class RoleFormComponent {
     control.setValidators(
       editing
         ? [Validators.maxLength(ROLE_NAME_MAX_LENGTH)]
-        : [Validators.required, Validators.maxLength(ROLE_NAME_MAX_LENGTH)],
+        : [requiredText, Validators.maxLength(ROLE_NAME_MAX_LENGTH)],
     );
     control.updateValueAndValidity({ emitEvent: false });
   }
@@ -1865,10 +2560,47 @@ export class RoleFormComponent {
    * The role-group selection is deliberately NOT set here — the dedicated effect in the constructor
    * owns it, because it must wait for the group list.
    *
+   * MIGRATION: THE FOUR PAID-TERM BOXES ARE BLANK FOR AN UNPRICED ROLE ON PURPOSE, AND THAT IS
+   * EXACT LEGACY PARITY RATHER THAN A FALSY-CHECK DEFECT. It was reported as data loss - "stored
+   * numeric zeros render as blank on a savable form, so a save can write null over a stored 0" - and
+   * every part of that was checked against the legacy source and the running API before being
+   * declined. `EditRoles.ascx.vb:L146-L156` is the legacy bind:
+   *
+   *   If Format(objRoleInfo.ServiceFee, "#,##0.00") <> "0.00" Then
+   *       txtServiceFee.Text = ...  :  txtBillingPeriod.Text = ...  :  (billing frequency)
+   *   End If
+   *   If objRoleInfo.TrialFrequency <> "N" Then
+   *       txtTrialFee.Text = ...    :  txtTrialPeriod.Text = ...
+   *   End If
+   *
+   * So the legacy left Service Fee and Billing Period EMPTY whenever the formatted fee was "0.00",
+   * and Trial Fee and Trial Period EMPTY whenever the trial frequency was "N" - gating the trial on
+   * the FREQUENCY, not on the fee. The `priced` and `onTrial` predicates above are those two tests.
+   * A role with a zero fee and no trial frequency therefore rendered all four boxes blank in the
+   * legacy screen exactly as it does here.
+   *
+   * NO NULL CAN BE WRITTEN, and that is structural rather than incidental. When the boxes are blank
+   * the submit resolves through {@link SUPPRESSED_TERMS} = `{ fee: 0, period: 1, frequency: 'N' }`,
+   * which is `EditRoles.ascx.vb:L212-L214` and `:L223-L225` reproduced literally - the legacy
+   * declared `sglServiceFee As Single = 0`, `intBillingPeriod As Integer = 1` and `"N"` as its own
+   * defaults. Numbers are sent, never nulls.
+   *
+   * Verified on the wire rather than by reading alone: the API REFUSES a zero billing period outright
+   * (`PUT /api/v1/roles/2` with `billingPeriod: 0` answers `400`, "Billing Period Must Be Greater
+   * Than Zero"), so even a hand-crafted request cannot round-trip that stored zero back. The one real
+   * consequence is that saving such a role moves its stored `billingPeriod` from 0 to 1 - the legacy's
+   * own default, and the only value the write contract accepts. That is recorded in MIGRATION_NOTES as
+   * a deliberate difference, not hidden here.
+   *
    * @param role The role as the API reported it.
    */
   private applyRole(role: Role): void {
     this.loadedRole.set(role);
+
+    // A role has just arrived from the server, so whatever snapshot was refused is no longer the one
+    // on screen. Cleared here rather than in the reload command because this is the single point every
+    // arrival passes through, including the first one.
+    this.staleRead.set(false);
 
     const fee = role.serviceFee;
     const priced =
@@ -1944,6 +2676,11 @@ export class RoleFormComponent {
    * `objEventLog.AddLog("RoleID", …, EventLogType.ROLE_DELETED)` at `:L293` is written by the API,
    * for the reason given on {@link createRole}.
    *
+   * The listing is NOT re-read from here. This screen departs for the listing as soon as the delete
+   * settles, and the listing reads itself from its own address on arrival; asking for a second,
+   * identical read issued one that the route teardown then cancelled mid-flight. The listing's own
+   * row-level delete passes `true` instead, because nothing carries it anywhere.
+   *
    * @param key The role id being deleted, which may legitimately be `0`.
    */
   private deleteRole(key: number): void {
@@ -1951,7 +2688,7 @@ export class RoleFormComponent {
     this.awaitedMutation.set('deleteRole');
     // The identifier is captured from the command's own return value, so the bridge waits on the very
     // write dispatched here rather than on "a write of this kind, from anywhere".
-    this.awaitedMutationId.set(this.roleStore.deleteRole(key));
+    this.awaitedMutationId.set(this.roleStore.deleteRole(key, { thenReadListing: false }));
   }
 
   /**
@@ -1970,11 +2707,33 @@ export class RoleFormComponent {
     // creation and after a deletion, and patches the changed row immutably after an update, so a
     // read requested here would be a second identical request racing the store's own - and
     // whichever answered last would decide what the listing showed.
-    this.navigateToList();
+  /*
+   * ⚠ THE ADDRESS IS REPLACED, NOT PUSHED, because the work this screen existed for is finished.
+   * A create route left in back history sends BACK to a form for a record that now exists - one
+   * review measured exactly that, landing on a completely empty form with the create confirmation
+   * still on screen above it - and a delete route sends BACK to a screen for a record that no
+   * longer does. Neither is a place the operator can return to, so neither may occupy an entry.
+   * The cancel paths on this screen deliberately keep pushing: an operator who changed their mind
+   * may reasonably change it back.
+   */
+    this.navigateToList(true);
   }
 
   /** Returns to the role list, the destination of every `NavigateURL()` on this screen. */
-  private navigateToList(): void {
+  private navigateToList(replaceEntry = false): void {
+    /*
+     * ⚠ THE CALL IS MADE TWO DIFFERENT WAYS ON PURPOSE, rather than always passing an options
+     * object with a computed flag. A pushed departure keeps the exact call it always made, so the
+     * behaviour of the cancel paths - and the specifications that pin them - is untouched by the
+     * addition; only a REPLACING departure carries options, which is the case whose behaviour
+     * genuinely changed. Written this way, the diff says what changed and nothing else.
+     */
+    if (replaceEntry) {
+      void this.router.navigate([ROLE_LIST_ROUTE], { replaceUrl: true });
+
+      return;
+    }
+
     void this.router.navigate([ROLE_LIST_ROUTE]);
   }
 
@@ -2050,6 +2809,19 @@ export class RoleFormComponent {
       trialFrequency: trial.frequency,
       rsvpCode: textOrNull(value.rsvpCode),
       iconFile: textOrNull(value.iconFile),
+
+      // ⚠ THE TOKEN FROM THE READ THIS EDIT WAS COMPOSED AGAINST, CARRIED THROUGH UNTOUCHED.
+      //
+      // This is the whole of the conflict check on this side, and its correctness rests on WHERE the
+      // value comes from: `loadedRole()` holds the role exactly as it was served, so the token sent is
+      // the token of the revision the person actually saw. It is never re-read, refreshed or re-fetched
+      // before a save — doing so would obtain the CURRENT revision and the check would then always
+      // pass, defeating itself while looking watertight.
+      //
+      // `null` in create mode, where there is no prior revision to be in conflict with, and `null` when
+      // the API served no token — in which case the update is unconditional, exactly as it was before
+      // this member existed. Nothing is invented to fill the gap.
+      concurrencyToken: loaded?.concurrencyToken ?? null,
     };
   }
 
@@ -2069,6 +2841,21 @@ export class RoleFormComponent {
    * value that slipped past the defective comparison validators threw; here an unparseable value is
    * indistinguishable from an absent one and yields the defaults, which is the same outcome the
    * legacy reached whenever its validators worked. Nothing is coerced through a zero.
+   *
+   * MIGRATION: NO CROSS-FIELD VALIDATION IS ADDED BETWEEN FREQUENCY AND PERIOD, and the request for
+   * one is declined here rather than left unanswered. It was reported that choosing "Month" with an
+   * EMPTY Billing Period leaves the form valid with Update enabled, "so a fee-bearing role with a
+   * recurrence unit but no interval would post". It would not: that combination fails the
+   * `period === null` test immediately above and resolves to the suppressed defaults, so what posts
+   * is fee `0`, period `1`, frequency `'N'` - a free role with no recurrence at all. The state the
+   * finding warns about cannot be reached through this method.
+   *
+   * And a refusal would be a REGRESSION rather than a hardening. `EditRoles.ascx.vb:L216` gates all
+   * three values on one conjunction and, failing it, silently substitutes the defaults - it raises no
+   * validator, marks no control and reports nothing. Refusing the submission would therefore reject
+   * input the legacy accepted, which is the opposite of parity; the sibling
+   * {@link resolveTrialTerms} records the same decision for the same reason. The cost is a silent
+   * resolution, and it is the legacy's own silence, carried across deliberately.
    *
    * @returns The resolved fee, period and frequency.
    */
@@ -2195,6 +2982,20 @@ export class RoleFormComponent {
 
     if (status === UNAUTHORIZED || status === FORBIDDEN) {
       this.notifications.notify(severity, problemDetailsMessage(problem, ACCESS_DENIED_MESSAGE));
+      return;
+    }
+
+    // ⚠ THE TWO `409`s ARE NOT THE SAME FAILURE and must not share a response. A duplicate name is
+    // corrected in a field; a stale read cannot be corrected in the form at all, because every
+    // subsequent save carries the same refused marker. Keyed on the published failure code, so the
+    // branch cannot be selected by a coincidence of status.
+    if (status === CONFLICT && failureCode(problem) === CONCURRENCY_CONFLICT_CODE) {
+      this.staleRead.set(true);
+      this.notifications.notify(
+        severity,
+        problemDetailsMessage(problem, CONCURRENCY_CONFLICT_MESSAGE),
+      );
+
       return;
     }
 

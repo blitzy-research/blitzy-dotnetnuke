@@ -313,11 +313,14 @@ internal sealed class LoggingAuditSink : IAuditSink
             "LineNumber",
             "LinePosition",
 
-            // MIGRATION: SEC-F1. Portal creation refuses when the installation's page-permission catalogue
-            // does not define a key its home page must grant, and these three facts are what make that
-            // refusal actionable: which scope code was consulted, and which of the two keys was absent. All
-            // three are authored constants or booleans - no caller input reaches them - which is why they
-            // belong in this vocabulary rather than in the withheld count.
+            // MIGRATION: SEC-F1. Portal creation PROCEEDS when the installation's page-permission catalogue
+            // does not define a key its home page would have been granted - the legacy template parser
+            // iterated an empty catalogue answer and created the portal regardless - and these three facts
+            // are what make the resulting record actionable: which scope code was consulted, and which of
+            // the two keys was absent. The record is therefore the ONLY trace of a tenant whose home page
+            // came into being with a reduced grant set, which is why it must carry them. All three are
+            // authored constants or booleans - no caller input reaches them - which is why they belong in
+            // this vocabulary rather than in the withheld count.
             "MissingEditDefinition",
             "MissingViewDefinition",
             "MustChangePassword",

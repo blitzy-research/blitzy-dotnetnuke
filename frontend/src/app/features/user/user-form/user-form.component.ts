@@ -35,6 +35,8 @@ import {
   input,
   signal,
   untracked,
+  ChangeDetectorRef,
+  ElementRef,
 } from '@angular/core';
 import type { Signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
@@ -43,25 +45,31 @@ import { Router, RouterLink } from '@angular/router';
 
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import { UserCreateStatus } from '../../../core/models/user.model';
-import type {
-  CreateUserRequest,
-  UpdateUserRequest,
-  UserDetail,
-} from '../../../core/models/user.model';
+import type { CreateUserRequest, UpdateUserRequest, UserDetail } from '../../../core/models/user.model';
 import { NotificationService } from '../../../core/services/notification.service';
 import type { NotificationSeverity } from '../../../core/services/notification.service';
+import { AuthStore } from '../../../core/state/auth.store';
 import { UserStore } from '../../../core/state/user.store';
 import type { UserOperation } from '../../../core/state/user.store';
 import { stripLegacyBreakTags, userCreateMessage } from '../../../core/utils/form-errors.util';
 import type { ProblemSeverity } from '../../../core/utils/form-errors.util';
 import { CREDENTIAL_MAX_LENGTH } from '../../../core/utils/credential-bounds.util';
-import { parseRouteId } from '../../../core/utils/route-id.util';
+import { parseRouteId, readRouteId } from '../../../core/utils/route-id.util';
+import { requiredText } from '../../../core/utils/required-text.validator';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
-import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
+import {
+  LoadingSpinnerComponent,
+} from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 import { DateDisplayPipe } from '../../../shared/pipes/date-display.pipe';
+import {
+  FocusFirstInvalidDirective,
+  INVALID_CONTROL_SELECTOR,
+} from '../../../shared/directives/focus-first-invalid.directive';
+import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 
 // The password policy — preserved verbatim, deliberately not tightened
 
@@ -243,6 +251,30 @@ export const PASSWORD_HELP =
  */
 export const REQUIRED_LEGEND = ' All fields marked with a red arrow are required.';
 
+/**
+ * The element identifier of the password section's GROUP message container — #8.
+ *
+ * ⚠ IT HAS TO BE A STABLE, KNOWN VALUE BECAUSE TWO CONTROLS POINT AT IT. The rule spans the password
+ * box and its confirmation, so the message belongs to neither control and both must reference it
+ * through `aria-describedby` and `aria-errormessage`. The shared field component owns that wiring for
+ * a message that belongs to ONE control and generates the identifier itself; a group message has no
+ * field to own it, which is why this one is declared here and referenced from three places in the
+ * template.
+ *
+ * Exported so a specification asserts against the same constant the template binds rather than
+ * against a copy of the string.
+ */
+export const PASSWORD_GROUP_ERROR_ID = 'user-form-password-rule';
+
+/**
+ * The element identifier of the password box — #8.
+ *
+ * Declared as a constant rather than left as a template literal because {@link
+ * UserFormComponent.onSubmit} now has to FIND that box in order to move focus to it, so the value is
+ * read from two places and must not be able to drift between them.
+ */
+export const PASSWORD_CONTROL_ID = 'user-form-password';
+
 // Measured wording — validation messages
 //
 //  MIGRATION, and this is the most consequential note in the file: every validator on this screen is
@@ -363,6 +395,27 @@ export const PASSWORD_CHANGE_REQUIRED_MESSAGE = 'This user must change their pas
  * neither adds nor removes a workflow.
  */
 export const USER_UPDATED_MESSAGE = 'User account updated';
+
+/**
+ * Success wording after an account is created — U-M9.
+ *
+ * ⚠ THE SCREEN CONFIRMED NOTHING AT ALL BEFORE THIS, AND THE NAVIGATION IS WHAT MADE THAT SERIOUS.
+ * A successful create leaves this screen immediately for the account listing — reproducing
+ * `Website/admin/Users/ManageUsers.ascx.vb`, which tests `If e.CreateStatus = UserCreateStatus.Success`
+ * and answers with `Response.Redirect(ReturnUrl, True)` — so the operator arrived at a listing of two
+ * hundred and fifty accounts with no statement that theirs had been added and no reliable way to find
+ * it among them. Measured: the notification surface was EMPTY after a successful create, while the
+ * sibling role and module creates both confirmed theirs.
+ *
+ * AUTHORED, and on exactly the same footing as {@link USER_UPDATED_MESSAGE} beside it: the legacy
+ * redirected without confirming, so there is no wording to recover, and confirming a write neither adds
+ * nor removes a workflow. The account's own sign-in name is substituted into it, because the one thing
+ * an operator needs on arriving at a long listing is which row is theirs.
+ *
+ * `{name}` is substituted with the sign-in name the server confirmed — never with the value typed into
+ * the form, which may differ from what was stored.
+ */
+export const USER_CREATED_MESSAGE = 'User account {name} created';
 
 /**
  * `NoUser.Text` — the account does not exist.
@@ -927,6 +980,8 @@ export function passwordRulesValidator(isCreateMode: () => boolean): ValidatorFn
   // strip used to provide; five shared components and one pipe. Nothing else is imported, and in particular
   // the permission directive is NOT: see the note on authorisation in the class body.
   imports: [
+    FocusFirstInvalidDirective,
+    SubmitGuardDirective,
     ReactiveFormsModule,
     RouterLink,
     PageHeaderComponent,
@@ -935,12 +990,33 @@ export function passwordRulesValidator(isCreateMode: () => boolean): ValidatorFn
     ErrorBannerComponent,
     LoadingSpinnerComponent,
     DateDisplayPipe,
+    FocusFirstInvalidDirective,
   ],
   templateUrl: './user-form.component.html',
   styleUrl: './user-form.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class UserFormComponent {
+
+  /**
+   * Registers this screen's unsaved-entry probe with the application's tracker.
+   *
+   * ⚠ WHY A REGISTRATION RATHER THAN A ROUTE-LEVEL READ. Leaving a screen happens two ways and
+   * only one of them is a router navigation: Cancel, an in-application link and the browser's Back
+   * button are navigations a route guard can refuse, while closing or reloading the tab is not, and
+   * only the browser's own unload prompt covers that - which needs the dirty state at an arbitrary
+   * moment rather than at a navigation. One tracker holding probes answers both, and the probe is
+   * released automatically when this screen is destroyed, so a screen that has gone can never hold
+   * a navigation up. Measured before this existed: a dirty form was discarded in silence by all
+   * four exits, with instrumented `confirm`, `alert` and `beforeunload` recording nothing at all.
+   *
+   * A form that is being SAVED is not dirty in the sense that matters here - the entry is on its
+   * way to the server, and prompting about it would ask the operator to confirm discarding work
+   * they have already committed.
+   */
+  private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
+    () => this.form.dirty && this.store.saving() === false,
+  );
   /**
    * The account identifier taken from the route, as a string, or undefined.
    *
@@ -969,6 +1045,43 @@ export class UserFormComponent {
    * Used only for the two measured redirects and the password cross-link.
    */
   private readonly router = inject(Router);
+
+  /**
+   * The signed-in operator, read ONLY to decide whether this screen is editing their own account.
+   *
+   * This is not an authorisation source and nothing here is enforced from it — the server owns every
+   * membership decision. It answers one question the measured screen asked of the same two identities:
+   * whether the operator and the subject are the same person.
+   */
+  private readonly auth = inject(AuthStore);
+
+  /**
+   * This screen's own root element, used for exactly one purpose — #8.
+   *
+   * ⚠ READ ONLY TO ANSWER "IS THERE AN INVALID CONTROL FOR THE SHARED FOCUS DIRECTIVE TO FIND", and
+   * never to read or write a value. The password rule is a GROUP rule, so it marks the form group
+   * invalid and leaves both password boxes valid — which means the shared directive's invalid-control
+   * query matches nothing and it correctly does nothing. Something still has to take focus, and this
+   * is how the component establishes that the directive has declined, so the two can never both act
+   * on one submit.
+   */
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  /**
+   * This view's change detector, used for exactly one purpose — #8.
+   * ⚠ READ THE MEASUREMENT BEFORE REMOVING THIS. The password box lives behind a disclosure, and when
+   * a submit is refused by the group rule while that disclosure is CLOSED the component has to open it
+   * before anything can be focused. Opening it sets a signal; the box only enters the document when
+   * that signal is RENDERED. The first implementation deferred the focus move to a resolved promise on
+   * the assumption that a microtask settles after change detection. It does not: a microtask queued
+   * inside the event handler runs before the scheduled render, so the callback looked the box up,
+   * found `null`, and returned. Measured across two independent trials — 30 polls over 3007ms and 25
+   * polls over 2500ms — focus never left the element it started on, in one case the submit button
+   * itself, even though the section HAD expanded and the box DID exist by the time polling began.
+   * Rendering synchronously removes the timing question rather than moving it: the box exists on the
+   * next statement, so the focus call is ordinary code and a specification needs neither a fake clock
+   * nor a settle. Only this view is checked, and the disclosure it renders belongs to this view.
+   */
+  private readonly changeDetector = inject(ChangeDetectorRef);
 
   // Mode — sentinel-safe identifier resolution
 
@@ -1023,6 +1136,23 @@ export class UserFormComponent {
    * Whether the screen is editing rather than creating.
    */
   protected readonly isEditMode: Signal<boolean> = computed<boolean>(() => !this.isCreateMode());
+
+  /**
+   * Whether the address carries something that is not an account identifier.
+   *
+   * ⚠ THE DISTINCTION {@link isCreateMode} CANNOT MAKE, and could not make. It tests
+   * {@link resolvedUserId} for `undefined`, and the shared parser answers `null` - coalesced to
+   * `undefined` there - both for an ABSENT parameter and for one it refuses. So `/users/abc` reported
+   * itself as create mode and rendered the add-account form with nine of its ten controls enabled and
+   * Authorize already ticked, having asked the server nothing at all.
+   *
+   * Read through the shared three-way reader rather than by testing the parsed value again, so that
+   * the grammar and the bounds are the SAME ones {@link resolvedUserId} applies - a second, local
+   * test would be free to disagree with the first, and the disagreement would be silent.
+   */
+  protected readonly addressUnreadable: Signal<boolean> = computed<boolean>(
+    () => readRouteId(this.userId()).kind === 'unreadable',
+  );
 
   // STORE PROJECTIONS
 
@@ -1166,6 +1296,21 @@ export class UserFormComponent {
   protected readonly membershipExpanded = signal(true);
 
   /**
+   * Whether the new-account options section is expanded.
+   *
+   * MIGRATION: this group had NO toggle while its three siblings each had one, and the
+   * justification recorded beside it - that "the measured markup gave these two rows no section
+   * head" - does not survive checking, because it is equally true of all four groups: `User.ascx`
+   * registers the collapsible-section control at L4 and then uses it ZERO times, which the note at
+   * the top of this file and DEFECT 10 beside the toggle handlers both already record. The legacy
+   * therefore supplies no authority for singling this group out; the disclosure pattern is entirely
+   * this screen's own addition, and applying it to three of four sibling groups was arbitrary.
+   * Removing all three was the alternative and was rejected: it would strip a working affordance
+   * from operators and undo the `aria-controls` wiring these toggles were deliberately given.
+   */
+  protected readonly newAccountOptionsExpanded = signal(true);
+
+  /**
    * Set while a create is in flight, so its outcome can be acted on exactly once.
    */
   private readonly createSubmitted = signal(false);
@@ -1216,28 +1361,42 @@ export class UserFormComponent {
    * The group-level password validator carries the conditional rules. It is passed a reader for the mode
    * rather than a boolean, so it re-evaluates when the route changes without anything having to reattach it.
    */
+  // MIGRATION: the five identity fields use `requiredText` from `core/utils`, NOT
+  // `Validators.required`, because Angular's own validator accepts a value of one space and the
+  // server does not. Every one of these five is declared with FluentValidation's `NotEmpty()`,
+  // whose string predicate is `string.IsNullOrWhiteSpace`, so an all-whitespace entry was
+  // refused server-side after a round trip. Measured on the wire before changing anything:
+  // `PUT /api/v1/users/2` with `"displayName":" "` answered HTTP 400 with
+  // `errors.DisplayName = ["Display Name is required"]` — word for word the sentence this
+  // screen already holds for `required`, which is what proves the two sides always meant the
+  // same rule and only the browser was lax. The validator reports under the `required` key, so
+  // {@link firstValidatorMessage} selects that same measured sentence with no change.
+  //
+  // The password controls below deliberately keep `Validators.required`: a credential is opaque
+  // bytes the user chose rather than prose to be judged for blankness, and this application
+  // never trims one.
   protected readonly form: FormGroup<UserFormModel> = new FormGroup<UserFormModel>(
     {
       username: new FormControl<string>('', {
         nonNullable: true,
-        validators: [Validators.required, Validators.maxLength(IDENTITY_MAX_LENGTH.username)],
+        validators: [requiredText, Validators.maxLength(IDENTITY_MAX_LENGTH.username)],
       }),
       firstName: new FormControl<string>('', {
         nonNullable: true,
-        validators: [Validators.required, Validators.maxLength(IDENTITY_MAX_LENGTH.firstName)],
+        validators: [requiredText, Validators.maxLength(IDENTITY_MAX_LENGTH.firstName)],
       }),
       lastName: new FormControl<string>('', {
         nonNullable: true,
-        validators: [Validators.required, Validators.maxLength(IDENTITY_MAX_LENGTH.lastName)],
+        validators: [requiredText, Validators.maxLength(IDENTITY_MAX_LENGTH.lastName)],
       }),
       displayName: new FormControl<string>('', {
         nonNullable: true,
-        validators: [Validators.required, Validators.maxLength(IDENTITY_MAX_LENGTH.displayName)],
+        validators: [requiredText, Validators.maxLength(IDENTITY_MAX_LENGTH.displayName)],
       }),
       email: new FormControl<string>('', {
         nonNullable: true,
         validators: [
-          Validators.required,
+          requiredText,
           Validators.maxLength(IDENTITY_MAX_LENGTH.email),
           Validators.pattern(EMAIL_PATTERN),
         ],
@@ -1280,7 +1439,20 @@ export class UserFormComponent {
    * rendered title.
    */
   protected readonly pageTitle: Signal<string> = computed<string>(() => {
-    if (this.isCreateMode()) {
+    /*
+     * ⚠ AN UNREADABLE ADDRESS IS NOT CREATE MODE FOR HEADING PURPOSES, and the extra term is a
+     * correction. `isCreateMode()` is false on `/users/abc` — no account can be read from it — but
+     * this computed used to fall through to the create branch anyway, putting `Add New User` above
+     * the sentence saying the account does not exist, while the route's own document title said
+     * `Edit User Accounts`. A real browser measured all three labels on that one screen.
+     *
+     * Falling to `EDIT_MODE_TITLE` below also makes `/users/abc` and `/users/0` agree: one address
+     * is unreadable and the other readable-but-absent, both name an account and neither can offer
+     * one, so both now carry the same heading over the same measured legacy sentence. That matches
+     * `ManageUsers.ascx.vb` L207/L221, where a missing account kept the edit screen's own title and
+     * paired the warning with `DisableForm()`.
+     */
+    if (this.isCreateMode() && !this.addressUnreadable()) {
       return CREATE_MODE_TITLE;
     }
 
@@ -1299,6 +1471,12 @@ export class UserFormComponent {
    * The help line above the password section. Administrator wording only.
    */
   protected readonly passwordHelp: string = PASSWORD_HELP;
+
+  /** {@link PASSWORD_GROUP_ERROR_ID} — #8. Bound to the container and to both controls that cite it. */
+  protected readonly passwordGroupErrorId: string = PASSWORD_GROUP_ERROR_ID;
+
+  /** {@link PASSWORD_CONTROL_ID} — #8. Bound to the password box, and used to find it on a refusal. */
+  protected readonly passwordControlId: string = PASSWORD_CONTROL_ID;
 
   /**
    * @see IDENTITY_MAX_LENGTH — bound to each identity box's native attribute.
@@ -1371,7 +1549,16 @@ export class UserFormComponent {
       return false;
     }
 
-    return !held.isSuperUser;
+    // ⚠ THE SERVER'S CAPABILITY, NOT A RULE RESTATED HERE, and restating it was the defect. This read
+    // `!held.isSuperUser`, which is only the FIRST half of the rule the removal operation enforces: it
+    // also refuses the account named by the tenant's `Portals.AdministratorId`. Nothing in the detail
+    // contract revealed who that was, so the second half was unreachable and was simply omitted - and
+    // the two screens then disagreed about one permission for one account, the listing correctly
+    // withholding the affordance for the tenant's administrator while this screen offered it.
+    //
+    // The contract now publishes the capability, computed by the same member that computes it for the
+    // listing, so there is one rule in one place and no client-side approximation of it anywhere.
+    return held.canDelete;
   });
 
   // The membership panel — read-only
@@ -1454,6 +1641,113 @@ export class UserFormComponent {
    */
   protected readonly mustChangePassword: Signal<boolean | undefined> =
     this.store.selectedUserMustChangePassword;
+
+  // The four per-account membership actions — offered only when they would change something
+  //
+  //  ⚠ THESE FOUR GATES WERE MISSING, AND THE OMISSION CAME FROM READING ONLY HALF THE LEGACY SCREEN.
+  //  `Membership.ascx` L13-L28 declares all four commands unconditionally, so a reading confined to the
+  //  markup concludes they are always offered. They are not: `Membership.ascx.vb` L135-L145 assigns every
+  //  one of their `Visible` properties on each data-bind, and the measured assignments are
+  //
+  //      If UserInfo.UserID = User.UserID Then     ' operator editing their OWN account
+  //          cmdAuthorize.Visible = False
+  //          cmdUnAuthorize.Visible = False
+  //          cmdUnLock.Visible = False
+  //          cmdPassword.Visible = False
+  //      Else
+  //          cmdUnLock.Visible      = Membership.LockedOut
+  //          cmdUnAuthorize.Visible = Membership.Approved
+  //          cmdAuthorize.Visible   = Not Membership.Approved
+  //          cmdPassword.Visible    = Not Membership.UpdatePassword
+  //      End If
+  //
+  //  where `UserInfo` is the SIGNED-IN operator (`PortalModuleBase.vb` L319-L323 returns
+  //  `UserController.GetCurrentUserInfo`) and `User` is the account under edit
+  //  (`UserModuleBase.vb` L439-L449 reads it with `UserController.GetUser(PortalId, UserId, False)`).
+  //
+  //  So every one of the four is offered ONLY when its own precondition holds, and the four are mutually
+  //  informative rather than independent: an approved account is offered UnAuthorize and NOT Authorize.
+  //  Offering both at once — which is what this screen did — presents one of them as an action whose only
+  //  possible outcome is no change at all.
+  //
+  //  ⚠ THE MECHANISM IS `Visible`, NOT `Enabled`, so the faithful counterpart is CONDITIONAL RENDERING
+  //  rather than a disabled control. That is also the better of the two: these preconditions are facts
+  //  about the account, not about this form's state, so a disabled button here could never become enabled
+  //  by anything the operator typed. A permanently dead control teaches nothing.
+  //
+  //  ⚠ EVERY TEST IS A STRICT EQUALITY AGAINST `true` OR `false`, NEVER A TRUTHINESS TEST OR A NEGATION.
+  //  These three signals are `boolean | undefined`, and `undefined` means no account is in hand. The
+  //  legacy always held a Membership object, so `Not Membership.Approved` could only ever read a real
+  //  Boolean — but `!undefined` is `true`, so translating that negation literally would OFFER Authorize
+  //  for an account whose approval state is unknown. Unknown is not the same as false, and only a
+  //  measured `false` may offer the action.
+
+  /**
+   * Whether the operator is editing their own account.
+   *
+   * Derived exactly as the sibling profile screen derives it, against the same two identities the measured
+   * code compared.
+   *
+   * ⚠ STRICT EQUALITY AGAINST AN EXPLICITLY RESOLVED KEY. A truthiness test would misread the account key
+   * zero, and a fallback default would make an unresolved route parameter match a real key. An unresolved
+   * identity on either side resolves to `false`, which withholds nothing — the four gates below then rest
+   * on the membership facts alone, exactly as they do for any other account.
+   */
+  protected readonly isSelf: Signal<boolean> = computed<boolean>(() => {
+    const subject: number | undefined = this.resolvedUserId();
+    const caller = this.auth.currentUser();
+
+    if (subject === undefined || caller === null) {
+      return false;
+    }
+
+    return caller.userId === subject;
+  });
+
+  /**
+   * `cmdAuthorize.Visible = Not Membership.Approved` — offered only for an account that may not sign in.
+   */
+  protected readonly canAuthorize: Signal<boolean> = computed<boolean>(
+    () => !this.isSelf() && this.isApproved() === false,
+  );
+
+  /**
+   * `cmdUnAuthorize.Visible = Membership.Approved` — offered only for an account that may sign in.
+   */
+  protected readonly canUnauthorize: Signal<boolean> = computed<boolean>(
+    () => !this.isSelf() && this.isApproved() === true,
+  );
+
+  /**
+   * `cmdUnLock.Visible = Membership.LockedOut` — offered only for an account failed sign-ins have locked.
+   */
+  protected readonly canUnlock: Signal<boolean> = computed<boolean>(
+    () => !this.isSelf() && this.isLockedOut() === true,
+  );
+
+  /**
+   * `cmdPassword.Visible = Not Membership.UpdatePassword` — offered only while the obligation is not
+   * already recorded.
+   */
+  protected readonly canForcePasswordChange: Signal<boolean> = computed<boolean>(
+    () => !this.isSelf() && this.mustChangePassword() === false,
+  );
+
+  /**
+   * Whether any of the four is offered at all.
+   *
+   * Exists so the template can omit the action row itself rather than render an empty one. Both cases are
+   * reachable and neither is exceptional: an operator editing their own account is offered none of the
+   * four, and so is an account that is approved, unlocked and already obliged to change its password —
+   * the second being the ordinary state of a healthy administrator account.
+   */
+  protected readonly hasMembershipActions: Signal<boolean> = computed<boolean>(
+    () =>
+      this.canAuthorize() ||
+      this.canUnauthorize() ||
+      this.canUnlock() ||
+      this.canForcePasswordChange(),
+  );
 
   // Guard behaviour — disabled and warned, never redirected
 
@@ -1638,6 +1932,31 @@ export class UserFormComponent {
           return;
         }
 
+        // ⚠ THE FORM IS SETTLED BEFORE LEAVING, OR THE UNSAVED-ENTRY GUARD ASKS ABOUT AN ACCOUNT THAT HAS
+        // ALREADY BEEN CREATED - AND REFUSING THAT PROMPT IS WORSE THAN THE PROMPT. This effect fires on
+        // the transition OUT of `store.saving()`, so the probe registered at the top of this class - which
+        // reads `dirty && store.saving() === false` - sees a dirty form with no write outstanding, and both
+        // departures below are navigations it can refuse. An operator who declined would be left sitting on
+        // a creation form for an account the server had just stored, and re-submitting it would be answered
+        // with a conflict. Marking the form settled is the honest statement of what happened.
+        //
+        // Marked HERE rather than beside each departure because the credential hand-over defers its
+        // navigation to `dismissCredential()`: the creation has still succeeded, so the entry is no longer
+        // unsaved from this point on regardless of which of the two paths carries the operator away.
+        this.form.markAsPristine();
+        this.form.markAsUntouched();
+        // ⚠ U-M9 — ANNOUNCED BEFORE EITHER OUTCOME BRANCH, so both are confirmed by one statement. The
+        // credential branch below does not navigate and the ordinary branch does, and a confirmation
+        // written into only one of them would leave the other silent — which is the defect, since the
+        // ordinary branch is the common case. The notification surface is root-scoped and a success
+        // notice survives the navigation deliberately, so the statement is still on screen when the
+        // operator arrives at the listing.
+        // The name comes from the account the SERVER confirmed, never from the form: the two can differ,
+        // and a confirmation naming something that was not stored is worse than none.
+        // `true`: the confirmation is raised immediately before a deliberate redirect and is meant to be read at the destination - the listing below. Without it the redirect on the
+        // next line would discard the confirmation before the operator could read it.
+        this.notifications.success(USER_CREATED_MESSAGE.replace('{name}', created.username), true);
+
         const generated: string | null = this.heldCredential;
         this.heldCredential = null;
 
@@ -1650,7 +1969,9 @@ export class UserFormComponent {
           return;
         }
 
-        void this.router.navigate(['/users']);
+        // Replaced, not pushed: the work is done, so BACK must not return to a form for a record that
+        // now exists. See the note on the sign-in screen's departure for the same rule stated in full.
+        void this.router.navigate(['/users'], { replaceUrl: true });
       });
     });
 
@@ -1695,7 +2016,19 @@ export class UserFormComponent {
           return;
         }
 
-        void this.router.navigate(['/users']);
+        // ⚠ SETTLED BEFORE LEAVING, OR THE UNSAVED-ENTRY GUARD ASKS THE OPERATOR TO CONFIRM DISCARDING
+        // EDITS TO AN ACCOUNT THAT NO LONGER EXISTS. The probe reads `dirty && store.saving() === false`,
+        // and a removal is not a save, so an operator who typed something and then removed the account was
+        // prompted about the typing on the way out. There is nothing left to save, so pristine is the
+        // honest state - the same correction the portal settings screen already carries on its own
+        // removal path.
+        this.form.markAsPristine();
+        this.form.markAsUntouched();
+
+    // Replaced, not pushed: the work is done, so BACK must not return to a form for a record that
+    // has just been written - and the unsaved-entry gate reads a replacement as a departure the
+    // application itself initiated, so it does not question it.
+    void this.router.navigate(['/users'], { replaceUrl: true });
       });
     });
 
@@ -1774,6 +2107,8 @@ export class UserFormComponent {
     }
 
     if (this.form.invalid) {
+      this.revealAndFocusPasswordRule();
+
       return;
     }
 
@@ -1784,6 +2119,70 @@ export class UserFormComponent {
     }
 
     this.submitUpdate();
+  }
+
+  /**
+   * Brings the password rule and its box into view when the rule is the reason a submit was refused
+   * and nothing else on the form can answer for it — #8.
+   *
+   * ⚠ THIS EXISTS BECAUSE THE PASSWORD RULE IS A GROUP RULE, AND A GROUP RULE HAS NO CONTROL.
+   * {@link passwordRulesValidator} runs on the whole form and reports its failure through
+   * `form.errors`, deliberately, because the rule spans two boxes and neither of them is individually
+   * wrong — a matching pair of weak passwords is two perfectly valid values in an invalid
+   * combination. The consequence is that neither box carries Angular's invalid class, so the shared
+   * focus directive's invalid-control query matches NOTHING and it returns without acting. Measured
+   * result before this method existed: pressing Create on a form whose only fault was the password
+   * rule left focus on the submit button, and the submit button on this screen sits below the fold at
+   * most viewport widths — so the message appeared off-screen above a person who had scrolled down to
+   * press it, and the form read as silently unsubmittable. For a screen-reader user there was no
+   * route at all from "something is wrong" to which control to correct.
+   *
+   * ⚠ IT ACTS ONLY WHERE THE DIRECTIVE HAS PROVABLY DECLINED, which is what keeps the two from
+   * fighting over one submit. The guard is the directive's own query: if any control in this screen's
+   * subtree carries the invalid class, the directive will focus the first of them and this method
+   * returns untouched — whichever order the two listeners happen to run in, because the two
+   * conditions are mutually exclusive rather than merely ordered.
+   *
+   * ⚠ THE SECTION IS EXPANDED FIRST, AND THAT IS NOT A CONVENIENCE. The password block is behind a
+   * disclosure, and the rule can be violated while the disclosure is CLOSED — in which case the box
+   * does not exist in the document, focus has nowhere to go, and an operator is shown an assertive
+   * message about a field they cannot see. Expanding is what makes the message actionable. Nothing is
+   * collapsed by this method: a section already open stays open.
+   *
+   * Expanding the section is what puts the box in the document, so the view is rendered before the box
+   * is looked up — see {@link changeDetector} for the measurement that forced this to be synchronous
+   * rather than deferred. Reading the document through the injected host element rather than through a
+   * global keeps this testable in a component harness.
+   */
+  private revealAndFocusPasswordRule(): void {
+    if (this.passwordMessage().length === 0) {
+      return;
+    }
+
+    // The directive's own selector, asked as a question. Any match means it will act and this must not.
+    if (this.host.nativeElement.querySelector(INVALID_CONTROL_SELECTOR) !== null) {
+      return;
+    }
+
+    if (!this.passwordExpanded()) {
+      this.passwordExpanded.set(true);
+
+      // ⚠ NOT OPTIONAL AND NOT A TIDINESS CALL. `passwordExpanded` gates an `@if` in this view's own
+      // template, and the box it contains does not exist until that `@if` has been rendered. Checking
+      // this view here is what makes the next statement able to find it; deferring instead is what the
+      // measurement in `changeDetector` records as never focusing anything at all.
+      this.changeDetector.detectChanges();
+    }
+
+    const box = this.host.nativeElement.ownerDocument.getElementById(PASSWORD_CONTROL_ID);
+
+    // Absent whenever a random password was requested, which withholds both boxes by design — and in
+    // that state the rule cannot fire either, so this is defence rather than a reachable branch.
+    if (box === null || box === this.host.nativeElement.ownerDocument.activeElement) {
+      return;
+    }
+
+    box.focus();
   }
 
   // COMMANDS — REMOVAL
@@ -1968,6 +2367,13 @@ export class UserFormComponent {
   }
 
   /**
+   * Expands or collapses the new-account options section.
+   */
+  toggleNewAccountOptions(): void {
+    this.newAccountOptionsExpanded.update((expanded) => !expanded);
+  }
+
+  /**
    * Expands or collapses the membership section.
    */
   toggleMembership(): void {
@@ -1987,7 +2393,10 @@ export class UserFormComponent {
   dismissCredential(): void {
     this._revealedCredential.set(null);
 
-    void this.router.navigate(['/users']);
+    // Replaced, not pushed. This is the tail of a CREATE - the panel exists only because an account
+    // was just made and its generated credential had to be handed over - so returning here would
+    // offer a form for a record that now exists, and would do so with the credential already gone.
+    void this.router.navigate(['/users'], { replaceUrl: true });
   }
 
   // TEMPLATE HELPERS
@@ -2037,10 +2446,39 @@ export class UserFormComponent {
    * The legacy equivalent is `valPassword`, the single custom validator on the screen, declared with no
    * control to validate precisely because the rule spans two inputs.
    *
+   * ⚠ THE GATE TRACKS THE PASSWORD SECTION, NOT THE WHOLE FORM, AND THAT DISTINCTION IS THE FIX.
+   * This previously read `!this.submitAttempted() && this.form.pristine`, which is FORM-level: typing a
+   * single character into User Name made the form dirty, opened this gate, and raised an assertive
+   * "the password specified is invalid" alert over two password boxes nobody had been near. Measured at
+   * runtime, both controls reported `ng-untouched ng-pristine ng-valid` while this method was returning a
+   * message and the template was stamping `aria-invalid="true"` on them from it — the form was announcing a
+   * failure its own validators did not agree with, on fields the operator had not reached.
+   *
+   * Two reasons the section-level gate is the correct one:
+   *
+   * - IT MATCHES THE DISCIPLINE ALREADY USED FOR EVERY OTHER MESSAGE ON THIS SCREEN. {@link messageFor}
+   *   gates on `control.touched || submitAttempted()`, so a field speaks only once its own control has been
+   *   left or the form has been submitted. A group rule is the same contract widened to the controls the
+   *   rule spans, which is what this now reads.
+   * - IT MATCHES THE LEGACY. `valPassword` is an `asp:CustomValidator` declared with no
+   *   `ControlToValidate`, and such a validator evaluates on POSTBACK. The legacy screen therefore showed
+   *   this message on submit and at no other time; the original intent recorded beside the template — that
+   *   a form nobody has typed into is never marked as failing — is preserved, just scoped to the section
+   *   the rule belongs to instead of to every control on the screen.
+   *
+   * The converse case was measured too and is deliberately unchanged: clearing User Name leaves it
+   * `ng-dirty ng-invalid` with no message while focus is still inside it, because `touched` is set on blur.
+   * Refusing to interrupt someone mid-edit is the intended behaviour, not an inverted one.
+   *
    * @returns A plain-text message, or the empty string.
    */
   protected passwordMessage(): string {
-    if (!this.submitAttempted() && this.form.pristine) {
+    // The two controls the group rule spans. Touching either one is what licenses the rule to speak,
+    // exactly as touching a single control licenses its own message in `messageFor`.
+    const engaged: boolean =
+      this.form.controls.password.touched || this.form.controls.confirmPassword.touched;
+
+    if (!this.submitAttempted() && !engaged) {
       return '';
     }
 

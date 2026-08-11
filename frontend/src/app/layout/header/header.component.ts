@@ -29,6 +29,22 @@ const BRAND_LINK = '/';
 const ACCOUNT_SERVICES_LABEL = 'Manage Services';
 
 /**
+ * The caption of the own-profile affordance.
+ *
+ * `cmdProfile.Text` in `Website/admin/Users/App_LocalResources/ManageUsers.ascx.resx`, the SAME
+ * resource file and the SAME legacy command bar that supplies {@link ACCOUNT_SERVICES_LABEL}.
+ */
+const ACCOUNT_PROFILE_LABEL = 'Manage Profile';
+
+/**
+ * The caption of the own-password affordance.
+ *
+ * `cmdPassword.Text` in `Website/admin/Users/App_LocalResources/ManageUsers.ascx.resx`, from the
+ * same command bar again.
+ */
+const ACCOUNT_PASSWORD_LABEL = 'Manage Password';
+
+/**
  * The application shell's single `banner` landmark.
  *
  * Renders the band's two clusters — the identity affordance at the leading edge
@@ -274,6 +290,38 @@ export class HeaderComponent {
   @Input() accountServicesLink?: string;
 
   /**
+   * The address of the signed-in account's own profile screen, or `undefined`.
+   *
+   * MIGRATION: THIS AFFORDANCE AND {@link accountPasswordLink} WERE MISSING, AND THEIR ABSENCE
+   * STRANDED EVERY NON-ADMINISTRATIVE ACCOUNT. Both destinations are permitted to the account
+   * owner - the route table gates them on the owner policy, not on an administrator one - but
+   * nothing in the chrome linked either, and every entry in the navigation rail requires a portal
+   * or host administrator. A signed-in member could therefore reach only the brand and "Manage
+   * Services": two screens they are entitled to operate on their own behalf existed and were
+   * addressable only by typing a URL that contains their own numeric account key.
+   *
+   * The legacy did not have this gap, and its own command bar is the authority for closing it.
+   * `ManageUsers.ascx.resx` declares FIVE commands and this application had ported exactly one of
+   * them; `ManageUsers.ascx.vb:L439-L456` states their visibility, and for an account viewing
+   * itself both of these were offered: `cmdPassword` is hidden only when the viewer is NEITHER an
+   * administrator NOR the account holder (`If (Not IsAdmin And Not IsUser) Then cmdPassword.Visible
+   * = False`), and `cmdProfile` is never hidden at all - only its enabled state is toggled. So the
+   * measured behaviour for the exact case that was stranded is that both affordances were present.
+   *
+   * Supplied whole by the container for the same reason the services address is: this band holds a
+   * caption rather than an account, so it has no key to compose an address from.
+   */
+  @Input() accountProfileLink?: string;
+
+  /**
+   * The address of the signed-in account's own change-password screen, or `undefined`.
+   *
+   * See {@link accountProfileLink} for the measured legacy authority; `cmdPassword` there is the
+   * command this reaches.
+   */
+  @Input() accountPasswordLink?: string;
+
+  /**
    * Whether a sign-out is currently in flight.
    *
    * Declared with `booleanAttribute` so that the bare attribute form
@@ -314,6 +362,12 @@ export class HeaderComponent {
    */
   readonly accountServicesLabel: string = ACCOUNT_SERVICES_LABEL;
 
+  /** The caption of the own-profile affordance. `cmdProfile.Text`. */
+  readonly accountProfileLabel: string = ACCOUNT_PROFILE_LABEL;
+
+  /** The caption of the own-password affordance. `cmdPassword.Text`. */
+  readonly accountPasswordLabel: string = ACCOUNT_PASSWORD_LABEL;
+
   /**
    * Whether an account is signed in, and therefore whether the session cluster
    * has anything to render.
@@ -341,11 +395,36 @@ export class HeaderComponent {
    * an absent identity if a container ever supplied one without the other.
    */
   protected get hasAccountServicesLink(): boolean {
-    return (
-      this.hasSignedInUser &&
-      this.accountServicesLink !== undefined &&
-      this.accountServicesLink.trim().length > 0
-    );
+    return this.hasUsableLink(this.accountServicesLink);
+  }
+
+  /**
+   * Whether the own-profile affordance can be rendered.
+   *
+   * Same two conditions as every other account-scoped link here, applied through one shared test
+   * so three affordances cannot come to disagree about what makes an address usable.
+   */
+  protected get hasAccountProfileLink(): boolean {
+    return this.hasUsableLink(this.accountProfileLink);
+  }
+
+  /** Whether the own-password affordance can be rendered. */
+  protected get hasAccountPasswordLink(): boolean {
+    return this.hasUsableLink(this.accountPasswordLink);
+  }
+
+  /**
+   * Whether an account-scoped address is present, non-blank and accompanied by a session.
+   *
+   * The session test is not redundant with the address test: a stale address could outlive the
+   * identity that produced it, and a link naming an account nobody is signed in as would navigate
+   * to a screen the caller is not entitled to and be refused there.
+   *
+   * @param link The address to test.
+   * @returns True when the affordance may be rendered.
+   */
+  private hasUsableLink(link: string | undefined): boolean {
+    return this.hasSignedInUser && link !== undefined && link.trim().length > 0;
   }
 
   /**

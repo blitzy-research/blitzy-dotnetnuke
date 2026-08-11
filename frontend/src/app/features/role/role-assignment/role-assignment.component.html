@@ -60,7 +60,7 @@
     than as a button because it navigates; the action region is the shared header's own
     projection slot, so no heading markup is duplicated here.
   -->
-  <a class="role-assignment__module-action" [routerLink]="['/roles']">{{ text.cancel }}</a>
+  <a class="page-action role-assignment__module-action" [routerLink]="['/roles']">{{ text.cancel }}</a>
 </app-page-header>
 
 <!--
@@ -161,6 +161,16 @@
           rather than from this screen's identifier constant, because the lookup owns the
           identifier of the input it renders. Pointing the label at a name no element carries
           would be a dangling association, which is worse than none.
+
+          The lookup is told to withhold its own caption, because this field already carries
+          one. Left on, the input was named by two labels at once: this field's `plUsers`
+          caption and the lookup's own generic "Search:", giving it two visible captions and a
+          composite accessible name in which the caption nearest the box was no longer the whole
+          name - a WCAG 2.1 SC 2.5.3 Label in Name mismatch, and a speech-input user asking for
+          the caption they can read would not reach the control. The legacy caption is the one
+          that stays, not the generic one: `plUsers.Text` is "User Name" and legacy captioned
+          this affordance with nothing else - `securityroles.ascx` declares no search label at
+          all, and "Search:" is our own wording, taken from a different screen.
         -->
         <app-form-field
           [label]="text.userLabel"
@@ -172,6 +182,7 @@
             #userLookup
             class="role-assignment__lookup"
             [placeholder]="text.validate"
+            [labelledExternally]="true"
             (search)="onUserSearch($event)"
           />
 
@@ -179,8 +190,21 @@
             Why the name box appears when the tenant asked for the dropdown. Stated rather than
             silently substituted: without it the operator sees a control the site's own settings
             say should not be there and has no way to know why.
+
+            THREE DIFFERENT REASONS, THREE DIFFERENT SENTENCES, and they are not interchangeable.
+            The site holds too many accounts to list, which is the legacy's own default for a site
+            that size and is not a degradation at all; or the decision could not be made because
+            neither the policy nor the count could be read; or the dropdown was asked for and the
+            complete list could not be assembled. Collapsing them into one sentence would tell an
+            operator on a large site that something was broken when nothing is.
+
+            An unread policy ON ITS OWN says nothing here any more, and deliberately: it no longer
+            decides which control is offered - the legacy's account-count rule does - so it is no
+            longer something to report. See `usersControlMode`.
           -->
-          @if (accountPolicyUnavailable()) {
+          @if (accountPolicyDefaultedBySize()) {
+            <p class="role-assignment__lookup-note">{{ accountPolicyDefaultedBySizeMessage }}</p>
+          } @else if (accountPolicyUnavailable()) {
             <p class="role-assignment__lookup-note">{{ text.accountPolicyUnavailable }}</p>
           } @else if (accountChoicesUnavailable()) {
             <p class="role-assignment__lookup-note">{{ text.accountChoicesUnavailable }}</p>
@@ -202,8 +226,34 @@
               activating the pressed entry releases it. Two variants rather than one with a
               conditional handler, so the pressed state and the outcome can never disagree and
               no decision is taken in this file.
+
+              THE LIST IS NAMED, AND IT IS DELIBERATELY NOT A LISTBOX OR A COMBOBOX POPUP.
+              Three reasons, and the first is decisive on its own:
+
+              * `role="option"` would REPLACE the button role on these controls, and `option`
+                does not support `aria-pressed` - it carries `aria-selected`. Declaring the role
+                over these controls therefore produces an option bearing a state its role does
+                not support, which is an invalid combination and a conformance regression rather
+                than a fix.
+              * A listbox is a COMPOSITE widget with a mandatory keyboard contract: one tab stop
+                for the whole set, arrow-key and Home/End traversal, and either
+                `aria-activedescendant` or a roving tab index. Declaring the roles without that
+                contract announces a widget that then does not behave like one, which is worse
+                for the reader who believes the announcement than a plain list of buttons, every
+                one of which is already named, focusable and operable by Enter and Space
+                natively.
+              * These matches are not a popup and the field is not a combobox. They are
+                persistent inline content, they do not dismiss on Escape, they do not collapse,
+                and choosing one does not fill the field: it sets the account this form will
+                submit while the search term stays exactly as typed. `role="combobox"` with
+                `aria-expanded` would describe an interaction this screen does not implement. A
+                `<datalist>` is the same mismatch - its options complete the text field, cannot
+                carry a selected state and cannot be released once chosen.
+
+              What was genuinely missing is the list's PURPOSE, so that is what is added: the
+              name. No visual change, no interaction contract, no widget promise.
             -->
-            <ul class="role-assignment__matches">
+            <ul class="role-assignment__matches" [attr.aria-label]="text.matchesLabel">
               @for (match of userMatches(); track match.userId) {
                 <li class="role-assignment__match">
                   @if (match.userId === formState().userId) {
@@ -290,8 +340,11 @@
         <input
           class="role-assignment__date"
           type="date"
+          appNativeDateValidity
           [id]="controlId.effectiveDate"
           formControlName="effectiveDate"
+          [min]="earliestDate"
+          [max]="latestDate"
           [attr.aria-invalid]="effectiveDateMessages().length > 0 ? 'true' : null"
         />
       </app-form-field>
@@ -312,8 +365,11 @@
         <input
           class="role-assignment__date"
           type="date"
+          appNativeDateValidity
           [id]="controlId.expiryDate"
           formControlName="expiryDate"
+          [min]="earliestDate"
+          [max]="latestDate"
           [attr.aria-invalid]="expiryDateMessages().length > 0 ? 'true' : null"
         />
       </app-form-field>
@@ -361,6 +417,7 @@
         class="role-assignment__submit"
         type="submit"
         [disabled]="!canSubmit()"
+          [attr.aria-busy]="saving() ? 'true' : null"
       >{{ actionLabel() }}</button>
     </div>
   </form>
@@ -396,10 +453,30 @@
     class="role-assignment__memberships"
     [attr.aria-busy]="assignmentsLoading() ? 'true' : null"
   >
+    <!--
+      The ordering inputs are the SOLE source of truth for what the account heading announces and are read
+      from the store, so a heading can never claim an order whose request failed. `[sortBy]` is handed a
+      COLUMN KEY rather than the endpoint field the coordinate holds - the grid compares it against a column
+      key - and the component projects one to the other.
+    -->
+      ⚠ R-M24: THE REASON THE REMOVAL COMMAND IS ABSENT, stated rather than left to be inferred.
+      The command column is withheld entirely on the registered-users role, because
+      `RoleController.vb:L745` forbids removal from it for every account without exception - see
+      `removalAvailable`. An operator who has removed accounts from every other role would
+      otherwise find the affordance simply gone, with nothing saying whether that is a rule or a
+      fault. The sibling role editor already states the reason for its own protected-role state,
+      for the same reason and on the same authored footing.
+    @if (!removalAvailable()) {
+      <p class="role-assignment__notice">{{ text.removalUnavailable }}</p>
+    }
     <app-data-table
       [columns]="columns()"
       [rows]="assignments()"
+      [rowKey]="assignmentRowKey"
       [loading]="assignmentsLoading()"
+      [sortBy]="sortColumnKey()"
+      [sortDir]="sortDirection()"
+      (sortChange)="onSortChange($event)"
     >
       <!--
         The caption is a CONSUMER obligation: the shared grid projects it into a real caption
@@ -415,11 +492,19 @@
       size it applied and the total across every page - and reporting a zero-based index straight
       back. No arithmetic appears on either binding: the control's input and its output are both
       on the wire's base, and the one-based number an operator reads is derived inside the control
-      itself. It is mounted only when it has somewhere to go, so the common case of a role whose
-      members fit on one page renders the bare grid.
+      itself.
+
+      ⚠ MOUNTED UNCONDITIONALLY. The control decides its own shape - the membership count alone
+      when every member fits on one page, the count plus the steps when they do not - and a
+      wrapper condition here could only remove the count, which is the one place this screen
+      states how many accounts hold the role. `pagerRequired` is still published as the legacy
+      arithmetic and is no longer a gate on rendering. The one guard below is narrower: a role with
+      no members at all has no count to state, and leaving an empty custom element in the document
+      would be exactly the emptied container this control promises never to be.
     -->
-    @if (pagerRequired()) {
+    @if (hasResults()) {
       <app-pagination
+        [loading]="assignmentsLoading()"
         [page]="pageIndex()"
         [pageSize]="pageSize()"
         [totalCount]="totalCount()"
@@ -479,6 +564,7 @@
     <button
       class="role-assignment__row-command"
       type="button"
+      [attr.aria-label]="removalCommandName(row)"
       (click)="requestRemoval(row)"
     >{{ text.delete }}</button>
   }
@@ -521,10 +607,39 @@
   `RoleController.vb:L542` where an unlimited billing frequency maps to the last day of year
   9999, as against `:L541` where a frequency of none maps to the sentinel.
 -->
-<ng-template #roleAssignmentEffectiveDateCell let-row="row">{{
-  row.effectiveDate | dateDisplay
-}}</ng-template>
+<!--
+  MIGRATION — R-M24: THE LIFECYCLE IS QUALIFIED IN WORDS BESIDE THE DATE, WHICH IS A NET ADDITION
+  WITH A MEASURED LEGACY PRECEDENT ON A SIBLING SCREEN. Neither `securityroles.ascx` nor
+  `SecurityRoles.ascx.vb` compares either bound against the clock anywhere, so a membership that
+  lapsed years ago, one that begins years hence and one in force today were drawn identically -
+  same colour, same weight, no other mark - on the one screen whose purpose is administering who
+  holds a role. Runtime testing measured exactly that across a hundred and twenty rows.
+  `Website/admin/Users/MemberServices.ascx.vb:L172-L186` is the in-scope screen that DOES own a
+  clock, and it supplies both the test and the word.
 
-<ng-template #roleAssignmentExpiryDateCell let-row="row">{{
-  row.expiryDate | dateDisplay
-}}</ng-template>
+  THE DATE IS UNTOUCHED. The qualifier is added BESIDE it rather than replacing it - unlike the
+  legacy formatter, which replaced the date with the word - because an administrator needs to know
+  WHEN a membership lapsed as well as that it has.
+
+  NOT COLOUR ALONE: the state is carried by the WORD, which every reader receives, and the colour is
+  a second cue for those who can use it. An absent bound stays an entirely empty cell, exactly as the
+  legacy left it - no dash, no placeholder - so no state is asserted where the legacy asserted none.
+  The qualifier and the emptiness cannot disagree, because both are decided by the same parser: see
+  `boundInstant`.
+
+  Each qualifier sits on the column that OWNS the fact - `Pending` beside the effective bound,
+  `Expired` beside the expiry bound - so neither cell reports the other's business.
+-->
+<ng-template #roleAssignmentEffectiveDateCell let-row="row"
+  >{{ row.effectiveDate | dateDisplay
+  }}@if (membershipState(row) === 'pending') {
+    <span class="role-assignment__lifecycle">{{ text.pending }}</span>
+  }</ng-template
+>
+
+<ng-template #roleAssignmentExpiryDateCell let-row="row"
+  >{{ row.expiryDate | dateDisplay
+  }}@if (membershipState(row) === 'expired') {
+    <span class="role-assignment__lifecycle">{{ text.expired }}</span>
+  }</ng-template
+>

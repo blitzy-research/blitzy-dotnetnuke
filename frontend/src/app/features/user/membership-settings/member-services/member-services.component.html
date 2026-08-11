@@ -86,7 +86,8 @@
       />
     </app-form-field>
 
-    <button type="submit" class="member-services__code-submit" [disabled]="busy()">
+    <button type="submit" class="member-services__code-submit" [disabled]="busy()"
+          [attr.aria-busy]="busy() ? 'true' : null">
       {{ codeSubmit }}
     </button>
   </form>
@@ -121,8 +122,20 @@
     `MemberServices.ascx` L26-L71. Row activation is not bound: the legacy grid had no select
     command, so nothing listens for one, and both command columns are declared as action
     columns, which suppresses row activation for their cells as well.
+
+    NO COLUMN IS SORTABLE AND `sortChange` IS UNBOUND, BECAUSE THE ENDPOINT ACCEPTS NO ORDERING.
+    `UsersController.ListMemberServicesAsync` takes the account key and a cancellation token and
+    answers an unpaged `IReadOnlyList`, so there is no sort parameter to send and
+    `SortableFields.cs` declares no permitted set for this collection. Where the endpoint DOES
+    accept an ordering the affordance is offered - see the portal, account, role, membership and
+    module listings - so this absence is a property of the collection rather than a gap.
   -->
-  <app-data-table [columns]="columns()" [rows]="services()" [loading]="loading()">
+  <app-data-table
+    [columns]="columns()"
+    [rows]="services()"
+    [rowKey]="serviceRowKey"
+    [loading]="loading()"
+  >
     <span dataTableCaption>{{ pageTitle }}</span>
   </app-data-table>
 }

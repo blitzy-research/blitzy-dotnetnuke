@@ -49,8 +49,9 @@
   occupied, and the paired stylesheet's `space-between` reproduces the 50/50 halves
   without a table. The ten-link window (`PageLinksPerPage = 10`, L192, L208-L224) is
   deliberately NOT reproduced: the paired class exposes no page window to iterate, and the
-  public input surface is closed by the design system at three members, so there is
-  nothing to enumerate. Stepping to any page therefore takes the first or last control
+  public input surface is closed by the design system at four members - three numbers and
+  one in-flight flag, the last added only because a live region cannot tell the truth
+  without it - so there is nothing to enumerate. Stepping to any page therefore takes the first or last control
   rather than a direct jump - a reduction in reach, recorded here rather than absorbed.
 
   MIGRATION: the wording diverges from the legacy pager, and the legacy wording does
@@ -86,9 +87,18 @@
 -->
 
 <!--
-  RENDER NOTHING when everything already fits on one page. A single guard on the class's
-  own predicate, so no button, no readout and no summary reaches the document - not an
-  emptied container, and not a hidden one.
+  RENDER NOTHING WHILE THERE IS NOTHING TO COUNT, and render the COUNT ALONE when everything
+  already fits on one page. Two guards on two of the class's own named predicates, so in the
+  zero-result state no button, no readout and no summary reaches the document - not an emptied
+  container, and not a hidden one - while in the single-page state the range summary reaches it
+  and the steps do not.
+
+  MIGRATION: splitting the two states apart is a documented divergence from the legacy PORTALS
+  screen and a return to the legacy USERS screen; the reasoning, with both authorities, is on
+  `isRendered` in the paired class. Runtime testing measured what the single guard cost: a
+  filter narrowing 250 portals to seven removed the group entirely, so nothing on screen stated
+  that seven was the whole match set. The steps stay behind the navigability predicate because
+  four permanently disabled buttons would assert the opposite of the truth.
 
   MIGRATION: this is BYTE-EQUIVALENT to the legacy portals screen and a documented
   divergence only from the legacy users screen, which behaved differently despite running
@@ -104,7 +114,7 @@
   "hide when the total is no greater than the page size", which is the rule the class's
   predicate states. A total of zero renders nothing and raises nothing.
 -->
-@if (isNavigable) {
+@if (isRendered) {
   <!--
     A NAMED GROUP, NOT A LANDMARK. The controls carry a discernible accessible name, so a
     person using assistive technology knows what the cluster is, but the element is
@@ -134,85 +144,119 @@
       table rather than a row inside it: no table, no foot, no row and no cell is emitted
       by this file at all.
     -->
-    <p class="pagination__status" aria-live="polite" aria-atomic="true">
+    <!--
+      ⚠ `aria-busy` HOLDS THE ANNOUNCEMENT UNTIL THE NUMBERS ARE THE PAGE'S OWN. The wording above is
+      composed from the page that was ASKED for, so it updates the instant a step is pressed - which is
+      right for the eye and wrong for the ear. Runtime measurement under deliberate throttling caught this
+      region reading "21-30 of 145" while the grid beside it still held rows eleven to twenty. While
+      `loading` is true the region's changes are held; when it clears, the region is processed once in its
+      settled state. `null` rather than `"false"` when settled, so the attribute is absent at rest exactly
+      as it is on the shared grid, and the two report progress the same way.
+    -->
+    <p
+      class="pagination__status"
+      aria-live="polite"
+      aria-atomic="true"
+      [attr.aria-busy]="ariaBusy"
+    >
       {{ firstItemNumber }}&ndash;{{ lastItemNumber }} of {{ totalCount }}
     </p>
 
-    <div class="pagination__controls">
-      <!--
-        THE FOUR STEPS, in the legacy control's own order: first, previous, then the
-        readout in the slot the page links occupied, then next and last.
+    <!--
+      THE STEPS, only when there is somewhere to step to. A named group of its own, so the
+      count above stays inside the "Pagination" region in both shapes while the cluster of
+      controls carries its own shorter name - the legacy status cell and its link cell were
+      likewise two halves of one row (`Library/Controls/PagingControl.vb` L153-L156).
+    -->
+    @if (isNavigable) {
+      <div class="pagination__controls" role="group" [attr.aria-label]="labels.steps">
+        <!--
+          THE FOUR STEPS, in the legacy control's own order: first, previous, then the
+          readout in the slot the page links occupied, then next and last.
 
-        Native `button` elements, each with an EXPLICIT `type="button"`. Without it a
-        button inside a form defaults to submit, so a person changing page would post the
-        surrounding form. Anchors are deliberately not used even though the legacy
-        affordances were text links: these actions have no URL of their own, and a `button`
-        is what a keyboard and a screen reader expect for an action.
+          Native `button` elements, each with an EXPLICIT `type="button"`. Without it a
+          button inside a form defaults to submit, so a person changing page would post the
+          surrounding form. Anchors are deliberately not used even though the legacy
+          affordances were text links: these actions have no URL of their own, and a `button`
+          is what a keyboard and a screen reader expect for an action.
 
-        Unavailability is stated PROGRAMMATICALLY through the native `disabled` property,
-        never by styling alone, and the buttons stay in the document so the control cannot
-        reflow under the pointer. The paired stylesheet deliberately declares no disabled
-        appearance of its own, letting the application-wide `button:disabled` rule apply, so
-        the disabled state here can never drift from the rest of the application.
+          Unavailability is stated PROGRAMMATICALLY through the native `disabled` property,
+          never by styling alone, and the buttons stay in the document so the control cannot
+          reflow under the pointer. The paired stylesheet deliberately declares no disabled
+          appearance of its own, letting the application-wide `button:disabled` rule apply, so
+          the disabled state here can never drift from the rest of the application.
 
-        The glyph is hidden from assistive technology and the accessible name comes from the
-        label, so each step is announced as "First page" rather than as a punctuation
-        character.
-      -->
-      <button
-        class="pagination__button"
-        type="button"
-        [disabled]="!canGoPrevious"
-        [attr.aria-label]="labels.first"
-        (click)="goFirst()"
-      >
-        <span aria-hidden="true">{{ labels.firstSymbol }}</span>
-      </button>
+          The glyph is hidden from assistive technology and the accessible name comes from the
+          label, so each step is announced as "First page" rather than as a punctuation
+          character.
+        -->
+        <!--
+          ⚠ THE `#firstStep` AND `#lastStep` REFERENCES ARE LOAD-BEARING, NOT DIAGNOSTIC. Both
+          controls disable themselves by succeeding, and a browser discards focus on an element
+          that becomes disabled - measured at runtime as focus landing on `body` after First and
+          after Last, while Next and Previous retained it. The paired class reads these four
+          references to hand focus to the step that is still available. Removing a reference
+          silently reintroduces the focus loss, because nothing here fails without it.
+        -->
+        <button
+          #firstStep
+          class="pagination__button"
+          type="button"
+          [disabled]="!canGoPrevious"
+          [attr.aria-label]="labels.first"
+          (click)="goFirst()"
+        >
+          <span aria-hidden="true">{{ labels.firstSymbol }}</span>
+        </button>
 
-      <button
-        class="pagination__button"
-        type="button"
-        [disabled]="!canGoPrevious"
-        [attr.aria-label]="labels.previous"
-        (click)="goPrevious()"
-      >
-        <span aria-hidden="true">{{ labels.previousSymbol }}</span>
-      </button>
+        <button
+          #previousStep
+          class="pagination__button"
+          type="button"
+          [disabled]="!canGoPrevious"
+          [attr.aria-label]="labels.previous"
+          (click)="goPrevious()"
+        >
+          <span aria-hidden="true">{{ labels.previousSymbol }}</span>
+        </button>
 
-      <!--
-        THE POSITION READOUT. Text rather than a control: there is nothing to activate, and
-        a disabled button here would put an unusable stop in the tab order. `displayPage`
-        is the one-based number a person expects and `totalPages` the count it sits within,
-        both already resolved by the class.
+        <!--
+          THE POSITION READOUT. Text rather than a control: there is nothing to activate, and
+          a disabled button here would put an unusable stop in the tab order. `displayPage`
+          is the one-based number a person expects and `totalPages` the count it sits within,
+          both already resolved by the class.
 
-        `aria-current="page"` marks the page on show. With no page-link window to mark - the
-        class exposes none, so there is no list to iterate - this readout IS the element that
-        identifies the current page, and it is the direct successor to the legacy inert
-        bracketed marker at `PagingControl.vb` L273-L274. `aria-current` is a global ARIA
-        state and is permitted here, unlike `aria-label`, which ARIA prohibits on a plain
-        span and which is therefore not used to dress the readout up as a sentence.
-      -->
-      <span class="pagination__position" aria-current="page">{{ displayPage }} / {{ totalPages }}</span>
+          `aria-current="page"` marks the page on show. With no page-link window to mark - the
+          class exposes none, so there is no list to iterate - this readout IS the element that
+          identifies the current page, and it is the direct successor to the legacy inert
+          bracketed marker at `PagingControl.vb` L273-L274. `aria-current` is a global ARIA
+          state and is permitted here, unlike `aria-label`, which ARIA prohibits on a plain
+          span and which is therefore not used to dress the readout up as a sentence.
+        -->
+        <span class="pagination__position" aria-current="page">{{ displayPage }} / {{ totalPages }}</span>
 
-      <button
-        class="pagination__button"
-        type="button"
-        [disabled]="!canGoNext"
-        [attr.aria-label]="labels.next"
-        (click)="goNext()"
-      >
-        <span aria-hidden="true">{{ labels.nextSymbol }}</span>
-      </button>
+        <button
+          #nextStep
+          class="pagination__button"
+          type="button"
+          [disabled]="!canGoNext"
+          [attr.aria-label]="labels.next"
+          (click)="goNext()"
+        >
+          <span aria-hidden="true">{{ labels.nextSymbol }}</span>
+        </button>
 
-      <button
-        class="pagination__button"
-        type="button"
-        [disabled]="!canGoNext"
-        [attr.aria-label]="labels.last"
-        (click)="goLast()"
-      >
-        <span aria-hidden="true">{{ labels.lastSymbol }}</span>
-      </button>
-    </div>
+        <button
+          #lastStep
+          class="pagination__button"
+          type="button"
+          [disabled]="!canGoNext"
+          [attr.aria-label]="labels.last"
+          (click)="goLast()"
+        >
+          <span aria-hidden="true">{{ labels.lastSymbol }}</span>
+        </button>
+      </div>
+    }
   </div>
 }

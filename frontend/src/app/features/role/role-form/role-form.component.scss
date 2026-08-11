@@ -21,6 +21,7 @@
 //     .role-form__control--pair
 //     .role-form__period
 //     .role-form__frequency
+//     .role-form__qualifier
 //     .role-form__readonly
 //     .role-form__warning
 //     .role-form__actions
@@ -85,6 +86,28 @@
 // and the emitted CSS is unchanged.
 $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 
+// The WIDE step, which the comment above says needs no declaration at all - and which R-M16 proved
+// it does need, for a reason that only appears when the grid is measured rather than reasoned about.
+//
+// ⚠ WHAT WAS MEASURED. With no cap, a control fills its column, and the column is a fraction of a
+// container that grows without limit. At 1024 the single-column form gave `#role-form-role-name` a
+// track of 566.13px - a text box more than two and a half times its measured legacy width, and far
+// past the measure at which a single line of text stops being comfortable to scan. Worse, it made the
+// width curve NON-MONOTONE across the field-grid switch: 566.13 at 1024 fell to 322.06 at 1280, so a
+// control got NARROWER as the viewport got WIDER, which is the shape of R-M16 itself.
+//
+// The cap is the MEASURED legacy value, restored rather than invented: `Width="325"` on all four
+// full-width controls in `Website/admin/Security/editroles.ascx` (`txtRoleName` L27,
+// `txtDescription` L39, `txtRSVPLink` L161, `ctlIcon` L169). Expressed in rem so it scales with the
+// reader's type size, which the pixel attribute could not. Capping the control at the width the
+// legacy screen gave it is MORE faithful than stretching it, not less - the earlier decision to let
+// it fill the column was the departure.
+//
+// ⚠ SOURCE ORDER IS LOAD-BEARING. `.role-form__control--narrow` carries the same specificity and
+// must come AFTER the rule this is used in, or the 96px short-control step would be overridden by
+// this wider one. It does; do not reorder them.
+$control-measure: 20.3125rem;
+
 // -----------------------------------------------------------------------------
 //  ROOT
 // -----------------------------------------------------------------------------
@@ -147,7 +170,23 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 // tuned for a border or an icon and does not clear the contrast threshold as body text.
 .role-form__warning {
   max-inline-size: mx.breakpoint('md');
-  color: var(--color-danger);
+  color: var(--color-danger-text);
+}
+
+// The recovery block for a refused save. Grouped so the sentence and the command that acts on it
+// read as one statement rather than as a stray paragraph followed by a stray button, and given the
+// same measure as every other prose block on the screen.
+//
+// The command itself is left entirely to the design system: `_forms.scss` gives every button its
+// surface, border, radius, padding and - the part that matters here - its target-size floor on both
+// axes. Nothing about this command warrants departing from that, so nothing is declared for it
+// beyond belonging to the group. Declaring a width or a padding here would be the one way to end up
+// below the floor QA measured for.
+.role-form__conflict {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-2);
+  max-inline-size: mx.breakpoint('md');
 }
 
 // -----------------------------------------------------------------------------
@@ -260,11 +299,78 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 // single-column runs of rows at every width, because the legacy stylesheets declare no media
 // query anywhere. It alters arrangement only; every field remains present, in source order,
 // and bound exactly as before.
+//
+// ⚠ R-M16: THE THRESHOLD IS `xl`, NOT `md`, AND THE REASON IS A THREE-WAY COLLISION MEASURED IN A
+// REAL BROWSER RATHER THAN REASONED ABOUT. At `md` this switch fired at exactly the width where two
+// OTHER layout changes fire, and the three compounded:
+//
+//   1. the application shell moves the sidebar from above the content to beside it, taking
+//      `section.role-form` from 720.00px to 510.13px;
+//   2. this grid becomes two columns, halving 476.13px into 232.06px per column;
+//   3. the shared field becomes a two-column label-and-control grid reserving a FIXED 150px label
+//      track plus a 16px gap.
+//
+// 232.06 - 150 - 16 leaves 66.06px for the control. Measured at 768: every one of the seven controls
+// on this form lost between 31% and 82% of its width for ONE PIXEL of extra viewport - the role name
+// showed six characters, the role-group select's `< Global Roles >` was genuinely clipped (111.73px
+// of text in 32px of space), and each half of a period pair fell to 29.03px, NARROWER THAN ITS OWN
+// `None` LABEL NEEDS, rendering as a bare dropdown arrow. The role-group select did not regain its
+// 767px width until 1920px.
+//
+// At `xl` the three no longer coincide. Between 768 and 1279 the fields are a single column, so each
+// one has the whole content measure and the shared field's 150px label track costs it nothing it
+// cannot afford; at 1280 and above there is room for two label tracks and two controls at the
+// measured legacy width. Paired with `$control-measure`, the control width curve across
+// 320/375/767/768/1024/1280/1920 becomes flat-or-rising instead of collapsing.
+//
+// It is NOT enough to move this switch alone: without the cap, the single-column band merely
+// replaces a too-narrow control with a 566px one and the curve still falls at the switch. The two
+// changes are one fix and must not be separated.
+//
+// ⚠ WHAT REMAINS, MEASURED AFTER THE FIX AND DELIBERATELY LEFT: the role-group select alone still
+// gives up 14.87px across the 767 -> 768 step (325.00 -> 310.13, a 4.58% change), because the
+// APPLICATION SHELL docks its sidebar beside the content at that same width and `section.role-form`
+// falls from 720.00 to 510.13. The remaining `.form-field` label track and gap then leave 310.125px,
+// which is just under the cap, so the cap stops binding for that one control in a fifteen-pixel band
+// that fully recovers at 783. Re-measured across eight widths: nothing is clipped anywhere - the
+// select holds 111.73px of text in 276px of space at 768, with the frequency selects legibly reading
+// `None` at 94px - and `window.scrollX` is 0 at every width, so no reader loses anything.
+//
+// Three ways to close it were considered and all three are worse:
+//   * moving the SHARED field's own `md` switch would change the label-and-control arrangement on
+//     every admin screen in the workspace, which is an enormous blast radius for 14.87px;
+//   * lowering `$control-measure` below 310.125px would trade a MEASURED legacy width for a number
+//     chosen only to flatten a curve;
+//   * letting the select size to its content - which is faithful, since `cboRoleGroups`
+//     (`editroles.ascx:L47`) declares no `Width` at all, unlike the four text controls that declare
+//     `Width="325"` - flattens this dataset and reintroduces a CONDITIONAL one, because a select
+//     sizes to its WIDEST option and a tenant with long group names would track the container again.
+// The shell breakpoint is the true driver and it is shared, so it belongs to the responsive sweep
+// rather than to this screen.
+//
+// ⚠ THAT SWEEP HAS NOW RUN AND LEAVES THIS EXACTLY AS IT IS. It re-measured the band control by
+// control, across 760, 767, 768, 775, 783, 800 and 1024, and the result narrows the finding rather
+// than widening it: FOUR of the five controls do not move at all - the name holds 217.00, the
+// description 213.00, the service fee 96.00 and the billing period 96.00 at every one of those
+// widths - so the dip belongs to the role-group select alone, and it belongs to it because a select
+// sizes to its widest option and this one's 325px intrinsic width is the only measure in the set
+// that exceeds the narrowed column. Recovery was pinned exactly rather than estimated: the select
+// grows one pixel per pixel of viewport as `innerWidth - 457.875`, crossing its own width at 782.875,
+// so 783 is the first integer width at full recovery and 782 is still 0.875px short.
+//
+// What the sweep added is the other side of the ledger, which is what settles it. The step costs
+// `main` 209.875px (752.00 -> 542.125, -27.909%) and it BUYS the content column its place at the top
+// of the viewport: `main`'s top edge rises from y 611.5 to y 69, so the share of the first viewport
+// consumed before any content at all falls from 67.94% to 7.67%. Trading sixty percentage points of
+// first-viewport content for 14.875px on one select, in a fifteen-pixel band, with zero horizontal
+// overflow and `scrollX` 0 on either side of it, is a trade worth keeping. `main` carries no measure
+// of its own (`max-inline-size: none`), so there is nothing to tune here short of moving the shared
+// breakpoint - which the three rejected options above already cost out.
 .role-form__grid {
   display: grid;
   gap: var(--space-3);
 
-  @include mx.respond-above('md') {
+  @include mx.respond-above('xl') {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -299,6 +405,11 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   display: grid;
   gap: var(--space-1);
   min-inline-size: 0;
+
+  // R-M16: see `$control-measure`. The measured legacy control width, restored as a cap so a
+  // single-column field cannot stretch a text box across a desktop viewport and so the width curve
+  // stays flat across the field-grid switch instead of falling.
+  max-inline-size: $control-measure;
 }
 
 // A money amount, a period count and a short code are short values. A control sized for a
@@ -369,6 +480,23 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   flex: var(--flex-fill-from-zero);
   max-inline-size: $control-narrow;
   min-inline-size: 0;
+}
+
+// The word that tells the two halves of a period pair apart in an accessible name, and
+// nothing else. It is referenced by `aria-labelledby` and never read as content, so it is
+// removed from the visual layout entirely rather than merely hidden: the shared helper keeps
+// it in the accessibility tree while collapsing it to a clipped single pixel.
+//
+// ⚠ IT MUST NOT BECOME A FLEX ITEM WITH SIZE. `.role-form__control--pair` is a flex row, and a
+// visible qualifier here would take a share of the row and push the two controls it exists to
+// describe out of alignment. The helper's `position: absolute` is what takes it out of the flow,
+// so this rule is load-bearing rather than cosmetic, and there is nothing to override: the
+// helper already declares every property the removal needs.
+//
+// MIGRATION: a net addition. The legacy screen had no second name to place, because both halves
+// of each pair shared one label and the surplus control simply went unnamed.
+.role-form__qualifier {
+  @include mx.visually-hidden;
 }
 
 // An `output` element holding a value the operator may not change. It is muted rather than
@@ -464,7 +592,7 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 // same kind of control being hovered.
 .role-form__command--danger,
 .role-form__command--danger:hover {
-  color: var(--color-danger);
+  color: var(--color-danger-text);
 }
 
 // =============================================================================

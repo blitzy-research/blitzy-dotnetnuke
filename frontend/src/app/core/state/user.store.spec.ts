@@ -411,6 +411,7 @@ const detailFixture = (overrides: Partial<UserDetail> = {}): UserDetail => ({
   lastLockoutDate: null,
   lastPasswordChangeDate: null,
   roles: ['Registered Users'],
+  canDelete: true,
   ...overrides,
 });
 
@@ -423,6 +424,10 @@ const detailFixture = (overrides: Partial<UserDetail> = {}): UserDetail => ({
  * override it would still not accidentally agree with a hard-coded constant.
  */
 const settingsFixture = (overrides: Partial<MembershipSettings> = {}): MembershipSettings => ({
+  // ⚠ #5/#6 — stated rather than left to the override, so a specification that says nothing about
+  // provenance still receives a policy that claims to be stored. A specification that cares tests
+  // both values explicitly.
+  isStored: true,
   columnFirstName: true,
   columnLastName: true,
   columnDisplayName: true,
@@ -1081,7 +1086,15 @@ describe('UserStore', () => {
 
       settings.flush(envelope(settingsFixture({ recordsPerPage: 25 })));
 
-      expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture()], { pageSize: 25 }));
+      const listing = expectRequest('GET', USERS_URL);
+
+      // The counted proof of the ORDER, not merely of the absence above: the listing could only carry
+      // the tenant's size because the policy that declares it had already been answered.
+      expect(parameter(listing, 'pageSize'))
+        .withContext('the listing carried the size the policy declared')
+        .toBe('25');
+
+      listing.flush(pageFixture([listItemFixture()], { pageSize: 25 }));
     });
 
     it('requests the page size the account policy declared, not a hard-coded 10', () => {
@@ -1438,14 +1451,21 @@ describe('UserStore', () => {
       /*
        * An UNREADABLE policy is a different situation from an absent key, and is answered
        * differently on purpose. The legacy default applied to a key missing from a policy it could
-       * still read; here the whole policy is gone, the page size falls back for the same reason, and
+       * still read; here the read itself failed, the page size falls back for the same reason, and
        * a tenant whose policy is unavailable still has accounts. The failure stays recorded.
+       *
+       * ⚠ A SERVER ERROR RATHER THAN A NOT-FOUND, and the distinction is the subject of this
+       * assertion rather than an incidental choice of fixture. `404` on this read does NOT mean the
+       * policy was unreadable - it is how the transport spells "this tenant stores no policy", which
+       * is a legitimate answer the store now reports through `membershipSettingsUnconfigured` WITHOUT
+       * recording a failure. Using it here would assert the opposite of the sibling case below and
+       * would make this test pass only while that distinction was missing.
        */
       store.reset();
       store.initialise();
       expectRequest('GET', SETTINGS_URL).flush(
-        { title: 'Not Found', status: 404, type: 'urn:dnnmigration:error:portal.not_found' },
-        { status: 404, statusText: 'Not Found' },
+        { title: 'Server Error', status: 500, type: 'urn:dnnmigration:error:server.error' },
+        { status: 500, statusText: 'Internal Server Error' },
       );
 
       const fallback = expectRequest('GET', USERS_URL);
@@ -1457,6 +1477,73 @@ describe('UserStore', () => {
       expect(store.failure())
         .withContext('the policy failure is still recorded, so nothing is concealed')
         .not.toBeNull();
+      expect(store.membershipSettingsUnconfigured())
+        .withContext('a failed read is not an absent policy')
+        .toBeFalse();
+    });
+
+    it('reports an absent policy without recording a failure, and still lists the accounts', () => {
+      /*
+       * ⚠ THE ANSWER THAT LOOKS LIKE AN ERROR AND IS NOT ONE. The Application layer returns a
+       * SUCCESSFUL outcome carrying no value for a tenant with no settings source, and the shared
+       * response helper maps that onto `404` by a documented convention. So the wire cannot tell
+       * "absent" from "missing" on the status line, and this store is where the distinction is
+       * recovered.
+       *
+       * MIGRATION: absence is legitimate rather than exceptional, and the legacy reader proves it.
+       * `Library/Components/Users/UserController.vb:L656-L671` located the "User Accounts" module by
+       * definition name and assigned its result ONLY inside a not-nothing guard, so a tenant without
+       * that module received `Nothing` - no error, no exception - and the screens that consumed it
+       * fell back to their own defaults. The server's own remarks on the replacement member say
+       * exactly that, and say reporting a failure instead "would change behaviour those screens
+       * depended upon".
+       *
+       * ⚠ WHAT THIS PREVENTS is a user-facing one: recording a failure here put "Not Found / The
+       * requested resource does not exist. / Reference: <correlation guid>" and a retry affordance on
+       * a fully loaded account listing, because that screen surfaces this operation's failure beside
+       * its own. Nothing was wrong and nothing could be retried into existence.
+       */
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(
+        { title: 'Not Found', status: 404, type: 'urn:dnnmigration:error:resource.not_found' },
+        { status: 404, statusText: 'Not Found' },
+      );
+
+      const listing = expectRequest('GET', USERS_URL);
+
+      listing.flush(pageFixture([listItemFixture()]));
+
+      expect(store.membershipSettingsUnconfigured())
+        .withContext('the absence is published, so a screen can explain it')
+        .toBeTrue();
+      expect(store.failure())
+        .withContext('and it is NOT a failure, so no screen raises an error over it')
+        .toBeNull();
+      // The policy slice stays empty, which is what keeps every consumer's own legacy defaults in
+      // force - the fallback the server's remarks expect this client to apply.
+      expect(store.membershipSettings()).toBeNull();
+      // A tenant with no policy still has accounts, and they are still listed.
+      expect(store.users().items.length).toBe(1);
+      expect(store.search()).toEqual({ mode: 'all' });
+    });
+
+    it('clears an absence once a later read succeeds', () => {
+      // A tenant can GAIN an account module, so the flag must not latch. Asserted because the reset
+      // path alone would leave it standing for the life of a mounted session.
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(
+        { title: 'Not Found', status: 404, type: 'urn:dnnmigration:error:resource.not_found' },
+        { status: 404, statusText: 'Not Found' },
+      );
+      expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture()]));
+
+      expect(store.membershipSettingsUnconfigured()).toBeTrue();
+
+      store.loadMembershipSettings();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({})));
+
+      expect(store.membershipSettingsUnconfigured()).toBeFalse();
+      expect(store.membershipSettings()).not.toBeNull();
     });
 
     it('leaves a search already chosen alone when the policy arrives', () => {
@@ -1850,7 +1937,12 @@ describe('UserStore', () => {
       store.setApprovalFilter(false);
       expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture({ isApproved: false })]));
 
-      httpMock.expectNone((request) => DROPPED.test(request.url));
+      // Counted rather than asserted through `expectNone`, which throws and therefore records no
+      // expectation: the emptiness of what `match` returns is the claim itself. The predicate is scoped
+      // to the dropped addresses alone, so the `verify()` in the teardown still guards the rest.
+      expect(httpMock.match((request) => DROPPED.test(request.url)))
+        .withContext('neither dropped mode is reached, on any endpoint')
+        .toEqual([]);
     });
 
     it('answers the unauthorised view as a PAGED filter, not as the dropped mode', () => {
@@ -3478,6 +3570,249 @@ describe('UserStore', () => {
   });
 
   // =========================================================================
+  // CONCURRENT WRITES
+  //
+  // ⚠ THE GROUP THAT EXISTS BECAUSE `saving` USED TO BE A BOOLEAN. Every write set it before
+  // dispatching and cleared it in both callbacks, which is exactly right for one write and wrong
+  // for every case where two are outstanding: the FIRST response to land cleared it while the rest
+  // were still on the wire, so "not saving" stopped meaning "every write has settled" and started
+  // meaning "at least one has". There is a real screen that does this — the profile-declaration
+  // grid's Apply issues ONE WRITE PER CHANGED ROW, concurrently — and every control on it is
+  // disabled on this flag, so a mid-batch clear re-enabled all of them, admitted a second write
+  // into the middle of the batch, and let the batch's next response settle THAT write: announced
+  // as a success before its own request had answered, with the record of what was awaited
+  // discarded, so its eventual refusal had nothing left to attribute it to. A false success and a
+  // lost failure, from one shared boolean.
+  //
+  // The same defect had a second half in the single failure slot, which every write emptied as it
+  // started — so a later write's START erased a refusal an earlier one had already recorded.
+  //
+  // These cases pin both halves. They drive the STORE directly rather than through the screen,
+  // because the store is where the invariant lives and a screen could satisfy it by accident
+  // through a disabled button.
+  // =========================================================================
+
+  describe('concurrent writes', () => {
+    /**
+     * Drains the re-reads a batch of successful writes leaves behind.
+     *
+     * Each write's callback re-reads the declaration list, and each re-read supersedes the one
+     * before it — so a batch of three leaves one live request and two cancelled ones. All three
+     * must be accounted for, because the teardown's `verify()` counts a cancelled request just as
+     * a live one.
+     */
+    function drainDefinitionReads(): void {
+      for (const read of httpMock.match((request) => request.url === DEFINITIONS_URL)) {
+        if (!read.cancelled) {
+          read.flush(envelope([definitionFixture()]));
+        }
+      }
+    }
+
+    it('reports saving until the LAST of several concurrent writes settles', () => {
+      store.updateProfileDefinition(0, definitionWriteFixture({ viewOrder: 1 }));
+      store.updateProfileDefinition(4, definitionWriteFixture({ viewOrder: 2 }));
+      store.updateProfileDefinition(9, definitionWriteFixture({ viewOrder: 3 }));
+
+      const writes = httpMock.match(
+        (request) => request.method === 'PUT' && request.url.startsWith(`${DEFINITIONS_URL}/`),
+      );
+
+      expect(writes.length).withContext('one write per changed row, dispatched together').toBe(3);
+      expect(store.saving()).toBeTrue();
+
+      writes[0].flush(envelope(definitionFixture({ propertyDefinitionId: 0, viewOrder: 1 })));
+
+      // ⚠ THE ASSERTION THE BOOLEAN FAILED. Two requests are still on the wire.
+      expect(store.saving())
+        .withContext('the first response does not settle the batch')
+        .toBeTrue();
+
+      writes[1].flush(envelope(definitionFixture({ propertyDefinitionId: 4, viewOrder: 2 })));
+
+      expect(store.saving())
+        .withContext('nor does the second, while one remains')
+        .toBeTrue();
+
+      writes[2].flush(envelope(definitionFixture({ propertyDefinitionId: 9, viewOrder: 3 })));
+
+      expect(store.saving())
+        .withContext('and the last one does')
+        .toBeFalse();
+
+      drainDefinitionReads();
+    });
+
+    it('holds a refusal from early in a batch until the batch has settled', () => {
+      // The consumer that matters reads the failure slot at the moment saving turns false, so a
+      // refusal raised by the first response has to still be there when the last one lands.
+      store.updateProfileDefinition(0, definitionWriteFixture({ required: true }));
+      store.updateProfileDefinition(4, definitionWriteFixture({ required: true }));
+
+      const writes = httpMock.match(
+        (request) => request.method === 'PUT' && request.url.startsWith(`${DEFINITIONS_URL}/`),
+      );
+
+      writes[0].flush(problemFixture({ status: 409 }), { status: 409, statusText: 'Conflict' });
+
+      const refusal = store.failure();
+
+      expect(refusal).withContext('the refusal is recorded when it arrives').not.toBeNull();
+      expect(refusal?.operation).toBe('updateProfileDefinition');
+      expect(store.saving()).withContext('and the batch is still outstanding').toBeTrue();
+
+      writes[1].flush(envelope(definitionFixture({ propertyDefinitionId: 4, required: true })));
+
+      expect(store.saving()).toBeFalse();
+      expect(store.failure())
+        .withContext('a sibling write succeeding does not erase the refusal')
+        .not.toBeNull();
+
+      drainDefinitionReads();
+    });
+
+    it('does not let a write STARTING erase a refusal a sibling write already recorded', () => {
+      // The second half of the same defect. Every write clears the failure slot as it starts,
+      // which is correct for a fresh attempt and destructive while siblings are outstanding: the
+      // row that was refused would be left looking as though it had been written, with the
+      // refusal discarded by a request rather than by anything the operator did.
+      store.updateProfileDefinition(0, definitionWriteFixture());
+      store.updateProfileDefinition(4, definitionWriteFixture());
+
+      const batch = httpMock.match(
+        (request) => request.method === 'PUT' && request.url.startsWith(`${DEFINITIONS_URL}/`),
+      );
+
+      batch[0].flush(problemFixture({ status: 403 }), { status: 403, statusText: 'Forbidden' });
+      expect(store.failure()).not.toBeNull();
+
+      // A third write starts while the second is still outstanding.
+      store.updateProfileDefinition(9, definitionWriteFixture());
+
+      expect(store.failure())
+        .withContext('the slot is cleared only by the first write of a batch')
+        .not.toBeNull();
+
+      const late = httpMock.expectOne(
+        (request) => request.method === 'PUT' && request.url === `${DEFINITIONS_URL}/9`,
+      );
+
+      batch[1].flush(envelope(definitionFixture({ propertyDefinitionId: 4 })));
+      late.flush(envelope(definitionFixture({ propertyDefinitionId: 9 })));
+
+      expect(store.saving()).toBeFalse();
+
+      drainDefinitionReads();
+    });
+
+    it('clears the slot again for a write that starts with nothing outstanding', () => {
+      // The behaviour a single write has always had, asserted so the rule above cannot be
+      // mistaken for "the failure slot is never cleared".
+      store.updateProfileDefinition(0, definitionWriteFixture());
+      expectRequest('PUT', `${DEFINITIONS_URL}/0`).flush(problemFixture({ status: 403 }), {
+        status: 403,
+        statusText: 'Forbidden',
+      });
+
+      expect(store.failure()).not.toBeNull();
+      expect(store.saving()).toBeFalse();
+
+      store.updateProfileDefinition(0, definitionWriteFixture());
+
+      expect(store.failure())
+        .withContext('a fresh attempt starts from a clean slot')
+        .toBeNull();
+
+      expectRequest('PUT', `${DEFINITIONS_URL}/0`).flush(
+        envelope(definitionFixture({ propertyDefinitionId: 0 })),
+      );
+
+      drainDefinitionReads();
+    });
+
+    it('zeroes the count when a session boundary releases the writes', () => {
+      // ⚠ WITHOUT THIS THE COUNT WOULD STRAND. A released write fires neither callback, and the
+      // callbacks are where the count comes down — so a boundary crossed with two writes
+      // outstanding would leave saving stuck at true for the remaining life of the application,
+      // with every form on every account screen disabled and no request outstanding to explain it.
+      store.updateProfileDefinition(0, definitionWriteFixture());
+      store.createProfileDefinition({
+        propertyName: 'Nickname',
+        propertyCategory: 'Contact',
+        dataType: 0,
+        defaultValue: null,
+        length: 0,
+        required: false,
+        validationExpression: null,
+        viewOrder: 0,
+        visible: true,
+        moduleDefId: null,
+      });
+
+      const outstanding = httpMock.match((request) => request.url.startsWith(DEFINITIONS_URL));
+
+      expect(outstanding.length).toBe(2);
+      expect(store.saving()).toBeTrue();
+
+      store.reset();
+
+      for (const request of outstanding) {
+        expect(request.cancelled)
+          .withContext('a write must not outlive the session that issued it')
+          .toBeTrue();
+      }
+
+      expect(store.saving())
+        .withContext('and the count goes with them')
+        .toBeFalse();
+
+      // The count is genuinely zero rather than merely reported as false: the next write moves it
+      // off zero, which a stranded or negative count could not do.
+      store.updateProfileDefinition(0, definitionWriteFixture());
+
+      expect(store.saving()).toBeTrue();
+
+      expectRequest('PUT', `${DEFINITIONS_URL}/0`).flush(
+        envelope(definitionFixture({ propertyDefinitionId: 0 })),
+      );
+
+      expect(store.saving()).toBeFalse();
+
+      drainDefinitionReads();
+    });
+
+    it('counts writes across DIFFERENT commands, not per command', () => {
+      // The count is one fact about the store, not one per endpoint: a form disabling itself on
+      // this flag is protecting the operator from a second submission of any kind, not only from
+      // a second submission of the same shape.
+      store.updateUser(7, updateRequestFixture());
+      store.updateProfileDefinition(0, definitionWriteFixture());
+
+      const account = expectRequest('PUT', `${USERS_URL}/7`);
+      const definition = expectRequest('PUT', `${DEFINITIONS_URL}/0`);
+
+      expect(store.saving()).toBeTrue();
+
+      account.flush(envelope(detailFixture({ userId: 7 })));
+
+      expect(store.saving())
+        .withContext('the declaration write is still outstanding')
+        .toBeTrue();
+
+      definition.flush(envelope(definitionFixture({ propertyDefinitionId: 0 })));
+
+      expect(store.saving()).toBeFalse();
+
+      // ⚠ NO LISTING RE-READ IS EXPECTED, and that is this store's own rule rather than an
+      // omission: the account listing dispatches nothing while no search has been chosen, which is
+      // the state this case leaves it in. The declaration write re-reads its own list, which is
+      // drained below.
+      httpMock.expectNone((request) => request.url === USERS_URL);
+      drainDefinitionReads();
+    });
+  });
+
+  // =========================================================================
   // FAILURES
   // =========================================================================
 
@@ -4043,7 +4378,12 @@ describe('UserStore', () => {
 
       const posted = expectRequest('POST', USERS_URL);
 
-      httpMock.expectNone((request) => request.method === 'GET');
+      // Counted, and scoped to the verb a pre-check would have used: the emptiness of this list is the
+      // claim that nothing was looked up first. `match` removes only what it matched - nothing - so the
+      // teardown's `verify()` still guards the creation itself.
+      expect(httpMock.match((request) => request.method === 'GET'))
+        .withContext('nothing is read before the creation is dispatched')
+        .toEqual([]);
 
       posted.flush(envelope(detailFixture({ userId: 91 })), {
         status: 201,

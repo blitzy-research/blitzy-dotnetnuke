@@ -157,6 +157,30 @@ export const REVOCATION_FAILED_MESSAGE =
   'password.';
 
 /**
+ * Confirms a sign-out the operator asked for.
+ *
+ * MIGRATION: AUTHORED BECAUSE THE LEGACY HAD NO EQUIVALENT TO PORT, and for a reason that no longer
+ * holds. The legacy sign-out was a full-page navigation, so the portal's own home page arriving in
+ * place of the administration screen was itself the confirmation. A single-page application replaces
+ * only the routed view, so the same event produces a sign-in form inside a shell that never
+ * reloaded — and a sign-in form is ALSO what an unattended session lapsing produces. This sentence
+ * is what separates the two.
+ *
+ * ⚠ DELIBERATELY DISTINCT IN WORDING FROM THE SESSION-ENDED NOTICE that
+ * `core/interceptors/auth.interceptor.ts` raises, and the distinction is the entire value of both.
+ * One says the operator's instruction was carried out; the other says something happened TO them
+ * that they must respond to. Wording them alike, or worse routing both through one sentence, would
+ * collapse a deliberate act and an interruption into the same report and leave the operator unable
+ * to tell whether they had lost anything.
+ *
+ * It states only what is certainly true at the moment it is raised: the session is gone from this
+ * device. It claims nothing about the server, because at this point nothing has been posted yet —
+ * {@link REVOCATION_FAILED_MESSAGE} is what qualifies it if the withdrawal is then refused, and the
+ * two are designed to sit together without contradicting each other.
+ */
+export const SIGNED_OUT_MESSAGE = 'You have been signed out.';
+
+/**
  * The failure a renewal reports when no renewal credential is held.
  *
  * Produced rather than posting an empty credential, which the server would refuse as a malformed
@@ -1272,14 +1296,18 @@ export class AuthStore {
    *
    * ⚠ THE DIFFERENCE BETWEEN THIS METHOD AND {@link AuthStore.renewSession} IS BOOKKEEPING,
    * AND CHOOSING THE WRONG ONE IS A REAL DEFECT RATHER THAN A STYLE PREFERENCE. This is the
-   * DELIBERATE command: it claims a phase so a busy projection reports the renewal, and on
-   * failure it discards the session and RECORDS the problem, because a caller that asked to
-   * renew — a navigation gate resolving an expired token, for instance — is about to send the
-   * operator to sign in and that screen has to be able to say why. The refused-request path
-   * wants none of that bookkeeping: it makes its own terminal decision, with its own
-   * conditions, and a failure record from a renewal the operator never asked for would put a
-   * stale message in front of somebody whose next action succeeded. That path therefore calls
-   * the primitive directly.
+   * DELIBERATE command: it claims a phase so a busy projection reports the renewal, and on failure
+   * it DISCARDS THE SESSION, because a caller that asked to renew — a navigation gate resolving an
+   * expired token, for instance — is about to send the operator to sign in. The refused-request path
+   * wants neither the phase nor the discard on its own terms: it makes its own terminal decision,
+   * with its own conditions, and an older renewal's refusal must leave a NEWER session completely
+   * alone. That path therefore calls the primitive directly.
+   *
+   * ⚠ WHAT IT DOES **NOT** DO IS RECORD THE PROBLEM DOCUMENT, and that is deliberate — see the
+   * failure handler below for the browser measurement that removed it. The operator is told the
+   * session ended by the boundary's one owner, in wording chosen for them; putting the renewal's own
+   * transport failure in front of them as though it were a refused sign-in told them about a token
+   * instead.
    *
    * MIGRATION: the slot, the two-request composition and the epoch conditioning around the
    *   commit used to live on `core/services/auth.service.ts`. They are session lifecycle,
@@ -1288,9 +1316,8 @@ export class AuthStore {
    *
    * On failure the session is discarded, because a refresh token the server refuses
    * cannot be retried and keeping it would mean presenting it again and being refused
-   * again. The failure is recorded AFTER the session is discarded so the recorded
-   * problem survives, which is what lets a sign-in screen explain why the caller is
-   * back at it.
+   * again. Discarding is what explains the ending too: it purges through the one owner of the
+   * session boundary, and that owner raises the operator-facing sentence for this reason alone.
    *
    * @returns The renewed session. Must be subscribed for the request to be issued.
    */
@@ -1299,6 +1326,28 @@ export class AuthStore {
       const ticket = this.claimPhase('refreshing');
 
       this.clearFailure();
+
+      /*
+       * ⚠ THE SESSION BOUNDARY THIS RENEWAL BELONGS TO, captured before the request goes out so the
+       * failure handler can tell whether its answer still concerns the session that asked.
+       *
+       * ⚠ AND IT IS THE **TEARDOWN** GENERATION, NOT THE CUSTODIAN'S EPOCH, which is the only one of
+       * the two that reads correctly here. `renewSession` clears the custodian as its own first act
+       * on a refusal, so the custodian's epoch has ALWAYS moved by the time the handler below runs
+       * and a test against it would skip the discard on every single refusal, including the ordinary
+       * one. The teardown generation moves only when a session boundary is actually crossed — a
+       * sign-out, a sign-in, a tenant change — and `renewSession` crosses none, so it is unchanged
+       * on the ordinary path and advanced on precisely the paths the discard must stand down for.
+       *
+       * MIGRATION: the discard below used to be unconditional. That was harmless while it only
+       *   emptied stores that a superseded session had already emptied, and it stopped being
+       *   harmless once the boundary owner began EXPLAINING an unasked-for ending: a renewal begun
+       *   before a sign-out, refused afterwards, would have told somebody who had just signed out
+       *   that their session had ended — about a session that no longer existed, in answer to a
+       *   request they had never made. `renewSession` already declines to touch a superseded
+       *   session in both directions; this is the same judgement applied to the discard.
+       */
+      const boundary = this.sessionTeardown.generation();
 
       /*
        * The phase ticket, the failure record and the handlers below are PER SUBSCRIBER, while
@@ -1311,12 +1360,37 @@ export class AuthStore {
           this.clearFailure();
         }),
         catchError((error: unknown) => {
-          // Ordered deliberately: the session is discarded FIRST and the failure
-          // recorded second, because discarding resets the ladder while recording sets
-          // the problem. Reversing the two would clear the very problem a sign-in screen
-          // needs in order to explain why the caller is back at it.
-          this.discardSession('renewalRefused');
-          this.recordFailure(error);
+          /*
+           * ⚠ THE SESSION IS DISCARDED AND THE PROBLEM DOCUMENT IS DELIBERATELY NOT RECORDED, and
+           * this is a correction rather than an omission. Recording it put the RENEWAL's own
+           * failure into the slot the sign-in screen reads as "why your sign-in attempt was
+           * refused", and that screen then rendered it faithfully. Measured in a browser: an
+           * operator who had done nothing but click a menu item after a long pause was shown
+           * "Unauthorized" over "The refresh token is not valid." over a bare correlation
+           * identifier. Every word true, none of it usable, and all of it about a credential they
+           * never knew existed.
+           *
+           * The comment that stood here defended the record on the grounds that the sign-in screen
+           * "has to be able to say why". That reasoning is right and is exactly why the record is
+           * gone: the discard below purges through the one owner of the session boundary, and that
+           * owner now raises `SESSION_ENDED_MESSAGE` for this reason and this reason alone — in the
+           * operator's vocabulary, on both of the paths that end a session un-asked-for, and
+           * exempted from the navigation sweep so it survives the trip to the sign-in screen. One
+           * explanation, worded once, reached however the ending was discovered.
+           *
+           * Nothing is lost by not recording. The failure is re-thrown unchanged, so a caller still
+           * learns its renewal was refused; `clearFailure` above has already emptied the slot, so
+           * the sign-in screen cannot show a stale sentence from an earlier attempt; and the phase
+           * returns to idle through this operator chain's own `finalize`, which the record only ever
+           * duplicated.
+           *
+           * Conditioned on the boundary captured above: a refusal that arrives after the session it
+           * belonged to has already been replaced discards nothing and explains nothing, because from
+           * where the operator is standing nothing has happened to them.
+           */
+          if (this.sessionTeardown.isCurrent(boundary)) {
+            this.discardSession('renewalRefused');
+          }
 
           return throwError(() => error);
         }),
@@ -1545,6 +1619,26 @@ export class AuthStore {
       this.discardSession('signedOut');
       this.clearFailure();
 
+      /*
+       * ⚠ NOTHING IS ANNOUNCED FROM HERE, AND THAT IS A CORRECTION RATHER THAN AN OMISSION. A
+       * revision of this method DID raise the sign-out confirmation at this point, which reads as
+       * the obvious place for it: the local sign-out is complete by now and this is where the fact
+       * is established. It was destroyed on every single run.
+       *
+       * `SessionLifecycleService.signOut` — the one path that reaches this method — runs its
+       * teardown in a `finalize`, so the queue is emptied AFTER this line executes: once by
+       * `SessionTeardownService.purge` and again by {@link AuthStore.reset}'s own discard. Both
+       * clears are total and must be, because a queued notice can name the departing operator's
+       * records. A real browser measured the resulting lifetime at 10 ms — added here, gone before
+       * a single display frame, invisible to a point-in-time read and to a 40 ms poller alike.
+       *
+       * The statement therefore belongs to the last actor in the teardown, not the first, and
+       * `session-lifecycle.service.ts` raises both it and the residue warning after its purge has
+       * run. {@link SIGNED_OUT_MESSAGE} and {@link REVOCATION_FAILED_MESSAGE} stay declared in this
+       * file because their wording and the legacy authority for it belong with the session model;
+       * only the raising moved.
+       */
+
       if (refreshToken === null || refreshToken.length === 0) {
         // Nothing to withdraw, so nothing is posted: an empty credential would be answered 400
         // and reported as an outstanding revocation, which would be a false alarm. Local
@@ -1571,7 +1665,23 @@ export class AuthStore {
            * exists for the residue.
            */
           this._revocationOutstanding.set(true);
-          this.notifications.warning(REVOCATION_FAILED_MESSAGE);
+
+          /*
+           * The residue is RECORDED here and ANNOUNCED elsewhere, for the reason set out beside the
+           * removed confirmation above: a statement raised from inside this method is erased by the
+           * teardown that follows it. `SessionLifecycleService.signOut` reads this flag BEFORE its
+           * teardown runs — it has to, because {@link AuthStore.reset} sets the flag back to `false`
+           * — and raises {@link REVOCATION_FAILED_MESSAGE} afterwards.
+           *
+           * The flag is also read by the sign-in screen through {@link AuthStore.revocationOutstanding}
+           * as a rendered notice, so the fact has a durable surface as well as a transient one.
+           */
+
+          // ⚠ EXEMPTED FROM THE NAVIGATION SWEEP. Signing out returns the caller to the sign-in
+          // screen, and the shell discards stale notifications on a completed navigation — so
+          // without this the one message explaining that a residue remains on the server would be
+          // queued and swept inside the same task as the redirect it accompanies.
+          this.notifications.retainAcrossNavigation();
 
           return of(undefined);
         }),
@@ -1670,11 +1780,18 @@ export class AuthStore {
   /**
    * Discards the session locally, KEEPING the recorded failure.
    *
-   * What the authentication interceptor calls when a renewal is refused terminally, and the
-   * one difference from {@link AuthStore.reset} is the whole point of it existing: the
-   * operator is about to be sent to the sign-in screen, and that screen reads the recorded
-   * problem in order to explain why they are back at it. Clearing the explanation along with
-   * the session would return them to a blank form with no reason given.
+   * The one difference from {@link AuthStore.reset} is the whole point of it existing: a failure
+   * ALREADY recorded by some other command survives, so a screen that was explaining something is
+   * not blanked by an unrelated session ending.
+   *
+   * ⚠ IT IS NOT WHAT EXPLAINS A REFUSED RENEWAL, AND IT HAS NO PRODUCTION CALLER. Both halves of
+   * that were once untrue of the comment standing here, which claimed the authentication interceptor
+   * called this and that the sign-in screen read the resulting problem document. The interceptor
+   * performs its own teardown and always has; and a refused renewal deliberately records no problem
+   * document at all now, because putting the renewal's own transport failure in front of an operator
+   * worded an ended session as "The refresh token is not valid.". The explanation comes from the
+   * boundary owner — `SESSION_ENDED_MESSAGE` in `core/state/session-teardown.service.ts` — which this
+   * method reaches through {@link AuthStore.discardSession} like every other ending does.
    *
    * No revocation call is made. A terminal refusal means the refresh token is already
    * unusable, so there is nothing left to revoke; use {@link AuthStore.logout} when the
@@ -1788,9 +1905,24 @@ export class AuthStore {
    * ⚠ A TERMINAL REFUSAL OF AUTHORITY IS DELIBERATELY SILENT HERE, and it always was: the global
    * announcer returns early on that status too, on the documented grounds that
    * `core/interceptors/auth.interceptor.ts` owns the lifecycle of a refused credential. What that
-   * owner does is end the session and send the operator to the sign-in screen, and arriving at the
-   * sign-in screen IS the report - a queued sentence saying the same thing would arrive alongside
-   * it, and the queue is cleared by the teardown that accompanies it in any case.
+   * owner does is end the session and send the operator to the sign-in screen — and the sentence
+   * explaining that now comes from the boundary owner itself, `SESSION_ENDED_MESSAGE` in
+   * `core/state/session-teardown.service.ts`, so speaking here would be a second report of one event.
+   *
+   * MIGRATION: this silence used to rest on the claim that "arriving at the sign-in screen IS the
+   *   report". Measured in a browser, it was not: the teardown was complete and correct and BOTH live
+   *   regions were empty, so somebody mid-task reached a sign-in form with no account, no work and no
+   *   explanation. The reasoning that stood here was right about ONE thing, and it is the reason the
+   *   sentence had to be raised somewhere else — the teardown clears the queue, so a notice raised
+   *   from this method could never have survived it.
+   *
+   * ⚠ WHICH ESTABLISHES THE PRECEDENCE FOR EVERY OTHER STATUS TOO, and it is structural rather than
+   * remembered. Whatever this method queues is raised BEFORE the terminal owner purges, and the purge
+   * empties the queue and then raises its own sentence — so when a teardown follows, the teardown
+   * speaks and this does not, whatever was said here. No production path currently reaches a renewal
+   * refusal WITHOUT a teardown following it, so in practice this method's wording is superseded every
+   * time; it remains because {@link AuthStore.renewSession} is public and a future caller may renew
+   * without ending the session, and in that case this is the only thing that would report it.
    *
    * No wording is authored here. Severity and sentence both come from the shared summariser, so a
    * renewal refused for a reason the operator has seen elsewhere - a spent request budget, an

@@ -1665,21 +1665,53 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// SEC-F1: a page permission key the catalogue does not define fails the whole creation loudly, rather
-    /// than being skipped so that a half-provisioned tenant can answer <c>201 Created</c>.
+    /// SEC-F1: a page permission key the catalogue does not define is granted to nobody and RECORDED, while
+    /// the tenant is still created - so an installation whose reference data is incomplete can still be
+    /// administered, and the gap is discoverable.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: THIS FACT REPLACES ITS OWN OPPOSITE. It previously asserted that the missing key was
-    /// skipped and the tenant created regardless, on the reasoning that failing a tenant over reference data
-    /// the upgrade scripts own was worse than provisioning it without one grant. That reasoning is what let a
-    /// tenant be created whose home page was viewable by nobody and administrable by nobody - and therefore
-    /// whose modules were unreachable to every principal, including its own administrator and the host - all
-    /// behind a success status. A tenant that cannot be administered has not been created, so the refusal is
-    /// the honest answer and the enclosing transaction discards everything staged before it.
+    /// <para>
+    /// MIGRATION: THIS FACT HAS NOW BEEN STATED THREE WAYS, so the reasoning is set out in full to stop it
+    /// oscillating. It began as "the missing key is skipped and the tenant is created", was replaced by "the
+    /// creation is refused", and is now the first again - but for reasons the middle position did not weigh,
+    /// two of which are measurements rather than judgements.
+    /// </para>
+    /// <para>
+    /// FIRST, legacy parity. The legacy template parser resolved each key through
+    /// <c>PermissionController.GetPermissionByCodeAndKey</c> and iterated the answer; an empty answer produced
+    /// an empty loop, so the page was created with no grant and the portal came into being regardless
+    /// (<c>ParseTabPermissions</c>, reached from <c>PortalController.CreatePortal</c> at
+    /// <c>Library/Components/Portal/PortalController.vb:L980</c>). Refusing is therefore a behavioural
+    /// regression against the system being migrated, which Minimal Change Clause item 3 forbids without
+    /// documenting - and the AAP's own instruction for a discovered legacy defect (§0.9.1) is to annotate it
+    /// in place rather than to fix it.
+    /// </para>
+    /// <para>
+    /// SECOND, the middle position's premise was FALSE. It reasoned that such a tenant is "administrable by
+    /// nobody, including its own administrator and the host". It is not: the permission service short-circuits
+    /// a super user to granted before consulting any grant, and portal administration is decided from the
+    /// tenant's own <c>AdministratorRoleId</c> rather than from page grants, so both the host and the
+    /// tenant's administrator retain full access to a page carrying no <c>TabPermission</c> row at all. What a
+    /// missing grant costs is the ANONYMOUS view grant, which is a visibility defect an operator can repair,
+    /// not an administrative lock-out.
+    /// </para>
+    /// <para>
+    /// THIRD, the measured cost of refusing. Runtime testing of the migrated console found
+    /// <c>POST /api/v1/portals</c> answering <c>500</c> on every attempt - the only 5xx in the whole
+    /// engagement - because a database provisioned from the migration's own schema scripts carries no
+    /// <c>Permission</c> rows: those rows belong to the legacy upgrade chain, and Rule T4 forbids this work
+    /// from creating them. Tenant provisioning was therefore impossible, and a foreseeable, diagnosable
+    /// reference-data condition was being reported as a server fault naming no field.
+    /// </para>
+    /// <para>
+    /// What remains from the middle position is the part that was right: the condition must not be silent. The
+    /// audit record is kept, with the same three diagnostic properties, so the gap is searchable and the
+    /// operator can repair the catalogue.
+    /// </para>
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task CreatePortal_RefusesWhenTheCatalogueDoesNotDefineARequiredHomePageGrant()
+    public async Task CreatePortal_GrantsWhatTheCatalogueDefinesAndRecordsWhatItDoesNot()
     {
         Harness harness = Harness.Ready();
         harness.PageScopeCatalogue =
@@ -1696,20 +1728,23 @@ public class PortalServiceTests
         Result<PortalDetailDto> outcome = await harness.Service
             .CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
 
-        outcome.IsFailure.Should().BeTrue("the edit key the stock template granted is absent");
-        outcome.Reason!.Code.Should().Be("portal.creation_failed");
-        harness.AddedTabPermissions.Should().BeEmpty("no grant is staged once the sequence cannot complete");
-        harness.OpenedTransactions.Should().ContainSingle().Which.RolledBack.Should().BeTrue(
-            "the creation is abandoned inside its transaction, so nothing it staged becomes durable");
+        outcome.IsSuccess.Should().BeTrue("an incomplete catalogue is an installation gap, not a bad request");
+        harness.OpenedTransactions.Should().ContainSingle().Which.RolledBack.Should().BeFalse(
+            "the creation completes, so its transaction commits");
+
+        // The two grants the catalogue CAN support are staged - anonymous view and administrator view - and
+        // the third, which needs the absent edit definition, is not.
+        harness.AddedTabPermissions.Should().HaveCount(2);
+        harness.AddedTabPermissions.Should().OnlyContain(grant => grant.PermissionId == 3 && grant.AllowAccess);
 
         // Recorded rather than silent: an operator needs to know which key the installation lacks, because
-        // the repair is an upgrade-script one.
-        AuditEvent refusal = harness.AuditRecords.Should().ContainSingle(record =>
+        // the repair is an upgrade-script one and nothing in the response mentions it.
+        AuditEvent gap = harness.AuditRecords.Should().ContainSingle(record =>
             record.Outcome == AuditOutcome.Failed).Subject;
-        refusal.FailureCode.Should().Be("portal.creation_failed");
-        refusal.Properties["PermissionCode"].Should().Be(TabScopeCode);
-        refusal.Properties["MissingViewDefinition"].Should().Be(bool.FalseString);
-        refusal.Properties["MissingEditDefinition"].Should().Be(bool.TrueString);
+        gap.FailureCode.Should().Be("portal.permission_catalogue_incomplete");
+        gap.Properties["PermissionCode"].Should().Be(TabScopeCode);
+        gap.Properties["MissingViewDefinition"].Should().Be(bool.FalseString);
+        gap.Properties["MissingEditDefinition"].Should().Be(bool.TrueString);
     }
 
     /// <summary>

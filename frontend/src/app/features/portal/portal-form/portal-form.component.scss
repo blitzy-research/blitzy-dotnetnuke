@@ -232,6 +232,21 @@
   margin-block: 0;
 }
 
+//  The statement rendered INSTEAD of either form when the address names no readable portal.
+//
+//  Given its own class rather than reusing `.portal-form__note` above, which exists to sit tight
+//  against the command row and inherits body size and colour for a legacy reason recorded there.
+//  This paragraph is the only thing on the screen, has no command to sit against and is not a
+//  footnote to anything, so it takes the muted supporting treatment every other screen gives a
+//  standing statement, and a comfortable measure so it does not run the full width of a desktop
+//  viewport.
+.portal-form__notice {
+  max-inline-size: mx.breakpoint('md');
+  margin-block: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
 // =============================================================================
 //  MIGRATION - THE REMAINING DIVERGENCES, RECORDED RATHER THAN ABSORBED
 // =============================================================================

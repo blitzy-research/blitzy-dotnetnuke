@@ -194,35 +194,77 @@ public sealed class PortalRepositoryTests
     }
 
     /// <summary>
-    /// The name filter matches a fragment anywhere in the value and ignores case, which is what the
-    /// legacy tenant grid did.
+    /// The name filter matches a PREFIX of the site name, ignores case and tolerates surrounding
+    /// whitespace, and a mid-string fragment matches nothing.
     /// </summary>
     /// <remarks>
-    /// This is deliberately different from the account listing, whose filters match a prefix
-    /// because the legacy account search appended a single trailing wildcard. The two behaviours
-    /// are asserted separately so that neither can be "corrected" into the other.
+    /// <para>
+    /// MIGRATION: the predicate is the LEGACY PREFIX MATCH, and the primary sources fix it beyond
+    /// doubt. The pattern was assembled at the call site rather than in the procedure:
+    /// <c>Website/admin/Portal/Portals.ascx.vb</c> line 142 reads
+    /// <c>GetPortalsByName(Filter + "%", CurrentPage - 1, PageSize, TotalRecords)</c> - one TRAILING
+    /// wildcard and no leading one - and the surviving procedure applies it unchanged with
+    /// <c>WHERE PortalName LIKE @NameToMatch</c>
+    /// (<c>Website/Providers/DataProviders/SqlDataProvider/04.04.00.SqlDataProvider</c> lines 245 to
+    /// 269). <c>LIKE 'j%'</c> is a prefix test, so a mid-string fragment matched nothing in the legacy
+    /// grid and matches nothing here.
+    /// </para>
+    /// <para>
+    /// ⚠ THIS FACT REPLACES ONE THAT PINNED A CONTAINMENT MATCH, AND THE REPLACEMENT IS THE POINT.
+    /// The earlier revision asserted that a marker in the MIDDLE of a name was matched, and its own
+    /// remark warned against "correcting" that into a prefix test - but the legacy sources above say
+    /// prefix, so the warning was guarding the wrong behaviour. The sibling assertion in the endpoint
+    /// suite was corrected at the time the predicate was; this one below the HTTP boundary was missed,
+    /// and it is the reason the repository contract and the endpoint contract briefly disagreed.
+    /// </para>
+    /// <para>
+    /// What a containment match costs is not a lost legacy result - a widening loses none - but the
+    /// FILTER STRIP'S MEANING. The listing's strip is an A-to-Z index of twenty-six single letters
+    /// named "Filter portals by first letter", and the strip and the free-text box share this one
+    /// filter parameter, so against containment pressing "A" returns every title carrying an "a"
+    /// anywhere, which on a populated installation is very nearly all of them. Runtime testing
+    /// measured exactly that. Rule T5 asks for identical outcomes wherever equivalence is achievable,
+    /// and here it plainly is.
+    /// </para>
+    /// <para>
+    /// The account listing matches by prefix for the same reason - its legacy search likewise appended
+    /// a single trailing wildcard - so the two listings now answer the same way, and that agreement is
+    /// a consequence of both legacy sources rather than one behaviour being conformed to the other.
+    /// </para>
     /// </remarks>
     [Fact]
-    public async Task ListAsync_WithANameFragment_MatchesAnywhereAndIgnoresCase()
+    public async Task ListAsync_WithANamePrefix_MatchesFromTheStartIgnoringCaseAndPadding()
     {
         string marker = Suffix();
-        int portalId = await CreatePortalAsync(FormattableString.Invariant($"Alpha {marker} Omega"));
+
+        // The marker LEADS the name, because a prefix predicate is what is being asserted. A portal
+        // whose marker sat mid-string is created below as the negative control.
+        int portalId = await CreatePortalAsync(FormattableString.Invariant($"{marker} Omega"));
+        int buriedPortalId = await CreatePortalAsync(FormattableString.Invariant($"Alpha {marker} Omega"));
 
         try
         {
             using IServiceScope scope = _fixture.Services.CreateScope();
             IPortalRepository portals = scope.ServiceProvider.GetRequiredService<IPortalRepository>();
 
-            PagedResult<Portal> midString = await portals.ListAsync(0, 0, marker, null, descending: false);
+            PagedResult<Portal> leading = await portals.ListAsync(0, 0, marker, null, descending: false);
             PagedResult<Portal> upperCased = await portals.ListAsync(0, 0, marker.ToUpperInvariant(), null, descending: false);
             PagedResult<Portal> padded = await portals.ListAsync(0, 0, "   " + marker + "   ", null, descending: false);
 
-            midString.Items.Should().ContainSingle().Which.PortalId.Should().Be(portalId);
+            // Each answer is the LEADING portal alone. That it is a single item is the negative control
+            // doing its work: the buried portal contains the very same marker, so a containment
+            // predicate would return two here and this assertion would fail.
+            leading.Items.Should().ContainSingle().Which.PortalId.Should().Be(portalId);
             upperCased.Items.Should().ContainSingle().Which.PortalId.Should().Be(portalId);
             padded.Items.Should().ContainSingle().Which.PortalId.Should().Be(portalId);
+
+            // Stated directly as well as implied, so a future reader cannot mistake the single-item
+            // assertions above for an accident of the fixture.
+            leading.Items.Should().NotContain(portal => portal.PortalId == buriedPortalId);
         }
         finally
         {
+            await RemovePortalAsync(buriedPortalId);
             await RemovePortalAsync(portalId);
         }
     }

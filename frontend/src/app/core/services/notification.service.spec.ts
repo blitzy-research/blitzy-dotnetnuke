@@ -154,13 +154,60 @@ describe('NotificationService', () => {
       ]);
     });
 
-    it('keeps two identical calls as two separate entries', () => {
-      // No de-duplication window exists, by design: collapsing repeats would
-      // hide a genuine second failure from the user.
-      service.notify('warning', LEGACY_ACCESS_DENIED_TEXT);
+    it('collapses an immediate repetition into one row, and re-issues it', () => {
+      // ⚠ THE PREVIOUS BEHAVIOUR WAS MEASURED AS A DEFECT. Two identical calls produced two rows a
+      // person could not tell apart, and the role membership screen produced THREE for a single
+      // fault - so an operator read the same sentence three times to learn that it said the same
+      // thing three times. The repeat is collapsed onto the newest entry instead.
       service.notify('warning', LEGACY_ACCESS_DENIED_TEXT);
 
-      expect(service.notifications().length).toBe(2);
+      const first = service.notifications()[0].id;
+
+      service.notify('warning', LEGACY_ACCESS_DENIED_TEXT);
+
+      expect(service.notifications().length).withContext('one row, not two').toBe(1);
+
+      // RE-ISSUED rather than left alone: a person who caused the outcome a second time must be
+      // told a second time, and a live region announces an entry by its identity, so the entry has
+      // to be a new one for the second occurrence to be announced at all.
+      expect(service.notifications()[0].id).withContext('a fresh identifier').not.toBe(first);
+      expect(service.notifications()[0].message).toBe(LEGACY_ACCESS_DENIED_TEXT);
+    });
+
+    it('collapses only the NEWEST entry, so a repeat across other outcomes is kept', () => {
+      // The entries in between are evidence that something else happened, and collapsing across
+      // them would reorder the record of what the operator did.
+      service.notify('warning', LEGACY_ACCESS_DENIED_TEXT);
+      service.notify('info', 'something else happened');
+      service.notify('warning', LEGACY_ACCESS_DENIED_TEXT);
+
+      expect(service.notifications().map((entry) => entry.message)).toEqual([
+        LEGACY_ACCESS_DENIED_TEXT,
+        'something else happened',
+        LEGACY_ACCESS_DENIED_TEXT,
+      ]);
+    });
+
+    it('keeps a repeat that carries a different support reference', () => {
+      // Same sentence, different incident: the reference is the thing an operator quotes, so two
+      // references are two reports and both must survive.
+      service.error('The request could not be completed.', 'reference-one');
+      service.error('The request could not be completed.', 'reference-two');
+
+      expect(service.notifications().map((entry) => entry.reference)).toEqual([
+        'reference-one',
+        'reference-two',
+      ]);
+    });
+
+    it('keeps a repeat at a different severity', () => {
+      service.notify('warning', 'the same words');
+      service.notify('error', 'the same words');
+
+      expect(service.notifications().map((entry) => entry.severity)).toEqual([
+        'warning',
+        'error',
+      ]);
     });
   });
 
@@ -286,6 +333,78 @@ describe('NotificationService', () => {
     });
   });
 
+  /*
+   * The screen-lifetime rule, which exists because two severities deliberately never expire on a
+   * timer. That exemption is correct while the operator is on the screen the fault belongs to, and
+   * was a leak the moment they left it: a refusal raised on one screen sat over an unrelated one
+   * indefinitely, still telling the operator to correct fields that were no longer present. One
+   * measured instance had a stale warning outlive a 200, a 201, a 204, three route changes, a search
+   * and two complete success-toast lifetimes.
+   */
+  describe('dismissStale', () => {
+    it('discards the entries that described the screen just left', () => {
+      service.warning('Correct the highlighted fields.');
+      service.error('The request could not be processed.');
+
+      service.dismissStale();
+
+      expect(service.notifications())
+        .withContext('neither severity expires on its own, so this is the only thing that removes them')
+        .toEqual([]);
+    });
+
+    it('spends a reprieve rather than leaving it set, so it is worth exactly one change of screen', () => {
+      service.success('The user account was created.', true);
+
+      service.dismissStale();
+
+      const [survivor] = service.notifications();
+
+      expect(survivor)
+        .withContext('it survives the navigation it was raised for')
+        .not.toBeUndefined();
+      expect(survivor.message).toBe('The user account was created.');
+      expect(survivor.survivesNavigation)
+        .withContext('but the flag is now spent, so a further change of screen discards it')
+        .toBeFalse();
+
+      service.dismissStale();
+
+      expect(service.notifications())
+        .withContext('a permanent flag would simply be the same leak under a nicer name')
+        .toEqual([]);
+    });
+
+    it('keeps identity and order for survivors', () => {
+      service.success('first', true);
+      service.warning('discarded');
+      service.info('second', true);
+
+      const ids = service.notifications().map((entry) => entry.id);
+
+      service.dismissStale();
+
+      const survivors = service.notifications();
+
+      expect(survivors.map((entry) => entry.message))
+        .withContext('order is preserved as the discarded entry is removed from between them')
+        .toEqual(['first', 'second']);
+      // Identity matters because a dismissal timer may already be armed against an id; a survivor
+      // that were re-keyed would leave that timer unable to find it.
+      expect(survivors.map((entry) => entry.id)).toEqual([ids[0], ids[2]]);
+    });
+
+    it('publishes the same empty reference when there was nothing to discard', () => {
+      const before = service.notifications();
+
+      service.dismissStale();
+
+      // The same identity requirement `clear` carries, and for the same reason: navigating with an
+      // empty queue is the common case and must notify nobody.
+      expect(service.notifications()).toBe(before);
+    });
+  });
+
   describe('immutability', () => {
     it('replaces the queue instead of mutating it in place', () => {
       const before = service.notifications();
@@ -340,12 +459,19 @@ describe('NotificationService', () => {
   });
 
   describe('severity aliases', () => {
+    /*
+     * Each alias forwards EVERY argument explicitly, absent ones included, which is the convention
+     * the `error()` case below already records. The two trailing arguments therefore appear in these
+     * expectations: `null` for "no support reference" and `false` for "does not outlive the next
+     * change of screen". Both defaults are the safe ones, and asserting them here is what stops a
+     * future edit from making an alias quietly grant a reprieve no caller asked for.
+     */
     it("success() delegates to notify with 'success' and adds nothing else", () => {
       const notify = spyOn(service, 'notify').and.callThrough();
 
       service.success('Portal saved.');
 
-      expect(notify).toHaveBeenCalledOnceWith('success', 'Portal saved.');
+      expect(notify).toHaveBeenCalledOnceWith('success', 'Portal saved.', null, false);
     });
 
     it("info() delegates to notify with 'info' and adds nothing else", () => {
@@ -353,7 +479,7 @@ describe('NotificationService', () => {
 
       service.info('Import complete.');
 
-      expect(notify).toHaveBeenCalledOnceWith('info', 'Import complete.');
+      expect(notify).toHaveBeenCalledOnceWith('info', 'Import complete.', null, false);
     });
 
     it("warning() delegates to notify with 'warning' and adds nothing else", () => {
@@ -361,7 +487,21 @@ describe('NotificationService', () => {
 
       service.warning(LEGACY_ACCESS_DENIED_TEXT);
 
-      expect(notify).toHaveBeenCalledOnceWith('warning', LEGACY_ACCESS_DENIED_TEXT);
+      expect(notify).toHaveBeenCalledOnceWith('warning', LEGACY_ACCESS_DENIED_TEXT, null, false);
+    });
+
+    it('forwards a requested reprieve, and only when it is requested', () => {
+      service.success('Saved and leaving.', true);
+      service.warning('Stays put.');
+
+      const [reprieved, ordinary] = service.notifications();
+
+      expect(reprieved.survivesNavigation)
+        .withContext('the caller asked for it, so the entry carries it')
+        .toBeTrue();
+      expect(ordinary.survivesNavigation)
+        .withContext('and an alias called the ordinary way must never grant one')
+        .toBeFalse();
     });
 
     it("error() delegates to notify with 'error' and adds nothing else", () => {

@@ -55,6 +55,12 @@ public class RoleServiceTests
 
     private const string RoleName = "Subscribers";
 
+    /// <summary>
+    /// The identifier the harness gives the role that already holds a name, so a refusal message that names
+    /// the existing role can be asserted exactly.
+    /// </summary>
+    private const int ClashingRoleId = 4242;
+
     private const string RoleGroupName = "Paid Membership";
 
     private const string MemberName = "measured_member";
@@ -1034,8 +1040,13 @@ public class RoleServiceTests
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(RoleNameDuplicateCode);
+        // THE MESSAGE NAMES THE ROLE THAT ALREADY HOLDS THE NAME, identifier included. Reporting only the
+        // SUBMITTED name was measurably misleading: the uniqueness index is evaluated under the database's
+        // collation, which gives no sort weight to supplementary-plane or zero-width characters, so a
+        // submitted name can collide with a stored name that differs from it - and runtime testing recorded
+        // an operator being told a portal already had a role whose name appeared in none of its rows.
         outcome.Reason!.Message.Should()
-            .Be($"Portal {PortalId} already has a role named '{RoleName}'.");
+            .Be($"Portal {PortalId} already has a role named '{RoleName}' (identifier {ClashingRoleId}).");
     }
 
     /// <summary>

@@ -23,6 +23,9 @@ import { ErrorBannerComponent } from '../../../shared/components/error-banner/er
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
 import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
+import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
+import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 
 // ---------------------------------------------------------------------------
 // WHERE EVERY MEMBER OF THIS POLICY TAKES EFFECT
@@ -373,6 +376,12 @@ export const USERS_CONTROL_OPTIONS: readonly MembershipSettingsOption[] = Object
  * not among them, so that column is always shown and has no switch.
  */
 export const LEGACY_MEMBERSHIP_SETTINGS_DEFAULTS: MembershipSettings = Object.freeze({
+  // ⚠ #6 — FALSE, AND SAYING SO IS THE WHOLE POINT OF THIS CONSTANT.
+  // These values are defaults, not decisions, and the flag is how a screen tells the two
+  // apart. The server publishes the same flag on the same member for the same reason, so a
+  // document that arrives with `isStored: false` and this constant are the same claim made
+  // by two authorities rather than two different things.
+  isStored: false,
   columnFirstName: false,
   columnLastName: false,
   columnDisplayName: true,
@@ -515,6 +524,38 @@ export const MEMBERSHIP_SETTINGS_TEXT = Object.freeze({
    */
   savedWithNoRewriteMessage:
     'User settings saved. No account names needed to change under the new display name format.',
+
+  /**
+   * Shown while this tenant has NO STORED POLICY OF ITS OWN and the form is therefore seated from
+   * the platform defaults.
+   *
+   * ⚠ #6 — THIS SENTENCE IS THE WHOLE FIX, AND WITHOUT IT THE SCREEN LIES BY OMISSION. Every
+   * control below renders a value whether the tenant stored one or not, and a rendered value looks
+   * identical either way: an operator reading `Records Per Page 10` cannot tell whether somebody
+   * chose ten or whether ten is simply what this platform falls back to. The distinction is not
+   * cosmetic — it decides whether pressing Update CHANGES a policy or CREATES one, and it decides
+   * whether a value an operator disagrees with was somebody's decision or nobody's.
+   *
+   * AUTHORED, and reported as such. There is no legacy wording to recover because the legacy
+   * screen could not reach this state and therefore had nothing to say about it:
+   * `Website/admin/Users/UserSettings.ascx.vb` read every value through
+   * `UserModuleBase.GetSetting(PortalId, key)` (L98-L190), which returned the hard-coded default
+   * for an absent key WITHOUT reporting that it had done so, so the legacy screen was
+   * structurally incapable of distinguishing the two states. That silence is the defect this
+   * sentence closes, so it is a documented net addition rather than a port.
+   */
+  defaultsNotice:
+    'This site has no stored user settings, so the values below are this platform\u2019s defaults. Press Update to store them for this site.',
+
+  /**
+   * Shown while the tenant DOES hold a stored policy, so the values are somebody's decision.
+   *
+   * The counterpart of {@link defaultsNotice} and rendered on the same terms. Stating only the
+   * defaults case would leave the stored case reading as the absence of a notice, which is exactly
+   * the ambiguity being closed — a reader cannot distinguish "no notice because a policy is
+   * stored" from "no notice because this screen does not say".
+   */
+  storedNotice: 'These user settings are stored for this site.',
 } as const);
 
 /**
@@ -885,18 +926,41 @@ const REQUIRED_MESSAGE = 'This setting is required.';
   selector: 'app-membership-settings',
   standalone: true,
   imports: [
+    FocusFirstInvalidDirective,
+    SubmitGuardDirective,
     ReactiveFormsModule,
     RouterLink,
     ErrorBannerComponent,
     FormFieldComponent,
     LoadingSpinnerComponent,
     PageHeaderComponent,
+    FocusFirstInvalidDirective,
   ],
   templateUrl: './membership-settings.component.html',
   styleUrl: './membership-settings.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class MembershipSettingsComponent implements OnInit {
+
+  /**
+   * Registers this screen's unsaved-entry probe with the application's tracker.
+   *
+   * ⚠ WHY A REGISTRATION RATHER THAN A ROUTE-LEVEL READ. Leaving a screen happens two ways and
+   * only one of them is a router navigation: Cancel, an in-application link and the browser's Back
+   * button are navigations a route guard can refuse, while closing or reloading the tab is not, and
+   * only the browser's own unload prompt covers that - which needs the dirty state at an arbitrary
+   * moment rather than at a navigation. One tracker holding probes answers both, and the probe is
+   * released automatically when this screen is destroyed, so a screen that has gone can never hold
+   * a navigation up. Measured before this existed: a dirty form was discarded in silence by all
+   * four exits, with instrumented `confirm`, `alert` and `beforeunload` recording nothing at all.
+   *
+   * A form that is being SAVED is not dirty in the sense that matters here - the entry is on its
+   * way to the server, and prompting about it would ask the operator to confirm discarding work
+   * they have already committed.
+   */
+  private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
+    () => this.form.dirty && this.saving() === false,
+  );
   /**
    * The account store, injected rather than the transport service.
    *
@@ -1097,6 +1161,52 @@ export class MembershipSettingsComponent implements OnInit {
   protected readonly saving: Signal<boolean> = this.store.saving;
 
   /**
+   * Which of the two provenances the values on screen have, or `null` while that is not yet known.
+   *
+   * ⚠ #6 — THE ONE FACT THAT MAKES THE VALUES ON THIS SCREEN READABLE. `'stored'` means the tenant
+   * holds a policy row of its own and every value below is somebody's decision. `'defaults'` means
+   * the tenant holds none and every value below is what this platform falls back to, in which case
+   * pressing Update CREATES the policy rather than changing it. The two are visually identical
+   * without this, because a control renders its value the same way whichever it is.
+   *
+   * `null` covers the read still being in flight and the read having failed. Neither is a
+   * provenance, and asserting one would be a guess: the disclosure is simply withheld, which is
+   * correct in both cases — while loading the form is not on screen at all, and after a failed
+   * read the banner is the thing that has something to say.
+   *
+   * Derived from the contract's own `isStored` member rather than inferred by comparing the values
+   * against the defaults. Inference would be wrong in the one case that matters most: a tenant
+   * that deliberately stored the default value for every key is STORED, and comparison would
+   * report it as unset.
+   */
+  protected readonly valueProvenance: Signal<'stored' | 'defaults' | null> = computed(() => {
+    const settings = this.store.membershipSettings();
+
+    if (settings === null) {
+      return null;
+    }
+
+    return settings.isStored ? 'stored' : 'defaults';
+  });
+
+  /**
+   * The sentence disclosing that provenance, or `null` when there is none to disclose.
+   *
+   * Composed here rather than in the template so that the wording, like every other string on
+   * this screen, has exactly one home.
+   */
+  protected readonly provenanceNotice: Signal<string | null> = computed(() => {
+    switch (this.valueProvenance()) {
+      case 'stored':
+        return MEMBERSHIP_SETTINGS_TEXT.storedNotice;
+      case 'defaults':
+        return MEMBERSHIP_SETTINGS_TEXT.defaultsNotice;
+      default:
+        return null;
+    }
+  });
+
+  /**
    * The failure to show, or null.
    *
    * MIGRATION: severity is NOT decided here. A permission refusal must read as a
@@ -1160,10 +1270,40 @@ export class MembershipSettingsComponent implements OnInit {
       return false;
     }
 
+    // ⚠ WITHHELD FOR A SECOND, DIFFERENT REASON: this tenant has nowhere to store a policy.
+    // The reasoning above is about not overwriting a live policy with seated defaults, and it does
+    // not apply here because there IS no stored policy to overwrite. What applies instead is that
+    // the WRITE cannot succeed - measured against the running API, `PUT /api/v1/users/settings`
+    // answers `404 user.membership_settings.source_missing`, "Portal -1 has no \"User Accounts\"
+    // module instance to store membership settings against." Opening the command would therefore
+    // invite the operator to fill in twenty-three settings and then fail at the last step.
+    //
+    // ⚠ AND THIS IS WHY THE REFUSAL IS NOW EXPLAINED. Before the store learned to tell absence
+    // apart from failure, this screen refused for the branch below AND showed the read's problem
+    // document, so the operator at least saw something - the wrong thing, "The requested resource
+    // does not exist", but something. That failure is no longer recorded, so a bare refusal here
+    // would leave a form full of controls and a dead button with nothing saying why. The template
+    // renders {@link unconfigured} as an in-page explanation for exactly that reason; the two
+    // changes are one change and must not be separated.
+    if (this.unconfigured()) {
+      return false;
+    }
+
     const failure = this.store.failure();
 
     return failure === null || failure.operation !== 'loadMembershipSettings';
   });
+
+  /**
+   * Whether this tenant stores no account policy at all, so none can be read or written.
+   *
+   * Distinct from a read that failed: a failure is transient and retryable and keeps its banner,
+   * whereas this state is stable and has nothing to retry. The store publishes the distinction; this
+   * screen only presents it.
+   */
+  protected readonly unconfigured: Signal<boolean> = computed(() =>
+    this.store.membershipSettingsUnconfigured(),
+  );
 
   /**
    * The submission awaiting an outcome.
@@ -1231,19 +1371,35 @@ export class MembershipSettingsComponent implements OnInit {
       this.pendingSubmit = false;
 
       if (failure === null) {
+        // ⚠ THE FORM IS SETTLED BEFORE LEAVING, OR THE UNSAVED-ENTRY GUARD ASKS ABOUT WORK THAT IS
+        // ALREADY SAVED. This effect fires on the transition OUT of saving, so `store.saving()` is
+        // already false by the time these lines run, while the controls are still dirty from the
+        // operator's typing - and the probe registered at the top of this class reads exactly
+        // `dirty && saving() === false`. The navigation below is the one the save itself triggers.
+        this.form.markAsPristine();
+        this.form.markAsUntouched();
+
         // ⚠ THE REPORT IS READ HERE RATHER THAN RENDERED ON THIS SCREEN, because this screen
         // is about to leave. The legacy handler redirected to the account listing on success
         // (`UserSettings.ascx.vb` L184-L187) and that navigation is reproduced below, so a
-        // panel raised here would be destroyed before it could be read. The notification
-        // outlives the route change, which makes it the only surface that can carry the count.
+        // panel raised here would be destroyed before it could be read.
+        //
+        // ⚠ AND A NOTIFICATION DOES NOT OUTLIVE A ROUTE CHANGE BY ITSELF - THIS COMMENT USED TO
+        // CLAIM IT DID. The shell retires transient notifications on every completed navigation, so
+        // raising this and navigating in the same task queued it and swept it before it could be
+        // painted: the count this screen exists to report reached nobody. It is the exemption on the
+        // next line that makes the claim true, and without it the reasoning above collapses.
         this.notifications.success(
           membershipSettingsSavedMessage(this.store.lastSettingsWrite()),
+          true,
         );
+        this.notifications.retainAcrossNavigation();
 
         // Discarded once reported, so returning to this screen does not re-announce a sweep
         // that happened during a previous visit.
         this.store.clearSettingsWriteReport();
-        void this.router.navigate([ACCOUNT_LISTING_PATH]);
+        // Replaced, not pushed: the settings are saved, so BACK must not return to the form.
+        void this.router.navigate([ACCOUNT_LISTING_PATH], { replaceUrl: true });
       }
 
       // A failure needs nothing done to it. The store has recorded it, the banner is
@@ -1357,12 +1513,24 @@ export class MembershipSettingsComponent implements OnInit {
 
     const control = this.form.controls[field];
 
-    if (control.valid || control.untouched) {
+    if (control.valid) {
       return null;
     }
 
+    // ⚠ ONLY THE EMPTY-FIELD RULE WAITS TO BE VISITED, AND THE DISTINCTION IS DELIBERATE. An
+    // untouched control that is merely empty has not been got wrong yet - the operator may simply not
+    // have reached it - so scolding it on arrival would be the premature complaint the legacy's
+    // `display="Dynamic"` gating existed to avoid. Every rule below is different in kind: a value out
+    // of range, or one longer than the store accepts, is only REACHABLE BY TYPING, so the operator has
+    // necessarily engaged with the field and there is nothing premature about answering them at once.
+    //
+    // Measured before this split: typing 101 into "Users per Page" left the field with no message, no
+    // red border and no `aria-invalid` until focus moved away, so the operator was told the value was
+    // unusable only after they had stopped looking at it. The same reasoning settled the date fields on
+    // the role membership screen, where the browser's own unusable-entry states are surfaced without
+    // waiting for a blur.
     if (control.hasError('required')) {
-      return REQUIRED_MESSAGE;
+      return control.untouched ? null : REQUIRED_MESSAGE;
     }
 
     if (control.hasError('min') || control.hasError('max')) {
@@ -1624,6 +1792,20 @@ export class MembershipSettingsComponent implements OnInit {
     const raw = this.form.getRawValue();
 
     return {
+      // ⚠ #6 — SENT, AND SENT AS RECEIVED. This is not a form value and the operator cannot
+      // change it: it is the server's statement about where the policy it served came from,
+      // and it travels back untouched because the API binds request bodies with
+      // unmapped-member handling set to disallow, so a member present on the read and absent
+      // from the write would make every save `400`. The server declares it on the request as
+      // accepted-and-ignored, so what is sent here has no effect on what is stored - the
+      // stored answer becomes `true` by virtue of the write itself.
+      //
+      // Read from the policy in hand rather than from the form, falling back to the defaults'
+      // own `false` before a policy has arrived - which is the only state in which a save
+      // cannot be attempted anyway.
+      isStored:
+        this.store.membershipSettings()?.isStored ?? LEGACY_MEMBERSHIP_SETTINGS_DEFAULTS.isStored,
+
       columnFirstName: raw.columnFirstName,
       columnLastName: raw.columnLastName,
       columnDisplayName: raw.columnDisplayName,

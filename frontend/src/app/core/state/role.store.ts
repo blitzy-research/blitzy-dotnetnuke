@@ -183,7 +183,7 @@
  */
 
 import { Injectable, computed, inject, signal } from '@angular/core';
-import { EMPTY, expand, finalize, map, reduce, switchMap, tap, throwError } from 'rxjs';
+import { finalize, switchMap, tap } from 'rxjs';
 
 import {
   DEFAULT_PAGE_SIZE,
@@ -701,50 +701,44 @@ const NO_ASSIGNMENTS_VIEW: AssignmentsViewState = Object.freeze({ kind: 'none' }
 const ASSIGNMENTS_VIEW_LEFT: AssignmentsViewState = Object.freeze({ kind: 'left' });
 
 /**
- * How many roles one request of the complete-listing walk asks for.
+ * The page size the ROLE listing reads with.
  *
- * ⚠ THE SERVER'S OWN MAXIMUM, AND NOT A NUMBER CHOSEN FOR COMFORT. The paging validator
- * refuses a larger page outright — `Application/Validation/PagedRequestValidator.cs`
- * declares `MaximumPageSize = 100` and reports "The page size may not exceed 100." — so
- * this is the largest legal request and asking for more would earn a 422 rather than a
- * bigger page.
+ * ⚠ THE LISTING IS NOW GENUINELY PAGED, AND THE CHANGE REPLACED A COMPLETE-LISTING WALK. This slice
+ * used to request page after page at the endpoint's maximum of a hundred records and join them into
+ * one unpaged envelope, because the screen consuming it offered no pager and a single window would
+ * have presented the first page AS the whole set. Runtime testing measured what that cost on a real
+ * tenant: a hundred and forty-five roles rendered as an eight-thousand-pixel document at 320 units
+ * wide with no way to reach anything but by scrolling, THREE requests per arrival, the whole walk
+ * re-issued on every browser Back and after every write, and thirty-six of those re-reads aborted
+ * mid-flight. The pager is what removes all of that, and it removes the walk with it: completeness is
+ * delivered by being able to REACH every page rather than by holding every page at once, which is
+ * exactly how the sibling assignment listing in this same store has always worked.
  *
- * ⚠ AND IT IS NOT, BY ITSELF, THE FIX. A single request of this size is still a WINDOW: a
- * portal with more than a hundred roles would be silently truncated at the hundredth,
- * which is the same defect one order of magnitude further out. The size only reduces the
- * number of round trips the walk in {@link RoleStore.readEveryRole} has to make; the walk
- * is what makes the listing complete.
+ * MIGRATION: A PAGER IS AN ADDITION, AND IT IS RECORDED AS ONE. `roles.ascx` declares no paging
+ * control and no `AllowPaging`, its grid bound a plain untyped list (`Roles.ascx.vb:L77`), and the
+ * code-behind holds no page index, size or record total anywhere. A tenant of the size the legacy
+ * product shipped — six stock roles — fits one page, so it renders with no page-to-page affordance at
+ * all and reads as it always did; the addition only becomes visible on a tenant the legacy screen
+ * could not have displayed usefully in the first place. The divergence is written up in
+ * `MIGRATION_NOTES.md`.
+ *
+ * The shared default is taken rather than a size chosen for this screen, so the role listing pages
+ * like every other listing in the application. The endpoint's own validator caps a page at a hundred
+ * records (`Application/Validation/PagedRequestValidator.cs`), well above this.
  */
-export const ROLES_FETCH_PAGE_SIZE = 100;
-
-/**
- * The hard ceiling on how many pages one complete-listing walk will request.
- *
- * A walk driven by the server's own record total needs no ceiling to terminate under
- * correct behaviour, and this exists for the case where that assumption fails: a server
- * that kept reporting full pages would otherwise have this client request pages until the
- * tab died. At {@link ROLES_FETCH_PAGE_SIZE} records a page this admits two hundred
- * thousand roles, which is several orders of magnitude above any real portal — the legacy
- * product shipped six stock roles per tenant — so no genuine installation can reach it.
- *
- * The bound never hides a shortfall: {@link RoleStore.rolesMeta} reports the total the
- * SERVER stated rather than the number of records gathered, so a truncated walk is visible
- * as a total larger than the row count rather than passing as a complete answer.
- */
-export const MAXIMUM_ROLE_PAGES = 2000;
+export const ROLES_PAGE_SIZE = DEFAULT_PAGE_SIZE;
 
 /**
  * The coordinate the ROLE listing starts at.
  *
- * Distinct from {@link INITIAL_PAGE_COORDINATE}, which seeds the ASSIGNMENT listing, and
- * the difference is the page size alone. The assignment listing is genuinely paged and
- * takes the shared default; the role listing is read whole, so its coordinate reports the
- * size its requests actually carry rather than a default it never uses. Publishing a size
- * the requests do not use would make {@link RoleStore.rolesPage} a lie.
+ * Identical in shape and size to {@link INITIAL_PAGE_COORDINATE}, which seeds the ASSIGNMENT
+ * listing, and kept as its own constant so the two listings can be re-seeded independently — a reset
+ * of one must not silently move the other. The size it publishes is the size its requests actually
+ * carry, which is what keeps {@link RoleStore.rolesPage} honest for the pager reading it.
  */
 const INITIAL_ROLES_COORDINATE: RolePageCoordinate = Object.freeze({
   pageIndex: 0,
-  pageSize: ROLES_FETCH_PAGE_SIZE,
+  pageSize: ROLES_PAGE_SIZE,
   sortBy: null,
   sortDir: null,
   query: null,
@@ -995,11 +989,12 @@ export class RoleStore implements OnDestroy {
   private readonly _assignmentsView = signal<AssignmentsViewState>(NO_ASSIGNMENTS_VIEW);
 
   /**
-   * The ordering, filter and request size the role listing was last read with.
+   * The page, ordering, filter and request size the role listing was last read with.
    *
-   * Its page index is permanently nought, because the role listing is read WHOLE — see
-   * {@link RoleStore.readEveryRole}. The member survives because the coordinate type is
-   * shared with the assignment listing, which is genuinely paged.
+   * Every member is live. The page index moves through {@link RoleStore.setRolesPage}, and the
+   * remaining three are re-seeded to the first page whenever they change, because a different
+   * narrowing, ordering or filter yields a different result set in which the page the caller was
+   * standing on has no counterpart.
    */
   private readonly _rolesPage = signal<RolePageCoordinate>(INITIAL_ROLES_COORDINATE);
 
@@ -1570,54 +1565,123 @@ export class RoleStore implements OnDestroy {
           this._roleGroupsLoading.set(false);
           this.applyNoGroupsFallback(response.data);
         }),
-        switchMap(() => this.readEveryRole()),
+        switchMap(() =>
+          this.roleService.listRoles(this._rolesPage(), this.narrowingFor(this._groupFilter())),
+        ),
         finalize(() => {
           this._roleGroupsLoading.set(false);
           this._rolesLoading.set(false);
         }),
       )
       .subscribe({
-        next: (page) => {
-          this._roles.set(page);
+        next: (response) => {
+          // The envelope is unwrapped HERE rather than inside the chain, because the chain's tail is
+          // now the service call itself: what arrives is the raw paged response, and the record type is
+          // named explicitly because the framing decoder validates framing only and is generic in the
+          // record.
+          this._roles.set(toPagedResult<RoleListItem>(response));
         },
         error: (error: unknown) => {
           this.recordFailure(this._roleGroups().length === 0 ? 'loadRoleGroups' : 'loadRoles', error);
         },
       });
-
   }
 
   /**
-   * Reads EVERY role under the current narrowing, not merely the first page of them.
+   * Reads ONE PAGE of the role listing.
    *
-   * Legacy: `Roles.ascx.vb:L72-L77`, whose two-armed query choice is now the narrowing
-   * translation in {@link RoleStore.narrowingFor}.
+   * Legacy: `Roles.ascx.vb:L72-L77`, whose two-armed query choice is now the narrowing translation in
+   * {@link RoleStore.narrowingFor}.
    *
-   * ⚠ COMPLETE, AND THAT IS A CORRECTNESS REQUIREMENT RATHER THAN A PREFERENCE. The legacy
-   * screen was UNPAGED — `roles.ascx` declares no paging control and no `AllowPaging`, its
-   * grid bound a plain untyped list at `Roles.ascx.vb:L77`, and the code-behind carries no
-   * page index, page size or record total anywhere — so the screen that consumes this slice
-   * offers no pager and no way to reach a second page. A single windowed request would
-   * therefore not produce an unpaged view; it would produce a SILENTLY TRUNCATED one, in
-   * which a portal's later roles simply do not exist as far as an operator can tell. The
-   * endpoint is paged and cannot be asked for everything at once, so completeness is
-   * assembled here — see {@link RoleStore.readEveryRole} for the walk and its bound.
+   * ⚠ EXACTLY ONE REQUEST PER READ, AND THE PAGE IS THE UNIT. This replaced a complete-listing walk
+   * that requested page after page and joined them — see {@link ROLES_PAGE_SIZE} for what that cost on
+   * a real tenant and why it went. The endpoint counts and windows per request, so the page in hand
+   * plus the total on its metadata is everything a pager needs, and {@link RoleStore.setRolesPage}
+   * reaches every other page. Completeness is delivered by being able to REACH every role rather than
+   * by holding every role.
    *
-   * The narrowing, the ordering and the free-text filter are all still the server's work and
-   * are forwarded on every request of the walk; only the WINDOW is removed.
+   * The narrowing, the ordering and the free-text filter remain the server's work and are forwarded on
+   * the request. Nothing is sorted, filtered, joined or de-duplicated here.
    */
   loadRoles(): void {
     this.rolesRequest?.unsubscribe();
-    this._rolesLoading.set(true);
     this.clearFailure();
+    this.dispatchRoles();
+  }
 
-    this.rolesRequest = this.readEveryRole()
-      .pipe(finalize(() => this._rolesLoading.set(false)))
+  /**
+   * Issues one page read for the role listing, correcting a coordinate left past the end.
+   *
+   * ⚠ WHY A CORRECTION IS NEEDED, AND WHY IT ARRIVED WITH THE PAGING. A DELETION CAN STRAND THE
+   * OPERATOR. Remove the only role on the last page and the coordinate they are standing on stops
+   * existing: the write's re-read asks for it again, the server answers an empty page whose metadata
+   * still reports the true total, and the grid renders nothing. Worse, the pager is drawn on
+   * `pageSize < totalCount` — eleven roles at ten a page becomes ten at ten a page, that predicate
+   * turns false, and the pager is WITHDRAWN, leaving a blank grid with no affordance back to the rows
+   * that are still there. The unpaged listing this replaced could not reach that state; the row-level
+   * delete command on the listing makes it reachable, so the correction ships with them both.
+   *
+   * ⚠ THIS IS NOT A REINTERPRETATION OF WHAT A CALLER ASKED FOR. {@link RoleStore.setRolesPage} sends
+   * the index it was given, untouched — an index past the last page is a real state of the world and
+   * the server is entitled to answer it. What is acted on here is the SERVER'S OWN ANSWER: an empty
+   * window beyond a positive total is the server saying the coordinate no longer names anything.
+   *
+   * The correction is BOUNDED BY CONSTRUCTION: the corrective read is issued with correction withheld,
+   * so a listing that keeps shrinking underneath the screen costs at most one extra request per read
+   * and can never loop. The step-back target comes from the server's own reported page count, never
+   * from arithmetic over the rows in hand.
+   *
+   * Written as the mirror of {@link RoleStore.dispatchAssignments}, deliberately: two paged listings in
+   * one store that corrected differently would be two behaviours to reason about instead of one.
+   *
+   * @param correctionAllowed Whether a past-the-end answer may issue one corrective read. `false` on
+   * the corrective read itself, which is what makes the recursion terminate.
+   */
+  private dispatchRoles(correctionAllowed = true): void {
+    this.rolesRequest?.unsubscribe();
+    this._rolesLoading.set(true);
+
+    // The loading flag is lowered EXPLICITLY rather than through `finalize`, for the reason given on
+    // the assignment dispatcher: a corrective read is issued from inside the first read's `next`, and
+    // a finaliser would run after it and report the grid at rest with a request still outstanding.
+    this.rolesRequest = this.roleService
+      .listRoles(this._rolesPage(), this.narrowingFor(this._groupFilter()))
       .subscribe({
-        next: (page) => {
+        next: (response) => {
+          const page: PagedResult<RoleListItem> = toPagedResult<RoleListItem>(response);
+          const requestedPageIndex: number = this._rolesPage().pageIndex;
+          const lastExistingPageIndex = page.meta.totalPages - 1;
+
+          // Every clause is load-bearing. A positive total separates "this window is past the end"
+          // from "this narrowing matches no roles", which is a legitimate empty answer that must not
+          // provoke a second request. A first-page request is never past the end, whatever the total.
+          // And the server's page count must actually fall short of the index asked for, so a server
+          // reporting a window that does exist is believed.
+          const pastTheEnd =
+            correctionAllowed &&
+            page.items.length === 0 &&
+            page.meta.totalCount > 0 &&
+            requestedPageIndex > 0 &&
+            lastExistingPageIndex < requestedPageIndex;
+
+          if (pastTheEnd) {
+            this._rolesPage.update((coordinate) => ({
+              ...coordinate,
+              // Never negative: this arm is only reached with a positive total, so the server reported
+              // at least one page. The floor is stated rather than assumed because the alternative is
+              // a negative index on the wire.
+              pageIndex: lastExistingPageIndex > 0 ? lastExistingPageIndex : 0,
+            }));
+
+            this.dispatchRoles(false);
+            return;
+          }
+
           this._roles.set(page);
+          this._rolesLoading.set(false);
         },
         error: (error: unknown) => {
+          this._rolesLoading.set(false);
           this.recordFailure('loadRoles', error);
         },
       });
@@ -1700,11 +1764,24 @@ export class RoleStore implements OnDestroy {
           this._rolesHeldByUser.set(response.data);
         },
         error: (error: unknown) => {
-          // The narrowing is abandoned on failure, so the screen falls back to the unnarrowed
-          // listing beside the reported failure rather than showing an empty membership set that
-          // would read as "this account holds nothing".
+          // ⚠ THE SUBJECT IS KEPT ON FAILURE, AND CLEARING IT WAS THE DEFECT. The collection is
+          // discarded because there is no answer, but the ACCOUNT is still what the listing is about:
+          // the address still names it and the heading still says so. Clearing the subject made the
+          // state claim no account was being asked about, which is how a consumer comparing the two
+          // slices came to treat a refused narrowing as an ordinary unnarrowed listing.
+          //
+          // ⚠ WHAT THAT PRODUCED, measured against `/roles?userId=999`: the read answers `404`
+          // ("Portal -1 has no member bearing identifier 999"), the narrowing was abandoned, and the
+          // screen rendered ALL THREE roles under the subtitle "Roles held by account 999" - asserting
+          // in writing that a non-existent account holds every role in the tenant. The failure was
+          // recorded here but the listing did not surface this operation, so nothing contradicted it.
+          //
+          // The original reasoning - that an empty set would read as "this account holds nothing" - is
+          // sound and is honoured differently: the consumer distinguishes a REFUSED read from an empty
+          // successful one and renders neither the memberships nor the unnarrowed listing, showing the
+          // reported failure instead. Absence of an answer is now expressed as absence rather than
+          // borrowed from a different question.
           this._rolesHeldByUser.set(null);
-          this._heldRolesUserId.set(undefined);
           this.recordFailure('loadRolesHeldByUser', error);
         },
       });
@@ -1722,6 +1799,22 @@ export class RoleStore implements OnDestroy {
     this._rolesHeldByUser.set(null);
     this._heldRolesUserId.set(undefined);
     this._heldRolesLoading.set(false);
+
+    // ⚠ THE NARROWED READ'S FAILURE GOES WITH THE NARROWING, and this became necessary the moment
+    // that failure started being surfaced. Measured: from `/roles?userId=999` - refused with `404`
+    // "Portal -1 has no member bearing identifier 999" - pressing the on-screen affordance that
+    // returns to the unnarrowed listing left the warning standing above a correct three-row listing,
+    // stable across four seconds of sampling. That path re-renders retained rows and starts no new
+    // read, so nothing else would ever clear the slot; the operator was left with a refusal about an
+    // account the screen is no longer about.
+    //
+    // ⚠ CONDITIONAL, NOT A BLANKET CLEAR. One slot serves the whole store, so clearing it outright
+    // here would silently discard an unrelated refusal - a rejected group rename, say - merely
+    // because the reader widened the listing. Only the failure this command actually invalidates is
+    // released.
+    if (this._failure()?.operation === 'loadRolesHeldByUser') {
+      this.clearFailure();
+    }
   }
 
   /**
@@ -2170,24 +2263,82 @@ export class RoleStore implements OnDestroy {
     this.loadRoles();
   }
 
-  // ⚠ THERE IS DELIBERATELY NO `setRolesPage`, AND ITS ABSENCE IS THE POINT.
-  //
-  // The role listing is read WHOLE — see {@link RoleStore.loadRoles} and
-  // {@link RoleStore.readEveryRole} — because the screen that consumes it offers no pager,
-  // exactly as the legacy screen it replaces offered none (`roles.ascx` declares no paging
-  // control and no `AllowPaging`; `Roles.ascx.vb` holds no page index, page size or record
-  // total anywhere). A command that moved an unpaged listing to a page could not be honoured
-  // by the read behind it, so publishing one would invite precisely the defect this store was
-  // corrected for: a caller asks for a page, believes it received one, and every role beyond
-  // that window silently ceases to exist for the operator reading the screen.
-  //
-  // A future screen that genuinely wants a window must add a SEPARATE windowed read with its
-  // own slice, rather than narrowing this one — two consumers with different completeness
-  // requirements cannot share one slice.
-  //
-  // The page index on {@link RolePageCoordinate} therefore stays at nought for the role
-  // listing. The member remains on the type because the ASSIGNMENT listing, which shares the
-  // type, is genuinely paged and moves through it with {@link RoleStore.setAssignmentsPage}.
+  /**
+   * Adopts a narrowing and a page together WITHOUT reading anything.
+   *
+   * ⚠ THIS COMMAND DISPATCHES NOTHING, WHICH IS THE WHOLE POINT OF IT, AND A CALLER MUST FOLLOW IT WITH
+   * A READ. Every other command on this store couples a state change to a read, which is right when the
+   * change originates in an affordance the operator just used. It is wrong when the change originates in
+   * the ADDRESS: the listing screen keeps its page and its narrowing in the address so that a reload, a
+   * bookmark and the browser's back and forward buttons all reproduce what was on screen, and on entry it
+   * therefore restores BOTH coordinates at once. Restoring them through {@link setGroupFilter} and
+   * {@link setRolesPage} would issue two reads for one view, and the first of them would be for the wrong
+   * page, because a change of narrowing correctly returns to the first page and would discard the page the
+   * address had just asked for.
+   *
+   * Separating the change from the read also lets the caller choose WHICH read follows, and the two are
+   * materially different. On entry the groups are not in hand, so the caller reads
+   * {@link loadRoleAdministration}, which fetches the groups and the listing as one chain. On a later
+   * address change the groups are already held and unaffected by a page turn, so the caller reads
+   * {@link loadRoles} alone — which is what keeps a page change to the single request it was measured down
+   * to, rather than returning it to the pair it used to cost.
+   *
+   * THE PAGE IS NOT RESET HERE, and that is the difference from {@link setGroupFilter}. The address states
+   * a narrowing and a page as one fact and both are honoured exactly as given; whoever WROTE that address
+   * is the party that decided whether a new narrowing should return to the first page.
+   *
+   * MIGRATION: no legacy counterpart, because the legacy screen had no separation to make. Its narrowing
+   * dropdown posted the whole page back and rebound the grid in one round trip
+   * (`Roles.ascx.vb:L273-L278`), so state and read were inseparable by construction.
+   *
+   * THE ORDERING IS STAGED HERE TOO, FOR THE SAME REASON THE PAGE IS. It is a third coordinate the address
+   * states, so restoring it through {@link setRolesSort} would issue a read AND reset the page index the
+   * address had just asked for — the identical pair of faults the paragraph above describes. Both ordering
+   * members are stored exactly as given; the caller that read them out of the address is the party that
+   * validated them against what the endpoint accepts.
+   *
+   * @param filter The narrowing to adopt.
+   * @param pageIndex The page to adopt, counted from zero. Stored exactly as supplied; nothing here
+   * clamps it against a total this store may not yet know.
+   * @param sortBy The column to order by, or `null` to accept the endpoint's default ordering.
+   * @param sortDir The direction, or `null`. Meaningful only alongside `sortBy`.
+   */
+  stageListQuery(
+    filter: RoleGroupFilter,
+    pageIndex: number,
+    sortBy: string | null = null,
+    sortDir: SortDirection | null = null,
+  ): void {
+    this._groupFilter.set(filter);
+    this._rolesPage.update((coordinate) => ({ ...coordinate, pageIndex, sortBy, sortDir }));
+  }
+
+  /**
+   * Moves the role listing to a page and re-reads it.
+   *
+   * ⚠ THIS COMMAND USED NOT TO EXIST, AND ITS ABSENCE WAS DOCUMENTED AS DELIBERATE. The reasoning was
+   * sound for the shape it described: the listing was read WHOLE, so a command that moved it to a page
+   * could not have been honoured by the read behind it, and publishing one would have invited a caller
+   * to ask for a page, believe it received one, and lose every role beyond that window. What changed is
+   * the read, not the reasoning — see {@link ROLES_PAGE_SIZE} for the measurements that retired the
+   * walk. The command exists now because the read behind it genuinely is windowed.
+   *
+   * The index is stored and sent EXACTLY as supplied. Nothing here clamps it against the total,
+   * corrects it or reinterprets it: roles can be deleted between a page being requested and rendered,
+   * so an index past the last page is a real state of the world rather than a caller's mistake. The
+   * server answers it with an empty page whose metadata still reports the true total, and
+   * {@link RoleStore.dispatchRoles} acts on THAT answer. The shared pager only ever emits an index
+   * inside the range it was told about, so the arithmetic has one home and it is not this one.
+   *
+   * The read it dispatches cancels whichever page read was in flight, so clicking through the pager
+   * cannot leave an earlier page's answer to land on top of a later one.
+   *
+   * @param pageIndex The page to move to, counted from zero.
+   */
+  setRolesPage(pageIndex: number): void {
+    this._rolesPage.update((coordinate) => ({ ...coordinate, pageIndex }));
+    this.loadRoles();
+  }
 
   /**
    * Re-orders the role listing and re-reads it from the first page.
@@ -2233,6 +2384,34 @@ export class RoleStore implements OnDestroy {
     this.reloadAssignments();
   }
 
+  /**
+   * Re-orders the assignment listing and re-reads it from the first page.
+   *
+   * The first page for the same reason a page move re-reads at all: a record's page depends on the
+   * ordering, so a coordinate measured under one order does not address the same records under another.
+   *
+   * The field name is the ENDPOINT's, not a column key: the membership listing orders by ACCOUNT fields,
+   * bounded by `SortableFields.RoleUsers` in
+   * `backend/src/DnnMigration.Application/Validation/SortableFields.cs`. That set deliberately excludes the
+   * two assignment dates the projection carries, so a caller must not offer them; the exclusion is the
+   * server's rule and this command does not restate it - it forwards whatever it is given, exactly as
+   * {@link RoleStore.setRolesSort} does, and the boundary refuses an unpermitted name with a field-level
+   * message rather than silently ignoring it.
+   *
+   * @param sortBy The account field to order by, or `null` for the server's own ordering.
+   * @param sortDir The direction, or `null` for the server's default. Passing `null` for BOTH is how a
+   * caller returns the listing to the order it arrived in.
+   */
+  setAssignmentsSort(sortBy: string | null, sortDir: SortDirection | null): void {
+    this._assignmentsPage.update((coordinate) => ({
+      ...coordinate,
+      sortBy,
+      sortDir,
+      pageIndex: 0,
+    }));
+    this.reloadAssignments();
+  }
+
   // -------------------------------------------------------------------------
   // ROLE WRITES
   // -------------------------------------------------------------------------
@@ -2262,7 +2441,20 @@ export class RoleStore implements OnDestroy {
         .subscribe({
           next: (response) => {
             this._selectedRole.set(response.data);
-            this.loadRoles();
+            // ⚠ THE LISTING IS DELIBERATELY NOT RE-READ HERE, and removing that read is a fix rather than an
+            // omission. Runtime testing quantified the duplicate it caused: 2,466 B sent and 25,283 B decoded
+            // per save, in two shapes depending on timing - a complete-and-discard, and a network abort, with
+            // 36 aborted listing refetches in a single session. The cause is that this store re-read the
+            // listing at the same moment the only caller of this command navigated TO the listing, which reads
+            // itself from its own address on entry; the two raced and the loser was cancelled mid-flight.
+            //
+            // The listing is the sole owner of listing reads now that its page, narrowing and ordering live in
+            // its address: it reads on entry and on every address change, so a caller arriving there always
+            // sees authoritative rows and totals without this command asking for them too. The row patch above
+            // covers the other direction - a listing that is still mounted sees the change immediately.
+            //
+            // ⚠ THE DELETE COMMAND KEEPS ITS RE-READ and must. It is reachable from the listing itself, where
+            // no navigation follows and no address changes, so without it a removed row would stay on screen.
           },
           error: (error: unknown) => {
             failure = this.recordFailure('createRole', error);
@@ -2312,7 +2504,10 @@ export class RoleStore implements OnDestroy {
                 item.roleId === updated.roleId ? this.projectListItem(updated) : item,
               ),
             }));
-            this.loadRoles();
+
+            // See the note on `createRole`: the listing owns its own reads, so re-reading here duplicated the
+            // read the caller's navigation was about to issue and one of the two was cancelled in flight. The
+            // row patch immediately above is what keeps a still-mounted listing correct.
           },
           error: (error: unknown) => {
             failure = this.recordFailure('updateRole', error);
@@ -2324,19 +2519,40 @@ export class RoleStore implements OnDestroy {
   }
 
   /**
-   * Deletes a role, then re-reads the listing.
+   * Deletes a role, and re-reads the listing only when the caller asks for it.
    *
    * MIGRATION: for a ROLE, an empty success really does mean the row is gone — which is
    * exactly what makes {@link RoleStore.removeAssignment} the exception rather than the
-   * rule, and why the two are not implemented alike. The listing is still re-read rather
-   * than having the row spliced out, because removing a record shifts every page after it.
+   * rule, and why the two are not implemented alike. When the listing IS re-read it is read
+   * rather than having the row spliced out, because removing a record shifts every page
+   * after it.
+   *
+   * ⚠ `thenReadListing` IS REQUIRED, AND DELIBERATELY HAS NO DEFAULT. It is the same rule
+   * the create and update commands follow — the listing owns listing reads, because its
+   * page, narrowing and ordering live in its address and it reads itself on entry and on
+   * every address change. This command therefore never DECIDES to read the listing; it only
+   * carries out a decision the caller alone can make, and the caller states it at the call
+   * site so a future one cannot inherit the wrong answer silently:
+   *
+   * - `false` when the caller navigates to the listing afterwards. The navigation's own
+   *   read is authoritative, and asking here as well issued a second, identical read that
+   *   the route teardown then cancelled mid-flight. Runtime measurement of the delete path
+   *   recorded exactly that: two listing reads with different correlation ids, the first
+   *   `net::ERR_ABORTED` after ~7 ms and the second returning the rows actually displayed.
+   * - `true` when the caller REMAINS where it is. A row-level delete on the listing changes
+   *   no address, so nothing else will refresh the grid and the removed row would stay on
+   *   screen. The read also passes through the page dispatcher, which steps back a page when
+   *   the removal emptied the one being viewed — a state a row-level delete can create and
+   *   the unpaged listing never could.
    *
    * The selection is discarded only when it is the role that was deleted, compared by
-   * identity.
+   * identity, and that happens on both branches: it describes what is held, not what is
+   * displayed.
    *
    * @param roleId The role to delete, forwarded exactly as supplied.
+   * @param options Whether this command should re-read the listing once the delete succeeds.
    */
-  deleteRole(roleId: number): number {
+  deleteRole(roleId: number, options: { readonly thenReadListing: boolean }): number {
     const mutationId = this.beginWrite();
     let failure: RoleStoreFailure | null = null;
 
@@ -2354,7 +2570,9 @@ export class RoleStore implements OnDestroy {
               this._selectedRole.set(null);
             }
 
-            this.loadRoles();
+            if (options.thenReadListing) {
+              this.loadRoles();
+            }
           },
           error: (error: unknown) => {
             failure = this.recordFailure('deleteRole', error);
@@ -2710,158 +2928,7 @@ export class RoleStore implements OnDestroy {
   // PRIVATE — THE COMPLETE-LISTING WALK AND THE REQUEST HANDLES
   // -------------------------------------------------------------------------
 
-  /**
-   * Emits ONE envelope carrying every role the current narrowing matches.
-   *
-   * WHY A WALK AND NOT A SINGLE REQUEST. The endpoint is paged and its validator caps a page
-   * at {@link ROLES_FETCH_PAGE_SIZE} records, so "every role" is not a request this client
-   * can make. The screen that consumes the result offers no pager — the legacy screen it
-   * replaces had none either — so a single request would present the first page AS the whole
-   * set, which is a silent data loss rather than a smaller view. The pages are therefore
-   * walked here and joined into one unpaged envelope, and the walk is the only place in this
-   * store that issues more than one request for one slice.
-   *
-   * HOW IT TERMINATES, in three independent ways, so that no server behaviour can leave it
-   * spinning:
-   *
-   *   1. THE SERVER'S OWN TOTAL ends it — and it is the ONLY successful ending. Once as many
-   *      records have been gathered as the server said exist, the answer is complete. For a
-   *      self-consistent server this is reached on the last page it actually needed to send, so
-   *      the walk costs no request the data does not warrant, and a tenant whose whole listing
-   *      fits in one page costs exactly one request.
-   *   2. AN EMPTY PAGE ends it by RAISING. The server has nothing further to give while still
-   *      reporting more than it supplied, which is a shortfall it caused; publishing the subset
-   *      would be the silent data loss this walk exists to prevent.
-   *   3. THE PAGE CEILING ends it by RAISING too — see {@link MAXIMUM_ROLE_PAGES}, which no real
-   *      installation can approach.
-   *
-   * ⚠ A SHORT PAGE IS DELIBERATELY NOT A TERMINATION CONDITION, and removing it was a fix. An
-   * earlier revision stopped on `items.length < ROLES_FETCH_PAGE_SIZE` on the reasoning that a
-   * short page "is the last page by definition". It is not: it is the last page a CONSISTENT
-   * server sends, and on a consistent server the record-total condition above has already fired
-   * by then, so the test earned nothing. What it did do was terminate the walk early on an
-   * INCONSISTENT server — one row delivered against a reported total of a hundred and
-   * thirty-seven — and publish that one row as the whole listing. The total alone decides
-   * completeness now, and an inconsistent server produces a refusal instead of a plausible
-   * subset.
-   *
-   * ⚠ A CEILING HIT IS A FAILURE AND PUBLISHES NOTHING. An earlier revision let the ceiling end
-   * the walk like the other two conditions and then emitted the rows gathered so far as one
-   * unpaged envelope, on the reasoning that "the bound never hides a shortfall" because the
-   * envelope carried the server's larger total. That reasoning does not survive contact with the
-   * consumer: the screen this feeds has NO PAGER by design — its legacy predecessor had none
-   * either — so nothing on it renders the total, and a caller comparing `meta.totalCount` against
-   * `items.length` is exactly the diligence a store must not require. The walk therefore raises,
-   * the failure is recorded, and an unreadable listing is reported rather than approximated.
-   *
-   * ⚠ THE TOTAL REPORTED IS THE SERVER'S, NOT THE ROW COUNT. Publishing the number of rows
-   * gathered would make a truncated walk indistinguishable from a complete one, which is the
-   * very defect this method exists to remove. Reporting what the server said keeps the envelope
-   * honest for a caller that does compare them, and it remains correct now that a genuine
-   * shortfall can no longer be emitted at all.
-   *
-   * ⚠ NOTHING IS SORTED, FILTERED OR DE-DUPLICATED HERE. The narrowing, the ordering and the
-   * free-text filter are the server's, are forwarded on every request of the walk, and the
-   * pages are concatenated in the order they were requested — so the assembled order is the
-   * server's order. A client-side sort would be a second, disagreeing opinion about an
-   * ordering the API already owns.
-   *
-   * @returns The complete listing as one envelope. Cold: nothing is requested until it is
-   * subscribed, which is what lets the caller own the handle and cancel the whole walk.
-   */
-  private readEveryRole(): Observable<PagedResult<RoleListItem>> {
-    const coordinate: RolePageCoordinate = this._rolesPage();
-    const narrowing = this.narrowingFor(this._groupFilter());
 
-    const requestPage = (pageIndex: number): Observable<PagedResponse<RoleListItem>> =>
-      this.roleService.listRoles(
-        {
-          pageIndex,
-          pageSize: ROLES_FETCH_PAGE_SIZE,
-          sortBy: coordinate.sortBy,
-          sortDir: coordinate.sortDir,
-          query: coordinate.query,
-        },
-        narrowing,
-      );
-
-    let gathered = 0;
-
-    return requestPage(0).pipe(
-      // `expand` re-enters with each emission, so this is the walk: every page it emits is
-      // both a result to accumulate and the input that decides whether another is needed.
-      expand((response: PagedResponse<RoleListItem>, index: number) => {
-        const page: PagedResult<RoleListItem> = toPagedResult(response);
-
-        gathered += page.items.length;
-
-        // An empty inner observable is how `expand` is told to stop: it emits nothing and
-        // completes, so the outer stream completes with the pages already emitted. This is the
-        // ONLY successful ending, and it means every record the server said exists is in hand.
-        if (gathered >= page.meta.totalCount) {
-          return EMPTY;
-        }
-
-        if (page.items.length === 0) {
-          // The server has nothing further to give yet reports more than was supplied. Raised
-          // rather than published, because publishing would present a subset as the whole
-          // listing on a screen that has no pager to say otherwise.
-          return throwError(
-            () =>
-              new Error(
-                `The role listing could not be read completely: the server reports ` +
-                  `${page.meta.totalCount} roles but supplied ${gathered} and then answered ` +
-                  `with an empty page.`,
-              ),
-          );
-        }
-
-        if (index + 1 >= MAXIMUM_ROLE_PAGES) {
-          // Raised for the same reason, so a truncated walk cannot complete successfully and be
-          // mistaken for the whole listing.
-          return throwError(
-            () =>
-              new Error(
-                `The role listing could not be read completely: the server reports ` +
-                  `${page.meta.totalCount} roles and stopped supplying them after ` +
-                  `${MAXIMUM_ROLE_PAGES} pages (${gathered} gathered).`,
-              ),
-          );
-        }
-
-        return requestPage(index + 1);
-      }),
-      // ⚠ ACCUMULATED IN PLACE RATHER THAN BY RE-SPREADING, for the same reason the assignment
-      // walk is: rebuilding the whole envelope per page makes the join quadratic in the number of
-      // pages. `reduce` emits once, at completion, so the array is never observable mid-build.
-      reduce<PagedResponse<RoleListItem>, { items: RoleListItem[]; totalCount: number }>(
-        (accumulated, response) => {
-          const page: PagedResult<RoleListItem> = toPagedResult(response);
-
-          accumulated.items.push(...page.items);
-          // The server's total, deliberately: see the note above.
-          accumulated.totalCount = page.meta.totalCount;
-
-          return accumulated;
-        },
-        { items: [], totalCount: 0 },
-      ),
-      map(
-        ({ items, totalCount }): PagedResult<RoleListItem> => ({
-          items,
-          meta: {
-            totalCount,
-            // Nought and "one page holding everything" are the coordinates the paging contract
-            // publishes for an unpaged answer, so a consumer cannot tell this envelope from one
-            // the server assembled unpaged.
-            pageIndex: 0,
-            pageSize: items.length,
-            totalPages: items.length > 0 ? 1 : 0,
-          },
-        }),
-      ),
-    );
-  }
 
   /**
    * Holds a write's handle until it settles, so that teardown can release it.

@@ -314,6 +314,35 @@ describe('errorInterceptor', () => {
     return queued().map((entry) => entry.message);
   }
 
+  /**
+   * Raises one failure and returns the message it queued, leaving the queue EMPTY afterwards.
+   *
+   * ⚠ NEEDED BECAUSE THE SERVICE COLLAPSES AN IMMEDIATE REPETITION. Several specifications below
+   * prove that several DIFFERENT inputs normalise to the SAME sentence, and they can only do that
+   * by raising them one after another - at which point the queue legitimately holds one row rather
+   * than one per raise. Reading and clearing between raises observes each normalisation on its own
+   * without asking the service to behave as it did when one fault could be reported three times.
+   *
+   * @param body The response body to flush.
+   * @param status The response status.
+   * @param statusText The response status text.
+   * @returns The message queued by that one failure, or an empty string when none was.
+   */
+  async function messageFrom(
+    body: FlushableBody,
+    status: number,
+    statusText: string,
+  ): Promise<string> {
+    await expectRejection(body, status, statusText);
+
+    const raised = messages();
+    const last = raised.at(-1) ?? '';
+
+    notifications.clear();
+
+    return last;
+  }
+
   /** The severities queued so far, in order. */
   function severities(): readonly NotificationSeverity[] {
     return queued().map((entry) => entry.severity);
@@ -800,13 +829,17 @@ describe('errorInterceptor', () => {
         '<br  / >You Must Enter a Valid Name',
       ];
 
+      const normalised: string[] = [];
+
       for (const detail of spellings) {
         const body: ProblemDetails = { title: 'Bad Request', status: 400, detail };
 
-        await expectRejection(body, 400, 'Bad Request');
+        // Read and cleared per spelling, because five identical sentences in a row are collapsed
+        // into one row by the service - which is the point of this loop, not a problem with it.
+        normalised.push(await messageFrom(body, 400, 'Bad Request'));
       }
 
-      expect(messages()).toEqual([
+      expect(normalised).toEqual([
         'You Must Enter a Valid Name',
         'You Must Enter a Valid Name',
         'You Must Enter a Valid Name',
@@ -945,6 +978,7 @@ describe('errorInterceptor', () => {
 
     it('is omitted for a refusal, which is already self-explanatory', async () => {
       const refusals: readonly number[] = [400, 403, 404, 409, 422, 429];
+      const raisedMessages: string[] = [];
 
       for (const status of refusals) {
         const body: ProblemDetails = {
@@ -955,7 +989,7 @@ describe('errorInterceptor', () => {
           correlationId: CORRELATION_ID,
         };
 
-        await expectRejection(body, status, 'Refused');
+        raisedMessages.push(await messageFrom(body, status, 'Refused'));
       }
 
       // A refusal is self-explanatory to the operator who provoked it: a duplicate
@@ -963,9 +997,9 @@ describe('errorInterceptor', () => {
       // reached. Appending a diagnostic identifier would add noise to a message they
       // can already act on, and would invite them to report a working system as
       // broken.
-      const joined = messages().join('\u0000');
+      const joined = raisedMessages.join('\u0000');
 
-      expect(messages().length).toBe(refusals.length);
+      expect(raisedMessages.length).toBe(refusals.length);
       expect(joined).not.toContain(REFERENCE_LABEL);
       expect(joined).not.toContain(TRACE_ID);
       expect(joined).not.toContain(CORRELATION_ID);
@@ -1271,12 +1305,12 @@ describe('errorInterceptor', () => {
       const empty: ProblemDetails = { title: 'Not Found', status: 404, detail: '' };
       const absent: ProblemDetails = { title: 'Not Found', status: 404 };
 
-      await expectRejection(empty, 404, 'Not Found');
-      await expectRejection(absent, 404, 'Not Found');
+      // One at a time, because two identical sentences in a row are collapsed onto one row - which
+      // is itself evidence that the two inputs took the same branch, but it is not what this
+      // specification is about.
+      const fromEmpty = await messageFrom(empty, 404, 'Not Found');
+      const fromAbsent = await messageFrom(absent, 404, 'Not Found');
 
-      const [fromEmpty, fromAbsent] = messages();
-
-      expect(messages().length).toBe(2);
       expect(fromEmpty).toBe('Not Found');
       expect(fromAbsent)
         .withContext('an empty string and an absent member take the same branch')
@@ -1398,10 +1432,10 @@ describe('errorInterceptor', () => {
       const nullDictionary: FlushableBody = { status: 400, errors: null };
       const bareString: FlushableBody = { status: 400, errors: { PortalName: 'Required.' } };
 
-      await expectRejection(nullDictionary, 400, 'Bad Request');
-      await expectRejection(bareString, 400, 'Bad Request');
+      const fromNull = await messageFrom(nullDictionary, 400, 'Bad Request');
+      const fromBareString = await messageFrom(bareString, 400, 'Bad Request');
 
-      expect(messages()).toEqual([REQUEST_REJECTED_TEXT, REQUEST_REJECTED_TEXT]);
+      expect([fromNull, fromBareString]).toEqual([REQUEST_REJECTED_TEXT, REQUEST_REJECTED_TEXT]);
     });
 
     it('falls back by status for a body that is an array', async () => {

@@ -1,5 +1,5 @@
 import { HttpContext, HttpContextToken } from '@angular/common/http';
-import { Injectable, signal, type Signal } from '@angular/core';
+import { Injectable, inject, signal, type Signal } from '@angular/core';
 
 /**
  * Closed severity vocabulary for a queued notification.
@@ -108,6 +108,31 @@ export interface AppNotification {
    * not be retained at whatever length it arrives.
    */
   readonly reference: string | null;
+
+  /**
+   * Whether this entry is meant to outlive the next change of screen.
+   *
+   * ⚠ THE DEFAULT IS `false`, AND THAT IS THE WHOLE POINT. A notification describes the screen it was
+   * raised on, so once the operator has left that screen it is no longer describing anything they can
+   * see. Two severities never expire on their own — {@link NotificationSeverity} `'warning'` and
+   * `'error'` — which is correct while the operator is still on the screen the fault belongs to and
+   * became a leak the moment they navigated away: a refusal raised on one screen sat over an unrelated
+   * one indefinitely, still telling the operator to correct fields that no longer existed.
+   *
+   * MIGRATION: the leak is deliberately NOT fixed by giving `'warning'` and `'error'` an expiry. A fault
+   * an operator has not acted on must not vanish from under them on a timer while they are reading it,
+   * which is why those two severities are exempt from the countdown in the first place. Screen lifetime
+   * and elapsed time are different questions, and this member answers the first without disturbing the
+   * second.
+   *
+   * `true` buys exactly ONE change of screen and is then spent — see
+   * {@link NotificationService.dismissStale}, which flips it rather than leaving it set. A permanent flag
+   * would simply reintroduce the leak under a nicer name. Exactly two kinds of caller need it, and both
+   * share one shape: they raise a statement and then deliberately navigate, intending it to be read at the
+   * destination. A create confirmation raised immediately before redirecting to the listing is one; a
+   * session-ended notice raised immediately before ejecting to the sign-in screen is the other.
+   */
+  readonly survivesNavigation: boolean;
 }
 
 /**
@@ -186,6 +211,31 @@ const MAX_REFERENCE_LENGTH = 128;
  */
 const REFERENCE_LABEL = 'Reference:';
 
+// =============================================================================
+//  WHERE THE COUNTDOWN LIVES, AND WHY IT IS NOT HERE
+// =============================================================================
+//  THIS SERVICE OWNS THE QUEUE AND NOT THE CLOCK. Timed dismissal is armed by the surface that
+//  renders the queue, and that placement is forced rather than chosen: the countdown has to stop
+//  while a person is reading or operating the region, and whether a pointer is over the region or
+//  focus is inside it are facts only the surface can observe. A service holding the timer cannot
+//  see either, so its timer fires straight through the pause - measured, as six failing cases -
+//  and no amount of care in the service can recover the information it does not have.
+//
+//  The surface therefore declares the interval, the severities that retire themselves, and the
+//  pause. It arms its timers FROM this queue, so an entry removed here - dismissed, displaced by
+//  the depth cap, replaced by a repeat, or swept on a change of screen - takes its countdown with
+//  it, and nothing has to be released alongside it.
+//
+//  ⚠ A WARNING AND AN ERROR ARE NOT RETIRED ON A TIMER, and an earlier revision here did retire a
+//  warning after a longer interval. The measurement that argued for it was a warning found sitting
+//  on screen for eighty-seven seconds, on a screen it had followed the reader to, complaining about
+//  a request that screen had never made. That defect is real and it is now answered by
+//  {@link NotificationService.clearOnNavigation} and the sweep the surface drives on a change of
+//  path, which is a narrower instrument than a clock: it removes the stale entry precisely because
+//  it is stale, and leaves a warning that is still about the screen in hand alone. Those two
+//  severities frequently carry the support reference an operator has to quote, so on the screen
+//  that raised them they persist until they are dismissed.
+
 /**
  * Retains at most `limit` UTF-16 code units of `text`, without splitting a surrogate pair.
  *
@@ -239,8 +289,10 @@ function boundReference(reference: string | null): string | null {
 // of behaviour is Library/Components/Providers/Caching/DataCache.vb - note the path, since a second,
 // unrelated 85-line DataCache.vb lives under Library/Controls/DotNetNuke.WebUtility/ and is out of scope.
 // Caching in the target architecture is a server-side concern only, `IMemoryCache` behind `ICacheService`,
-// so this queue holds no cache, keeps no de-duplication window and expires nothing on a timer: it is a
-// transient view-model slice and nothing more.
+// so this queue holds no cache and expires nothing on a timer: it is a transient view-model slice and
+// nothing more. The collapsing of an immediate repetition in `notify` is NOT a cache either, and must not be
+// read as one - it is keyless, it looks only at the single newest entry, and it retains the NEW occurrence
+// rather than serving the old one back.
 //
 // The fixed-depth overflow guard at MAX_QUEUED_NOTIFICATIONS is NOT a cache eviction policy and must not be
 // read as one. It is keyless and timeless - no key to look an entry up by, no expiry to reach, no
@@ -262,13 +314,24 @@ function boundReference(reference: string | null): string | null {
  * Holds an in-memory, append-ordered queue of user-facing notifications, each one a severity plus an
  * already-composed message.
  *
- * It deliberately owns no presentation behaviour - no auto-dismiss window, no animation, no de-duplication -
- * and no interpretation of transport failures: whoever reports an outcome has already chosen the severity
- * and composed the text. Every operation replaces the queue rather than mutating it in place.
+ * It deliberately owns no presentation behaviour - no auto-dismiss window and no animation, both of which
+ * belong to the surface that renders the queue - and no interpretation of transport failures: whoever
+ * reports an outcome has already chosen the severity and composed the text. Every operation replaces the
+ * queue rather than mutating it in place.
+ *
+ * It DOES collapse an immediate repetition of the newest entry; see {@link NotificationService.notify}.
  */
 @Injectable({ providedIn: 'root' })
 export class NotificationService {
   private readonly _notifications = signal<readonly AppNotification[]>(EMPTY_QUEUE);
+
+  /**
+   * The entries exempted from the next navigation sweep, by identifier.
+   *
+   * Populated by {@link retainAcrossNavigation} and emptied by every sweep, so an exemption lasts
+   * for exactly one navigation and cannot accumulate.
+   */
+  private readonly retained = new Set<number>();
 
   /**
    * The queue, oldest entry first. Read-only at compile time: the `readonly` element type and the read-only
@@ -304,8 +367,22 @@ export class NotificationService {
    * - appending to a queue already holding {@link MAX_QUEUED_NOTIFICATIONS} entries drops the oldest, so depth
    *   never exceeds the cap.
    *
-   * Two identical `(severity, message)` pairs produce two distinct entries with distinct ids, because no
-   * de-duplication window exists here.
+   * ⚠ AN IMMEDIATE REPETITION OF THE NEWEST ENTRY IS COLLAPSED RATHER THAN STACKED. When the entry
+   * currently at the end of the queue carries the same severity, the same composed message and the same
+   * reference, it is REPLACED by the new one - removed and re-appended with a fresh id - so the queue never
+   * holds two adjacent rows a person cannot tell apart, while the newest occurrence is still the one on
+   * screen and is still announced.
+   *
+   * Runtime testing is what forced this. One fault was routinely reported twice at once, and the role
+   * membership screen raised THREE near-identical warnings for a single fault, so an operator was asked to
+   * read the same sentence three times to discover it said the same thing three times. Refusing the repeat
+   * outright was rejected: a person who performs the same action twice - deleting two roles in a row, each
+   * answering with the same confirmation - must get feedback for the second one, and re-appending with a new
+   * id is what re-announces it in a live region whose entries are announced individually.
+   *
+   * Only the NEWEST entry is compared. A repetition further back is left alone, because the entries between
+   * them are evidence that something else happened in between and collapsing across that would reorder the
+   * record of what the operator did.
    *
    * A caller that has a support reference passes it as the third argument rather than concatenating it into
    * the message, and the ordering inside this method is the whole reason the argument exists: the caller's
@@ -323,6 +400,7 @@ export class NotificationService {
     severity: NotificationSeverity,
     message: string,
     reference: string | null = null,
+    survivesNavigation = false,
   ): void {
     // The bound is applied BEFORE the emptiness test, so a message that is only whitespace is still
     // recognised as blank after truncation.
@@ -342,28 +420,73 @@ export class NotificationService {
       severity,
       message: composed,
       reference: quoted,
+      survivesNavigation,
     };
 
     this._notifications.update((queue) => {
+      // The newest entry, and whether this one repeats it. Compared on all three stored members, so a
+      // second occurrence carrying a different support reference is a genuinely different report and
+      // survives as its own row.
+      const newest = queue.at(-1);
+      const repeats =
+        newest !== undefined &&
+        newest.severity === entry.severity &&
+        newest.message === entry.message &&
+        newest.reference === entry.reference;
+      const retained = repeats ? queue.slice(0, -1) : queue;
+
       // Written as a surplus count rather than a `length === cap` test so that it is total: it collapses to
       // a plain append for every depth below the cap and still returns a correctly capped queue for any
       // depth at or above it.
-      const surplus = queue.length + 1 - MAX_QUEUED_NOTIFICATIONS;
+      const surplus = retained.length + 1 - MAX_QUEUED_NOTIFICATIONS;
 
-      return surplus > 0 ? [...queue.slice(surplus), entry] : [...queue, entry];
+      // A REPEAT REPLACES THE ENTRY IT REPEATS, so the queue never holds the same sentence twice in a
+      // row. Nothing has to be released alongside it: the countdown belongs to the SURFACE, which arms
+      // its timers from this queue, so an entry that leaves the queue takes its countdown with it.
+      if (surplus > 0) {
+        return [...retained.slice(surplus), entry];
+      }
+
+      return [...retained, entry];
     });
   }
 
-  success(message: string): void {
-    this.notify('success', message);
+  /**
+   * Queues a confirmation.
+   *
+   * @param message The statement to present.
+   * @param survivesNavigation Whether the statement must outlive the next change of screen. Pass `true`
+   *   ONLY when this call is immediately followed by a deliberate navigation whose destination is where the
+   *   statement is meant to be read; see {@link AppNotification.survivesNavigation}.
+   */
+  success(message: string, survivesNavigation = false): void {
+    this.notify('success', message, null, survivesNavigation);
   }
 
-  info(message: string): void {
-    this.notify('info', message);
+  /**
+   * Queues a neutral statement.
+   *
+   * @param message The statement to present.
+   * @param survivesNavigation Whether the statement must outlive the next change of screen. Pass `true`
+   *   ONLY when this call is immediately followed by a deliberate navigation - or by an action that makes
+   *   one inevitable, such as discarding the session - whose destination is where the statement is meant to
+   *   be read.
+   */
+  info(message: string, survivesNavigation = false): void {
+    this.notify('info', message, null, survivesNavigation);
   }
 
-  warning(message: string): void {
-    this.notify('warning', message);
+  /**
+   * Queues a warning.
+   *
+   * @param message The statement to present.
+   * @param survivesNavigation Whether the statement must outlive the next change of screen. Pass `true`
+   *   ONLY when this call is immediately followed by a deliberate navigation whose destination is where the
+   *   statement is meant to be read - a session-ended notice raised just before ejecting to the sign-in
+   *   screen being the case this exists for.
+   */
+  warning(message: string, survivesNavigation = false): void {
+    this.notify('warning', message, null, survivesNavigation);
   }
 
   /**
@@ -392,10 +515,150 @@ export class NotificationService {
   }
 
   /**
+   * Discards every notification that a change of screen has made stale.
+   *
+   * ⚠ THE ONE THING THIS QUEUE HAD NO WAY TO DO, AND THE MEASUREMENT IS THE ARGUMENT. The queue
+   * is root-scoped while the surface that renders it lives in the persistent shell, so an entry
+   * survived every route change and every screen: an empty-submit warning raised on the module
+   * creation screen was still on screen, word for word, after seven in-application navigations
+   * across five different feature areas, and nothing but the dismiss control could clear it. It
+   * was not cosmetic either — on the portal listing it occupied a full-width band that pushed the
+   * page heading down by 42px and displaced the whole grid.
+   *
+   * A notification states the outcome of an action taken on a SCREEN, so leaving that screen
+   * retires it. This is called from the shell on a completed navigation, which is the one event
+   * that means the operator has genuinely arrived somewhere else — a navigation a guard is about
+   * to refuse has not moved them, so its entries must survive.
+   *
+   * ⚠ AN ENTRY RAISED BY THE ARRIVAL ITSELF MUST NOT BE SWEPT AWAY BY THE ARRIVAL. A guard that
+   * refuses a destination announces WHY, and a session that has expired announces THAT, and both
+   * happen as part of the navigation the caller is reporting here. Such an entry is therefore
+   * exempted for the remainder of the current task, which is what {@link retainAcrossNavigation}
+   * marks and what the arrival-time announcements use.
+   */
+  clearOnNavigation(): void {
+    this.sweep();
+  }
+
+  /**
+   * Exempts the entry raised most recently from the NEXT navigation sweep.
+   *
+   * TWO CLASSES OF CALLER NEED THIS, and the second was discovered by measurement rather than
+   * reasoned about in advance:
+   *
+   *  1. An announcement that is itself the result of ARRIVING somewhere — a guard's refusal, a
+   *     forced sign-out. Without the exemption the message is raised and swept within one task and
+   *     the operator is moved with no explanation at all.
+   *  2. An outcome announced by a screen that then LEAVES. A save, a delete, or a record that
+   *     turned out not to exist: the screen states the outcome and navigates in the same task, and
+   *     the whole point of the message is to be read at the destination — which is where the legacy
+   *     showed it, since its handlers announced and then redirected. Without the exemption the
+   *     sweep discards it before it can be painted, and the effect is total silence: an update that
+   *     succeeded, a role that was deleted, and a record that could not be found all look
+   *     identical to an operator who is simply moved back to a listing.
+   *
+   *     ⚠ MEASURED, NOT SUSPECTED. Saving a role and then following an unknown role id were both
+   *     driven in a real browser: the destination's live region stayed empty, and 226 consecutive
+   *     video frames after the listing painted were pixel-identical to the final frame, so nothing
+   *     appeared and nothing was dismissed. The queue was working; the sweep was faster.
+   *
+   * A caller in the second class must call this immediately after raising the entry and before
+   * requesting the navigation, so the exemption is in place when the sweep runs.
+   *
+   * ⚠ IF YOU EVER RE-CENSUS THE SECOND CLASS, SEARCH FOR THE CONVENIENCE METHODS TOO. The first
+   * survey looked for `notify(` and found six sites; a second pass that also looked for `success(`,
+   * `warning(`, `error(` and `info(` found four more, including a settings screen whose own comment
+   * asserted that its confirmation 'outlives the route change' - the exact claim this sweep had
+   * falsified. A saved-then-left screen is just as likely to announce through a convenience method as
+   * through the general one.
+   *
+   * Returns the caller nothing, and deliberately takes nothing: an announcement is exempted by
+   * being the latest, so a caller cannot exempt an unrelated entry by holding on to an old
+   * identifier.
+   */
+  retainAcrossNavigation(): void {
+    const queue = this._notifications();
+    const latest = queue.at(-1);
+
+    if (latest !== undefined) {
+      this.retained.add(latest.id);
+    }
+  }
+
+  /**
    * Empties the queue by restoring the shared empty instance, so clearing an already-empty queue publishes
    * an unchanged reference and notifies nobody.
    */
   clear(): void {
+    this.retained.clear();
     this._notifications.set(EMPTY_QUEUE);
+  }
+
+  /**
+   * Discards the entries that described the screen the operator has just left.
+   *
+   * Called by the surface that renders this queue, once per change of SCREEN. It removes every entry whose
+   * {@link AppNotification.survivesNavigation} is `false`, and spends the flag on those where it is `true`
+   * by rewriting them with it cleared — so a reprieve is worth exactly one change of screen and the entry
+   * is an ordinary one thereafter.
+   *
+   * ⚠ "CHANGE OF SCREEN" DELIBERATELY MEANS A CHANGE OF PATH, NOT OF ADDRESS, and the caller is what
+   * enforces that. Paging, filtering and sorting are all carried in the query string, so treating any
+   * address change as a change of screen would clear a refusal the operator is still reading the moment
+   * they turned a page — and would make the fix indistinguishable from the fault it replaces, since in
+   * both cases a message the operator wanted vanishes without being read.
+   *
+   * Order and identity are preserved for survivors: a spent entry keeps its {@link AppNotification.id}, so
+   * a dismissal timer already armed against it still finds it, and keeps its position, so a queue of two
+   * does not reorder as one is spent.
+   *
+   * Publishes the shared empty instance when nothing survives, matching {@link NotificationService.clear},
+   * and returns the queue UNTOUCHED when nothing would change — so the common case, navigating with an
+   * empty queue or with nothing but already-spent entries, notifies no dependent and schedules no work.
+   */
+  dismissStale(): void {
+    this.sweep();
+  }
+
+  /**
+   * Discards the previous screen's entries, keeping the ones exempted from this sweep.
+   *
+   * ⚠ THERE ARE TWO WAYS TO CLAIM AN EXEMPTION AND THIS HONOURS BOTH, which is the whole reason the
+   * sweep is written once here instead of twice at the two public names above. A caller states the
+   * claim either when the entry is raised - {@link NotificationService.notify}'s survival argument,
+   * which records a flag ON the entry - or afterwards, through
+   * {@link NotificationService.retainAcrossNavigation}, which records the entry's identifier in a set.
+   * The two forms exist because the two kinds of caller differ: a screen announcing its own departure
+   * knows at the moment it speaks, whereas an interceptor, a guard or a session teardown learns only
+   * once the navigation it is reacting to is already under way. A sweep that consulted one form and not
+   * the other silently destroyed every message raised through the other - measured, as a confirmation
+   * that was announced, retained and then swept before it could be painted.
+   *
+   * AN EXEMPTION LASTS FOR EXACTLY ONE SWEEP, in both forms: a survivor is rewritten with its flag
+   * lowered and the identifier set is emptied, so nothing can accumulate a permanent immunity.
+   *
+   * The reference identity is deliberate. An empty queue is republished as itself so no dependent
+   * re-runs for a sweep with nothing to do; a queue swept clean publishes the shared empty instance;
+   * and a queue with survivors publishes a new array, because every survivor's flag genuinely changed
+   * and a consumer testing it must see the new value.
+   */
+  private sweep(): void {
+    this._notifications.update((queue) => {
+      if (queue.length === 0) {
+        return queue;
+      }
+
+      const survivors = queue.filter(
+        (entry) => entry.survivesNavigation || this.retained.has(entry.id),
+      );
+
+      if (survivors.length === 0) {
+        return EMPTY_QUEUE;
+      }
+
+      return Object.freeze(survivors.map((entry) => ({ ...entry, survivesNavigation: false })));
+    });
+
+    this.retained.clear();
   }
 }

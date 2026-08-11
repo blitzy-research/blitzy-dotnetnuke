@@ -17,11 +17,12 @@
  * `ModuleVisibility` mirrors the API enumeration of the same name, and `MODULE_VISIBILITY` is its frozen
  * lookup map; both are documented individually below.
  *
- * The module-settings screen's VIEW MODEL is deliberately NOT here. A screen's shape is not a wire shape,
- * so it lives with the screen, at
- * `features/module/module-settings/module-settings.view-model.ts`, together with the adapter that
- * projects its form state onto {@link UpdateModuleRequest}. Everything declared in THIS file is
- * transported.
+ * The module-settings screen's own STATE SHAPE is deliberately NOT here. A screen's shape is not a wire
+ * shape, so it lives with the screen: `features/module/module-settings/module-settings.component.ts`
+ * declares `ModuleSettingsSeed` for what that screen is given, its own typed form shape for what it
+ * edits, and one private projection onto {@link UpdateModuleRequest} - all three beside the template that
+ * uses them, so the screen's shape and the rule that maps it onto the wire cannot drift apart.
+ * Everything declared in THIS file is transported.
  *
  * The endpoints these contracts serve are, in full:
  *
@@ -722,6 +723,23 @@ export interface UpdateModuleRequest {
    */
   readonly tabId: number;
 
+  /**
+   * The page this placement should be moved ONTO, or `null` when nothing is being moved.
+   *
+   * TWO DIFFERENT QUESTIONS, TWO DIFFERENT MEMBERS. `tabId` above answers "which placement am I editing",
+   * because a module placed on several pages has one row per page. This answers "where should it end up".
+   * They were the same value on the legacy screen only in the sense that both were read in the same
+   * handler - `ModuleSettings.ascx.vb` compared them before acting, `If TabId <> newTabId Then
+   * objModules.MoveModule(...)`, which it could only do because they were held separately.
+   *
+   * Sending the destination as `tabId` does NOT move anything, and it is worse than inert: the server
+   * uses that member to find the row, a page the module does not occupy has no row, and the save is
+   * refused with `module.placement_not_found` while the module stays exactly where it was.
+   *
+   * `null` and "the same page it is already on" both mean no move, so an ordinary save carries `null`.
+   */
+  readonly moveToTabId: number | null;
+
   /** The heading for the module, or `null` to leave it unset. Not required. At most 256 characters. */
   readonly moduleTitle: string | null;
 
@@ -840,8 +858,8 @@ export interface UpdateModuleRequest {
  *   state" and would be mistaken for it on sight, when the two are structurally unrelated: this type is
  *   two string maps, and the screen's state is a flat record of placement fields. The suffix names what
  *   the type actually is - two property bags - and is retained for that reason rather than to avoid a
- *   collision. The screen's own view model lives beside the screen, at
- *   `features/module/module-settings/module-settings.view-model.ts`.
+ *   collision. The screen's own state shape lives beside the screen, as `ModuleSettingsSeed` in
+ *   `features/module/module-settings/module-settings.component.ts`.
  */
 export interface ModuleSettingsBag {
   /**

@@ -121,7 +121,13 @@ const EXPECTED: ReadonlyArray<readonly [string, string]> = [
   ['/role-groups/new', 'RoleGroupFormComponent'],
   ['/settings/membership', 'MembershipSettingsComponent'],
   ['/settings/profile-definitions', 'ProfileDefinitionListComponent'],
-  ['/no/such/address', 'EmptyStateComponent'],
+  // The fallback resolves to a routed view of its own rather than to the shared empty state
+  // loaded directly. Loading the shared component straight from the router left the address with
+  // no `<h1>` — it states an `<h2>`, correctly, because eight screens embed it beneath their own
+  // page heading — and with a structurally empty action slot, because a router-loaded component
+  // has no host template projecting into it. The composed view fixes both and touches neither
+  // shared component.
+  ['/no/such/address', 'NotFoundComponent'],
 ];
 
 describe('APP_ROUTES', () => {
@@ -290,7 +296,7 @@ describe('APP_ROUTES', () => {
         'LoginComponent',
       );
       expect(((await harness.navigateByUrl('/nowhere')) as object).constructor.name).toBe(
-        'EmptyStateComponent',
+        'NotFoundComponent',
       );
     });
 

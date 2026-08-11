@@ -43,6 +43,7 @@ import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 
 import { BannerAdvertisingMode, UserRegistrationMode } from '../../../core/models/portal.model';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { PortalStore } from '../../../core/state/portal.store';
 import { PortalFormComponent } from './portal-form.component';
@@ -1032,6 +1033,70 @@ describe('PortalFormComponent', () => {
       expect(aliasSentFor('Contoso.Example.TEST')).toBe('contoso.example.test');
     });
 
+    /**
+     * ⚠ R-M20: THE TITLE IS TIDIED TOO, AND THIS SCREEN WAS THE ONE THAT DID NOT DO IT.
+     *
+     * Runtime testing measured three screens against one another: the role editor trims its name into
+     * the control before judging it, the site-settings screen trims its title into the control before
+     * judging it, and this screen sent whatever was typed — twenty-three characters typed, twenty-three
+     * sent, against seventeen on the sibling resource for the same class of field. An operator could not
+     * learn one rule from three behaviours.
+     *
+     * Asserted on the CONTROL as well as on the wire, because trimming into the control is the whole
+     * point: it makes the correction visible in the field, and it means the value that was VALIDATED is
+     * the value that was SENT.
+     */
+    it('trims the site title into its control and sends the trimmed value', () => {
+      createMode();
+      type('portal-form-title', '   Padded Portal Title   ');
+      fillMinimalCreation('padded.example.test');
+      press(CREATE_SUBMIT_LABEL);
+
+      const call = expectRequest('POST', PORTALS_URL, 'the creation');
+      const body = call.request.body as { readonly portalName: string };
+
+      expect(body.portalName).toBe('Padded Portal Title');
+      expect(field<HTMLInputElement>('portal-form-title').value)
+        .withContext('written back, so the operator sees what will be sent')
+        .toBe('Padded Portal Title');
+
+      call.flush(envelope(portalDetail(1)), { status: 201, statusText: 'Created' });
+      fixture.detectChanges();
+      answerListingReread();
+    });
+
+    /**
+     * ⚠ A WHITESPACE-ONLY TITLE IS ACCEPTED ON THE CREATION PATH, AND THAT IS THE SERVER'S RULE
+     * RATHER THAN AN OVERSIGHT.
+     *
+     * `CreatePortalRequestValidator:L473-L474` declares only `MaximumLength` on `PortalName`, whereas
+     * the UPDATE validator declares `NotEmpty()` — because the legacy `valPortalName` validator at
+     * `signup.ascx:L40-L41` guarded the ALIAS despite its message naming the portal name, so a
+     * creation genuinely accepted a blank title. Adding requiredness here would refuse a submission
+     * both the legacy screen and the current API accept.
+     *
+     * What the trim DOES change is what travels: the empty string rather than five spaces, so the
+     * stored value matches the legacy null contract's own spelling of absence
+     * (`Null.vb` declares `NullString` as literally `""`). This case pins the asymmetry so neither
+     * half can be "tidied" into the other.
+     */
+    it('sends a whitespace-only title as the empty string, and still creates', () => {
+      createMode();
+      type('portal-form-title', '     ');
+      fillMinimalCreation('blank-title.example.test');
+      press(CREATE_SUBMIT_LABEL);
+
+      const call = expectRequest('POST', PORTALS_URL, 'the creation');
+      const body = call.request.body as { readonly portalName: string };
+
+      expect(body.portalName).withContext('five spaces became nothing, not five spaces').toBe('');
+      expect(field<HTMLInputElement>('portal-form-title').value).toBe('');
+
+      call.flush(envelope(portalDetail(1)), { status: 201, statusText: 'Created' });
+      fixture.detectChanges();
+      answerListingReread();
+    });
+
     // MIGRATION: `Signup.ascx.vb` reads `Replace(txtPortalName.Text, "http://", "")`. VB's `Replace` removes
     // EVERY occurrence, not merely a leading one, so the successor must do the same.
     it('strips a legacy scheme wherever it appears, not merely at the front', () => {
@@ -1596,6 +1661,58 @@ describe('PortalFormComponent', () => {
       fixture.detectChanges();
       answerListingReread();
     });
+
+    /**
+     * ⚠ R-M20 ON THE REPLACEMENT PATH: THE TITLE IS TIDIED HERE TOO, so one resource does not trim
+     * where another does. Runtime testing measured twenty-three characters typed becoming seventeen
+     * sent on one screen and twenty-three on this one, for the same class of field.
+     */
+    it('trims the title into its control on a replacement as well', () => {
+      const detail: PortalDetail = arriveEditing(5, { portalName: 'Before' });
+
+      type('portal-form-title', '  Tidied Title  ');
+      press(EDIT_SUBMIT_LABEL);
+
+      const call = expectRequest('PUT', portalUrl(5), 'the replacement');
+      const body = call.request.body as { readonly portalName: string };
+
+      expect(body.portalName).toBe('Tidied Title');
+      expect(field<HTMLInputElement>('portal-form-title').value)
+        .withContext('written back, so the operator sees what will be sent')
+        .toBe('Tidied Title');
+
+      call.flush(envelope({ ...detail, portalName: 'Tidied Title' }));
+      fixture.detectChanges();
+      answerListingReread();
+    });
+
+    /**
+     * ⚠ AND ON THIS PATH A BLANK TITLE IS REFUSED LOCALLY, BECAUSE THE ENDPOINT REFUSES IT.
+     *
+     * `UpdatePortalRequestValidator:L385-L387` declares `NotEmpty()` on `PortalName`, and
+     * FluentValidation counts a whitespace-only string as empty — so without a matching rule here the
+     * form declared the value valid and the API refused it, which is a banner after a round trip
+     * instead of a message beside the field. The sentence shown is the SERVER'S OWN, restated verbatim
+     * so the two cannot disagree.
+     *
+     * This is deliberately the OPPOSITE of the creation path, whose own case sits beside the alias
+     * tidying above: the creation endpoint declares no such rule, so requiring it there would refuse a
+     * submission the API accepts. The asymmetry is the server's and both halves are pinned.
+     */
+    it('refuses a whitespace-only title on a replacement, sending nothing', () => {
+      arriveEditing(5, { portalName: 'Before' });
+
+      type('portal-form-title', '   ');
+      press(EDIT_SUBMIT_LABEL);
+
+      httpMock.expectNone(() => true);
+      expect(field<HTMLInputElement>('portal-form-title').value)
+        .withContext('trimmed to nothing, which is exactly what makes it invalid')
+        .toBe('');
+      expect(fieldMessages())
+        .withContext("the server's own sentence, beside the field that caused it")
+        .toContain('Site Title is required.');
+    });
   });
 
   // The request and what comes back
@@ -1646,7 +1763,81 @@ describe('PortalFormComponent', () => {
       answerListingReread();
 
       expect(notifications()).toEqual([{ severity: 'success', message: CREATE_SUCCEEDED_MESSAGE }]);
-      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE]);
+      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE], { replaceUrl: true });
+    });
+
+    it('holds no unsaved entry while a creation is in flight', () => {
+      // ⚠ THIS CASE EXISTS FOR AN OPERATOR-PRECEDENCE DEFECT, WHICH IS WHY IT ASKS THE TRACKER RATHER
+      // THAN THE FORM. This screen holds two forms, and its unsaved-entry probe is meant to read
+      // `(either is dirty) AND (no save is in flight)`. Written without brackets it parsed as
+      // `createForm.dirty || (editForm.dirty && notSaving)`, so a dirty CREATE form was sufficient on
+      // its own - and the route guard therefore offered to discard the portal that was at that moment
+      // being created. Reading the tracker asks precisely the question the guard asks.
+      createMode();
+
+      fillMinimalCreation('contoso.example.test');
+      type('portal-form-title', 'Contoso');
+
+      press(CREATE_SUBMIT_LABEL);
+
+      const call = expectRequest('POST', PORTALS_URL, 'the creation');
+
+      expect(TestBed.inject(UnsavedChangesTracker).isDirty())
+        .withContext('work on its way to the server is not unsaved work')
+        .toBeFalse();
+
+      call.flush(envelope(portalDetail(1, { portalName: 'Contoso' })), {
+        status: 201,
+        statusText: 'Created',
+      });
+      fixture.detectChanges();
+      answerListingReread();
+    });
+
+    it('settles the form and keeps its confirmation once the creation succeeds', () => {
+      // Two claims that share one flow, because they are two halves of the same departure: the screen
+      // must stop claiming unsaved entry, and the confirmation it raises must reach the listing it is
+      // about to move to.
+      createMode();
+
+      fillMinimalCreation('contoso.example.test');
+      type('portal-form-title', 'Contoso');
+
+      press(CREATE_SUBMIT_LABEL);
+
+      expectRequest('POST', PORTALS_URL, 'the creation').flush(
+        envelope(portalDetail(1, { portalName: 'Contoso' })),
+        { status: 201, statusText: 'Created' },
+      );
+      fixture.detectChanges();
+      answerListingReread();
+
+      // ⚠ CLEARING `saveRequested` IS WHAT MAKES THIS NECESSARY. The success handler clears it before
+      // navigating, so from that moment the probe sees a dirty form with no save in flight - and the
+      // navigation it is about to request is the save's own. A sibling screen showed exactly this in a
+      // real browser: the record was created, the confirmation painted, and the operator was then asked
+      // whether to discard the work that had just been stored.
+      expect(TestBed.inject(UnsavedChangesTracker).isDirty())
+        .withContext('the entry is stored, so there is nothing to ask about')
+        .toBeFalse();
+
+      // ⚠ AND THE CONFIRMATION SURVIVES THE NAVIGATION IT IS RAISED WITH. The shell retires
+      // notifications on a completed navigation, so a confirmation announced in the same task as the
+      // departure was swept before it could be painted - the portal was created and the operator was
+      // returned to a listing that said nothing. The queue is real here, so running the sweep proves
+      // the retention rather than asserting that a method was called.
+      const service = TestBed.inject(NotificationService);
+      service.clearOnNavigation();
+
+      expect(service.notifications().map((entry) => entry.message))
+        .withContext('the listing is where the written row - and its confirmation - is read')
+        .toEqual([CREATE_SUCCEEDED_MESSAGE]);
+
+      // A second sweep retires it, so the exemption is exactly one navigation deep and cannot leave a
+      // stale confirmation following the operator around.
+      service.clearOnNavigation();
+
+      expect(service.notifications()).withContext('one navigation, not forever').toHaveSize(0);
     });
 
     it('replaces with one request to the record, carrying every untouched member forward verbatim', () => {
@@ -1704,7 +1895,7 @@ describe('PortalFormComponent', () => {
       answerListingReread();
 
       expect(notifications()).toEqual([{ severity: 'success', message: UPDATE_SUCCEEDED_MESSAGE }]);
-      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE]);
+      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE], { replaceUrl: true });
     });
 
     it('addresses the record by the identifier it arrived with, sentinels included', () => {
@@ -1743,7 +1934,7 @@ describe('PortalFormComponent', () => {
       answerListingReread();
 
       expect(notifications()).toEqual([{ severity: 'success', message: CREATE_SUCCEEDED_MESSAGE }]);
-      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE]);
+      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE], { replaceUrl: true });
     });
 
     it('treats a created portal identified by zero as the success it is', () => {
@@ -1760,7 +1951,7 @@ describe('PortalFormComponent', () => {
       answerListingReread();
 
       expect(notifications()).toEqual([{ severity: 'success', message: CREATE_SUCCEEDED_MESSAGE }]);
-      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE]);
+      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE], { replaceUrl: true });
     });
 
     it('reports a duplicate alias in the measured wording and keeps the entry', () => {
@@ -1780,6 +1971,47 @@ describe('PortalFormComponent', () => {
       // Nobody is taken away from an entry they can still correct.
       expect(navigateSpy).not.toHaveBeenCalled();
       expect(aliasValue()).toBe('contoso.example.test');
+
+      // ⚠ Pf-M8 — THE REFUSAL IS BOUND TO THE FIELD THAT CAUSED IT.
+      //
+      // Runtime testing found the recovery path itself sound - the entry survives, every control stays
+      // editable and the submit stays enabled - but the refusal reached only the banner and the toast.
+      // The alias input reported `aria-invalid="false"` while being the sole reason the write failed,
+      // so an operator had to infer from a sentence which of eleven fields to change.
+      //
+      // A duplicate host name is answered 409 with a published code and a `detail` sentence and NO
+      // `errors` member, which is why the per-field lookup alone could not surface it.
+      expect(fieldMessages()).toEqual([DUPLICATE_ALIAS_MESSAGE]);
+
+      const alias = field<HTMLInputElement>('portal-form-alias');
+
+      expect(alias.getAttribute('aria-invalid')).toBe('true');
+
+      // ⚠ Pf-M8 — AND FOCUS MOVES THERE. The shared focus-to-first-invalid directive cannot cover this:
+      // it acts on the CLIENT form's validity, and the client form is entirely valid after this refusal.
+      // Measured before the fix: `document.activeElement` was `<body>`.
+      expect(document.activeElement).toBe(alias);
+    });
+
+    it('does not move focus for a refusal no single field can be blamed for', () => {
+      const held: PortalDetail = arriveEditing(5);
+      const before = document.activeElement;
+
+      type('portal-form-title', 'Renamed');
+      press(EDIT_SUBMIT_LABEL);
+
+      expectRequest('PUT', portalUrl(5), 'the replacement').flush(
+        problem('portal.host_field_forbidden', 403, 'Host-administered fields may not change.'),
+        { status: 403, statusText: 'Forbidden' },
+      );
+      fixture.detectChanges();
+
+      // The banner is an assertive live region and is announced regardless, so taking focus for a
+      // failure with no field to correct would move an operator away from what they were reading and
+      // tell them nothing. Nothing is marked invalid either - no field is at fault.
+      expect(document.activeElement).toBe(before);
+      expect(fieldMessages()).toEqual([]);
+      expect(held.portalId).toBe(5);
     });
 
     // MIGRATION: measured at `SiteSettings.ascx.vb`. When the operator is not a host account the legacy
@@ -1966,6 +2198,107 @@ describe('PortalFormComponent', () => {
         (node.textContent ?? '').trim(),
       );
     }
+  });
+
+  // Which failure sentence belongs to which operation
+
+  /**
+   * The last-resort failure sentence is chosen BY MODE.
+   *
+   * Found at runtime rather than by reading: a portal UPDATE that failed with no server document
+   * displayed `Signup.ascx.resx`'s CREATE wording, so it named "the Creation Of Your Portal" for an
+   * operation that created nothing and told the operator to check a password "For An Existing User
+   * Account" when neither credential control is rendered in edit mode at all. Both arms are pinned
+   * here so the two sentences cannot be collapsed back into one.
+   *
+   * The `400` arm is pinned too, because it is deliberately NOT mode-dependent: a bad request is
+   * answered beside the fields, and a summary sentence there would only compete with them.
+   */
+  describe('which failure sentence belongs to which operation', () => {
+    /** The sentence authored for a failed update. `SiteSettings.ascx.vb` supplies no wording. */
+    const UPDATE_ERROR_MESSAGE =
+      'The portal could not be updated. Nothing was changed. Check the connection and try again.';
+
+    /**
+     * A fault carrying no problem document, which is what forces the fallback arm.
+     *
+     * ⚠ THE SURFACE UNDER TEST IS THE NOTIFICATION, NOT THE BANNER. The two are fed from
+     * different places and say different things: the banner renders the problem document, so on a
+     * documentless fault it shows a status-derived sentence, while `failureMessage` — the mode-
+     * dependent sentence these specs exist for — reaches the operator through the notification
+     * queue. A first draft of these specs read `.error-banner__message` and failed against the
+     * status sentence, which is the banner working correctly on a surface that never carried the
+     * wording. Read through the spy, as every sibling failure spec here already does.
+     */
+    const DOCUMENTLESS_FAULT: RawFault = { message: 'upstream unavailable' };
+
+    /** The one sentence the failure put on the notification queue. */
+    function reportedMessage(): string {
+      return notifications()[0]?.message ?? '';
+    }
+
+    it('names the UPDATE when an update fails with no document of its own', () => {
+      arriveEditing(5);
+
+      type('portal-form-title', 'Renamed');
+      press(EDIT_SUBMIT_LABEL);
+
+      expectRequest('PUT', portalUrl(5), 'the replacement').flush(DOCUMENTLESS_FAULT, {
+        status: 500,
+        statusText: 'Internal Server Error',
+      });
+      fixture.detectChanges();
+
+      const message: string = reportedMessage();
+
+      expect(message).withContext('the operation that actually failed').toBe(UPDATE_ERROR_MESSAGE);
+      expect(message)
+        .withContext('and NOT the creation wording, which names the wrong operation')
+        .not.toContain('Creation Of Your Portal');
+      expect(message)
+        .withContext('nor a password field this mode does not render')
+        .not.toContain('Incorrect Password');
+    });
+
+    it('still names the CREATION when a creation fails with no document of its own', () => {
+      createMode();
+
+      fillMinimalCreation('contoso.example.test');
+      press(CREATE_SUBMIT_LABEL);
+
+      expectRequest('POST', PORTALS_URL, 'the creation').flush(DOCUMENTLESS_FAULT, {
+        status: 500,
+        statusText: 'Internal Server Error',
+      });
+      fixture.detectChanges();
+
+      // The legacy resource is reinstated on the path it was authored for, and is unchanged.
+      expect(reportedMessage()).toBe(CREATE_ERROR_MESSAGE);
+    });
+
+    it('leaves a rejected update to the server, whose per-field messages carry the detail', () => {
+      arriveEditing(5);
+
+      type('portal-form-title', 'Renamed');
+      press(EDIT_SUBMIT_LABEL);
+
+      expectRequest('PUT', portalUrl(5), 'the replacement').flush(
+        problem('validation.failed', 400, 'One or more fields are invalid.', {
+          PortalName: ['That title is not permitted here.'],
+        }),
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      const message: string = reportedMessage();
+
+      expect(message).withContext("the server's own sentence wins").toContain(
+        'One or more fields are invalid.',
+      );
+      expect(message)
+        .withContext('no authored sentence competes with it')
+        .not.toContain(UPDATE_ERROR_MESSAGE);
+    });
   });
 
   // The fields the legacy screen showed that are gone
@@ -2216,6 +2549,105 @@ describe('PortalFormComponent', () => {
   });
 
   // Structure, typing and reach
+
+  // =========================================================================
+  // WHICH PORTAL, AND HOW TO REACH ITS SIBLINGS
+  // =========================================================================
+  //
+  // ⚠ THE HEADING IDENTIFIES NOTHING ON ITS OWN. It reads "Edit Portals" for every tenant, and
+  // the three controls beneath it are a title, a description and a keyword list — so an operator
+  // arriving from a bookmark had nothing on screen saying WHICH tenant they were about to
+  // rewrite, only a number in the address bar.
+  //
+  // ⚠ AND THE SIBLINGS WERE UNREACHABLE. Every anchor the console renders was enumerated: none
+  // addressed `:portalId/aliases` at all, and the listing's one row command targets
+  // `:portalId/settings`. The three portal screens each own part of one tenant, and moving
+  // between them meant leaving the feature and coming back through the listing. The legacy
+  // console had them as separate administration modules reached from its menu —
+  // `SiteSettings.ascx.vb:L484-L489` inspects the referrer specifically to detect arrival FROM
+  // the Portal Aliases module, which is direct evidence operators moved between them.
+
+  describe('identifying the portal and reaching its siblings', () => {
+    /** Every action projected into the shared header, in document order. */
+    function headerActions(): readonly HTMLAnchorElement[] {
+      return queryAll<HTMLAnchorElement>('app-page-header a');
+    }
+
+    /** The addresses those actions carry, in document order. */
+    function headerAddresses(): readonly string[] {
+      return headerActions().map((action) => action.getAttribute('href') ?? '');
+    }
+
+    /** The whole header's trimmed text. */
+    function headerText(): string {
+      return (required<HTMLElement>('app-page-header').textContent ?? '').trim();
+    }
+
+    it('shows the stored name beside the heading', () => {
+      arriveEditing(5, { portalName: 'Contoso Intranet' });
+
+      expect(headerText()).toContain('Edit Portals');
+      expect(headerText()).toContain('Contoso Intranet');
+    });
+
+    it('renders no name at all while the portal is still being read', () => {
+      // Nothing is invented to fill the gap and no placeholder is shown: the shared header
+      // collapses an absent subtitle, so the heading simply stands alone until the record lands.
+      editMode('5');
+
+      expect(headerText()).not.toContain('Contoso');
+
+      answerDetail(portalDetail(5, { portalName: 'Contoso' }));
+
+      expect(headerText()).toContain('Contoso');
+    });
+
+    it('renders no name for a stored value that is blank or only whitespace', () => {
+      // A blank line under the heading would occupy space and add a node with no accessible name.
+      arriveEditing(5, { portalName: '   ' });
+
+      expect(query('.page-header__subtitle')).toBeNull();
+    });
+
+    it('links to both siblings, at addresses built from the portal in the address', () => {
+      arriveEditing(5);
+
+      expect(headerAddresses()).toEqual(['/portals/5/settings', '/portals/5/aliases']);
+      expect(textOf('app-page-header a')).toEqual(['Site Settings', 'Portal Aliases']);
+    });
+
+    it('builds those addresses correctly for the two sentinel identifiers', () => {
+      // `Portals.PortalID` is `IDENTITY (-1, 1)`, so 0 is the first real tenant and -1 is a real
+      // tenant as well as the legacy absent-marker. A falsy test or a magnitude test anywhere in
+      // the link composition would drop one of them, and the link would then resolve to the
+      // wildcard route rather than failing visibly.
+      arriveEditing(0);
+      expect(headerAddresses()).toEqual(['/portals/0/settings', '/portals/0/aliases']);
+
+      arriveEditing(-1);
+      expect(headerAddresses()).toEqual(['/portals/-1/settings', '/portals/-1/aliases']);
+    });
+
+    it('offers neither sibling in creation mode, where neither exists yet', () => {
+      // A link composed from an absent identifier would read `/portals/undefined/aliases`, which
+      // the router resolves to the wildcard entry - a link that goes nowhere and reports nothing.
+      createMode();
+
+      expect(headerActions()).toHaveSize(0);
+      expect(headerText()).toContain('Add New Portal');
+    });
+
+    it('keeps the sibling links out of the form\u2019s own action row', () => {
+      // Three affordances that must not merge: page-level navigation belongs in the header slot,
+      // while submit and cancel belong to the form footer. Asserted because the shared header's
+      // own documentation names this as the obvious mistake, and because a link inside the form
+      // would sit in the submit control's tab path.
+      arriveEditing(5);
+
+      expect(required<HTMLElement>('.portal-form__actions').querySelectorAll('a')).toHaveSize(0);
+      expect(headerActions()).toHaveSize(2);
+    });
+  });
 
   describe('structure, typing and reach', () => {
     // The component declares on-push change detection, so a change reaching it out of band marks the view

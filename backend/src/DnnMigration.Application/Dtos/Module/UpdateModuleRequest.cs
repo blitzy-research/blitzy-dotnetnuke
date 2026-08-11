@@ -311,6 +311,49 @@ public sealed class UpdateModuleRequest
     [JsonRequired]
     public int TabId { get; set; }
 
+    /// <summary>
+    /// The page this placement should be moved ONTO, when the caller is relocating it.
+    /// <see langword="null"/>, or the same value as <see cref="TabId"/>, means "do not move".
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS IS A SECOND MEMBER AND NOT A REUSE OF <see cref="TabId"/>. The legacy screen held these
+    /// as two genuinely different values and never confused them: the page the module currently occupied
+    /// arrived as the request's own page context, while the destination came from the
+    /// <c>cboTab</c> picker, and <c>ModuleSettings.ascx.vb</c> compared the two before acting -
+    /// <c>If TabId &lt;&gt; newTabId Then objModules.MoveModule(ModuleId, TabId, newTabId, "")</c>.
+    /// </para>
+    /// <para>
+    /// Collapsing both onto <see cref="TabId"/> cannot work, and the failure is not theoretical. That
+    /// member SELECTS which placement is being updated - a module placed on several pages has one row
+    /// per page, and without the page there is no way to say which row the submitted values belong to.
+    /// A destination therefore could not be carried by the same member: naming a page the module does
+    /// not yet occupy would make the selection fail, so the caller was answered
+    /// <c>module.placement_not_found</c> and the module stayed exactly where it was. The picker was
+    /// labelled with an action it could not perform, and using it as labelled broke the save.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the move itself reproduces <c>ModuleController.MoveModule</c>, which was a COPY
+    /// followed by a DELETE rather than a page reassignment - <c>CopyModule(..., includeSettings:=True)</c>
+    /// then <c>DeleteTabModule(fromTabId, moduleId)</c>. That distinction is load-bearing: the copy
+    /// carried the placement's presentation columns and its placement-scoped settings across, so a move
+    /// preserved appearance and settings rather than resetting them. The destination pane defaults to the
+    /// source's own pane and the new row lands at the bottom of it, both exactly as the legacy copy did.
+    /// </para>
+    /// <para>
+    /// This member carries NO validator rule, which is the same correctness requirement documented for
+    /// <see cref="TabId"/>: <c>Tabs.TabID</c> is <c>IDENTITY (0, 1)</c>, so zero is a legitimate page and
+    /// a positive-only rule would make the first page of every portal an illegal destination. The real
+    /// check - that the page exists, belongs to this portal and is one the caller may edit - is stateful
+    /// and belongs to the service.
+    /// </para>
+    /// <para>
+    /// Omitting it is the default and means no move, so every caller written against the selecting
+    /// contract keeps its exact previous behaviour.
+    /// </para>
+    /// </remarks>
+    public int? MoveToTabId { get; set; }
+
     // --- Module scope: identical on every page the module appears on ---
 
     /// <summary>

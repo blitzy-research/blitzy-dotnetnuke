@@ -125,8 +125,12 @@
       'sidebar main'
       'footer  footer';
 
-    // MIGRATION: `auto` for the sidebar column rather than a fixed track. No sidebar-width token
-    // exists, and composing one from the spacing scale would put the real design decision - the
+    // MIGRATION: `auto` for the sidebar column rather than a fixed track, and it STAYS `auto` now
+    // that a rail width exists. The rail component declares `--layout-rail-inline-size` on itself,
+    // which is precisely what the closing sentence below asked any future width to do, so this track
+    // now measures a definite item instead of a bold-weight-dependent one - and every collapse case
+    // named below still holds, because an absent or empty region still contributes no item to
+    // measure. Composing a width from the spacing scale would have put the real design decision - the
     // multiplier - outside the sole token owner. Sizing the track intrinsically needs no width and
     // handles every state without a modifier class: present, and it fits the region's own content
     // and padding; empty, and the region leaves the flow so the track collapses to zero; absent, and
@@ -140,9 +144,8 @@
 }
 
 .shell__skip-link {
-  // Its own grid row, above the header. While the link is hidden it is out of flow so the row
-  // measures nothing; revealing it grows the row and shifts the document down by exactly the link's
-  // height, obscuring nothing.
+  // Its own grid row, above the header, so the link leads the document order that the tab order
+  // follows. The row measures nothing in EITHER state - see the positioning below.
   grid-area: skip;
 
   // The hide-and-reveal geometry comes wholly from the shared mixin, which scopes it to a compound
@@ -152,7 +155,28 @@
   @include mx.visually-hidden-focusable;
   @include mx.focus-ring;
 
-  justify-self: start;
+  // ⚠ REVEALED AS AN OVERLAY, NOT AS A ROW THAT GROWS, AND THAT IS A FIX RATHER THAN A PREFERENCE.
+  // The mixin returns the element to normal flow when it takes focus - its own documentation says so
+  // and names positioning-on-focus as the consumer's alternative - and this rule used to accept that,
+  // on the reasoning that a link which pushes the page down obscures nothing. Measured in a browser:
+  // the FIRST Tab press on every screen moved the entire document down 33px, and tabbing past the
+  // link moved it back up again, so the reflow happened twice on the way in to every page and had to
+  // be re-read by anyone watching the screen. Staying out of flow in both states costs one corner of
+  // the header band while the link holds focus, which is the near-universal convention for exactly
+  // this trade.
+  //
+  // `fixed` rather than `absolute`, so the containing block is the viewport and the link cannot be
+  // resolved against - or clipped by - whichever ancestor happens to be positioned. The insets are
+  // logical, so the link lands at the start corner in both writing directions. The layer comes from
+  // the scale in _tokens.scss, at its topmost step, because this is the first tab stop on the screen
+  // and nothing may paint over it; the reasoning is recorded with the token.
+  //
+  // `justify-self` is deliberately absent: it applied to the grid item this used to be, and an
+  // out-of-flow box shrink-wraps its content anyway, so restating it would only mislead.
+  position: fixed;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  z-index: var(--z-index-skip-link);
   padding: var(--space-2) var(--space-3);
   background-color: var(--color-primary);
   color: var(--color-background);
@@ -193,6 +217,17 @@
 
 .shell__main {
   grid-area: main;
+
+  // ⚠ THE POSITIONING CONTEXT FOR THE NOTIFICATION OVERLAY, and the reason it is declared here
+  // rather than on the notification surface itself: an absolutely positioned element resolves
+  // against its nearest POSITIONED ancestor, and every ancestor in this shell was static, so
+  // without this the overlay would escape to the initial containing block and anchor to the
+  // viewport instead of to the page.
+  //
+  // It also CONFINES that overlay. The notification surface is clipped to nothing by no ancestor,
+  // and a toast anchored to the viewport would sit over the header and the navigation rail rather
+  // than over the content it concerns.
+  position: relative;
 
   // The page gutter. A grid item whose inline size is automatic fits its border box to the track, so
   // padding declared here can never overflow the track regardless of which box model is in force -
@@ -300,4 +335,33 @@
 
 .align-end {
   text-align: end;
+}
+
+// -----------------------------------------------------------------------------
+//  The visually-hidden attribute hook, for any element
+// -----------------------------------------------------------------------------
+//  Carried as an ATTRIBUTE rather than a class because it states a presentational
+//  fact about one element rather than joining it to a component's vocabulary, and
+//  because the table conventions already established the spelling for `caption`.
+//  That rule stays where it is - it is scoped to the element it documents and
+//  resolves to the same mixin - and this generalises the hook so the same spelling
+//  works wherever the need recurs.
+//
+//  WHAT IT IS FOR, and what it is not. It is for text that names a region for a
+//  reader who cannot see the region's own visual grouping, on a screen where a
+//  visible heading would duplicate something already on screen - which is exactly
+//  the case the caption rule's own note describes. It is NOT a way to hide content
+//  that ought to be visible: the mixin clips the element rather than removing it,
+//  so the text stays in the reading order and in the accessibility tree, and
+//  neither `display: none` nor `visibility: hidden` is used anywhere near it.
+//
+//  ⚠ THE ELEMENT LEAVES NORMAL FLOW, because the mixin positions it absolutely.
+//  Two consequences a consumer must respect: it never becomes a grid item or a flex
+//  item, so it cannot open a track or a slot in a laid-out container; and it
+//  resolves its position against the nearest POSITIONED ancestor, so it must be
+//  placed inside ordinary flow content rather than as a direct child of a scrolling
+//  region that is not itself positioned - a 1px box at an unexpected origin was
+//  previously measured extending a scroll container's scrollable width.
+[data-visually-hidden] {
+  @include mx.visually-hidden;
 }

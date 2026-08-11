@@ -483,6 +483,7 @@ const routes: Routes = [
 describe('permissionGuard', () => {
   let store: AuthStoreDouble;
   let notify: jasmine.Spy;
+  let retainAcrossNavigation: jasmine.Spy;
   let storeOffLimits: Record<string, jasmine.Spy>;
   let notifierOffLimits: Record<string, jasmine.Spy>;
   let harness: RouterTestingHarness;
@@ -495,6 +496,14 @@ describe('permissionGuard', () => {
     // Returns `undefined` because the real member returns void; what is measured is the
     // ARGUMENTS it was called with and how many times, never a value it hands back.
     notify = jasmine.createSpy('notify');
+
+    // ⚠ A SECOND MEMBER THE GATE LEGITIMATELY REACHES, and it is not off limits. The refusal it
+    // queues is raised DURING the navigation the gate is refusing, and the shell sweeps stale
+    // notifications on every completed navigation - so without this exemption the one message
+    // explaining the refusal would be queued and swept inside a single task and the operator
+    // would be redirected with no explanation at all. Spied rather than stubbed silently so the
+    // closing blocks can assert that the gate pairs every refusal with the exemption.
+    retainAcrossNavigation = jasmine.createSpy('retainAcrossNavigation');
 
     // Installed on EVERY test rather than only on the ones that assert about them, so that
     // any test which accidentally drives the gate into consulting an entitlement, mutating
@@ -525,7 +534,7 @@ describe('permissionGuard', () => {
         },
         {
           provide: NotificationService,
-          useValue: { notify, ...notifierOffLimits },
+          useValue: { notify, retainAcrossNavigation, ...notifierOffLimits },
         },
       ],
     });

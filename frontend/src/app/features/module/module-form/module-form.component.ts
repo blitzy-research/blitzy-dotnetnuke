@@ -174,6 +174,11 @@ import { NotificationService } from '../../../core/services/notification.service
 import { AuthStore } from '../../../core/state/auth.store';
 import { ModuleStore } from '../../../core/state/module.store';
 import { fieldErrorMessage } from '../../../core/utils/form-errors.util';
+import {
+  containedIconPathValidator,
+  ICON_NOT_CONTAINED_ERROR,
+  ICON_NOT_CONTAINED_MESSAGE,
+} from '../../../core/utils/icon-reference.util';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
@@ -189,6 +194,9 @@ import type {
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { TabListItem } from '../../../core/models/tab.model';
 import type { ModuleStoreOperation } from '../../../core/state/module.store';
+import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
+import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 
 // =====================================================================================================
 // NUMERIC INSTRUCTIONS THAT LOOK LIKE SENTINELS AND ARE NOT
@@ -426,6 +434,18 @@ const MODULE_TITLE_MAX_LENGTH = 256;
 const MODULE_ICON_MAX_LENGTH = 100;
 
 /**
+ * The opening of the blank-heading disclosure, up to the name itself.
+ *
+ * Split from its closing half so the definition's own name is interpolated between them rather than
+ * concatenated into a sentence fragment, which keeps the name a value and the wording a constant. The same
+ * two constants word the same disclosure on the settings screen.
+ */
+const TITLE_FALLBACK_PREFIX = 'With no heading, this module is listed as “';
+
+/** The close of the blank-heading disclosure, after the name. @see TITLE_FALLBACK_PREFIX */
+const TITLE_FALLBACK_SUFFIX = '”, the name of its module definition.';
+
+/**
  * The earliest instant SQL Server's `datetime` can store, as a calendar date.
  *
  * The two schedule bounds land in `datetime` columns, whose domain begins on the first of January 1753
@@ -475,13 +495,6 @@ const DELETE_LABEL = 'Delete';
 const DELETE_CONFIRM_MESSAGE = 'Are You Sure You Wish To Delete This Item?';
 
 /**
- * The destructive confirmation's heading.
- *
- * A net addition: the legacy confirmation was a browser dialog with a message and no title.
- */
-const DELETE_CONFIRM_TITLE = 'Delete Module';
-
-/**
  * The sentence shown when the operator submits a form that still carries a validation message.
  *
  * A net addition. The legacy screen guarded its handler with `If Page.IsValid Then`
@@ -520,6 +533,14 @@ const UNREADABLE_ADDRESS_MESSAGE =
 
 /** The sentence shown when the addressed module could not be found. */
 const NOT_FOUND_MESSAGE = 'The module could not be found. It may have been removed.';
+
+/**
+ * The one status that answers the question of existence in the negative.
+ *
+ * Every other failed read leaves existence unanswered, which is why this constant is compared against
+ * rather than a refusal status being listed: see {@link ModuleFormComponent.readRefused}.
+ */
+const NOT_FOUND_STATUS = 404;
 
 /** The sentence shown after a module has been placed. */
 const CREATED_MESSAGE = 'The module was added.';
@@ -953,6 +974,11 @@ function integerValidator(control: AbstractControl<string>): ValidationErrors | 
  */
 const LOCAL_VALIDATION_MESSAGES: Readonly<Partial<Record<keyof ModuleFormModel, string>>> =
   Object.freeze({
+    // The two required choices. Deliberately the SAME two sentences the imperative guards already
+    // report, rather than field-specific rewordings: one rule must not be described two ways depending
+    // on which mechanism happens to notice it first.
+    moduleDefId: DEFINITION_REQUIRED_MESSAGE,
+    tabId: PAGE_REQUIRED_MESSAGE,
     startDate: START_DATE_INVALID_MESSAGE,
     endDate: END_DATE_INVALID_MESSAGE,
     cacheTime: CACHE_TIME_INVALID_MESSAGE,
@@ -982,18 +1008,41 @@ const SUCCESS_MESSAGES: Readonly<Record<ModuleFormOperation, string>> = Object.f
   // surface for a refusal, and the destructive confirmation. No sixth is added and none is authored:
   // the shared inventory is closed.
   imports: [
+    FocusFirstInvalidDirective,
+    SubmitGuardDirective,
     ReactiveFormsModule,
     PageHeaderComponent,
     FormFieldComponent,
     LoadingSpinnerComponent,
     ErrorBannerComponent,
     ConfirmDialogComponent,
+    FocusFirstInvalidDirective,
   ],
   templateUrl: './module-form.component.html',
   styleUrl: './module-form.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class ModuleFormComponent {
+
+  /**
+   * Registers this screen's unsaved-entry probe with the application's tracker.
+   *
+   * ⚠ WHY A REGISTRATION RATHER THAN A ROUTE-LEVEL READ. Leaving a screen happens two ways and
+   * only one of them is a router navigation: Cancel, an in-application link and the browser's Back
+   * button are navigations a route guard can refuse, while closing or reloading the tab is not, and
+   * only the browser's own unload prompt covers that - which needs the dirty state at an arbitrary
+   * moment rather than at a navigation. One tracker holding probes answers both, and the probe is
+   * released automatically when this screen is destroyed, so a screen that has gone can never hold
+   * a navigation up. Measured before this existed: a dirty form was discarded in silence by all
+   * four exits, with instrumented `confirm`, `alert` and `beforeunload` recording nothing at all.
+   *
+   * A form that is being SAVED is not dirty in the sense that matters here - the entry is on its
+   * way to the server, and prompting about it would ask the operator to confirm discarding work
+   * they have already committed.
+   */
+  private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
+    () => this.form.dirty && this.saving() === false,
+  );
   // ---------------------------------------------------------------------------------------------------
   // DEPENDENCIES
   // ---------------------------------------------------------------------------------------------------
@@ -1077,8 +1126,40 @@ export class ModuleFormComponent {
   protected readonly form = new FormGroup<ModuleFormModel>({
     // `null` is "not chosen". It is NOT a sentinel: page zero and module zero are real, so no numeric
     // value could have carried this meaning.
-    moduleDefId: new FormControl<number | null>(null, { nonNullable: true }),
-    tabId: new FormControl<number | null>(null, { nonNullable: true }),
+    //
+    // ⚠ BOTH RULES WERE ALREADY BEING ENFORCED, IMPERATIVELY, AND THAT WAS THE DEFECT. `submit` tested
+    // `tabId === null` and reported a page-level sentence, and `createModule` tested
+    // `moduleDefId === null` and reported another - so `form.invalid` was FALSE with two required
+    // choices unmade, no control carried `aria-invalid`, not one of the thirteen fields showed a
+    // message, and an empty submission produced a single polite warning naming only the page. The
+    // module was never mentioned at all, because its test sat downstream of three earlier guards and
+    // was never reached.
+    //
+    // Declaring the rules here is a change of REPORTING, not a new rule: the requirement already
+    // existed and already blocked the write. Once declared, the screen's existing machinery does the
+    // rest - `markAllAsTouched` plus `errorsFor` renders a sentence against each control, the template
+    // binds `aria-invalid` from the same source, and the single `form.invalid` branch reports the
+    // summary. The imperative guards below stay as defence in depth, exactly as the cache-time guard
+    // does.
+    //
+    // MIGRATION: the legacy screen declared no required rule on `cboTab` - `modulesettings.ascx`
+    // carries four validators and all four are `CompareValidator`s for date and integer types - but it
+    // could not need one: `ModuleSettings.ascx.vb:L129-L130` pre-selected the module's own tab,
+    // `:L145` pre-selected a supplied one, and `:L211` INSERTED the active tab at position zero, so an
+    // unchosen page was unreachable. There was also no legacy create screen at all. The situation is
+    // reachable here, so the rule has to be stated where the rest of the rules live.
+    //
+    // `Validators.required` is safe on a numeric control: its emptiness test is `value == null ||
+    // value.length === 0`, and `0 == null` is false while `(0).length` is undefined - so page zero and
+    // module zero, both real identities, pass. Only `null` fails, which is precisely "not chosen".
+    moduleDefId: new FormControl<number | null>(null, {
+      nonNullable: true,
+      validators: [Validators.required],
+    }),
+    tabId: new FormControl<number | null>(null, {
+      nonNullable: true,
+      validators: [Validators.required],
+    }),
     moduleTitle: new FormControl('', {
       nonNullable: true,
       validators: [Validators.maxLength(MODULE_TITLE_MAX_LENGTH)],
@@ -1091,9 +1172,16 @@ export class ModuleFormComponent {
     inheritViewPermissions: new FormControl(false, { nonNullable: true }),
     moduleOrder: new FormControl(MODULE_ORDER_APPEND, { nonNullable: true }),
     cacheTime: new FormControl('', { nonNullable: true, validators: [integerValidator] }),
+    // SEC: the containment rule joins the length bound, and it is the SHARED rule rather than a local
+    // copy. `modulesettings.ascx:L116` declared this field as `<portal:url id="ctlIcon" ...>`, a picker
+    // over the portal's own files, so an arbitrary path was unreachable by construction and the legacy
+    // screen had nothing to validate. This screen offers a text box instead, so the constraint the picker
+    // enforced structurally is enforced by a rule - which refuses only values the legacy could not have
+    // produced. Measured before it was added: `../../../etc/passwd` reached the API and was stored
+    // VERBATIM, because the module validators were the one path still missing the rule.
     iconFile: new FormControl('', {
       nonNullable: true,
-      validators: [Validators.maxLength(MODULE_ICON_MAX_LENGTH)],
+      validators: [Validators.maxLength(MODULE_ICON_MAX_LENGTH), containedIconPathValidator],
     }),
     visibility: new FormControl<ModuleVisibility>(ModuleVisibility.Maximized, {
       nonNullable: true,
@@ -1267,13 +1355,59 @@ export class ModuleFormComponent {
   });
 
   /**
+   * Whether the read of the addressed module FAILED for a reason other than the module being absent.
+   *
+   * A REFUSAL IS NOT AN ABSENCE, and that distinction is the whole point of this member. The server
+   * answers `GET /api/v1/modules/{id}` with 403 when the caller may not see the module, and with 404
+   * when there is no such module; both leave this screen holding no module, so a test for "no module
+   * in hand" cannot tell them apart. Reporting a refusal as "could not be found" states something
+   * that is not true, and states it ALONGSIDE the banner's accurate sentence, so the screen
+   * contradicts itself.
+   *
+   * The predicate is deliberately "any failed read except an absence" rather than "a 403", because
+   * every other status carries the same defect for the same reason: a read that failed with a fault
+   * did not answer the question of existence either. The one status that DOES answer it is 404, which
+   * is left to {@link moduleMissing} and its ported sentence.
+   *
+   * Narrowed to the read, because the store holds one failure slot shared by every module command: a
+   * rejected save must not make the form disappear.
+   *
+   * MIGRATION: the presentation of a refusal is the shared banner and nothing else, at warning
+   *   severity. That is the faithful port of `Website/admin/Security/AccessDenied.ascx.vb:L41-L45`,
+   *   which raised `ModuleMessage.ModuleMessageType.YellowWarning` on BOTH of its branches - a
+   *   module message rendered in the page, not a transient one - and it is the severity
+   *   `core/utils/form-errors.util.ts` already resolves 403 to. Keeping the document rather than
+   *   reducing it to a sentence is what retains the trace identifier, which is the only join key
+   *   between what the operator saw and what the server logged.
+   */
+  protected readonly readRefused = computed<boolean>(() => {
+    if (this.isEditMode() === false || this.addressUnreadable()) {
+      return false;
+    }
+
+    const failure = this.store.failure();
+
+    if (failure === null || failure.operation !== 'loadModule') {
+      return false;
+    }
+
+    return failure.summary.status !== NOT_FOUND_STATUS;
+  });
+
+  /**
    * Whether the addressed module could not be found.
    *
    * Distinguished from "still reading" by the dispatch flag and the loading flag, so the message
-   * appears only once a read has actually completed without producing the module.
+   * appears only once a read has actually completed without producing the module - and distinguished
+   * from "the read was refused" by {@link readRefused}, so the ported sentence is reserved for the one
+   * condition it actually describes.
    */
   protected readonly moduleMissing = computed<boolean>(() => {
     if (this.isEditMode() === false || this.addressUnreadable()) {
+      return false;
+    }
+
+    if (this.readRefused()) {
       return false;
     }
 
@@ -1427,6 +1561,92 @@ export class ModuleFormComponent {
   /** @see SQL_DATETIME_MAXIMUM_DATE — bound to both date pickers' native upper bound. */
   protected readonly dateMaximum = SQL_DATETIME_MAXIMUM_DATE;
 
+  /**
+   * What the operator is told when the end of the schedule precedes its start.
+   *
+   * MIGRATION: AUTHORED, because the legacy screen had nothing to say about this state — it could not
+   * detect it. `Website/admin/Modules/modulesettings.ascx` guards each date with an independent
+   * `DataTypeCheck` comparison validator naming NO control to compare against, so the relationship
+   * between the two fields was never expressed on either tier.
+   *
+   * The wording states the consequence rather than scolding, because the value is ACCEPTED: it says
+   * what the module will do, which is the fact the operator needs in order to decide whether they
+   * meant it.
+   */
+  protected readonly reversedScheduleNotice =
+    'The end of this schedule is earlier than its start, so the module will not be shown at any ' +
+    'time. This is saved as entered.';
+
+  /**
+   * What the module will be listed as while its heading is blank, or `null` when the heading is set.
+   *
+   * A `computed` here rather than a method — unlike {@link scheduleReversed}, which must read a form
+   * control — because its one changing dependency, the definition's name, is already a signal. It still
+   * has to read the heading control, so it is written as a method-free getter over that signal and the
+   * control together; the control is read inside the same change-detection pass that renders it, which is
+   * the same arrangement the reversed-schedule notice relies on and which was verified at runtime there.
+   *
+   * @see titleFallbackNotice on the settings screen for the full sourcing: three tiers agree that the
+   * heading is optional, and this states the consequence rather than refusing the value.
+   */
+  protected titleFallbackNotice(): string | null {
+    if (this.form.controls.moduleTitle.value.length > 0) {
+      return null;
+    }
+
+    // The catalogue name of whichever definition applies — the loaded module's own when editing, the
+    // picked one when creating. Empty means there is nothing truthful to offer, so nothing is said.
+    const fallback = this.definitionName();
+
+    if (fallback.length === 0) {
+      return null;
+    }
+
+    return `${TITLE_FALLBACK_PREFIX}${fallback}${TITLE_FALLBACK_SUFFIX}`;
+  }
+
+  /**
+   * Whether the entered schedule ends before it begins.
+   *
+   * A METHOD rather than a `computed`, deliberately, and the reason is that this form's state lives
+   * in a `FormGroup` and not in signals: nothing here bridges `valueChanges` into a signal, so a
+   * `computed` would have nothing reactive to depend on and would latch its first answer forever.
+   * Reading the controls directly is also what guarantees the notice describes the two values that
+   * are actually drawn rather than a second copy of them that could disagree.
+   *
+   * This re-evaluates on every change-detection pass for this component, which is exactly when it
+   * needs to: the component is `OnPush`, and an `input` event raised by a control inside this
+   * template marks the view dirty, so typing in either date box re-runs the check. The same
+   * arrangement backs the role form's at-limit notice and was verified at runtime there rather than
+   * assumed to work.
+   *
+   * The controls are native `type="date"` inputs, so their values are ISO `yyyy-mm-dd` strings, which
+   * would compare correctly as strings for equal-length values — but they are compared as DATES here
+   * anyway, because a blank or partially typed value must not be mistaken for an ordering.
+   *
+   * Both bounds must be present and valid for the comparison to mean anything: a schedule with only
+   * one bound is open-ended and ordinary, and is never remarked on.
+   *
+   * @returns `true` only when both bounds are real dates and the end precedes the start.
+   */
+  protected scheduleReversed(): boolean {
+    const start: string = this.form.controls.startDate.value;
+    const end: string = this.form.controls.endDate.value;
+
+    if (start.length === 0 || end.length === 0) {
+      return false;
+    }
+
+    const startAt: number = Date.parse(start);
+    const endAt: number = Date.parse(end);
+
+    if (Number.isNaN(startAt) || Number.isNaN(endAt)) {
+      return false;
+    }
+
+    return endAt < startAt;
+  }
+
   /** The three visibility choices. */
   protected readonly visibilityChoices = VISIBILITY_CHOICES;
 
@@ -1438,9 +1658,6 @@ export class ModuleFormComponent {
 
   /** The label on the removal affordance. */
   protected readonly deleteLabel = DELETE_LABEL;
-
-  /** The destructive confirmation's heading. */
-  protected readonly deleteConfirmTitle = DELETE_CONFIRM_TITLE;
 
   /** The destructive confirmation's message. */
   protected readonly deleteConfirmMessage = DELETE_CONFIRM_MESSAGE;
@@ -1661,6 +1878,13 @@ export class ModuleFormComponent {
       return DATE_OUT_OF_RANGE_MESSAGE;
     }
 
+    // Ordered before the length arm so the more specific rule wins. A rooted or upward-traversing
+    // reference that also happens to be over-long is described as escaping the folder, because that is
+    // the mistake that was actually made - shortening it would not make it acceptable.
+    if (control.hasError(ICON_NOT_CONTAINED_ERROR)) {
+      return ICON_NOT_CONTAINED_MESSAGE;
+    }
+
     const overlong: unknown = control.errors?.['maxlength'];
 
     if (typeof overlong === 'object' && overlong !== null) {
@@ -1733,6 +1957,20 @@ export class ModuleFormComponent {
 
       return;
     }
+
+    // THE PREVIOUS REFUSAL IS DISCARDED HERE, at the last point before a request is dispatched and after
+    // every local guard has passed. This is the pattern the portal settings, portal alias, user form,
+    // user list, membership settings and profile definition screens all already follow, and this screen
+    // was the one that did not - so a refusal from an earlier attempt stayed on display through the next
+    // one, describing a response that had been superseded. Measured: a 400 on the icon reference left its
+    // banner, its correlation reference and its per-field message standing while the corrected submission
+    // was in flight and after it had succeeded.
+    //
+    // Cleared HERE rather than on every keystroke, deliberately and for the same reason those screens do
+    // it here: the banner reports the last answer the server gave and stays true until a new one arrives,
+    // and it carries the correlation reference a reader may still be writing down. Wiping it the moment a
+    // character is typed would take that away mid-sentence.
+    this.store.clearFailure();
 
     if (this.isCreateMode()) {
       this.createModule(raw, tabId, cacheTime);
@@ -1868,8 +2106,18 @@ export class ModuleFormComponent {
       return;
     }
 
+    // THE PICKER IS A DESTINATION ON THIS PATH, NOT A SELECTOR, and the two roles have to be separated
+    // because the same control serves both modes of this screen. Creating a module, the chosen page IS the
+    // page the new placement goes on. Replacing one, the placement being replaced is the page the module was
+    // LOADED from, and the chosen page is where the operator wants it to end up - so passing the choice as
+    // the selector asks the server to update a placement on a page the module does not occupy, which it
+    // answers `module.placement_not_found` while moving nothing.
+    //
+    // MIGRATION: the guard mirrors `ModuleSettings.ascx.vb:L405`, `If TabId <> newTabId`, so a save that
+    // leaves the picker alone carries no relocation instruction rather than a self-cancelling one.
     const request: UpdateModuleRequest = {
-      tabId,
+      tabId: detail.tabId,
+      moveToTabId: tabId === detail.tabId ? null : tabId,
       moduleTitle: textOrNull(raw.moduleTitle),
       allTabs: raw.allTabs,
       header: textOrNull(raw.header),
@@ -1999,10 +2247,30 @@ export class ModuleFormComponent {
    * @param operation The command that completed.
    */
   private reportSuccess(operation: ModuleFormOperation): void {
+    // ⚠ THE FORM IS SETTLED BEFORE LEAVING, OR THE UNSAVED-ENTRY GUARD ASKS ABOUT WORK THAT IS ALREADY
+    // SAVED - AND DESTROYS THE CONFIRMATION BELOW WHILE IT ASKS. The probe registered on this class reads
+    // `dirty && saving() === false`, and the only caller of this method is the outcome effect, which runs
+    // precisely on the transition OUT of `saving()` - so the flag is already false here while the controls
+    // are still dirty from the operator's typing, and `returnToListing()` on the last line is a navigation
+    // the guard can refuse. `window.confirm` blocks the JavaScript thread, so the auto-dismiss timer on
+    // the notification below becomes due while the dialog stands and fires the instant it is accepted,
+    // which is how a redundant prompt swallows the answer to itself.
+    //
+    // Marked for EVERY completed operation rather than only the write: after a removal the placement is
+    // gone, so entry still standing in the controls is work that can no longer be saved. Marking an
+    // already-pristine form is a no-op, so one unconditional pair is narrower than a per-operation test.
+    this.form.markAsPristine();
+    this.form.markAsUntouched();
+
     // The measured legacy severity vocabulary had exactly three levels and a completed operation used
     // the affirmative one.
-    this.notifications.notify('success', SUCCESS_MESSAGES[operation]);
-    this.returnToListing();
+    this.notifications.notify('success', SUCCESS_MESSAGES[operation], null, true);
+
+    // ⚠ EXEMPTED FROM THE NAVIGATION SWEEP, WITHOUT WHICH THIS CONFIRMATION IS NEVER SEEN. The shell
+    // retires notifications on a completed navigation and `returnToListing` navigates in this same
+    // task, so the message was raised and swept before it could be painted. The legacy announced and
+    // then redirected, so the listing is where this belongs.
+    this.returnToListing(true);
   }
 
   /**
@@ -2012,8 +2280,19 @@ export class ModuleFormComponent {
    * in the console, where an operator never sees it, and the screen would appear to have done nothing.
    * A literal path is used because a feature folder never imports from another one.
    */
-  private returnToListing(): void {
-    this.router.navigateByUrl(MODULE_LIST_PATH).catch(() => {
+  private returnToListing(replaceEntry = false): void {
+    /*
+     * ⚠ THE CALL IS MADE TWO DIFFERENT WAYS ON PURPOSE, rather than always passing an options
+     * object with a computed flag. A pushed departure keeps the exact call it always made, so the
+     * behaviour of the cancel paths - and the specifications that pin them - is untouched by the
+     * addition; only a REPLACING departure carries options, which is the case whose behaviour
+     * genuinely changed. Written this way, the diff says what changed and nothing else.
+     */
+    const departure = replaceEntry
+      ? this.router.navigateByUrl(MODULE_LIST_PATH, { replaceUrl: true })
+      : this.router.navigateByUrl(MODULE_LIST_PATH);
+
+    departure.catch(() => {
       this.notifications.notify('error', NAVIGATION_FAILED_MESSAGE);
     });
   }

@@ -15,7 +15,9 @@ import type {
   UserDetail,
   UserListItem,
 } from '../../../core/models/user.model';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
+import { TokenStorageService } from '../../../core/services/token-storage.service';
 import { UserStore } from '../../../core/state/user.store';
 import { USER_CREATE_MESSAGE, stripLegacyBreakTags } from '../../../core/utils/form-errors.util';
 import {
@@ -224,6 +226,7 @@ describe('UserFormComponent', () => {
       lastLockoutDate: null,
       lastPasswordChangeDate: '2024-02-01T10:00:00Z',
       roles: ['Registered Users'],
+      canDelete: true,
       ...overrides,
     };
   }
@@ -263,6 +266,9 @@ describe('UserFormComponent', () => {
   });
 
   afterEach(() => {
+    // The session is cleared so one case's signed-in operator cannot decide another's affordances.
+    TestBed.inject(TokenStorageService).clear();
+
     httpMock.verify();
   });
 
@@ -298,6 +304,40 @@ describe('UserFormComponent', () => {
       (candidate) => candidate.method === method && candidate.url === url,
       description ?? `${method} ${url}`,
     );
+  }
+
+  /**
+   * Seats the signed-in operator, which is what decides whether this screen is editing its own subject.
+   *
+   * The identity is READ FROM THE STORED SESSION rather than fetched, so seating it is the whole of the
+   * first half of the measured gate at `Membership.ascx.vb` L135 — `UserInfo.UserID = User.UserID`, over
+   * the signed-in operator (`PortalModuleBase.vb` L319-L323) and the account under edit
+   * (`UserModuleBase.vb` L439-L449). The expiry is a FIXED literal: reading the clock in a specification
+   * would make it depend on when the specification runs.
+   *
+   * @param userId The account the operator is signed in as.
+   */
+  function signedInAs(userId: number): void {
+    TestBed.inject(TokenStorageService).store({
+      accessToken: 'not-a-real-token.not-a-real-payload.not-a-real-signature',
+      expiresAtUtc: '2099-12-31T23:59:59.000Z',
+      refreshToken: 'not-a-real-refresh-token',
+      mustChangePassword: false,
+      mustUpdateProfile: false,
+      passwordExpiring: false,
+      user: {
+        userId,
+        portalId: -1,
+        portalName: 'Baseline Portal',
+        username: 'caller',
+        displayName: 'The Caller',
+        email: 'caller@example.test',
+        isSuperUser: false,
+        isPortalAdministrator: false,
+        roles: ['Registered Users'],
+        permissions: [],
+      },
+    });
   }
 
   /** Mounts in edit mode and answers the account read. */
@@ -471,11 +511,29 @@ describe('UserFormComponent', () => {
       expect(field<HTMLInputElement>(CONTROL_ID.username).value).toBe('ada.lovelace');
     });
 
-    it('stays in creation mode for a route parameter that is not a whole number', () => {
+    it('titles an unusable parameter as an edit address, not as a creation', () => {
+      /*
+       * ⚠ THIS CASE USED TO REQUIRE `CREATE_MODE_TITLE` HERE, which put `Add New User` at the top of
+       * a screen whose body says the account does not exist — and disagreed with the route's own
+       * document title, `Edit User Accounts`. A real browser measured three labels on that one
+       * screen. The heading's question is whether the address NAMES an account, not whether one
+       * could be read from it.
+       *
+       * It also makes `/users/abc` and `/users/0` agree: unreadable and readable-but-absent both
+       * name an account, neither can produce one, and both now carry this heading over the same
+       * measured sentence. `ManageUsers.ascx.vb` L207/L221 is the authority — a missing account kept
+       * the edit screen's title and paired the warning with `DisableForm()`.
+       *
+       * The withdrawal of the FORM is asserted separately, by "offers no form at all when the
+       * parameter is not an identifier"; this case is only about the wording at the top.
+       */
       create('not-a-number');
 
       expect(httpMock.match(() => true)).withContext('nothing is read').toHaveSize(0);
-      expect(query('app-page-header')?.textContent ?? '').toContain(CREATE_MODE_TITLE);
+      expect(query('app-page-header')?.textContent ?? '').toContain(EDIT_MODE_TITLE);
+      expect(query('app-page-header')?.textContent ?? '')
+        .withContext('and it must not also claim to be a creation')
+        .not.toContain(CREATE_MODE_TITLE);
     });
 
     it('titles the screen from the record once it arrives, and plainly before it does', () => {
@@ -518,7 +576,17 @@ describe('UserFormComponent', () => {
 
       expect(links).toContain('/users/7/profile');
       expect(links).toContain('/users/7/password');
-      expect(links).toContain('/roles');
+
+      // ⚠ THE ROLE ACTION MUST CARRY THE ACCOUNT. This assertion used to read `/roles`, which
+      // encoded the defect rather than the requirement: an action captioned "Manage Roles for this
+      // User" landed on the unfiltered listing of every role in the tenant. The account-keyed
+      // address was available all along — the sibling account LISTING already links `/roles` with
+      // `queryParams {userId}` — so the caption was promising something the link did not do.
+      expect(links).toContain('/roles?userId=7');
+
+      // And nothing still points at the bare listing, so the corrected address cannot sit beside a
+      // leftover copy of the old one.
+      expect(links).not.toContain('/roles');
     });
 
     it('says so and offers no form when the read is refused as not-found', () => {
@@ -647,6 +715,76 @@ describe('UserFormComponent', () => {
       // Seven characters is the measured configured minimum, and zero non-alphanumeric ones.
       // The sentence interpolates both, exactly as the legacy substitution produced at run time.
       expect(host().textContent ?? '').toContain(INVALID_PASSWORD_MESSAGE);
+      expect(httpMock.match(() => true)).toHaveSize(0);
+    });
+
+    // ⚠ THE NEXT TWO GUARD A FOCUS MOVE NO OTHER MECHANISM CAN MAKE. The password rule is a GROUP
+    // rule: it marks the form invalid and leaves both boxes individually valid, so neither carries
+    // Angular's invalid class and the shared first-invalid directive correctly declines. Without the
+    // component supplying the move, a submit refused only by this rule left focus on the submit
+    // button — which on this screen was measured 388 units BELOW the fold at a 1280x900 viewport, so
+    // the message appeared off-screen above somebody who had scrolled down to press it.
+    it('moves focus to the password box when the rule is the only reason a submit was refused', () => {
+      create();
+
+      fillCreationForm('Str0ng');
+      press(CREATE_SUBMIT_LABEL);
+
+      const box = query<HTMLInputElement>(`#${CONTROL_ID.password}`);
+
+      expect(host().textContent ?? '').toContain(INVALID_PASSWORD_MESSAGE);
+      expect(document.activeElement)
+        .withContext('the group rule names no control, so the component supplies the focus')
+        .toBe(box);
+      expect(httpMock.match(() => true)).toHaveSize(0);
+    });
+
+    // ⚠ THIS IS THE CASE THAT REGRESSED, AND IT REGRESSED SILENTLY. The first implementation deferred
+    // the focus move to a resolved promise, on the assumption that a microtask settles after change
+    // detection. It does not — a microtask queued inside the event handler runs BEFORE the scheduled
+    // render, so the callback looked the box up, found it absent because the disclosure had not been
+    // rendered open yet, and returned. Measured in a real browser across two trials, 30 polls over
+    // 3007ms and 25 over 2500ms: the section DID open and the box DID exist, and focus never moved at
+    // all. Nothing in this suite caught it, because no specification exercised the collapsed path.
+    it('opens the collapsed password disclosure and still lands focus inside it', () => {
+      create();
+
+      const collapse = queryAll<HTMLButtonElement>('button.user-form__section-toggle').find(
+        (candidate) => (candidate.textContent ?? '').toLowerCase().includes('password'),
+      );
+
+      expect(collapse).withContext('the password section is collapsible').toBeDefined();
+      (collapse as HTMLButtonElement).click();
+      fixture.detectChanges();
+
+      // The disclosure REMOVES its body rather than hiding it, which is precisely why the focus move
+      // cannot be made before the reopened section has rendered.
+      expect(query(`#${CONTROL_ID.password}`))
+        .withContext('collapsing takes the box out of the document')
+        .toBeNull();
+
+      // Every other field valid, and the password pair never touched — so the group rule is the sole
+      // fault, exactly as it is for an operator who never opened the section.
+      type(CONTROL_ID.username, 'grace.hopper');
+      type(CONTROL_ID.firstName, 'Grace');
+      type(CONTROL_ID.lastName, 'Hopper');
+      type(CONTROL_ID.displayName, 'Grace Hopper');
+      type(CONTROL_ID.email, 'grace@example.test');
+
+      press(CREATE_SUBMIT_LABEL);
+
+      const reopened = queryAll<HTMLButtonElement>('button.user-form__section-toggle').find(
+        (candidate) => (candidate.textContent ?? '').toLowerCase().includes('password'),
+      );
+      const box = query<HTMLInputElement>(`#${CONTROL_ID.password}`);
+
+      expect(reopened?.getAttribute('aria-expanded'))
+        .withContext('a message about a field nobody can see is not actionable')
+        .toBe('true');
+      expect(box).withContext('and the box is back in the document').not.toBeNull();
+      expect(document.activeElement)
+        .withContext('no settle, no fake clock: the render is synchronous and so is the focus')
+        .toBe(box);
       expect(httpMock.match(() => true)).toHaveSize(0);
     });
 
@@ -793,7 +931,45 @@ describe('UserFormComponent', () => {
       expectNoListingReRead();
 
       // Measured as a redirect to the return address, whose equivalent here is a navigation.
-      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users']);
+      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users'], { replaceUrl: true });
+    });
+
+    it('leaves the form settled at the instant it navigates, so the guard cannot question a stored account', () => {
+      const tracker = TestBed.inject(UnsavedChangesTracker);
+
+      create();
+      fillCreationForm();
+
+      // THE CONTROL. Without it a later `false` would be indistinguishable from a probe that was never
+      // registered, or from a form that was never dirty. `isDirty()` is the guard's own public surface, so
+      // this is asserted through the very call the guard makes.
+      expect(tracker.isDirty())
+        .withContext('a dirty form with no write in flight is what the guard exists to catch')
+        .toBeTrue();
+
+      // ⚠ SAMPLED AT THE INSTANT OF NAVIGATION, NOT AFTERWARDS, because it is the navigation the
+      // creation itself triggers that the guard would have refused - and refusing was worse than the prompt:
+      // the operator would have been left on a creation form for an account the server had already stored,
+      // and re-submitting it would have been answered with a conflict.
+      let dirtyAtNavigation: boolean | null = null;
+      navigateSpy.and.callFake(() => {
+        dirtyAtNavigation = tracker.isDirty();
+
+        return Promise.resolve(true);
+      });
+
+      press(CREATE_SUBMIT_LABEL);
+      expectRequest('POST', USERS_URL).flush(envelope(account(9)), {
+        status: 201,
+        statusText: 'Created',
+      });
+      fixture.detectChanges();
+      expectNoListingReRead();
+
+      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users'], { replaceUrl: true });
+      expect(dirtyAtNavigation)
+        .withContext('the guard must see a settled form on the navigation the creation itself triggered')
+        .toBeFalse();
     });
 
     it('re-reads the listing after a write once a search HAS been chosen', () => {
@@ -820,7 +996,7 @@ describe('UserFormComponent', () => {
       expectRequest('GET', USERS_URL, 'the listing re-read').flush(emptyPage());
       fixture.detectChanges();
 
-      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users']);
+      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users'], { replaceUrl: true });
     });
 
     it('states the notification gap BESIDE the box, while there is still a decision to make', () => {
@@ -1316,7 +1492,13 @@ describe('UserFormComponent', () => {
     });
 
     it('validates nothing for any of the four, so an incomplete form cannot block one', () => {
-      arriveEditing(account(7));
+      // ⚠ THE FIXTURE MUST BE AN ACCOUNT THE RELEASE IS ACTUALLY OFFERED FOR. Each of the four is
+      // rendered only when its own precondition holds — `cmdUnLock.Visible = Membership.LockedOut`
+      // at `Membership.ascx.vb` L141 — and the default fixture is UNLOCKED, so pressing the release
+      // against it would be pressing a control the measured screen does not show either. The point
+      // this case makes is about VALIDATION, not about the gate, so it states the gate's precondition
+      // explicitly and leaves the assertion below untouched.
+      arriveEditing(account(7, { isLockedOut: true }));
 
       // Empty a required field. All four transitions carried `causesvalidation="False"`, so
       // authorising an account has nothing to do with whether its display name is filled in.
@@ -1334,8 +1516,15 @@ describe('UserFormComponent', () => {
       expectNoListingReRead();
     });
 
-    it('withholds all four while a refusal has withheld the form', () => {
-      arriveEditing(account(7));
+    it('withholds every offered transition while a refusal has withheld the form', () => {
+      // ⚠ "ALL FOUR AT ONCE" IS UNREACHABLE BY CONSTRUCTION, which is why this case no longer claims
+      // it. Authorize is offered for an account that may NOT sign in and UnAuthorize for one that may
+      // (`Membership.ascx.vb` L142-L143), so the two are complements of a single fact and exactly one
+      // of them is ever present. THREE is the most that can be offered together, and this fixture
+      // reaches it: unapproved, locked out, and not yet obliged to change its password.
+      arriveEditing(
+        account(7, { isApproved: false, isLockedOut: true, mustChangePassword: false }),
+      );
 
       type(CONTROL_ID.firstName, 'Augusta');
       press(UPDATE_SUBMIT_LABEL);
@@ -1345,10 +1534,92 @@ describe('UserFormComponent', () => {
       );
       fixture.detectChanges();
 
-      expect(button(AUTHORIZE_LABEL)?.disabled).toBeTrue();
-      expect(button(UNAUTHORIZE_LABEL)?.disabled).toBeTrue();
-      expect(button(UNLOCK_LABEL)?.disabled).toBeTrue();
-      expect(button(FORCE_PASSWORD_LABEL)?.disabled).toBeTrue();
+      // Each offered control is present AND disabled. `?.disabled` is deliberately not used here: on
+      // an absent control it yields `undefined`, which no longer distinguishes "withheld by the
+      // refusal" from "never offered at all" — and telling those two apart is the whole point.
+      for (const label of [AUTHORIZE_LABEL, UNLOCK_LABEL, FORCE_PASSWORD_LABEL]) {
+        const control = button(label);
+
+        expect(control).withContext(`"${label}" is offered for this account`).not.toBeUndefined();
+        expect((control as HTMLButtonElement).disabled)
+          .withContext(`"${label}" is withheld by the refusal`)
+          .toBeTrue();
+      }
+
+      expect(button(UNAUTHORIZE_LABEL))
+        .withContext('the complement of Authorize is not offered alongside it')
+        .toBeUndefined();
+    });
+
+    // The four gates themselves.
+    //
+    //  ⚠ THESE COVER THE DEFECT DIRECTLY: all four transitions were offered unconditionally, so an
+    //  approved and unlocked account was invited to be authorised and unlocked. `Membership.ascx`
+    //  L13-L28 declares all four with no condition, which is why a reading confined to the markup
+    //  produced that behaviour — but `Membership.ascx.vb` L135-L145 assigns every one of their
+    //  `Visible` properties on each data-bind, and those assignments are the contract.
+
+    it('offers UnAuthorize and not Authorize for an account that may sign in', () => {
+      arriveEditing(account(7, { isApproved: true }));
+
+      expect(button(UNAUTHORIZE_LABEL))
+        .withContext('cmdUnAuthorize.Visible = Membership.Approved')
+        .not.toBeUndefined();
+      expect(button(AUTHORIZE_LABEL))
+        .withContext('cmdAuthorize.Visible = Not Membership.Approved')
+        .toBeUndefined();
+    });
+
+    it('offers Authorize and not UnAuthorize for an account that may not sign in', () => {
+      // The complement of the case above. Asserted separately rather than by re-reading the account
+      // inside one case, so that a failure names WHICH direction broke.
+      arriveEditing(account(7, { isApproved: false }));
+
+      expect(button(AUTHORIZE_LABEL)).not.toBeUndefined();
+      expect(button(UNAUTHORIZE_LABEL)).toBeUndefined();
+    });
+
+    it('offers Unlock only for a locked-out account', () => {
+      arriveEditing(account(7, { isLockedOut: false }));
+
+      expect(button(UNLOCK_LABEL))
+        .withContext('cmdUnLock.Visible = Membership.LockedOut')
+        .toBeUndefined();
+    });
+
+    it('offers Force Password Change only while the obligation is not already recorded', () => {
+      arriveEditing(account(7, { mustChangePassword: true }));
+
+      expect(button(FORCE_PASSWORD_LABEL))
+        .withContext('cmdPassword.Visible = Not Membership.UpdatePassword')
+        .toBeUndefined();
+    });
+
+    it('offers none of the four to an operator editing their own account', () => {
+      // `Membership.ascx.vb` L135-L139: when the signed-in operator IS the subject, all four are
+      // withheld whatever the membership facts say. This fixture would otherwise offer three.
+      signedInAs(7);
+      arriveEditing(
+        account(7, { isApproved: false, isLockedOut: true, mustChangePassword: false }),
+      );
+
+      expect(button(AUTHORIZE_LABEL)).toBeUndefined();
+      expect(button(UNAUTHORIZE_LABEL)).toBeUndefined();
+      expect(button(UNLOCK_LABEL)).toBeUndefined();
+      expect(button(FORCE_PASSWORD_LABEL)).toBeUndefined();
+    });
+
+    it('offers them to an operator editing somebody else, on the same membership facts', () => {
+      // The control for the case above: same account state, different operator. Without this the
+      // self-check could withhold the four for the wrong reason and still look correct.
+      signedInAs(99);
+      arriveEditing(
+        account(7, { isApproved: false, isLockedOut: true, mustChangePassword: false }),
+      );
+
+      expect(button(AUTHORIZE_LABEL)).not.toBeUndefined();
+      expect(button(UNLOCK_LABEL)).not.toBeUndefined();
+      expect(button(FORCE_PASSWORD_LABEL)).not.toBeUndefined();
     });
 
     it('offers none of the four while creating, because there is no account to act on', () => {
@@ -1412,7 +1683,37 @@ describe('UserFormComponent', () => {
       fixture.detectChanges();
       expectNoListingReRead();
 
-      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users']);
+      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users'], { replaceUrl: true });
+    });
+
+    it('leaves the form settled at the instant a removal navigates, because deleted entry cannot be saved', () => {
+      const tracker = TestBed.inject(UnsavedChangesTracker);
+
+      arriveEditing(account(7));
+      type(CONTROL_ID.lastName, 'Typed, then deleted');
+
+      expect(tracker.isDirty()).withContext('the control condition for this assertion').toBeTrue();
+
+      let dirtyAtNavigation: boolean | null = null;
+      navigateSpy.and.callFake(() => {
+        dirtyAtNavigation = tracker.isDirty();
+
+        return Promise.resolve(true);
+      });
+
+      press(DELETE_LABEL);
+      pressDialogue(DELETE_LABEL);
+      expectRequest('DELETE', userUrl(7), 'the removal').flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+      fixture.detectChanges();
+      expectNoListingReRead();
+
+      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users'], { replaceUrl: true });
+      expect(dirtyAtNavigation)
+        .withContext('there is nothing left to save once the account is gone')
+        .toBeFalse();
     });
 
     it('sends nothing when the question is dismissed', () => {
@@ -1443,13 +1744,34 @@ describe('UserFormComponent', () => {
     });
 
     it('withholds the removal from an installation superuser', () => {
-      arriveEditing(account(7, { isSuperUser: true }));
+      // ⚠ THE CAPABILITY IS THE SERVER'S AND THE FIXTURE STATES IT AS THE SERVER WOULD. The removal
+      // operation refuses a super user, so the contract reports `canDelete: false` for one - which is
+      // why this fixture sets both. It is no longer this screen's business to infer the second value
+      // from the first.
+      arriveEditing(account(7, { isSuperUser: true, canDelete: false }));
 
-      // DELIBERATELY STRICTER THAN THE LEGACY, which withheld it only when the superuser was
-      // also the caller. Erring towards withholding is the safe direction: the action is
-      // destructive, the server refuses it anyway, and offering a button whose only possible
-      // outcome is a refusal is worse than not offering it.
       expect(button(DELETE_LABEL)).withContext('withheld').toBeUndefined();
+    });
+
+    it('withholds the removal from the tenant\u2019s designated administrator', () => {
+      /*
+       * ⚠ THE CASE THAT WAS THE DEFECT, AND IT IS NOT COVERED BY THE ONE ABOVE. The removal operation
+       * refuses TWO kinds of account: a super user, and the account named by the tenant's
+       * `Portals.AdministratorId`. This screen used to derive the affordance from `!isSuperUser`
+       * alone, which is only the first clause - so for the tenant's own administrator, who is NOT a
+       * super user, the account listing correctly withheld the removal while this screen offered it.
+       * Two surfaces disagreeing about one permission, and the offered action's only possible outcome
+       * was a refusal.
+       *
+       * The administrator is unknowable from anything else in this contract, which is precisely why
+       * the capability is published rather than computed here. The fixture therefore states exactly
+       * what such an account looks like on the wire: not a super user, and not removable.
+       */
+      arriveEditing(account(7, { isSuperUser: false, canDelete: false }));
+
+      expect(button(DELETE_LABEL))
+        .withContext('withheld for the administrator, matching the listing')
+        .toBeUndefined();
     });
 
     it('withholds the removal while creating, because there is nothing to remove', () => {
@@ -2113,17 +2435,39 @@ describe('UserFormComponent', () => {
       expectNoListingReRead();
     });
 
-    it('does not let a non-numeric parameter collapse into an identifier', () => {
-      // ⚠ THE OPTION STRICT ASYMMETRY MADE EXPLICIT. The legacy admin code-behinds compiled
-      // with `<compilation debug="false" strict="false">` (`Website/release.config` L125) — that
-      // is Option Strict OFF — so a late-bound narrowing of a non-numeric string to an integer
-      // would have yielded ZERO without complaint, and the page would have read a real row.
-      // Here the coercion is explicit and it FAILS CLOSED: the screen stays in creation mode and
-      // reads nothing at all.
+    it('offers no form at all when the parameter is not an identifier', () => {
+      /*
+       * ⚠ THE OPTION STRICT ASYMMETRY MADE EXPLICIT. The legacy admin code-behinds compiled with
+       * `<compilation debug="false" strict="false">` (`Website/release.config` L125) — that is Option
+       * Strict OFF — so a late-bound narrowing of a non-numeric string to an integer would have
+       * yielded ZERO without complaint, and the page would have read a real row. Here the coercion is
+       * explicit and no identifier is invented, which is the half of this rule that always held.
+       *
+       * ⚠ THIS CASE USED TO ASSERT THE OTHER HALF WRONGLY. It required the CREATE submit to be
+       * present and called that "failing closed". It is the opposite: an address naming nothing was
+       * answered with the live add-account form, nine of its ten controls enabled and Authorize
+       * already ticked, so the operator was invited to create an account by a URL that looked like a
+       * request to edit one. Reading nothing is necessary but not sufficient — it is precisely what
+       * made the fall-through silent, since the server never got the chance to disagree.
+       *
+       * Absence of a parameter still selects creation; that is `/users/new` and is covered elsewhere.
+       * This case is about a parameter that is present and unusable, which is a third state.
+       */
       create('not-a-number');
 
-      expect(button(CREATE_SUBMIT_LABEL)).withContext('no identifier was invented').not.toBeUndefined();
-      expect(httpMock.match(() => true)).withContext('and nothing was read').toHaveSize(0);
+      expect(button(CREATE_SUBMIT_LABEL))
+        .withContext('an address that names nothing must not offer to create something')
+        .toBeUndefined();
+      expect(button(UPDATE_SUBMIT_LABEL))
+        .withContext('nor to update it, which is what the address appears to ask for')
+        .toBeUndefined();
+      expect(query('form')).withContext('no form is offered in either mode').toBeNull();
+      expect(host().textContent ?? '')
+        .withContext('the outcome is stated in the measured wording instead')
+        .toContain(NO_USER_MESSAGE);
+      expect(httpMock.match(() => true))
+        .withContext('and no identifier was invented, so nothing was read')
+        .toHaveSize(0);
     });
   });
 

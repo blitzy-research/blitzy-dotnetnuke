@@ -131,19 +131,33 @@
       validated the page. `type="submit"` is the faithful translation: it runs the form's validators
       through the submit handler.
 
-      Withheld when the screen has nothing to save - an address that names no readable module, or a
-      module that could not be found - because in those two states a save could only ever be refused.
-      It is NOT withheld for an invalid form: the operator has to be able to submit in order to be
-      told what is wrong, which is exactly how the legacy postback behaved.
+      Withheld when the screen has nothing to save - an address that names no readable module, a module
+      that could not be found, or a read the server refused - because in those states a save could only
+      ever be refused. The refusal case is the third of the set rather than being folded into the
+      second: the two are distinct facts and are reported as such (see `readRefused`).
+
+      ⚠ IT IS DELIBERATELY NOT WITHHELD FOR AN INVALID FORM, AND THAT WAS ASKED FOR AND DECLINED.
+      Pressing submit is how an operator asks to be TOLD what is wrong: the two required choices now
+      report themselves beside their own controls, and every one of those messages is gated on a
+      submission attempt, so a control that cannot be pressed would hide the very feedback the fix
+      exists to produce. It is also the legacy behaviour rather than a preference - `cmdUpdate` was
+      always enabled and its handler was wrapped in `If Page.IsValid Then`
+      (`ModuleSettings.ascx.vb:L328`), so the legacy screen validated ON CLICK and did nothing when
+      validation failed. The same rule is stated on the portal creation form for the same reason
+      (`Signup.ascx.vb:L155`), so the console behaves one way throughout.
+
+      Disabling on invalidity would additionally strand a form whose only fault is a SERVER-side
+      refusal, since the control would be enabled and disabled by a rule the server does not share.
 
       Disabled only while a request is outstanding. The component guards this as well; the attribute
       makes the reason visible rather than leaving a click silently ignored.
     -->
-    @if (addressUnreadable() === false && moduleMissing() === false) {
+    @if (addressUnreadable() === false && moduleMissing() === false && readRefused() === false) {
       <button
-        class="module-form__action module-form__action--primary"
+        class="page-action module-form__action module-form__action--primary"
         type="submit"
         [disabled]="busy()"
+          [attr.aria-busy]="busy() ? 'true' : null"
       >
         {{ saveLabel }}
       </button>
@@ -155,7 +169,7 @@
       marked touched, and an invalid form does not disable it. The legacy handler was a bare redirect
       with no validation and no confirmation (`:L279-L286`).
     -->
-    <button class="module-form__action" type="button" (click)="cancel()">
+    <button class="page-action module-form__action" type="button" (click)="cancel()">
       {{ cancelLabel }}
     </button>
 
@@ -174,7 +188,7 @@
     -->
     @if (canDelete()) {
       <button
-        class="module-form__action module-form__action--danger"
+        class="page-action module-form__action module-form__action--danger"
         type="button"
         (click)="requestRemoval()"
       >
@@ -210,6 +224,20 @@
       treating the parameter as absent, which would present the create screen and place a new module.
     -->
     <p class="module-form__notice">{{ unreadableAddressMessage }}</p>
+  } @else if (readRefused()) {
+    <!--
+      THE READ WAS REFUSED, OR FAILED. The banner above IS the presentation, and this branch exists to
+      render nothing beneath it - which is what makes the refusal one statement rather than two.
+
+      Reaching this branch is what suppresses both the "could not be found" sentence below and the form
+      itself: a refusal is not an absence, and a form seeded from no module would offer a save the
+      server has already said it will refuse.
+
+      MIGRATION: this is the legacy access-denied page's whole content - a heading and a single
+      `YellowWarning` module message (`Website/admin/Security/AccessDenied.ascx.vb:L41-L45`) - and it
+      is now the identical presentation this feature's settings and export screens give the same
+      status.
+    -->
   } @else if (moduleMissing()) {
     <!--
       A readable identifier that resolved to nothing: a stale bookmark, or a module already removed.
@@ -240,7 +268,7 @@
         ==========================================================================================
       -->
       <fieldset class="module-form__group">
-        <legend class="module-form__group-title">Module Settings</legend>
+        <legend class="module-form__group-title"><h2>Module Settings</h2></legend>
 
         <!--
           Legacy `dshDetails` / `tblDetails`, L22-L52. Caption from `GeneralDetails.Text`, whose value
@@ -282,6 +310,7 @@
               <select
                 id="module-form-module-def"
                 formControlName="moduleDefId"
+                [attr.aria-invalid]="errorsFor('moduleDefId').length > 0"
                 [attr.aria-required]="true"
                 [attr.aria-busy]="definitionsLoading()"
               >
@@ -354,7 +383,23 @@
               type="text"
               [attr.maxlength]="titleMaxLength"
               formControlName="moduleTitle"
+              [attr.aria-invalid]="errorsFor('moduleTitle').length > 0"
             />
+
+            <!--
+              WHAT A BLANK HEADING MEANS. The heading is optional on every tier and stays optional: the
+              legacy markup declares no presence validator on `txtTitle`, both server validators gate
+              their only title rule on the value being non-empty, and the column is nullable. A module in
+              the measured data stores the empty string, so a required rule here would make an existing
+              record unsavable for an operator who came to change something else.
+              What was missing is that the choice has a consequence: the module is then listed under its
+              definition's name, exactly as `ControlPanelBase.vb:192-196` did on finding `title = ""`.
+              Same treatment as the reversed schedule above — state the outcome, accept the value, never
+              through the field's `error` channel.
+            -->
+            @if (titleFallbackNotice() !== null) {
+              <p class="module-form__schedule-notice" aria-live="polite">{{ titleFallbackNotice() }}</p>
+            }
           </app-form-field>
 
           <!--
@@ -377,6 +422,7 @@
               id="module-form-inherit-view-permissions"
               type="checkbox"
               formControlName="inheritViewPermissions"
+              [attr.aria-invalid]="errorsFor('inheritViewPermissions').length > 0"
             />
           </app-form-field>
         </fieldset>
@@ -413,7 +459,12 @@
             [error]="errorsFor('allTabs')"
             for="module-form-all-tabs"
           >
-            <input id="module-form-all-tabs" type="checkbox" formControlName="allTabs" />
+            <input
+              id="module-form-all-tabs"
+              type="checkbox"
+              formControlName="allTabs"
+              [attr.aria-invalid]="errorsFor('allTabs').length > 0"
+            />
           </app-form-field>
 
           <!--
@@ -430,7 +481,12 @@
             [error]="errorsFor('header')"
             for="module-form-header"
           >
-            <textarea id="module-form-header" rows="6" formControlName="header"></textarea>
+            <textarea
+              id="module-form-header"
+              rows="6"
+              formControlName="header"
+              [attr.aria-invalid]="errorsFor('header').length > 0"
+            ></textarea>
           </app-form-field>
 
           <app-form-field
@@ -439,7 +495,12 @@
             [error]="errorsFor('footer')"
             for="module-form-footer"
           >
-            <textarea id="module-form-footer" rows="6" formControlName="footer"></textarea>
+            <textarea
+              id="module-form-footer"
+              rows="6"
+              formControlName="footer"
+              [attr.aria-invalid]="errorsFor('footer').length > 0"
+            ></textarea>
           </app-form-field>
 
           <!--
@@ -487,6 +548,7 @@
               [attr.min]="dateMinimum"
               [attr.max]="dateMaximum"
               formControlName="startDate"
+              [attr.aria-invalid]="errorsFor('startDate').length > 0"
             />
           </app-form-field>
 
@@ -502,7 +564,27 @@
               [attr.min]="dateMinimum"
               [attr.max]="dateMaximum"
               formControlName="endDate"
+              [attr.aria-invalid]="errorsFor('endDate').length > 0"
             />
+
+            <!--
+              ⚠ A WARNING, NOT A VALIDATION FAILURE, AND THE DISTINCTION IS DELIBERATE AND SOURCED.
+              An end date before its start date is accepted by both tiers, and that is legacy-faithful
+              rather than an oversight: the legacy screen's two date validators are independent
+              `DataTypeCheck` comparisons, each naming no control to compare against, so neither could
+              ever have related the two fields to one another. The AAP's Minimal Change Clause item 4
+              requires validation rules to MATCH the legacy screens, and §0.9.1 requires a discovered
+              legacy defect to be ANNOTATED rather than corrected — so refusing the save here, or adding
+              the rule server-side, would both be departures from the plan rather than compliance with
+              it. The server-side rules were consequently left exactly as measured.
+              What the operator gets instead is a statement of what they have entered. It never blocks
+              the submit, it is `aria-live="polite"` so it does not interrupt, and it is deliberately
+              NOT rendered through the field's `error` channel — that channel means "this was refused",
+              and this was not.
+            -->
+            @if (scheduleReversed()) {
+              <p class="module-form__schedule-notice" aria-live="polite">{{ reversedScheduleNotice }}</p>
+            }
           </app-form-field>
         </fieldset>
       </fieldset>
@@ -514,7 +596,7 @@
         ==========================================================================================
       -->
       <fieldset class="module-form__group">
-        <legend class="module-form__group-title">Page Settings</legend>
+        <legend class="module-form__group-title"><h2>Page Settings</h2></legend>
 
         <!--
           Legacy `dshAppearance` / `tblAppearance`, L108-L176. Caption from `Appearance.Text`, whose
@@ -549,6 +631,7 @@
               type="text"
               [attr.maxlength]="iconMaxLength"
               formControlName="iconFile"
+              [attr.aria-invalid]="errorsFor('iconFile').length > 0"
             />
           </app-form-field>
 
@@ -570,7 +653,10 @@
             the container", never an absent value.
 
             No `for` is passed to the shared field: a group of controls has no single control to name,
-            so the field omits the attribute entirely rather than emitting a reference to nothing.
+            so the field omits the attribute entirely rather than emitting a reference to nothing - and
+            because nothing is named, the field renders its caption as a `span` rather than as a
+            `label` that would associate with no control at all. The naming below is unaffected: it
+            works by reference to that caption's identifier, which is the same in either form.
 
             The wrapper is declared `role="radiogroup"` and named from the shared field's own label,
             reached through the `labelId` signal that field exposes publicly for exactly this purpose -
@@ -625,6 +711,7 @@
                     type="radio"
                     name="visibility"
                     formControlName="visibility"
+                    [attr.aria-invalid]="errorsFor('visibility').length > 0"
                     [value]="choice.value"
                   />
                   {{ choice.label }}
@@ -646,7 +733,12 @@
             [error]="errorsFor('displayTitle')"
             for="module-form-display-title"
           >
-            <input id="module-form-display-title" type="checkbox" formControlName="displayTitle" />
+            <input
+              id="module-form-display-title"
+              type="checkbox"
+              formControlName="displayTitle"
+              [attr.aria-invalid]="errorsFor('displayTitle').length > 0"
+            />
           </app-form-field>
 
           @if (cacheTimeOffered()) {
@@ -690,6 +782,7 @@
                 maxlength="6"
                 autocomplete="off"
                 formControlName="cacheTime"
+                [attr.aria-invalid]="errorsFor('cacheTime').length > 0"
               />
             </app-form-field>
           }
@@ -730,6 +823,7 @@
                 id="module-form-set-as-default-settings"
                 type="checkbox"
                 formControlName="setAsDefaultSettings"
+                [attr.aria-invalid]="errorsFor('setAsDefaultSettings').length > 0"
               />
             </app-form-field>
 
@@ -743,6 +837,7 @@
                 id="module-form-apply-to-all-modules"
                 type="checkbox"
                 formControlName="applyToAllModules"
+                [attr.aria-invalid]="errorsFor('applyToAllModules').length > 0"
               />
             </app-form-field>
           }
@@ -779,6 +874,7 @@
             <select
               id="module-form-tab"
               formControlName="tabId"
+              [attr.aria-invalid]="errorsFor('tabId').length > 0"
               [attr.aria-required]="true"
               [attr.aria-busy]="tabsLoading()"
             >
@@ -831,8 +927,16 @@
   with a message and no title.
 -->
 @if (removalConfirmVisible()) {
+  <!-- ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application
+       shows the SAME title, which the shared dialog declares as its default; binding one here is how
+       five different titles for one action came about - runtime testing found `Delete`,
+       `Confirm Delete`, `Delete Module`, `Delete Profile Property` and `Delete role group` across the
+       screens. The legacy had no title to preserve either: every in-scope delete confirmation was a
+       `window.confirm()` carrying the single shared string `DeleteItem`
+       (`Website/App_GlobalResources/SharedResources.resx` L120-L122), with no title at all. The
+       MESSAGE is still bound where a screen has its own legacy wording, because that wording is a
+       resource value this migration must preserve. -->
   <app-confirm-dialog
-    [title]="deleteConfirmTitle"
     [message]="deleteConfirmMessage"
     [confirmLabel]="deleteLabel"
     [danger]="true"

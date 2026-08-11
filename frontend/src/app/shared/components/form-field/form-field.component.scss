@@ -72,13 +72,27 @@
     // two-cell table row whose label cell carried its width on the markup —
     // `<td class="SubHead" width="150">` followed by a `<dnn:Label>`, twelve
     // times in Website/admin/Security/editroles.ascx alone, against control
-    // cells of `width="325"`. --field-label-inline-size, which
-    // --grid-track-label is built from, is that measured 150px expressed as
-    // 9.375rem so the column scales with the reader's type size; the control
-    // column takes the remaining space as a fraction rather than as the measured
-    // 325px, so the field fills its container instead of being pinned to one
-    // device-pixel count. No length from the legacy markup enters this file.
-    grid-template-columns: var(--grid-track-label) var(--grid-track-fluid);
+    // cells of `width="325"`. --field-label-inline-size is that measured 150px
+    // expressed as 9.375rem so the column scales with the reader's type size; the
+    // control column takes the remaining space as a fraction rather than as the
+    // measured 325px, so the field fills its container instead of being pinned to
+    // one device-pixel count. No length from the legacy markup enters this file.
+    //
+    // ⚠ THE WIDTH TOKEN IS RESOLVED HERE RATHER THAN THROUGH `--grid-track-label`, AND THE
+    // DIFFERENCE IS NOT COSMETIC. This read `var(--grid-track-label)`, a root-declared token
+    // whose own value is `minmax(0, var(--field-label-inline-size))`. A custom property's
+    // `var()` is substituted on the element where that property is declared, so the track was
+    // fixed to the literal `minmax(0, 9.375rem)` at the root and inherited already resolved:
+    // a screen overriding `--field-label-inline-size` on its own host silently got the default
+    // anyway. Measured at runtime on a screen declaring `18.75rem` — the resolved track was
+    // still `150px`, and the labels it was widening for still wrapped to four lines.
+    //
+    // Resolving the primitive at the point of use makes the width a live knob at any level,
+    // which is what a screen with unusually long labels needs, while the zero minimum stays
+    // stated exactly once — here — so the clamping the token was introduced to guarantee is
+    // still guaranteed. The resolved value is unchanged for every screen that overrides
+    // nothing, so this is behaviour-preserving except where an override exists.
+    grid-template-columns: minmax(0, var(--field-label-inline-size)) var(--grid-track-fluid);
     column-gap: var(--space-4);
 
     // The label sits on the same text baseline as the first line of the control
@@ -113,6 +127,26 @@
 :host {
   display: block;
   margin-block-end: var(--space-4);
+
+  // ⚠ THE HOST IS THE ITEM A LAYOUT PLACES, AND CLAMPING ANYTHING INSIDE IT IS NOT THE SAME THING.
+  // A screen that puts this field in a flex row or a CSS grid makes THIS element the item, and an
+  // item's `min-width` resolves to `auto` - the automatic minimum size, which is its whole
+  // subtree's min-content contribution. So a control inside that was already told it may shrink
+  // still could not: the box around it refused to.
+  //
+  // Measured on the role listing, whose filter row is a flex row holding one of these fields around
+  // a `<select>`. The select itself declares `flex: 1 1 0` and a cap, and its own descendant wrapper
+  // was clamped to nought - and the field still held a fixed 344-to-375px, set by the min-content of
+  // a fifty-character seeded group name. Below a 406px viewport that was wider than the space
+  // available and the DOCUMENT scrolled sideways: 86px at 320, 31px at 375, with the select's right
+  // border cut off at the viewport edge. Bisection put the threshold at exactly 405/406, so the band
+  // affected was every narrow viewport rather than the two that happened to be sampled.
+  //
+  // Flooring the host at nought fixes it for every consumer at once, which is why it belongs here
+  // rather than in one screen's stylesheet - the shared grid's host already carries the identical
+  // declaration for the identical reason. It changes nothing where space is plentiful: an item only
+  // consults its minimum when the space on offer is smaller.
+  min-inline-size: 0;
 }
 
 // MIGRATION: the stacked arrangement is authored unconditionally and the
@@ -143,6 +177,22 @@
 // own line whichever of the two is taller.
 .form-field__label-row {
   display: flex;
+
+  // WRAPPING, AND THE HELP AFFORDANCE IS WHAT MOVES. The row shares the measured 150px label
+  // column with the help button, and flex resolves a shortfall by SHRINKING items before it
+  // will break a line — so on a field with help the label text was handed roughly 99px of the
+  // column and a two-word label reflowed onto two lines. Measured on the account creation
+  // screen: "Confirm Password *" rendered 99.4 x 33, its required marker orphaned onto a line
+  // of its own and the label no longer sharing a baseline with the control beside it.
+  //
+  // Allowing the line to break fixes it in the right place. Flex breaks lines using each
+  // item's BASE size before it shrinks anything, so the button drops beneath the label and the
+  // label recovers the full column — which is enough for every measured label in the admin
+  // surface to stay on one line with its marker attached. The button keeps its own line only
+  // on the fields that genuinely cannot afford it, and it stays beside the label everywhere
+  // else, so the arrangement the legacy composite had is unchanged wherever it still fits.
+  flex-wrap: wrap;
+
   align-items: baseline;
   gap: var(--space-2);
   min-inline-size: 0;
@@ -206,7 +256,7 @@
 // required, twice over, by mechanisms that do not depend on colour at all.
 .form-field__required {
   margin-inline-start: var(--space-1);
-  color: var(--color-danger);
+  color: var(--color-danger-text);
 }
 
 // The word that gives the marker glyph a meaning for a reader who cannot see it.
@@ -278,6 +328,19 @@
   @include mx.hover {
     color: var(--color-primary-hover);
   }
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and
+  // suppression without replacement is what leaves a control with no visible response at
+  // all. `background-color: transparent` above weighs (0,1,0) while the global
+  // `button:active { background-color: var(--color-selected) }` weighs (0,1,1) — one class
+  // outranks one type selector, so the shared press tint was already losing before a
+  // pointer arrived. Measured: this control was BYTE-IDENTICAL in its pressed and resting
+  // states, and where the control is a link rather than a button there was no global rule
+  // to lose in the first place. The value is the shared selection tint, so the press reads
+  // the same here as on every other control in the console; nothing new is invented.
+  &:active {
+    background-color: var(--color-selected);
+  }
+
 }
 
 // MIGRATION: the spacing scale is a NET ADDITION — the legacy stylesheet has no
@@ -398,6 +461,19 @@
 // reference are one element rather than one per message. A column with a `gap`,
 // so two simultaneous messages are separated by the shared token and never run
 // together.
+//
+// ⚠ THE MESSAGE COLUMN'S WIDTH IS NOT DECIDED HERE, AND DELIBERATELY IS NOT UNIFORM
+// ACROSS SCREENS. It is whatever the fluid track of the field grid above resolves to,
+// so it follows the width of the form it sits in - three screens were measured at
+// three widths (173px, 280px and 338px) and all three are correct. Unifying it would
+// mean forcing every form to one width, which the legacy measurements forbid: the
+// in-scope admin markup declares TWELVE distinct explicit widths, among them
+// `width="150"` 118 times, `width="325"` 73 times and `width="475"`, `width="525"`
+// and `width="560"` on the wider screens, so per-screen form width is a measured
+// legacy value rather than drift. What IS uniform - and is what a reader actually
+// perceives as consistency - is the message's typography, colour, position beneath
+// its control and announcement behaviour, all of which are stated in this file and
+// therefore identical on every screen.
 .form-field__errors {
   display: flex;
   flex-direction: column;
@@ -435,7 +511,7 @@
 // red still receives the failure, in text, through the accessibility tree.
 .form-field__error {
   margin: 0;
-  color: var(--color-danger);
+  color: var(--color-danger-text);
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-bold);
   line-height: var(--line-height-base);
@@ -516,5 +592,44 @@
   // inline axis and shrink the row instead of moving it.
   :host(.form-field--multiline) .form-field__label-row {
     align-self: start;
+  }
+
+  // MIGRATION: the always-stacked variant — U-M7. The mirror image of
+  // `.form-field--inline`: where that one keeps the two-column arrangement at
+  // every width, this one keeps the STACKED arrangement at every width, and it
+  // exists for a field whose label is not application text.
+  //
+  // ⚠ THE LABEL TRACK IS A MEASURE, AND A MEASURE ONLY WORKS ON WORDING SOMEBODY
+  // MEASURED. The track's provenance is `<td class="SubHead" width="150">` beside
+  // a label control — 229 of the 240 occurrences of that width across the admin
+  // surface — and every one of those labels a FIXED field whose wording is a
+  // measured resource string. A field whose label is TENANT DATA has no such
+  // measurement behind it and no bound on its length, so a fixed track can only
+  // meet it by wrapping. Measured on the profile screen, whose property names are
+  // authored by the tenant: a fifty-character name wrapped onto THREE lines at
+  // every width from 768 upward against ONE line below 767, and raising the track
+  // from 150 to 240 units improved that only to TWO — still worse at 1280 than at
+  // 767, because the name needs 429 units and no track that also leaves room for
+  // a usable control can offer them. Widening further starves the control: the
+  // same track meets a 484-unit content column at 768, where a 432-unit label
+  // would leave 36 units for the field itself.
+  //
+  // Stacking removes the measure from the decision instead of tuning it. The label
+  // then gets the whole content width at every viewport, so the wider the viewport
+  // the more room it has — which is the direction a reader expects, and the
+  // inversion U-M7 reported is gone rather than reduced. The cost is vertical
+  // rhythm on a screen that already scrolls, and it is accepted for a screen whose
+  // field count is tenant-determined anyway.
+  //
+  // ⚠ EVERY DECLARATION HERE UNDOES ONE FROM `two-column-field`, INCLUDING THE
+  // ALIGNMENT. `align-items: baseline` is harmless in a grid row and destructive in
+  // a flex column: on the column's cross axis it would size every slot to its own
+  // content instead of stretching it, so the controls would end up ragged. The two
+  // `grid-column` placements need no reset — a flex item ignores them.
+  :host(.form-field--stacked) .form-field {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-1);
   }
 }

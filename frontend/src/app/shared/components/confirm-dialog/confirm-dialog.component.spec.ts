@@ -625,6 +625,14 @@ describe('ConfirmDialogComponent', () => {
    */
   let focusHolders: HTMLButtonElement[] = [];
 
+  /**
+   * Main landmarks appended by a specification, removed after every one.
+   *
+   * The teardown fallback resolves the region by document lookup, so a landmark left
+   * behind would leak into every later focus expectation in the shared Karma document.
+   */
+  let mainRegions: HTMLElement[] = [];
+
   let httpMock: HttpTestingController;
 
   beforeEach(async () => {
@@ -681,6 +689,14 @@ describe('ConfirmDialogComponent', () => {
       holder.remove();
     }
     focusHolders = [];
+
+    // Removed after the fixtures for the same reason as the holders above: the
+    // teardown fallback has to find a CONNECTED region for the assertion to mean
+    // anything, and no later specification may inherit one.
+    for (const region of mainRegions) {
+      region.remove();
+    }
+    mainRegions = [];
 
     // The order-independence guard, asserted rather than assumed: an open modal
     // left behind would make the shared Karma document inert and would corrupt
@@ -741,6 +757,21 @@ describe('ConfirmDialogComponent', () => {
     focusHolders.push(holder);
 
     return holder;
+  };
+
+  /**
+   * A connected main landmark, focusable but untabbable exactly as the shell renders it.
+   *
+   * Tracked for removal. The negative tab index is not decoration: without it the
+   * element cannot take programmatic focus at all and the fallback would appear broken.
+   */
+  const appendMainRegion = (): HTMLElement => {
+    const region = document.createElement('main');
+    region.tabIndex = -1;
+    document.body.appendChild(region);
+    mainRegions.push(region);
+
+    return region;
   };
 
   /** The inner `<dialog>` of a fixture. */
@@ -1926,6 +1957,39 @@ describe('ConfirmDialogComponent', () => {
       expect(confirmButton.querySelector(DECORATIVE_SELECTOR)).not.toBeNull();
     });
 
+    it('inks the destructive label with the DANGER token and not the hover token', () => {
+      // ⚠ THE MEASURED DEFECT. The rule named `--color-primary-hover` for its ink, in all three
+      // states, while naming `--color-danger` for its border - so the destructive button rendered
+      // as a red-bordered box with an ORDINARY BLUE LABEL, and the resting state was identical to
+      // the neighbouring Cancel button's HOVER state. The comment above that rule already claimed
+      // the ink was the token's own value, so the code contradicted its own explanation.
+      //
+      // Asserted as a computed colour rather than by reading the declaration, because that is the
+      // only form that proves which of the competing rules actually won: the base button rule sets
+      // a colour too, and it is equal in specificity.
+      const fixture = createDialog({ danger: true, confirmLabel: 'Delete' });
+      const [cancelButton, confirmButton] = buttonsOf(fixture);
+
+      const danger = getComputedStyle(confirmButton).color;
+      const ordinary = getComputedStyle(cancelButton).color;
+
+      // ⚠ THE LABEL READS IN THE DANGER *TEXT* TOKEN, AND THE BORDER READS IN THE DANGER TOKEN.
+      // The two are deliberately different values. `--color-danger` is the legacy portal's own red and
+      // it is kept for non-text accents like the border below, where contrast ratios do not apply; at
+      // this size it fails the 4.5:1 minimum as ink, so text carries `--color-danger-text` instead,
+      // which clears it. The property this case exists to prove is unchanged - the destructive label
+      // states its severity in colour, in a colour that is neither the link colour nor the ordinary
+      // button's - and it is now proven against the token that is actually legible.
+      expect(danger).withContext('#B80000, the danger TEXT token').toBe('rgb(184, 0, 0)');
+      expect(danger)
+        .withContext('and NOT #25569A, which is the hover token this rule used to name')
+        .not.toBe('rgb(37, 86, 154)');
+      expect(danger)
+        .withContext('so the two buttons cannot be mistaken for one another')
+        .not.toBe(ordinary);
+      expect(getComputedStyle(confirmButton).borderTopColor).toBe('rgb(255, 0, 0)');
+    });
+
     it('coerces the bare attribute form to destructive', () => {
       const fixture = createHost(BareDangerAttributeHostComponent);
 
@@ -2101,6 +2165,162 @@ describe('ConfirmDialogComponent', () => {
       }).not.toThrow();
       expect(restoreAttempt).not.toHaveBeenCalled();
       expect(document.activeElement).not.toBe(invoker);
+    });
+
+    it('re-homes focus when the invoker is removed immediately after restoration', async () => {
+      // ⚠ THE THIRD TEARDOWN BRANCH. Cancelling keeps the opener and navigating away finds it already
+      // detached; CONFIRMING A DELETION does neither - the opener is still connected when the hook runs,
+      // so focus is correctly returned to it, and the deletion the confirmation caused then destroys the
+      // row it belonged to. Measured in a browser after a confirmed delete: focus on BODY, which restarts
+      // a keyboard reader at the top of the document and announces nothing.
+      const region = appendMainRegion();
+      const invoker = appendFocusHolder('Delete');
+
+      invoker.focus();
+
+      const fixture = createUninitialisedDialog();
+      fixture.detectChanges();
+
+      // Destroyed while the invoker is STILL connected, which is what makes this branch distinct.
+      fixture.destroy();
+      expect(document.activeElement).withContext('restored to the opener first').toBe(invoker);
+
+      // The consequence of the outcome: the opener goes away a moment later.
+      invoker.remove();
+      expect(document.activeElement)
+        .withContext('the browser gives focus to the document when the focused element is removed')
+        .toBe(document.body);
+
+      // A REAL macrotask, not a mocked clock: the component schedules its rescue with the real timer
+      // during `destroy()`, which a clock installed afterwards could not have captured, and installing
+      // one beforehand would mock timers across Angular's own teardown for no benefit. Awaiting a timer
+      // scheduled AFTER the component's guarantees the component's runs first.
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve);
+      });
+
+      expect(document.activeElement)
+        .withContext('focus is re-homed to the main region rather than left on the document')
+        .toBe(region);
+    });
+
+    it('re-homes focus when the invoker survives several macrotasks before being removed', async () => {
+      // ⚠ THE REGRESSION THIS PINS DOWN, AND IT WAS MEASURED IN A BROWSER RATHER THAN IMAGINED.
+      // The first version of the rescue scheduled ONE macrotask at teardown, which anchors it to
+      // the wrong event: the invoker is destroyed by the response to the request the confirmation
+      // triggered, not by the dialog closing. On a real confirmed alias deletion the dialog tore
+      // down at t+18ms, that single check ran and correctly declined because focus was on a live
+      // element, and the `204` landed at t+50ms and removed the row - leaving focus on BODY at
+      // t+100ms, t+600ms, t+1000ms and t+3500ms.
+      //
+      // The delay below is what the previous implementation could not survive. The sibling spec
+      // above removes the invoker synchronously, so it passed even when the defect was present.
+      const region = appendMainRegion();
+      const invoker = appendFocusHolder('Delete');
+
+      invoker.focus();
+
+      const fixture = createUninitialisedDialog();
+      fixture.detectChanges();
+      fixture.destroy();
+
+      expect(document.activeElement).withContext('restored to the opener first').toBe(invoker);
+
+      // Three macrotasks, comfortably past the point a single scheduled check would have fired.
+      for (let turn = 0; turn < 3; turn += 1) {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve);
+        });
+      }
+
+      expect(document.activeElement).withContext('still on the opener, which is still present').toBe(invoker);
+
+      // Now the deletion renders.
+      invoker.remove();
+      expect(document.activeElement).toBe(document.body);
+
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve);
+      });
+
+      expect(document.activeElement)
+        .withContext('the watch is still live and re-homes focus whenever the removal happens')
+        .toBe(region);
+    });
+
+    it('leaves focus untouched when the invoker disappears while something else holds it', async () => {
+      // The watch may only act when focus is NOWHERE. If the consumer moved focus somewhere
+      // deliberate after the outcome - or the reader simply moved on - then stealing it back to
+      // the main region would be worse than the defect being fixed.
+      const region = appendMainRegion();
+      const invoker = appendFocusHolder('Delete');
+      const elsewhere = appendFocusHolder('Somewhere deliberate');
+
+      invoker.focus();
+
+      const fixture = createUninitialisedDialog();
+      fixture.detectChanges();
+      fixture.destroy();
+
+      elsewhere.focus();
+      invoker.remove();
+
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve);
+      });
+
+      expect(document.activeElement).withContext('focus is never taken from a live element').toBe(elsewhere);
+      expect(document.activeElement).not.toBe(region);
+    });
+
+    it('falls back to the main region when the invoking element has been removed', () => {
+      // ⚠ THE DEFECT: skipping restoration is not the same as restoring somewhere.
+      // A confirmed deletion destroys the row its Delete button lived in, and a
+      // navigation destroys the whole screen, so the captured invoker is detached in
+      // both of the ordinary cases - and doing nothing then leaves focus on the
+      // document, which restarts a keyboard reader at the top of the page and
+      // announces nothing at all.
+      //
+      // The region is appended to the document rather than inside a fixture because
+      // the shell mounts it outside the routed screen, which is precisely why it
+      // SURVIVES the teardown that removes the invoker.
+      const region = appendMainRegion();
+      const invoker = appendFocusHolder('Delete');
+
+      invoker.focus();
+      expect(document.activeElement).toBe(invoker);
+
+      const fixture = createUninitialisedDialog();
+      fixture.detectChanges();
+
+      invoker.remove();
+      expect(invoker.isConnected).toBeFalse();
+
+      fixture.destroy();
+
+      expect(document.activeElement).toBe(region);
+    });
+
+    it('moves focus to the main region without scrolling the viewport to it', () => {
+      // A reader who has scrolled a long grid and confirmed a deletion has the main
+      // region far above the viewport. Focusing it without this option would drag the
+      // page back to the top, trading a focus defect for a scroll-position one, so the
+      // option is part of the contract rather than an implementation detail.
+      const region = appendMainRegion();
+      const invoker = appendFocusHolder('Delete');
+
+      invoker.focus();
+
+      const fixture = createUninitialisedDialog();
+      fixture.detectChanges();
+
+      invoker.remove();
+
+      const fallbackFocus = spyOn(region, 'focus');
+
+      fixture.destroy();
+
+      expect(fallbackFocus).toHaveBeenCalledOnceWith({ preventScroll: true });
     });
 
     it('declines an invoker that is not an HTML element, without throwing', () => {
@@ -2499,4 +2719,81 @@ describe('ConfirmDialogComponent', () => {
       expect(httpMock.match((): boolean => true)).toEqual([]);
     });
   });
+
+  // =========================================================================
+  //  BACKGROUND SCROLL LOCK
+  // =========================================================================
+  describe('the background scroll lock', () => {
+    // ⚠ A NATIVE MODAL DIALOG DOES NOT LOCK SCROLL. `showModal()` makes the page inert to the
+    // POINTER and lifts the dialog into the top layer, and it is easy to conclude from that that
+    // the page is frozen. It is not: runtime testing measured a real Page Down moving the page
+    // from 364 to 891 pixels with a confirmation open, which carried the row being deleted out of
+    // view and left the dialog hovering over unrelated content.
+    //
+    // The lock is a class on the ROOT element, paired with the permanent `scrollbar-gutter`
+    // reservation in the reset stylesheet so that removing the scrollbar cannot lurch the page
+    // sideways at the moment a person is asked to confirm a deletion.
+
+    const LOCK_CLASS = 'dnn-scroll-locked';
+
+    // No `afterEach` guard is registered here, and the omission is deliberate: Jasmine runs an
+    // inner `afterEach` BEFORE the outer one, so a guard here would run before the suite-level
+    // teardown that destroys the fixtures and would fail on a dialog that is still legitimately
+    // open. Each specification below releases what it took and asserts the release itself.
+
+    it('locks the root element while the dialog is open, and only until it closes', () => {
+      expect(document.documentElement.classList.contains(LOCK_CLASS)).toBeFalse();
+
+      const fixture = createDialog();
+
+      expect(dialogOf(fixture).open).withContext('the dialog really opened').toBeTrue();
+      expect(document.documentElement.classList.contains(LOCK_CLASS)).toBeTrue();
+
+      fixture.destroy();
+
+      expect(document.documentElement.classList.contains(LOCK_CLASS))
+        .withContext('the lock is not left behind for the rest of the session')
+        .toBeFalse();
+    });
+
+    it('releases the lock when the dialog is destroyed', () => {
+      const fixture = createDialog();
+
+      fixture.destroy();
+
+      expect(document.documentElement.classList.contains(LOCK_CLASS)).toBeFalse();
+    });
+
+    it('keeps the lock while a second dialog still needs it', () => {
+      // Two confirmations can overlap for a moment - Angular constructs a replacement before
+      // destroying the instance it replaces - and a boolean flag would release the lock on the
+      // first teardown, leaving the page scrollable underneath the surviving dialog.
+      const first = createDialog();
+      const second = createDialog();
+
+      first.destroy();
+
+      expect(document.documentElement.classList.contains(LOCK_CLASS))
+        .withContext('the second dialog is still open')
+        .toBeTrue();
+
+      second.destroy();
+
+      expect(document.documentElement.classList.contains(LOCK_CLASS)).toBeFalse();
+    });
+
+    it('takes no lock at all when the dialog never opens', () => {
+      // A view that is never initialised never reaches `showModal()`, so there is nothing to
+      // release either - and a release without an acquire is what would strand the page
+      // unscrollable for the rest of the session.
+      const fixture = createUninitialisedDialog();
+
+      expect(document.documentElement.classList.contains(LOCK_CLASS)).toBeFalse();
+
+      fixture.destroy();
+
+      expect(document.documentElement.classList.contains(LOCK_CLASS)).toBeFalse();
+    });
+  });
+
 });

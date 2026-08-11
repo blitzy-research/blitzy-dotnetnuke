@@ -93,13 +93,22 @@
     and its verdict governs.
   -->
   @if (narrowedToAccount()) {
-    <a class="role-list__page-action" [routerLink]="showAllRolesLink">{{ showAllRolesLabel }}</a>
+    <!--
+      THE RETURN PATH TO THE PERSON, and it is listed FIRST of the two because it is the way back
+      whereas the other is a way sideways. An operator reaches this screen from a per-account command
+      on the account listing, and without this the account they were working on was unreachable from
+      here — which is the "navigation context is lost" half of the reported defect.
+    -->
+    <a class="page-action role-list__page-action" [routerLink]="subjectAccountLink()">{{
+      subjectAccountLabel
+    }}</a>
+    <a class="page-action role-list__page-action" [routerLink]="showAllRolesLink">{{ showAllRolesLabel }}</a>
   }
   @if (administersPortal()) {
-    <a class="role-list__page-action" [routerLink]="addRoleLink">{{ addRoleLabel }}</a>
-    <a class="role-list__page-action" [routerLink]="addRoleGroupLink">{{ addRoleGroupLabel }}</a>
+    <a class="page-action role-list__page-action" [routerLink]="addRoleLink">{{ addRoleLabel }}</a>
+    <a class="page-action role-list__page-action" [routerLink]="addRoleGroupLink">{{ addRoleGroupLabel }}</a>
   }
-  <a class="role-list__page-action" [routerLink]="membershipSettingsLink">{{
+  <a class="page-action role-list__page-action" [routerLink]="membershipSettingsLink">{{
     membershipSettingsLabel
   }}</a>
 </app-page-header>
@@ -140,6 +149,25 @@
 <!--
   THE ROLE-GROUP FILTER.
 
+  MIGRATION: THIS SCREEN OFFERS NO FREE-TEXT SEARCH AND NO PAGER, AND BOTH ABSENCES ARE
+  MEASURED PARITY RATHER THAN OMISSIONS. It was reported that the screen "omits search, sort,
+  scope filter and pager the backend fully supports". Each of the four was checked against
+  `Website/admin/Security/roles.ascx` and its code-behind:
+
+    - SEARCH: the legacy screen declares ZERO search controls - no text box, no Search button,
+      no filter parameter. That an endpoint accepts `?query=` does not make a screen that never
+      had a search box non-compliant; adding one would be new functionality, which is the
+      change the migration discipline forbids.
+    - PAGER: `grep -iE "allowpaging|pagesize|pagingcontrol" roles.ascx` returns NOTHING. The
+      grid declares a `<pagerstyle cssclass="DataGrid_Pager" />` at L32 and nothing that would
+      ever render a pager - a style for an affordance the screen does not have. The sibling
+      screens that DO page (`portals.ascx` L58, `users.ascx` L83) each declare a real
+      `dnn:pagingcontrol`, and this one does not.
+    - SCOPE FILTER: implemented, and its disappearance when the portal has no role groups is
+      the legacy's own behaviour - see the citation immediately below.
+    - SORT: the one genuine gap, and it has been closed. Column sorting is a documented
+      net-new affordance on this screen, recorded in MIGRATION_NOTES.
+
   MIGRATION: reproduces `roles.ascx` L5-L16, the server-side row named `trGroups`, as one
   labelled field rather than as three table cells. The whole region disappears when the
   portal has no role groups, which is BOTH halves of `Roles.ascx.vb` L110/L127-L131: the
@@ -164,6 +192,17 @@
 -->
 @if (filterRowVisible()) {
   <div class="role-list__filter">
+    <!--
+      ⚠ THE SECTION HEADING, CLIPPED FROM THE PAINTED PAGE. Measured before it existed: `<main>`
+      exposed exactly ONE heading on this screen - the page title - so a reader navigating by
+      heading could not move between the controls that narrow the list and the list itself. This
+      names the first of those two regions. It is clipped rather than shown because the region is
+      already obvious to anyone who can see it and a visible heading would add furniture the
+      legacy screen never had; the records region needs no counterpart because the grid carries
+      its own accessible name in a real `<caption>`.
+    -->
+    <h2 data-visually-hidden>Filter Roles</h2>
+
     <app-form-field
       [label]="groupFilterLabel"
       [help]="groupFilterHelp"
@@ -326,7 +365,7 @@
 @if (groupEditorOpen()) {
   <form class="role-list__group-editor" [formGroup]="groupForm" (ngSubmit)="submitGroupEditor()">
     <fieldset class="role-list__group-editor-fields">
-      <legend class="role-list__group-editor-legend">{{ groupEditorLegend }}</legend>
+      <legend class="role-list__group-editor-legend"><h2>{{ groupEditorLegend }}</h2></legend>
 
       <!--
         MIGRATION: the length bound is declared with an ATTRIBUTE binding, deliberately
@@ -411,7 +450,8 @@
       which is the same refusal the sibling component applies to a second submission.
     -->
     <div class="role-list__group-editor-commands">
-      <button type="submit" class="role-list__command" [disabled]="saving()">Update</button>
+      <button type="submit" class="role-list__command" [disabled]="saving()"
+          [attr.aria-busy]="saving() ? 'true' : null">{{ saving() ? 'Saving…' : 'Update' }}</button>
 
       <button
         type="button"
@@ -469,9 +509,60 @@
   ROW ACTIVATION IS NOT BOUND. The legacy grid had no select command - its selected-item style
   was declared but unreachable - so nothing listens for a row activation.
 -->
-<app-data-table [columns]="columns()" [rows]="roles()" [loading]="loading()">
+<!--
+  The ordering inputs are the SOLE source of truth for what each heading announces and are read straight
+  from the store, so a heading can never claim an order whose request failed. Both report absence while an
+  account is the subject of the listing: those rows come from a different slice that the ordering command
+  cannot reach, and the columns withhold their controls in that mode for the same reason.
+-->
+<app-data-table
+  [columns]="columns()"
+  [rows]="roles()"
+  [rowKey]="roleRowKey"
+  [loading]="loading()"
+  [sortBy]="sortBy()"
+  [sortDir]="sortDir()"
+  (sortChange)="onSortChange($event)"
+>
   <span dataTableCaption>{{ pageTitle }}</span>
 </app-data-table>
+
+<!--
+  THE PAGER — AN ADDITION, AND RECORDED AS ONE.
+
+  MIGRATION: `roles.ascx` declares no paging control and no `AllowPaging`, its grid bound a plain
+  untyped list (`Roles.ascx.vb:L77`), and the code-behind holds no page index, size or record total
+  anywhere. The pager style declared at `roles.ascx:L32` never rendered. So this element has no legacy
+  counterpart at all, and the note above the table said so for as long as the listing was read whole.
+
+  WHAT CHANGED IS THE READ. The store used to request page after page at a hundred records each and
+  join them into one unpaged envelope, precisely so that this screen could show everything without a
+  pager. Runtime testing measured what that cost on a tenant with a hundred and forty-five roles: an
+  eight-thousand-pixel document at 320 units wide with no affordance but scrolling, three requests on
+  every arrival, the whole walk re-issued on every browser Back and after every write, and thirty-six
+  of those re-reads aborted in flight. The pager is what removes all of it — see `ROLES_PAGE_SIZE` in
+  the store for the full record.
+
+  A TENANT THE SIZE THE LEGACY PRODUCT SHIPPED READS AS IT ALWAYS DID. Six stock roles fit one page, so
+  no page-to-page affordance is drawn for them; the addition only becomes visible on a listing the
+  legacy screen could not have displayed usefully in the first place.
+
+  ⚠ MOUNTED UNCONDITIONALLY, for the reason established on the portal listing: THE PAGER DECIDES ITS
+  OWN SHAPE — the range summary alone when everything fits on one page, the summary plus the steps when
+  it does not — and a wrapper condition here could only remove the summary, which is the sole on-screen
+  confirmation of how many roles a group filter matched. Runtime testing measured that exact loss on the
+  portal listing when a filter narrowed 250 records to seven.
+
+  A SIBLING BELOW THE TABLE, never a row inside it, so the grid keeps one column count and the pager
+  keeps its own semantics.
+-->
+<app-pagination
+  [page]="pageIndex()"
+  [pageSize]="servedPageSize()"
+  [totalCount]="totalCount()"
+  [loading]="loading()"
+      (pageChange)="onPageChange($event)"
+/>
 
 <!--
   THE GROUP-REMOVAL CONFIRMATION.
@@ -498,13 +589,48 @@
   reason it is on the page header.
 -->
 @if (pendingGroupRemoval() !== null) {
+  <!-- ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application
+       shows the SAME title, which the shared dialog declares as its default; binding one here is how
+       five different titles for one action came about - runtime testing found `Delete`,
+       `Confirm Delete`, `Delete Module`, `Delete Profile Property` and `Delete role group` across the
+       screens. The legacy had no title to preserve either: every in-scope delete confirmation was a
+       `window.confirm()` carrying the single shared string `DeleteItem`
+       (`Website/App_GlobalResources/SharedResources.resx` L120-L122), with no title at all. The
+       MESSAGE is still bound where a screen has its own legacy wording, because that wording is a
+       resource value this migration must preserve. -->
   <app-confirm-dialog
-    [title]="removalTitle"
     [message]="removalMessage"
     [confirmLabel]="removalConfirmLabel"
     [danger]="true"
     (confirm)="onGroupRemovalConfirmed()"
     (cancel)="onGroupRemovalCancelled()"
+  />
+}
+
+<!--
+  THE ROLE-REMOVAL CONFIRMATION.
+
+  The same flow, the same shared dialog and the same wording as the group removal above, because they
+  are one action performed on two kinds of subject and an operator should not have to learn two. No
+  `title` is bound here either — the shared default is what keeps one action from acquiring five
+  different titles across the application.
+
+  The MESSAGE is the shared `DeleteItem` resource value, which is what the legacy attached to every
+  in-scope delete confirmation through `ClientAPI.AddButtonConfirm`. The role's own name is not
+  interpolated into it: the resource wording is a fixed sentence this migration preserves, and the
+  subject is already established by the command that was pressed, whose accessible name carries the
+  role's name.
+
+  The wording makes no claim about permanence, for the reason given above the group dialog: in this
+  domain removal is not always destruction.
+-->
+@if (pendingRoleRemoval() !== null) {
+  <app-confirm-dialog
+    [message]="removalMessage"
+    [confirmLabel]="removalConfirmLabel"
+    [danger]="true"
+    (confirm)="onRoleRemovalConfirmed()"
+    (cancel)="onRoleRemovalCancelled()"
   />
 }
 
@@ -554,6 +680,7 @@
     class="role-list__row-action"
     [routerLink]="editRoleLinks()[row.roleId]"
     [attr.aria-label]="editRoleLabel + ' ' + row.roleName"
+    [attr.title]="editRoleLabel + ' ' + row.roleName"
   >
     <svg
       class="role-list__icon"
@@ -589,6 +716,7 @@
     class="role-list__row-action"
     [routerLink]="manageUsersLinks()[row.roleId]"
     [attr.aria-label]="manageUsersLabel + ' ' + row.roleName"
+    [attr.title]="manageUsersLabel + ' ' + row.roleName"
   >
     <svg
       class="role-list__icon"
@@ -608,6 +736,57 @@
     </svg>
     <span class="role-list__action-label">{{ manageUsersLabel }}</span>
   </a>
+</ng-template>
+
+<!--
+  ROW COMMAND THREE - DELETE. NO LEGACY COLUMN BEHIND IT.
+
+  MIGRATION: `roles.ascx:L34-L35` declares exactly two image command columns and no delete command
+  anywhere. The `cmdDelete` control on the same page is the ROLE-GROUP removal button
+  (`Roles.ascx.vb:L81-L86`), visible only while the selected group holds no roles - it is not, and never
+  was, a row command. Role removal lived on the role editor, and still does; this command reaches the
+  same removal from the listing rather than replacing it. The full reasoning for adding it, including
+  why the mis-press hazard is answered by construction, is recorded on the view query in the sibling
+  component.
+
+  A BUTTON, NOT A LINK, because removing a role changes state and addresses nothing. That distinction is
+  also what the paired stylesheet has to correct for: the global button vocabulary would give this one a
+  fill, a boundary, a radius and padding that its two anchor siblings do not carry, and three commands
+  in one row that look like different KINDS of control is worse than three that look alike.
+
+  THE ACCESSIBLE NAME NAMES THE ROLE, exactly as the two commands above do, and it CONTAINS the visible
+  word so a spoken command still matches what is seen. `title` carries the same text for a pointer user,
+  because the visible wording beside the glyph is clipped at every width on this screen - see the
+  stylesheet for the measurement that forced that.
+-->
+<ng-template #deleteCommand let-row>
+  <button
+    type="button"
+    class="role-list__row-action role-list__row-action--danger"
+    [attr.aria-label]="deleteRoleLabel + ' ' + row.roleName"
+    [attr.title]="deleteRoleLabel + ' ' + row.roleName"
+    [disabled]="saving()"
+    (click)="requestRoleRemoval(row)"
+  >
+    <svg
+      class="role-list__icon"
+      aria-hidden="true"
+      focusable="false"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.4"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M2.6 4.4 H13.4" />
+      <path d="M6.2 4.4 V2.6 H9.8 V4.4" />
+      <path d="M4 4.4 L4.8 13.4 H11.2 L12 4.4" />
+      <path d="M6.6 7 V11" />
+      <path d="M9.4 7 V11" />
+    </svg>
+    <span class="role-list__action-label">{{ deleteRoleLabel }}</span>
+  </button>
 </ng-template>
 
 <!--
@@ -633,6 +812,81 @@
   text-shaped values only and imports no pipe of its own; the pipe is declared in this
   screen's own component, which is the context this template compiles in.
 -->
+<!--
+  THE FEE CELLS - ONE TEMPLATE, BOTH MONEY COLUMNS.
+
+  A browser pass over the whole dataset found the asymmetry this closes: on the one role whose fees are
+  stored NULL, these two cells rendered as completely empty strings while the two COUNT cells beside them
+  on the same row rendered the mark and its clipped words. A reader heard "not recorded" for the counts
+  and silence for the fees, for one indistinguishable state.
+
+  A fee of ZERO is emphatically NOT absent and is unaffected: `RoleController.vb:L494` discriminates a
+  paid assignment with `ServiceFee > 0.0`, so nought is a real, free price and still renders as `0.00`.
+  Only the legacy single-precision marker and a null reach this branch.
+-->
+<!--
+  R-M4: AN AMOUNT TOO LARGE FOR A DOUBLE TO STATE EXACTLY SAYS SO. The column is SQL `money` and the
+  wire carries a JSON number, so above a computable magnitude the figure that arrives has already
+  moved from the figure that is stored - measured as `922337203685477.5807` stored against
+  `922337203685477.63` painted, in the same colour and weight as an exact amount. The loss happens
+  when the wire is parsed, before anything here runs, so the cell cannot correct it; it paints what it
+  has and says the figure is approximate, which is the one thing available that is not misleading.
+  The qualifier is CLIPPED, on the same footing as the absent-value description above it: announced,
+  never drawn, so an ordinary row is unchanged and no reader is misled about an extraordinary one.
+-->
+<ng-template #feeCell let-row let-column="column">
+  @if (isFeeAbsent(row, column.key)) {
+    <span aria-hidden="true">{{ absentValueMark }}</span>
+    <span class="role-list__absent-value">{{ absentValueDescription }}</span>
+  } @else {
+    {{ feeText(row, column.key)
+    }}@if (isFeeApproximate(row, column.key)) {
+      <span class="role-list__absent-value">{{ approximateValueDescription }}</span>
+    }
+  }
+</ng-template>
+
+<!--
+  THE PERIOD CELLS - ONE TEMPLATE, BOTH PERIOD COLUMNS.
+
+  R-M1: an empty cell could not distinguish a period the tenant never recorded from one nobody had got
+  to yet, and this grid had a specific inconsistency to answer for - a stored `-1` rendered blank while a
+  stored `-3` rendered "-3", two negative periods presented as different kinds of value. The value is
+  still absent; the cell now says so.
+
+  The mark is DECORATIVE and the words are the content, which is the same split the portal listing makes:
+  a reader who cannot see the dash is told what it means, and a reader who can is not read a sentence on
+  every row of a full page. Which of the two columns is being drawn is read from the column key, so one
+  template serves both and neither can drift from the other.
+-->
+<ng-template #periodCell let-row let-column="column">
+  @if (isPeriodAbsent(row, column.key)) {
+    <span aria-hidden="true">{{ absentValueMark }}</span>
+    <span class="role-list__absent-value">{{ absentValueDescription }}</span>
+  } @else {
+    {{ periodText(row, column.key) }}
+  }
+</ng-template>
+
+<!--
+  THE FREQUENCY CELLS - ONE TEMPLATE, BOTH FREQUENCY COLUMNS.
+
+  R-M3: THE PAINTED CHARACTER IS UNCHANGED. The legacy grid bound the raw field rather than the joined
+  description (`roles.ascx:L50-L52`), so `M` rendered as `M`, and it still does - the character is
+  load-bearing data constrained by `FK_Roles_CodeFrequency`. What was wrong was that nothing said what it
+  meant, while the role editor two clicks away rendered the same datum as "Month".
+
+  So the expansion sits beside it, clipped from sight, drawn from the one shared vocabulary the editor's
+  own select captions come from. Zero visual change; the announcement becomes "Billing Period Month"
+  rather than "Billing Period M". An unrecognised character contributes nothing rather than a guess.
+-->
+<ng-template #frequencyCell let-row let-column="column">
+  <span aria-hidden="true">{{ frequencyCode(row, column.key) }}</span>
+  @if (frequencyName(row, column.key) !== '') {
+    <span class="role-list__absent-value">{{ frequencyName(row, column.key) }}</span>
+  }
+</ng-template>
+
 <ng-template #publicCell let-row>
   {{ row.isPublic | yesNo }}
 </ng-template>

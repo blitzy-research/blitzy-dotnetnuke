@@ -48,24 +48,17 @@
   -->
   <div class="form-field__label-row">
     <!--
-      A real `label`, exactly as `labelcontrol.ascx:L2` rendered one, so clicking
-      the text focuses the control and assistive technology names the control from
-      it. Rendered unconditionally as the legacy control rendered it, so the field
-      keeps its shape when a caller supplies no text.
+      THE CAPTION, IN ONE PLACE, RENDERED INTO ONE OF TWO ELEMENTS.
 
-      `for` is bound through `attr.` for two reasons: the DOM property is `htmlFor`
-      rather than `for`, so a property binding would not compile under strict
-      template checking; and an attribute binding removes the attribute entirely
-      when the component resolves it to null, which is what keeps `for=""` - a
-      reference that names nothing - off the 5 of 186 legacy labels that declare no
-      control association at all.
-
-      The `id` is bound because both the projection group and every otherwise
-      unnamed projected control reference this visible text. ARIA naming is not
-      inherited from a group, so the component applies the control references
-      directly after projected content is checked.
+      Declared as a template and stamped by the two branches below so the caption
+      text and the required marker exist ONCE. Duplicating them into two branches
+      would be the more obvious spelling and is deliberately not used: the marker is
+      three nested elements carrying two accessibility decisions, and two copies of
+      it would be two things to keep in step. An `ng-template` emits a comment node
+      rather than an element, so it is not a flex item and the row's layout is
+      untouched.
     -->
-    <label class="form-field__label" [id]="labelId()" [attr.for]="labelFor()">
+    <ng-template #captionContent>
       {{ labelText() }}
       @if (required) {
         <!--
@@ -87,7 +80,64 @@
           <span class="form-field__required-text">{{ requiredText }}</span>
         </span>
       }
-    </label>
+    </ng-template>
+
+    <!--
+      A REAL `label` WHEN THERE IS A CONTROL TO NAME, AND A `span` WHEN THERE IS NOT.
+
+      The `label` branch is `labelcontrol.ascx:L2` carried across: clicking the text
+      focuses the named control and assistive technology names that control from it.
+      It covers 112 of the 118 fields in the application.
+
+      `for` is bound through `attr.` because the DOM property is `htmlFor` rather than
+      `for`, so a property binding would not compile under strict template checking.
+
+      ⚠ MIGRATION - A LEGACY MARKUP DEFECT REVERSED, NOT REPRODUCED. The legacy control
+      rendered a `label` element unconditionally and attached `for` only when it had a
+      control to point at: `LabelControl.vb:L292-L295` guards the assignment with
+      `If Not String.IsNullOrEmpty(ControlName)`, so the 5 of 186 legacy labels that
+      declare no association rendered as `label` elements captioning nothing. An earlier
+      revision here was faithful to that and omitted the attribute, which is how the
+      application came to raise a form-label diagnostic - its ONLY one - on six fields:
+      the portal type radio group on the create form, the banner and user-registration
+      radio groups on portal settings, the module visibility radio group, and the two
+      read-only values on the password screen, which have no control at all rather than
+      merely no single one.
+
+      The `span` branch is not invented for this migration either - `module-settings`
+      already captions its own visibility radio group with a `span` carrying an id that
+      a `role="radiogroup"` references, so this is the pattern the codebase had already
+      settled on, applied to the shared component so all six fields get it.
+
+      WHY THIS IS PERMITTED WHERE FAITHFULNESS USUALLY WINS. The same argument the help
+      affordance makes a few lines below: accessibility outranks visual continuity in the
+      precedence order, and here the two do not conflict. `.form-field__label` restates
+      every property the global `label` rule sets - display, margin, colour, size, weight,
+      line height - so exactly ONE computed property changes on the six affected fields,
+      `cursor`, from `pointer` to the default. Losing it is itself a correction: a pointer
+      cursor on a caption that focuses nothing promises an interaction that does not exist.
+
+      WHAT WAS REJECTED. Rendering a `span` for every field would have been one branch
+      instead of two, and would have discarded native click-to-focus on all 112 fields
+      that legitimately have it - a real loss to pay for a tidier template. Pointing `for`
+      at the first control of a group was also rejected: it would name one radio as though
+      it were the whole question, which is worse than naming nothing.
+
+      The `id` is bound on BOTH branches because the projection group and every otherwise
+      unnamed projected control reference this visible text by id, and that wiring is what
+      actually carries the accessible name for a group. ARIA naming is not inherited from
+      a group, so the component applies the control references directly after projected
+      content is checked. Nothing about either name changes with the tag.
+    -->
+    @if (labelFor() !== null) {
+      <label class="form-field__label" [id]="labelId()" [attr.for]="labelFor()">
+        <ng-container [ngTemplateOutlet]="captionContent" />
+      </label>
+    } @else {
+      <span class="form-field__label" [id]="labelId()">
+        <ng-container [ngTemplateOutlet]="captionContent" />
+      </span>
+    }
 
     @if (hasHelp()) {
       <!--
@@ -239,6 +289,31 @@
       The region is removed when the field becomes valid rather than emptied or
       hidden, so it neither occupies space nor lingers in the accessibility tree.
 
+      ⚠ AND IT IS INSERTED WITH ITS MESSAGE ON PURPOSE, WHICH IS THE OPPOSITE OF THE
+      RULE THE SHARED BANNER AND THE NOTIFICATION SURFACE FOLLOW. Those two keep an
+      empty region mounted at all times because a POLITE live region has to be observed
+      before it is updated. `role="alert"` is the one live-region role defined the other
+      way round: adding a node that carries it IS the announcement trigger, so the
+      region and its text may arrive together. Keeping one mounted per field instead
+      would leave an empty alert region in the accessibility tree for every field on
+      every form - ten of them on the account-creation form alone - for no gain. Do not
+      "make this consistent" with the banner; the inconsistency is the correct reading of
+      two different roles.
+
+      ⚠ SPACE FOR THE MESSAGE IS DELIBERATELY *NOT* RESERVED, and that is a measured
+      decision rather than an omission. Reserving one line costs `--font-size-lg` x
+      `--line-height-base` = 1.125rem = 18px per error-bearing field, which on the
+      account-creation form's seven such fields is 126px of PERMANENT blank space -
+      almost exactly the 124px transient growth it would be spent to avoid, and paid on
+      every visit instead of only after a refused submission. It would not even succeed:
+      individual fields there were measured growing 87px and 110px, because a message
+      can wrap and a field can carry several, so no fixed reservation can absorb them.
+      What addresses the real harm - the command moving out from under the pointer that
+      just pressed it - is moving focus to the first invalid control, which
+      `FocusFirstInvalidDirective` does for every `form[formGroup]` in the application:
+      the operator is carried to the message rather than left looking at where the
+      button was.
+
       SEVERAL messages, not one. `editroles.ascx` places two `CompareValidator`s on a
       single control four separate times, and there is not one
       `<asp:ValidationSummary>` anywhere in the 39 in-scope screens - so this region
@@ -265,9 +340,28 @@
       point where localisation is out of scope, for a distinction the three affordances
       above already carry.
     -->
+    <!--
+      MIGRATION: EVERY MESSAGE CARRIES ITS OWN IDENTIFIER, and the reason is a measured
+      accessibility defect rather than tidiness. The description reference used to name only
+      this container, and only on the non-focusable group wrapper around the control — never
+      on the control itself. The consequence was precise: because the region is an assertive
+      live region, a failure WAS announced the moment it appeared, so the defect was invisible
+      to a first-pass test; but an operator who tabbed BACK to the field afterwards heard only
+      that it was invalid, with no statement of what was wrong, because nothing the control
+      pointed at held the reason. The component now applies the description to the projected
+      control directly — see `ensureProjectedControlsAreDescribed` — and each message is
+      addressable in its own right so a caller, a specification or an assistive technology can
+      name one message rather than the whole block.
+
+      `aria-errormessage` is deliberately NOT added alongside the description. It would name
+      the same region a second time, and the two mechanisms together make several screen
+      readers announce the reason twice; the description is the one with dependable support.
+      Requiredness and invalidity remain the caller's to state on the control, as they always
+      were, because this component cannot make a field either.
+    -->
     <div class="form-field__errors" [id]="errorId()" role="alert">
       @for (message of errorMessages(); track $index) {
-        <p class="form-field__error">{{ message }}</p>
+        <p class="form-field__error" [id]="errorMessageId($index)">{{ message }}</p>
       }
     </div>
   }

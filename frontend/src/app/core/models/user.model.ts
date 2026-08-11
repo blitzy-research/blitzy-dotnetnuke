@@ -407,6 +407,22 @@ export interface UserDetail {
   readonly isOnline: boolean;
 
   /**
+   * Whether this account may be removed from the tenant.
+   *
+   * ⚠ THE SERVER'S OWN RULE, NOT A CLIENT APPROXIMATION. The removal operation refuses a super user
+   * AND it refuses the account named by the tenant's `Portals.AdministratorId` - and nothing else in
+   * this contract reveals who that designated administrator is, so a screen cannot derive the second
+   * clause. It previously tried, as "not a super user", and the consequence was measurable: for the
+   * tenant's own administrator the account LISTING withheld the removal affordance while the detail
+   * screen offered it, two surfaces disagreeing about one permission, with the offered action's only
+   * possible outcome being a refusal.
+   *
+   * Spelled and computed identically to {@link UserListItem.canDelete} - the server derives both from
+   * one member - so the two screens cannot disagree again.
+   */
+  readonly canDelete: boolean;
+
+  /**
    * Whether the account must change its password before it can proceed.
    *
    * Blocking. Spelled identically on the sign-in response so that both paths report
@@ -606,6 +622,34 @@ export interface ChangePasswordRequest {
  * ever configured.
  */
 export interface MembershipSettings {
+  /**
+   * Whether these values were READ FROM STORAGE, or are the defaults that stand in when
+   * nothing is stored.
+   *
+   * ⚠ #5/#6 — THE MEMBER THAT MAKES A DEFAULT DISTINGUISHABLE FROM A DECISION, and the
+   * reason the account screens no longer report a failure for a tenant that has simply
+   * never opened this screen.
+   *
+   * Every one of the members below has a value in both cases, which is exactly the problem
+   * it solves: a tenant with no stored policy previously received a `404`, four screens
+   * raised an assertive not-found banner over otherwise healthy content, and the policy
+   * screen rendered its client-side defaults as though they were persisted decisions with
+   * no way for an operator to tell. The server now answers `200` with the legacy defaults -
+   * which is what `Library/Components/Users/UserModuleBase.vb` did, applying a default for
+   * every key it could not read - and states which of the two it gave.
+   *
+   * `false` therefore means "nothing is stored for this tenant; these are the defaults the
+   * legacy screens would also have applied", and `true` means "an operator decided these".
+   * A screen that treats them the same is reporting fiction as fact.
+   *
+   * It is also ACCEPTED BACK on the write. The policy screen sends the document it read,
+   * verbatim, and the API binds request bodies with unmapped-member handling set to
+   * disallow - so a member present on the read and absent from the write contract would
+   * make every save `400`. The server declares it on the request as accepted-and-ignored,
+   * and this client keeps it in the shape for the same reason.
+   */
+  readonly isStored: boolean;
+
   /** Whether the listing shows the given-name column. */
   readonly columnFirstName: boolean;
 
@@ -1157,6 +1201,8 @@ export const decodeUserDetail: Decoder<UserDetail> = objectOf<UserDetail>({
   lastLockoutDate: nullable(decodeDateString),
   lastPasswordChangeDate: nullable(decodeDateString),
   roles: arrayOf(decodeString),
+  // Decoded exactly as the list projection decodes it: one capability, one spelling, one rule.
+  canDelete: decodeBoolean,
 });
 
 /**
@@ -1174,6 +1220,12 @@ export const decodeUserDetail: Decoder<UserDetail> = objectOf<UserDetail>({
  */
 export const decodeMembershipSettings: Decoder<MembershipSettings> =
   objectOf<MembershipSettings>({
+    // ⚠ #5/#6 — REQUIRED, not tolerated as absent. A server that omitted it would leave a
+    // consumer unable to tell a default from a decision, and a decoder that defaulted the
+    // flag to `false` would silently label a real stored policy as unset - which is the
+    // more damaging of the two errors, because it invites an operator to "fix" settings
+    // that were already deliberate. Refusing the shape says so instead.
+    isStored: decodeBoolean,
     columnFirstName: decodeBoolean,
     columnLastName: decodeBoolean,
     columnDisplayName: decodeBoolean,

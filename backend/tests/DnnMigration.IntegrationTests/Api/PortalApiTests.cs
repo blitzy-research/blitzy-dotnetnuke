@@ -3407,49 +3407,71 @@ public sealed class PortalApiTests
     }
 
     /// <summary>
-    /// The name filter matches a fragment found ANYWHERE in the site title, and a caller's wildcard
-    /// characters are matched literally rather than acting as a pattern.
+    /// The name filter matches a PREFIX of the site title, exactly as the legacy grid did, and a caller's
+    /// wildcard characters are matched literally rather than acting as a pattern.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
-    /// MIGRATION: THIS IS A DELIBERATE WIDENING AND IT IS RECORDED HERE RATHER THAN ABSORBED. The legacy
-    /// filter was a PREFIX match assembled at the call site: <c>Website/admin/Portal/Portals.ascx.vb</c>
-    /// line 142 appends a single trailing wildcard - <c>GetPortalsByName(Filter + "%", ...)</c> - and the
-    /// surviving procedure applies it unchanged with <c>WHERE PortalName LIKE @NameToMatch</c>
+    /// MIGRATION: the predicate is the LEGACY PREFIX MATCH, and the primary sources fix it beyond doubt.
+    /// The pattern was assembled at the call site, not in the procedure:
+    /// <c>Website/admin/Portal/Portals.ascx.vb</c> line 142 reads
+    /// <c>GetPortalsByName(Filter + "%", CurrentPage - 1, PageSize, TotalRecords)</c> - one TRAILING
+    /// wildcard and no leading one - and the surviving procedure applies it unchanged with
+    /// <c>WHERE PortalName LIKE @NameToMatch</c>
     /// (<c>Website/Providers/DataProviders/SqlDataProvider/04.04.00.SqlDataProvider</c> lines 245 to 269).
-    /// A mid-string fragment therefore matched nothing in the legacy grid, and it matches here. The change
-    /// is a widening rather than a loss - every title a prefix match returned is also returned by a
-    /// containment match - so no legacy result disappears, and this fact asserts the behaviour the endpoint
-    /// actually has instead of pinning one it does not.
+    /// <c>LIKE 'j%'</c> is a prefix test, so a mid-string fragment matched nothing in the legacy grid and
+    /// matches nothing here.
     /// </para>
     /// <para>
-    /// MIGRATION: the same change closes a real hazard in the legacy call, and that is the second half of
-    /// this fact. Because the caller's own text was concatenated into the pattern, a filter containing
-    /// <c>%</c> or <c>_</c> acted as a WILDCARD: a single per cent sign matched every portal in the
-    /// installation. The fragment is now a value rather than a pattern, so those characters match
-    /// themselves, which is asserted below by filtering on a per cent sign and expecting nothing back.
+    /// ⚠ THIS FACT REPLACES ONE THAT PINNED A CONTAINMENT MATCH, AND THE REPLACEMENT IS THE POINT. The
+    /// earlier revision widened the predicate on the reasoning that a widening loses no legacy result.
+    /// It loses something a result count cannot show: the FILTER STRIP'S MEANING. The listing's strip is
+    /// an A-to-Z index of twenty-six single letters, named "Filter portals by first letter", and the
+    /// strip and the free-text box share one filter parameter - so against a containment match pressing
+    /// "A" returns every title carrying an "a" anywhere, which on a populated installation is very nearly
+    /// all of them. Runtime testing measured that. Rule T5 asks for identical outcomes wherever
+    /// equivalence is achievable, and here it plainly is.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the WILDCARD HARDENING is retained and is a separate concern from the predicate's
+    /// shape. Because the legacy pattern was string concatenation, a filter containing <c>%</c> or
+    /// <c>_</c> acted as a WILDCARD - a single per cent sign matched every portal in the installation.
+    /// Expressed relationally the caller's text is a value rather than a pattern, so those characters
+    /// match themselves, which is asserted below by filtering on each and expecting nothing back.
     /// </para>
     /// </remarks>
     [Fact]
-    public async Task ListPortals_NameFilter_MatchesAFragmentAnywhereAndTreatsWildcardsAsLiterals()
+    public async Task ListPortals_NameFilter_MatchesAPrefixAndTreatsWildcardsAsLiterals()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
-        // A fragment taken from the MIDDLE of the seeded portal's name: it is neither a prefix of the name
-        // nor a suffix of it, so only a containment match can find it.
+        // A genuine prefix of the seeded title, in the WRONG case, so the fact also pins the case folding
+        // that keeps the answer independent of the installation's collation.
+        const string prefix = "integrat";
+        IntegrationSeed.PortalName.Should().StartWith(
+            "Integrat",
+            "the prefix asserted below is only a prefix if the seeded title still begins with it");
+
+        PagedEnvelope<PortalListItemDto> matched = await FilterByNameAsync(client, prefix);
+        matched.Items.Select(item => item.PortalId).Should().Contain(
+            _fixture.Seed.PortalId,
+            "a prefix matches, and case is folded on both sides");
+
+        // A fragment taken from the MIDDLE of the seeded title: neither a prefix of the name nor a suffix
+        // of it, so only a containment match could find it - and the legacy grid could not.
         const string interior = "tegration Por";
         IntegrationSeed.PortalName.Should().Contain(interior);
         IntegrationSeed.PortalName.Should().NotStartWith(interior);
 
-        PagedEnvelope<PortalListItemDto> matched = await FilterByNameAsync(client, interior);
-        matched.Items.Select(item => item.PortalId).Should().Contain(
+        PagedEnvelope<PortalListItemDto> interiorMatch = await FilterByNameAsync(client, interior);
+        interiorMatch.Items.Select(item => item.PortalId).Should().NotContain(
             _fixture.Seed.PortalId,
-            "an interior fragment matches, which the legacy prefix filter would not have done");
+            "an interior fragment matched nothing in the legacy grid, and the prefix filter reproduces that");
 
         PagedEnvelope<PortalListItemDto> wildcard = await FilterByNameAsync(client, "%");
         wildcard.Items.Should().BeEmpty(
-            "a per cent sign is data rather than a pattern, so it matches no title that does not contain one");
+            "a per cent sign is data rather than a pattern, so it matches no title that does not begin with one");
         wildcard.Meta.TotalCount.Should().Be(0);
 
         PagedEnvelope<PortalListItemDto> underscore = await FilterByNameAsync(client, "_ntegration");

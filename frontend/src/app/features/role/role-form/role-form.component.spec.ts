@@ -91,6 +91,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Router, provideRouter } from '@angular/router';
 
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
 import { PortalStore } from '../../../core/state/portal.store';
@@ -115,7 +116,6 @@ import type {
   CreateRoleRequest,
   Role,
   RoleGroup,
-  RoleListItem,
   UpdateRoleRequest,
 } from '../../../core/models/role.model';
 
@@ -155,6 +155,16 @@ const ROLE_LIST_ROUTE = '/roles';
 
 const ADD_TITLE = 'Add New Role';
 const EDIT_TITLE = 'Edit Security Roles';
+
+/**
+ * The sentence shown when the address names no readable role.
+ *
+ * Restated here rather than imported, matching how every other expected string in this file is
+ * declared. Importing the component's own constant would compare it against itself and pass for any
+ * wording at all, including an empty one.
+ */
+const UNREADABLE_ADDRESS_MESSAGE =
+  'This address does not name a role that can be read. Return to the role list and try again.';
 
 const SUBMIT_LABEL = 'Update';
 const CANCEL_LABEL = 'Cancel';
@@ -396,6 +406,39 @@ const NUMERIC_FIELDS: readonly NumericField[] = Object.freeze<readonly NumericFi
   },
 ]);
 
+/**
+ * The data-type sentence declared for a control, looked up from the table above.
+ *
+ * A lookup rather than a second literal, so a message can never be asserted against a string this
+ * file alone believes in.
+ *
+ * @param controlId The rendered control's id.
+ * @returns The control's own data-type wording.
+ */
+function dataTypeMessageFor(controlId: string): string {
+  const field = NUMERIC_FIELDS.find((candidate: NumericField) => candidate.controlId === controlId);
+  if (field === undefined) {
+    throw new Error(`No numeric field is declared for "${controlId}".`);
+  }
+
+  return field.dataTypeMessage;
+}
+
+/**
+ * The comparison sentence declared for a control, looked up from the same table.
+ *
+ * @param controlId The rendered control's id.
+ * @returns The control's own comparison wording.
+ */
+function comparisonMessageFor(controlId: string): string {
+  const field = NUMERIC_FIELDS.find((candidate: NumericField) => candidate.controlId === controlId);
+  if (field === undefined) {
+    throw new Error(`No numeric field is declared for "${controlId}".`);
+  }
+
+  return field.comparisonMessage;
+}
+
 // =====================================================================================================
 // THE FAILURE VOCABULARY, TAKEN FROM THE SERVER
 // =====================================================================================================
@@ -509,6 +552,10 @@ function role(roleId = 7, overrides: Partial<Role> = {}): Role {
     autoAssignment: false,
     rsvpCode: null,
     iconFile: null,
+    // The revision marker the API serves with every role detail. Declared BEFORE the spread so a case
+    // may replace it or set it to null - the form is required to carry whatever it read into the
+    // update it composes, and both of those are cases worth asserting.
+    concurrencyToken: 'revision-1',
     ...overrides,
   };
 }
@@ -558,29 +605,15 @@ interface WireEnvelope<T> {
   readonly meta: null;
 }
 
-/** The paging coordinates every collection answer carries. */
-interface WireMeta {
-  readonly totalCount: number;
-  readonly pageIndex: number;
-  readonly pageSize: number;
-  readonly totalPages: number;
-}
-
-/** A page of records, as the collection endpoints answer. */
-interface WirePage<T> {
-  readonly items: readonly T[];
-  readonly meta: WireMeta;
-}
-
 /** Wraps one payload in the single-payload envelope. */
 function envelope<T>(data: T): WireEnvelope<T> {
   return { data, meta: null };
 }
 
-/** An empty page of roles, which is all the post-write listing re-read needs. */
-function emptyRolePage(): WirePage<RoleListItem> {
-  return { items: [], meta: { totalCount: 0, pageIndex: 0, pageSize: 100, totalPages: 0 } };
-}
+// ⚠ THERE IS DELIBERATELY NO PAGE FIXTURE HERE ANY MORE. This screen dispatches three writes and not one
+// of them reads a collection: the listing owns listing reads, because its page, narrowing and ordering
+// live in its address. A page fixture would only exist to answer a read that must never be issued, and
+// having one available invites answering it instead of asserting its absence.
 
 describe('RoleFormComponent', () => {
   let fixture: ComponentFixture<RoleFormComponent>;
@@ -936,15 +969,36 @@ describe('RoleFormComponent', () => {
   }
 
   /**
-   * Answers the listing re-read that follows every SUCCESSFUL write.
+   * Asserts that a successful write does NOT re-read the listing.
    *
-   * MIGRATION: `DataCache.RemoveCache("GetRoles")` (`EditRoles.ascx.vb:L264` and `:L296`) has NO
-   * client equivalent — it evicted a server-side cache entry and no endpoint exposes that. The shared
-   * store re-reads its own listing instead, so the list screen shows the change at once, and no cache
-   * invalidation endpoint is invented. This helper is what answers that read.
+   * ⚠ THIS HELPER USED TO ANSWER SUCH A READ, AND ITS INVERSION IS THE FIX FOR A MEASURED DEFECT. Runtime
+   * testing quantified the duplicate the old behaviour produced: 2,466 B sent and 25,283 B decoded per save,
+   * in two shapes depending on timing - a complete-and-discard and a network abort - with 36 aborted listing
+   * refetches in a single session. The store re-read the listing at the same moment this screen navigated TO
+   * the listing, which reads itself from its own address on entry, so the two raced and one was cancelled
+   * mid-flight.
+   *
+   * MIGRATION: `DataCache.RemoveCache("GetRoles")` (`EditRoles.ascx.vb:L264` and `:L296`) has NO client
+   * equivalent — it evicted a server-side cache entry and no endpoint exposes that. What replaces it is that
+   * the LISTING owns listing reads: its page, narrowing and ordering live in its address, so it reads on entry
+   * and on every address change, and a caller arriving there always sees authoritative rows and totals. No
+   * cache-invalidation endpoint is invented and no read is duplicated.
+   *
+   * ⚠ THE RULE COVERS DELETION TOO, AND IT DID NOT ALWAYS. The delete command still re-reads the listing
+   * when it is asked to, because deletion is ALSO reachable from the listing itself, where no navigation
+   * follows and no address changes, so a removed row would otherwise stay on screen. But this screen is not
+   * that caller: it departs for the listing, so it asks for no read, and runtime measurement of the old
+   * behaviour on this exact path recorded the abort shape directly — two listing reads with different
+   * correlation ids, the first `net::ERR_ABORTED` after some seven milliseconds and the second returning the
+   * rows actually shown. Which caller wants the read is now stated at each call site rather than decided for
+   * both, so this screen and the listing can differ without either inheriting the other's answer.
+   *
+   * Named as an assertion rather than an answer because that is now what it is.
    */
-  function answerListingReread(): void {
-    expectRequest('GET', ROLES_URL, 'the listing re-read after a write').flush(emptyRolePage());
+  function expectNoListingReread(): void {
+    expect(httpMock.match((candidate) => candidate.url === ROLES_URL))
+      .withContext('a write must not duplicate the read the listing issues for itself')
+      .toHaveSize(0);
     fixture.detectChanges();
   }
 
@@ -959,7 +1013,7 @@ describe('RoleFormComponent', () => {
     const body: CreateRoleRequest = call.request.body;
 
     call.flush(envelope(role()), { status: 201, statusText: 'Created' });
-    answerListingReread();
+    expectNoListingReread();
 
     return body;
   }
@@ -975,7 +1029,7 @@ describe('RoleFormComponent', () => {
     const body: UpdateRoleRequest = call.request.body;
 
     call.flush(envelope(role(roleId)));
-    answerListingReread();
+    expectNoListingReread();
 
     return body;
   }
@@ -999,6 +1053,23 @@ describe('RoleFormComponent', () => {
     const queue: readonly Announcement[] = announcements();
 
     return queue.length === 0 ? undefined : queue[queue.length - 1];
+  }
+
+  /**
+   * The messages that would still be on screen after the shell's navigation sweep.
+   *
+   * The queue is REAL in this suite - `notify` is spied and called through - so this exercises the
+   * actual retention rule rather than asserting that a method was called. That distinction is the
+   * whole point here: a screen that announces an outcome and then leaves must have its message
+   * survive exactly one navigation, and the only way to prove it is to run the sweep.
+   *
+   * @returns The surviving messages, in queue order.
+   */
+  function messagesSurvivingNavigation(): readonly string[] {
+    const notifications = TestBed.inject(NotificationService);
+    notifications.clearOnNavigation();
+
+    return notifications.notifications().map((entry) => entry.message);
   }
 
   /** The whole rendered document as text, for absence assertions. */
@@ -1068,6 +1139,48 @@ describe('RoleFormComponent', () => {
       expect(messagesFor(CONTROL_ID.serviceFee))
         .withContext('the grouped form this screen itself writes is accepted')
         .toEqual([]);
+    });
+
+    CURRENCY_CONTROLS.forEach((controlId: string) => {
+      it(`refuses more than two decimal places in #${controlId}, which Type="Currency" never admitted`, () => {
+        // ⚠ THE SENTENCE IS THE DATA-TYPE ONE, AND THAT IS CORRECT RATHER THAN A CONFUSION OF
+        // TWO RULES. The framework's currency conversion measures the digits after the decimal
+        // separator against the culture's `CurrencyDecimalDigits` — two — and refuses a longer
+        // value BEFORE parsing it, so `-0.001` never reaches a comparison at all. It is not a
+        // negative amount; it is not an amount.
+        createMode();
+        fillRoleName();
+
+        type(controlId, '-0.001');
+
+        expect(messagesFor(controlId)).toHaveSize(1);
+        expect(messagesFor(controlId)).toEqual([dataTypeMessageFor(controlId)]);
+      });
+
+      it(`refuses the exponent form in #${controlId}, which NumberStyles.Currency omits`, () => {
+        // `Currency` parses under `NumberStyles.Currency`, which does not include
+        // `AllowExponent`, so the legacy validator refused this too.
+        createMode();
+        fillRoleName();
+
+        type(controlId, '1e5');
+
+        expect(messagesFor(controlId)).toHaveSize(1);
+        expect(messagesFor(controlId)).toEqual([dataTypeMessageFor(controlId)]);
+      });
+
+      it(`answers a WELL-FORMED negative amount in #${controlId} with the sign sentence, not the data-type one`, () => {
+        // The pair is distinguishable in both directions, which is the whole claim: a value that
+        // is a real money amount and merely negative gets the comparison sentence, and the two
+        // sentences are different strings.
+        createMode();
+        fillRoleName();
+
+        type(controlId, '-1.00');
+
+        expect(messagesFor(controlId)).toEqual([comparisonMessageFor(controlId)]);
+        expect(comparisonMessageFor(controlId)).not.toBe(dataTypeMessageFor(controlId));
+      });
     });
 
     it('shows exactly ONE sentence for a value that breaks both rules on the same control', () => {
@@ -1718,7 +1831,7 @@ describe('RoleFormComponent', () => {
       submittedCreate();
 
       expect(announcements()).toContain({ severity: 'success', message: ROLE_CREATED_MESSAGE });
-      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE]);
+      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], { replaceUrl: true });
     });
 
     it('announces an update and leaves for the listing when the server accepts it', () => {
@@ -1728,7 +1841,81 @@ describe('RoleFormComponent', () => {
       submittedUpdate(7);
 
       expect(announcements()).toContain({ severity: 'success', message: ROLE_UPDATED_MESSAGE });
-      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE]);
+      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], { replaceUrl: true });
+    });
+
+    it('leaves the form settled at the instant it navigates, so the guard cannot question a saved role', () => {
+      const tracker = TestBed.inject(UnsavedChangesTracker);
+
+      editMode(role(7));
+
+      // ⚠ THE DESCRIPTION, NOT THE NAME. On the edit route the role name is not an editable control at all -
+      // it renders as an `<output>`, because `UpdateRole(...)` takes no name parameter - so typing into it
+      // would dirty nothing and the control assertion below would fail for the wrong reason. It did, on the
+      // first run of this case, which is precisely what that assertion is for.
+      type(CONTROL_ID.description, 'Edited by the operator');
+
+      // THE CONTROL. Without it a later `false` would be indistinguishable from a probe that was never
+      // registered, or from a form that was never dirty. `isDirty()` is the guard's own public surface, so
+      // this is asserted through the very call the guard makes.
+      expect(tracker.isDirty())
+        .withContext('a dirty form with no write in flight is what the guard exists to catch')
+        .toBeTrue();
+
+      // ⚠ SAMPLED AT THE INSTANT OF NAVIGATION, NOT AFTERWARDS, because it is the navigation the save
+      // itself triggers that the guard would have refused. Measured in a real browser before this was
+      // settled: every successful save raised "You have unsaved changes on this page. Leave without saving
+      // and discard them?" about the entry that had just been stored - and because `window.confirm` blocks
+      // the JavaScript thread, the confirmation's auto-dismiss timer became due while the dialog stood and
+      // fired the instant it was accepted, so the operator never saw the success notice at all. A
+      // MutationObserver caught it being emitted and then removed.
+      let dirtyAtNavigation: boolean | null = null;
+      navigateSpy.and.callFake(() => {
+        dirtyAtNavigation = tracker.isDirty();
+
+        return Promise.resolve(true);
+      });
+
+      press(SUBMIT_LABEL);
+      submittedUpdate(7);
+
+      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], { replaceUrl: true });
+      expect(dirtyAtNavigation)
+        .withContext('the guard must see a settled form on the navigation the save itself triggered')
+        .toBeFalse();
+    });
+
+    it('leaves the confirmation readable at the listing it navigates to', () => {
+      // ⚠ THE CONFIRMATION USED TO BE SWEPT BY ITS OWN NAVIGATION, and the effect was total
+      // silence: a save that succeeded and a save that was never made looked identical, because the
+      // screen simply returned to the listing. Measured in a real browser after an untouched save -
+      // the destination's live region was the empty string and 44 extracted frames showed no toast
+      // appearing or dismissing. The message must survive exactly one navigation.
+      editMode(role(7));
+
+      press(SUBMIT_LABEL);
+      submittedUpdate(7);
+
+      expect(messagesSurvivingNavigation())
+        .withContext('the confirmation belongs at the destination, as the legacy showed it')
+        .toContain(ROLE_UPDATED_MESSAGE);
+    });
+
+    it('does NOT leave an unrelated earlier message behind at the destination', () => {
+      // ⚠ THE BOUNDARY, and it is what stops the fix becoming the defect it replaced. Only the
+      // entry raised alongside the navigation is exempted; anything already on screen from an
+      // earlier action is still retired, which is the rule the sweep exists to enforce.
+      editMode(role(7));
+
+      TestBed.inject(NotificationService).notify('info', 'An earlier, unrelated message.');
+
+      press(SUBMIT_LABEL);
+      submittedUpdate(7);
+
+      const surviving = messagesSurvivingNavigation();
+
+      expect(surviving).toContain(ROLE_UPDATED_MESSAGE);
+      expect(surviving).not.toContain('An earlier, unrelated message.');
     });
   });
 
@@ -2189,9 +2376,9 @@ describe('RoleFormComponent', () => {
 
       expect(call.request.url).toBe('/api/v1/roles/0');
       call.flush(envelope(role(0)));
-      answerListingReread();
+      expectNoListingReread();
 
-      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE]);
+      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], { replaceUrl: true });
     });
 
     it('creates with a POST to the collection, carrying no identifier in the address', () => {
@@ -2204,21 +2391,117 @@ describe('RoleFormComponent', () => {
 
       expect(call.request.url).toBe('/api/v1/roles');
       call.flush(envelope(role()), { status: 201, statusText: 'Created' });
-      answerListingReread();
+      expectNoListingReread();
     });
 
-    it('stays in creation mode for a route parameter that is not an integer', () => {
+    it('offers no form at all for a route parameter that is not an integer', () => {
+      /*
+       * ⚠ THIS CASE USED TO ASSERT THE DEFECT, TITLE AND ALL. It was called "stays in creation mode
+       * for a route parameter that is not an integer" and required the heading to read
+       * `Add New Role` — which is precisely the fault: `/roles/abc` presented a complete, enabled
+       * creation form, and because the legacy submit is labelled `Update` in both modes, the address
+       * and the verb together read as "editing a role called abc" while pressing it would have
+       * CREATED one. Runtime testing called it the most deceptive of the four such screens.
+       *
+       * The case survived the fix only because it asserted the HEADING rather than the form, so it
+       * is rewritten to assert the contract that actually matters. The `expectNone` below is kept
+       * from the original, which had that half right.
+       */
       fixture = TestBed.createComponent(RoleFormComponent);
       fixture.componentRef.setInput('roleId', 'not-a-role');
       fixture.detectChanges();
 
       answerGroups();
 
-      expect(textOf(queryOrFail<Element>(host(), 'h1'))).toBe(ADD_TITLE);
+      // The address NAMES a role and fails to resolve it, so the screen is the edit screen — which
+      // is also what the route's own document title declares. Reading `Add New Role` here is the
+      // three-labels-on-one-screen defect measured in a browser.
+      expect(textOf(queryOrFail<Element>(host(), 'h1'))).toBe(EDIT_TITLE);
+
+      // Nothing to fill in and nothing to submit: the surface is withdrawn rather than disabled, so
+      // there is no control an operator can reach at all.
+      expect(host().querySelectorAll('form').length)
+        .withContext('no form is offered for an address that names nothing readable')
+        .toBe(0);
+      expect(host().querySelectorAll('input, select, textarea').length)
+        .withContext('and therefore no field either')
+        .toBe(0);
+      expect(host().querySelector('button[type="submit"]'))
+        .withContext('above all no submit: pressing it would have created a role')
+        .toBeNull();
+
+      // The state is STATED rather than merely left blank, so the address is diagnosable.
+      expect(textOf(queryOrFail<Element>(host(), '.role-form__notice'))).toBe(
+        UNREADABLE_ADDRESS_MESSAGE,
+      );
+
       httpMock.expectNone(
         (candidate) => candidate.url.startsWith(`${ROLES_URL}/`),
         'an unusable parameter reads nothing',
       );
+    });
+
+    it('reads role 1 for a route parameter written with leading zeros', () => {
+      // ⚠ A REAL ADDRESS, NOT A TYPO TO BE PUNISHED. `00001` is a well-formed decimal integer naming
+      // role 1, the API's own `int.TryParse` accepts it, and the portal and user screens normalise it.
+      // This screen used to refuse it through a text round-trip test — and the refusal was invisible,
+      // because a null key means "creation route", so the CREATE form rendered under an Edit heading.
+      fixture = TestBed.createComponent(RoleFormComponent);
+      fixture.componentRef.setInput('roleId', '00001');
+      fixture.detectChanges();
+
+      answerGroups();
+
+      expect(textOf(queryOrFail<Element>(host(), 'h1'))).toBe(EDIT_TITLE);
+
+      const read: TestRequest = expectRequest('GET', roleUrl(1), 'the role read');
+
+      expect(read.request.url)
+        .withContext('the id is normalised rather than transmitted as typed')
+        .not.toContain('00001');
+
+      read.flush(envelope(role(1, { roleName: 'Subscribers' })));
+      fixture.detectChanges();
+    });
+
+    it('transmits nothing for a route parameter beyond the signed 32-bit range', () => {
+      // ⚠ THE REQUEST IS THE DEFECT, NOT THE ID. Every identifier column in this schema is a SQL
+      // Server `int` and the API binds the segment with `int.TryParse`, so this value cannot name a
+      // record and the round trip was guaranteed to fail. The portal and user screens refused it
+      // without a request; this screen forwarded it.
+      fixture = TestBed.createComponent(RoleFormComponent);
+      fixture.componentRef.setInput('roleId', '2147483648');
+      fixture.detectChanges();
+
+      answerGroups();
+
+      // Counted rather than merely asserted through the testing backend, for the same reason: `match`
+      // returns what it found, so the size IS the assertion and the case cannot pass vacuously.
+      expect(httpMock.match((candidate) => candidate.url.startsWith(`${ROLES_URL}/`)))
+        .withContext('an unaddressable id reads nothing')
+        .toHaveSize(0);
+    });
+
+    it('reads the largest addressable role id, so the bound refuses nothing valid', () => {
+      // ⚠ THE BOUNDARY, in the other direction. A guard that refused the range limit itself would
+      // make one real record unreachable.
+      fixture = TestBed.createComponent(RoleFormComponent);
+      fixture.componentRef.setInput('roleId', '2147483647');
+      fixture.detectChanges();
+
+      answerGroups();
+
+      const read: TestRequest = expectRequest('GET', roleUrl(2147483647), 'the role read');
+
+      // Counted, because consuming a request is not the same as asserting one: `expectRequest` raises
+      // when the read is missing but registers no expectation, so the case would pass vacuously if the
+      // bound ever started refusing this id.
+      expect(read.request.url)
+        .withContext('the largest addressable id is read, not refused')
+        .toBe(roleUrl(2147483647));
+
+      read.flush(envelope(role(2147483647)));
+      fixture.detectChanges();
     });
 
     it('takes a person back to the listing when the role has gone', () => {
@@ -2238,7 +2521,17 @@ describe('RoleFormComponent', () => {
       fixture.detectChanges();
 
       expect(lastAnnouncement()).toEqual({ severity: 'warning', message: ROLE_NOT_FOUND_MESSAGE });
-      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE]);
+      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], { replaceUrl: true });
+
+      // ⚠ AND IT SURVIVES THE ARRIVAL IT CAUSED. The shell retires notifications on a completed
+      // navigation, so raising this one in the same task as the navigation was not enough: measured
+      // in a real browser, the destination's live region stayed empty and 226 consecutive frames
+      // after the listing painted were pixel-identical, so the operator was moved back to the list
+      // with no explanation at all. Asserting the survival rather than the call, because the call is
+      // not the behaviour the operator experiences.
+      expect(messagesSurvivingNavigation())
+        .withContext('the explanation must be readable at the destination')
+        .toContain(ROLE_NOT_FOUND_MESSAGE);
     });
 
     it('offers the ungrouped choice FIRST, captioned "< Global Roles >" with its brackets', () => {
@@ -2524,15 +2817,26 @@ describe('RoleFormComponent', () => {
   });
 
   // ===================================================================================================
-  // THE NAME IS TIDIED BEFORE IT IS JUDGED
+  // THE NAME IS TIDIED, AND A BLANK ONE IS REFUSED BY THE RULE ITSELF
   //
-  // The role name used to be trimmed on its way INTO THE REQUEST, which meant the value that was
-  // validated and the value that was sent were different strings. `roleName` carries `required` and
-  // `maxLength` and nothing else, so a whitespace-only entry is a non-empty string that satisfies both
-  // — and was then trimmed to the EMPTY STRING on its way out. `CreateRoleRequestValidator` declares
-  // `NotEmpty`, which treats a whitespace-only string as empty, so the server refused what the screen
-  // had just declared valid and the operator was shown a server rejection for a field the form had
-  // raised no complaint about.
+  // Two separate obligations, settled in two places, and the split is the point.
+  //
+  // EMPTINESS is settled by the presence rule on the control, which is the shared TRIM-AWARE rule
+  // rather than `Validators.required`. `Validators.required` rejects only the empty string, so three
+  // spaces satisfy it — while an ASP.NET `RequiredFieldValidator` trimmed before comparing against its
+  // initial value and refused exactly that, and `CreateRoleRequestValidator` declares `NotEmpty`,
+  // which treats a whitespace-only string as empty. Under the framework rule alone this screen
+  // declared valid what both the legacy screen and this API refuse, and the operator was shown a
+  // server rejection for a field the form had raised no complaint about. The rule is the same one the
+  // sibling role-group form carries, so the two screens refuse a blank name at the same moment and in
+  // the same words.
+  //
+  // PADDING is settled on submit, by tidying the name INTO ITS OWN CONTROL rather than on the way
+  // into the request, so the value that was validated and the value that is sent are one string.
+  // MIGRATION: the legacy stored what was posted, padding and all. Trimming it is a deliberate
+  // divergence, made because `UpdateRole` has no `RoleName` parameter at all
+  // (`Library/Providers/MembershipProviders/DataProvider/SqlDataProvider.vb:L242-L243`) — a name
+  // stored with invisible padding at creation could never afterwards be corrected.
   // ===================================================================================================
 
   describe('tidying the role name before judging it', () => {
@@ -2552,6 +2856,32 @@ describe('RoleFormComponent', () => {
       expect(messagesFor(CONTROL_ID.roleName))
         .withContext('the form complains rather than deferring to the server')
         .not.toEqual([]);
+    });
+
+    it('refuses a whitespace-only name AS SOON AS IT IS TYPED, without waiting for a submit', () => {
+      // The moment matters, and it is the moment the sibling form uses. An ASP.NET validator was
+      // wired to the control's own change event and updated its display there, so the legacy
+      // reported this before any postback; a rule that waited for the submit would report it later
+      // than the screen it replaces.
+      createMode();
+      fillRoleName('   ');
+
+      expect(messagesFor(CONTROL_ID.roleName))
+        .withContext('the presence rule trims before judging, so it fires on the entry itself')
+        .not.toEqual([]);
+    });
+
+    it('leaves a refused whitespace-only entry exactly as typed, rather than blanking the box', () => {
+      // The box is NOT rewritten under the operator: the legacy validator refused the value and
+      // left it alone, and a field that empties itself as you are told it is required reads as the
+      // screen having eaten the entry.
+      createMode();
+      fillRoleName('   ');
+
+      press(SUBMIT_LABEL);
+
+      httpMock.expectNone(() => true);
+      expect(input(CONTROL_ID.roleName).value).toBe('   ');
     });
 
     it('TIDIES a padded name into the control, so what is shown is what is sent', () => {
@@ -2716,7 +3046,7 @@ describe('RoleFormComponent', () => {
       expect(command(CANCEL_LABEL)?.disabled).toBeTrue();
 
       call.flush(envelope(role(7)));
-      answerListingReread();
+      expectNoListingReread();
     });
   });
 
@@ -2768,7 +3098,7 @@ describe('RoleFormComponent', () => {
       pressDialogue(CANCEL_LABEL);
     });
 
-    it('asks first, then deletes, re-reads the listing and leaves', () => {
+    it('asks first, then deletes and leaves without re-reading the listing', () => {
       editMode(role(7));
 
       press(DELETE_LABEL);
@@ -2778,10 +3108,10 @@ describe('RoleFormComponent', () => {
         status: 204,
         statusText: 'No Content',
       });
-      answerListingReread();
+      expectNoListingReread();
 
       expect(announcements()).toContain({ severity: 'success', message: ROLE_DELETED_MESSAGE });
-      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE]);
+      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], { replaceUrl: true });
     });
 
     it('sends nothing when the confirmation is dismissed', () => {
@@ -3169,7 +3499,7 @@ describe('RoleFormComponent', () => {
         .toEqual([]);
 
       creation.flush(envelope(role()), { status: 201, statusText: 'Created' });
-      answerListingReread();
+      expectNoListingReread();
 
       expect(announcements()).toContain({ severity: 'success', message: ROLE_CREATED_MESSAGE });
     });
@@ -3193,7 +3523,7 @@ describe('RoleFormComponent', () => {
       fixture.detectChanges();
 
       creation.flush(envelope(role()), { status: 201, statusText: 'Created' });
-      answerListingReread();
+      expectNoListingReread();
 
       expect(announcements())
         .withContext('exactly one announcement, and it is ours')
@@ -3316,6 +3646,604 @@ describe('RoleFormComponent', () => {
       expect(textArea().value).toBe('Premium tier');
       expect(chosenLabel(CONTROL_ID.roleGroup)).toBe('Paid Services');
       expect(input(CONTROL_ID.serviceFee).value).toBe('25.00');
+    });
+  });
+
+  // ===================================================================================================
+  // AREA 15 — NUMERIC INTEGRITY, THE REVISION MARKER, AND THE RECOVERY PATH
+  //
+  // Three defects found by runtime testing, none of which any earlier case in this file could have
+  // caught, because each of them produced a form that reported itself VALID.
+  //
+  //   1. `1,5` in a fee field was accepted, the separator was stripped, and `15` was persisted — a
+  //      TEN-FOLD monetary error, silent end to end. The pattern admitted a group of any length.
+  //   2. A period beyond `Int32` and a fee with more digits than a double carries were both accepted
+  //      here and rewritten or refused elsewhere: the first came back as a server refusal naming no
+  //      field, the second reached storage as a different number from the one typed.
+  //   3. Two people editing one role both saved their whole snapshot and the later save silently
+  //      discarded the earlier one, because no revision marker travelled with the update.
+  //
+  // Every case below asserts on what leaves the screen or what the person can see, never on a private
+  // member, so none of them can pass while the defect survives.
+  // ===================================================================================================
+
+  describe('AREA 15 — numeric integrity, the revision marker and the recovery path', () => {
+    /** Puts a role in edit mode with its billing group loaded, then reveals the advanced section. */
+    function openAdvanced(): HTMLDetailsElement {
+      const section: HTMLDetailsElement = queryOrFail<HTMLDetailsElement>(
+        host(),
+        'details.role-form__section--advanced',
+      );
+
+      section.open = true;
+      fixture.detectChanges();
+
+      return section;
+    }
+
+    describe('a thousands separator must separate thousands', () => {
+      // ⚠ THE CASE THAT NAMES THE DEFECT. `1,5` is not a number in any locale this screen writes, and
+      // the screen's own formatter emits groups of three (`EditRoles.ascx.vb:L147,L155`). Accepting it
+      // and stripping the comma turned one and a half into fifteen.
+      it('refuses "1,5" in a fee field with the legacy data-type wording, and sends nothing', () => {
+        createMode();
+        fillRoleName();
+        openAdvanced();
+        type(CONTROL_ID.serviceFee, '1,5');
+        press('Update');
+
+        expect(messagesFor(CONTROL_ID.serviceFee)).toContain(
+          'Service Fee Value Entered Is Not Valid',
+        );
+        // No new sentence is invented for it: the legacy resource already had words for an invalid
+        // currency value, and those are the words shown.
+        expect(announcements()).toEqual([]);
+      });
+
+      it('still accepts the grouped form the screen itself writes', () => {
+        createMode();
+        fillRoleName();
+        openAdvanced();
+        type(CONTROL_ID.serviceFee, '1,234.56');
+        type(CONTROL_ID.billingPeriod, '1');
+        choose(CONTROL_ID.billingFrequency, 'Month');
+        press('Update');
+
+        // The whole point of tolerating separators at all: a role loaded with a four-figure fee is
+        // rendered `1,234.56`, and a form that refused it would be invalid before anyone touched it.
+        expect(submittedCreate().serviceFee).toBe(1234.56);
+      });
+
+      it('refuses a group that is neither absent nor three digits', () => {
+        createMode();
+        fillRoleName();
+        openAdvanced();
+
+        for (const malformed of ['1,23', '1,2345', '12,34,567', '1,']) {
+          type(CONTROL_ID.serviceFee, malformed);
+
+          expect(messagesFor(CONTROL_ID.serviceFee))
+            .withContext(malformed)
+            .toContain('Service Fee Value Entered Is Not Valid');
+        }
+      });
+    });
+
+    describe('a value the store cannot hold is refused here, beside the field', () => {
+      it('refuses a period beyond Int32 and accepts the largest one that fits', () => {
+        createMode();
+        fillRoleName();
+        openAdvanced();
+
+        type(CONTROL_ID.billingPeriod, '2147483648');
+
+        // Previously this reached the API, failed to BIND — before any validator ran — and came back
+        // as `"request": ["The request field is required."]`, which names no field at all.
+        expect(messagesFor(CONTROL_ID.billingPeriod)).toContain(
+          'That number is outside the range this site can store. Enter a whole number between ' +
+            '-2,147,483,648 and 2,147,483,647.',
+        );
+
+        type(CONTROL_ID.billingPeriod, '2147483647');
+
+        expect(messagesFor(CONTROL_ID.billingPeriod)).toEqual([]);
+      });
+
+      it('refuses an amount beyond what the money column can hold', () => {
+        createMode();
+        fillRoleName();
+        openAdvanced();
+        type(CONTROL_ID.serviceFee, '123456789012345678901');
+
+        expect(messagesFor(CONTROL_ID.serviceFee)).toContain(
+          'That amount is outside the range this site can store. Enter an amount between ' +
+            '-922,337,203,685,477.58 and 922,337,203,685,477.58.',
+        );
+      });
+
+      it('refuses an amount that would arrive with different digits from the ones typed', () => {
+        createMode();
+        fillRoleName();
+        openAdvanced();
+
+        // Inside the column's range, and still not carryable: a double cannot hold this to the cent,
+        // so the value that would be STORED is not the value that was TYPED.
+        type(CONTROL_ID.serviceFee, '922337203685477.58');
+
+        expect(messagesFor(CONTROL_ID.serviceFee)).toContain(
+          'That amount has more digits than can be stored without rounding. Enter a shorter amount.',
+        );
+      });
+
+      it('leaves an ordinary two-decimal amount alone', () => {
+        createMode();
+        fillRoleName();
+        openAdvanced();
+
+        for (const ordinary of ['0', '0.00', '9.99', '100000000000000.00', '1,234,567.89']) {
+          type(CONTROL_ID.serviceFee, ordinary);
+
+          expect(messagesFor(CONTROL_ID.serviceFee)).withContext(ordinary).toEqual([]);
+        }
+      });
+
+      // The legacy sentence wins wherever it applies. A negative fee breaks `valServiceFee2` as well as
+      // nothing else, and the wording a person sees must be the one this screen has always used.
+      it('reports the legacy comparison wording, not a storability sentence, for a negative fee', () => {
+        createMode();
+        fillRoleName();
+        openAdvanced();
+        type(CONTROL_ID.serviceFee, '-49.95');
+
+        expect(messagesFor(CONTROL_ID.serviceFee)).toEqual([
+          'Service Fee Must Be Greater Than or Equal to Zero',
+        ]);
+      });
+    });
+
+    describe('normalisation happens where it can be seen', () => {
+      it('shows a typed fee back in the form it will be stored in', () => {
+        createMode();
+        fillRoleName();
+        openAdvanced();
+        type(CONTROL_ID.serviceFee, '007');
+
+        const box: HTMLInputElement = input(CONTROL_ID.serviceFee);
+        box.dispatchEvent(new Event('blur'));
+        fixture.detectChanges();
+
+        // `007` was already being sent as `7`; the substitution was correct and invisible, which is the
+        // defect. `EditRoles.ascx.vb:L147` re-rendered the box through `Format(fee, "#,##0.00")` on
+        // every postback, so this is the legacy's own display behaviour on a client-side event.
+        expect(box.value).toBe('7.00');
+      });
+
+      it('shows a typed period back without its leading zeros', () => {
+        createMode();
+        fillRoleName();
+        openAdvanced();
+        type(CONTROL_ID.billingPeriod, '007');
+
+        const box: HTMLInputElement = input(CONTROL_ID.billingPeriod);
+        box.dispatchEvent(new Event('blur'));
+        fixture.detectChanges();
+
+        expect(box.value).toBe('7');
+      });
+
+      it('leaves text that will not parse exactly as it was typed', () => {
+        createMode();
+        fillRoleName();
+        openAdvanced();
+        type(CONTROL_ID.serviceFee, '1,5');
+
+        const box: HTMLInputElement = input(CONTROL_ID.serviceFee);
+        box.dispatchEvent(new Event('blur'));
+        fixture.detectChanges();
+
+        // A person correcting a mistake needs to see the mistake. There is also no canonical form of
+        // something that is not a number.
+        expect(box.value).toBe('1,5');
+      });
+
+      it('leaves a loaded, untouched field completely alone', () => {
+        editMode(pricedRole(7));
+
+        const box: HTMLInputElement = input(CONTROL_ID.serviceFee);
+        const loaded: string = box.value;
+
+        box.dispatchEvent(new Event('blur'));
+        fixture.detectChanges();
+
+        // ⚠ THIS PINS AN INVARIANT RATHER THAN EXERCISING A BRANCH, and saying so is the honest
+        // description. A loaded fee is written into the control BY `formatMoney` (`applyRole`), so it is
+        // already in canonical form and would survive a rewrite unchanged in any case. What the case
+        // guards is the pair of consequences that a rewrite here would have: the displayed value must
+        // not move under someone who only tabbed through the field, and the form must not become dirty
+        // without an edit — because an unsaved-changes guard would then challenge an exit nobody
+        // initiated. Pristine state is read from the class Angular renders onto the form element, which
+        // is a fact about the document rather than a private member.
+        expect(box.value).toBe(loaded);
+        expect(queryOrFail<HTMLFormElement>(host(), 'form').classList).toContain('ng-pristine');
+      });
+    });
+
+    describe('a refused submit reaches the control that caused it', () => {
+      it('opens the advanced section and focuses the offending field', () => {
+        editMode(role(7));
+
+        const section: HTMLDetailsElement = queryOrFail<HTMLDetailsElement>(
+          host(),
+          'details.role-form__section--advanced',
+        );
+
+        // The section starts CLOSED, which is the whole hazard: four of the twelve controls live inside
+        // it, and a control inside closed disclosure content cannot take focus.
+        expect(section.open).toBeFalse();
+
+        section.open = true;
+        fixture.detectChanges();
+        type(CONTROL_ID.billingPeriod, '0');
+        section.open = false;
+        fixture.detectChanges();
+
+        press('Update');
+
+        expect(section.open).toBeTrue();
+        expect(document.activeElement).toBe(input(CONTROL_ID.billingPeriod));
+      });
+    });
+
+    describe('the revision marker', () => {
+      it('carries the token from the read into the update', () => {
+        editMode(role(7, { concurrencyToken: 'revision-from-the-read' }));
+        type(CONTROL_ID.description, 'Edited');
+        press('Update');
+
+        // The token must come from the role that was READ. Re-reading it before a save would obtain the
+        // CURRENT revision, and the check would then always pass while looking watertight.
+        expect(submittedUpdate(7).concurrencyToken).toBe('revision-from-the-read');
+      });
+
+      it('sends null when the API served no token', () => {
+        editMode(role(7, { concurrencyToken: null }));
+        type(CONTROL_ID.description, 'Edited');
+        press('Update');
+
+        // A last-writer-wins update, exactly as it behaved before the member existed. Nothing is
+        // invented to fill the gap: a fabricated token that happened to match would defeat the check.
+        expect(submittedUpdate(7).concurrencyToken).toBeNull();
+      });
+
+      it('sends no token on a creation, because there is no prior revision', () => {
+        createMode();
+        fillRoleName();
+        press('Update');
+
+        expect(submittedCreate()).not.toEqual(
+          jasmine.objectContaining({ concurrencyToken: jasmine.anything() }),
+        );
+      });
+    });
+
+    describe('a conflict is recoverable without leaving the application', () => {
+      /** Refuses the pending update the way the API refuses a stale one. */
+      function refuseAsStale(roleId: number): void {
+        expectRequest('PUT', roleUrl(roleId), 'the update').flush(
+          {
+            type: 'urn:dnnmigration:error:role.concurrency_conflict',
+            title: 'Conflict',
+            status: 409,
+            detail:
+              `Role ${roleId} was changed by someone else after you read it, so nothing was ` +
+              `written. Reload the role to see the current values, then apply your change again.`,
+          },
+          { status: 409, statusText: 'Conflict' },
+        );
+        fixture.detectChanges();
+      }
+
+      it('offers a re-read, announces the server sentence, and stays on the screen', () => {
+        editMode(role(7, { concurrencyToken: 'stale' }));
+        type(CONTROL_ID.description, 'Mine');
+        press('Update');
+        refuseAsStale(7);
+
+        expect(lastAnnouncement()?.message).toContain('was changed by someone else');
+        expect(navigateSpy).not.toHaveBeenCalled();
+
+        const reload: HTMLButtonElement = queryOrFail<HTMLButtonElement>(
+          host(),
+          'button.role-form__conflict-reload',
+        );
+
+        // Outside the form and explicitly not a submit, because a button inside a form submits it.
+        expect(reload.type).toBe('button');
+        expect(reload.closest('form')).toBeNull();
+        expect(documentText()).toContain('Anything you have typed here and not saved will be replaced');
+      });
+
+      it('does not offer a re-read for a duplicate name, which is corrected in a field', () => {
+        createMode();
+        fillRoleName('Administrators');
+        press('Update');
+
+        expectRequest('POST', ROLES_URL, 'the creation').flush(
+          {
+            type: 'urn:dnnmigration:error:role.name_duplicate',
+            title: 'Conflict',
+            status: 409,
+            detail: 'A role with that name already exists.',
+          },
+          { status: 409, statusText: 'Conflict' },
+        );
+        fixture.detectChanges();
+
+        // The two 409s are different failures. Keying on the published code rather than the status is
+        // what keeps them apart.
+        expect(host().querySelector('button.role-form__conflict-reload')).toBeNull();
+      });
+
+      it('replaces the stale values on re-read and withdraws the recovery affordance', () => {
+        editMode(role(7, { description: 'Stored', concurrencyToken: 'stale' }));
+        type(CONTROL_ID.description, 'Mine');
+        press('Update');
+        refuseAsStale(7);
+
+        queryOrFail<HTMLButtonElement>(host(), 'button.role-form__conflict-reload').click();
+        fixture.detectChanges();
+
+        const reread: TestRequest = expectRequest('GET', roleUrl(7), 'the re-read');
+
+        reread.flush(
+          envelope(role(7, { description: 'Theirs', concurrencyToken: 'revision-2' })),
+        );
+        fixture.detectChanges();
+
+        // The re-read must actually reach the form. `appliedRoleKey` exists to stop a second arrival of
+        // the same role overwriting typed values, which is right for the store's echo after a save and
+        // wrong here, where replacing them is the entire purpose of the command.
+        expect(textArea().value).toBe('Theirs');
+        expect(host().querySelector('button.role-form__conflict-reload')).toBeNull();
+
+        // And the next save carries the NEW revision, so the recovery actually recovers.
+        type(CONTROL_ID.description, 'Mine again');
+        press('Update');
+
+        expect(submittedUpdate(7).concurrencyToken).toBe('revision-2');
+      });
+    });
+  });
+
+  // ===================================================================================================
+  // AREA 16 — NAMING A PAIR, DISCLOSING A TRUNCATION, AND STATING A BUSY FORM
+  //
+  // Three findings whose common shape is that the screen already behaved correctly and said nothing
+  // about it, so nothing an operator or a screen reader could perceive distinguished the right state
+  // from the wrong one.
+  //
+  //   R-M8   Eight controls resolved to SIX distinct accessible names, because both halves of each
+  //          period pair were named from the field's single visible label.
+  //   R-M18  `maxlength` discarded the surplus of a pasted name silently, and the shortened name then
+  //          collided with a stored one — producing a duplicate-name refusal naming a value the
+  //          operator had never typed.
+  //   R-M21  Five presses inside one task all found the submit button enabled, because no
+  //          change-detection pass had run between them; the busy state was conveyed by a spinner and
+  //          by nothing that is programmatically determinable.
+  // ===================================================================================================
+
+  describe('AREA 16 — naming a pair, disclosing a truncation, and stating a busy form', () => {
+    /** Reveals the advanced section, where both period pairs live. */
+    function revealAdvanced(): void {
+      queryOrFail<HTMLDetailsElement>(host(), 'details.role-form__section--advanced').open = true;
+      fixture.detectChanges();
+    }
+
+    /** The accessible name a control resolves to, composed from its `aria-labelledby` references. */
+    function accessibleNameOf(controlId: string): string {
+      const control: HTMLElement = queryOrFail<HTMLElement>(host(), `#${controlId}`);
+      const references: string = control.getAttribute('aria-labelledby') ?? '';
+
+      return references
+        .split(/\s+/)
+        .filter((id: string): boolean => id.length > 0)
+        .map((id: string): string => (host().querySelector(`#${id}`)?.textContent ?? '').trim())
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    describe('R-M8 — each half of a period pair is named distinctly', () => {
+      /**
+       * ⚠ THE CASE THAT NAMES THE DEFECT. The legacy screen put `txtBillingPeriod` and
+       * `cboBillingFrequency` under the single label `plBillingPeriod` (`editroles.ascx` L98-L115),
+       * so the second control carried no name of its own; the shared field then named it from the
+       * field's visible label, which is correct for a lone control and leaves a PAIR announcing one
+       * identical string twice.
+       */
+      it('gives the count and the unit different names on both pairs', () => {
+        createMode();
+        revealAdvanced();
+
+        expect(accessibleNameOf(CONTROL_ID.billingPeriod)).toBe('Billing Period (Every) count');
+        expect(accessibleNameOf(CONTROL_ID.billingFrequency)).toBe('Billing Period (Every) unit');
+        expect(accessibleNameOf(CONTROL_ID.trialPeriod)).toBe('Trial Period (Every) count');
+        expect(accessibleNameOf(CONTROL_ID.trialFrequency)).toBe('Trial Period (Every) unit');
+
+        // All four are distinct, which is the property the finding was about rather than any
+        // particular wording.
+        const names: readonly string[] = [
+          accessibleNameOf(CONTROL_ID.billingPeriod),
+          accessibleNameOf(CONTROL_ID.billingFrequency),
+          accessibleNameOf(CONTROL_ID.trialPeriod),
+          accessibleNameOf(CONTROL_ID.trialFrequency),
+        ];
+
+        expect(new Set(names).size).withContext('four controls, four names').toBe(4);
+      });
+
+      /**
+       * ⚠ WCAG 2.5.3 LABEL IN NAME. The qualifier is APPENDED, so the text an operator can read
+       * remains a prefix of the name an assistive technology announces — which is what lets someone
+       * using voice control say the visible words and reach the control.
+       */
+      it('keeps the visible label as a prefix of each name', () => {
+        createMode();
+        revealAdvanced();
+
+        const visible: string = (
+          queryOrFail<HTMLLabelElement>(
+            host(),
+            `label[for="${CONTROL_ID.billingPeriod}"]`,
+          ).textContent ?? ''
+        )
+          .replace(/\s+/g, ' ')
+          .trim();
+
+        expect(visible).toBe('Billing Period (Every)');
+        expect(accessibleNameOf(CONTROL_ID.billingPeriod).startsWith(visible)).toBeTrue();
+        expect(accessibleNameOf(CONTROL_ID.billingFrequency).startsWith(visible)).toBeTrue();
+      });
+
+      /**
+       * ⚠ THE QUALIFIERS MUST NOT BE DRAWN. They exist to be announced; painting them would put two
+       * stray words into a field whose visible wording is a resource value this migration preserves.
+       * The clipping helper is asserted through the rendered class, because the rule that hides it
+       * lives in a stylesheet the test bed does not apply.
+       */
+      it('never paints the qualifiers into the field', () => {
+        createMode();
+        revealAdvanced();
+
+        const qualifiers: readonly Element[] = Array.from(
+          host().querySelectorAll('.role-form__qualifier'),
+        );
+
+        expect(qualifiers.length).withContext('one per sub-control, four in all').toBe(4);
+        expect(qualifiers.map((node) => (node.textContent ?? '').trim())).toEqual([
+          'count',
+          'unit',
+          'count',
+          'unit',
+        ]);
+      });
+    });
+
+    describe('R-M18 — a name held at its limit says so', () => {
+      /** A name of exactly the stored maximum. */
+      const AT_LIMIT = 'X'.repeat(50);
+
+      /** The notice, or `null` when the form is not disclosing one. */
+      function lengthNotice(): string | null {
+        const notice: Element | null = host().querySelector('p.role-form__notice[aria-live]');
+
+        return notice === null ? null : (notice.textContent ?? '').trim();
+      }
+
+      /**
+       * ⚠ THE CASE THAT NAMES THE DEFECT. `maxlength` is faithful — `editroles.ascx:L31` declares
+       * `MaxLength="50"` — and a browser enforcing it discards the surplus with no indication at all.
+       * Runtime testing pasted fifty-one characters, watched fifty arrive, and then received a
+       * duplicate-name refusal naming a role the operator had never typed.
+       */
+      it('discloses the limit once the name reaches it', () => {
+        createMode();
+
+        expect(lengthNotice()).withContext('an empty field claims nothing').toBeNull();
+
+        type(CONTROL_ID.roleName, AT_LIMIT);
+
+        expect(lengthNotice()).toContain('Maximum length reached');
+        expect(lengthNotice())
+          .withContext('the limit itself is stated, so the operator knows what was dropped')
+          .toContain('50 characters');
+      });
+
+      /**
+       * ⚠ AND IT MUST BE SILENT BELOW THE LIMIT. A notice standing permanently beside a field is a
+       * notice nobody reads, and this one earns its place only by appearing at the moment the field
+       * stops accepting input.
+       */
+      it('says nothing while the name is shorter than the limit', () => {
+        createMode();
+        type(CONTROL_ID.roleName, 'X'.repeat(49));
+
+        expect(lengthNotice()).toBeNull();
+      });
+
+      /**
+       * ⚠ IT IS A NOTICE AND NOT AN ERROR. The value at the limit is VALID — `maxLength(50)` is
+       * satisfied by exactly fifty — so it must not appear in the field's error region, must not be
+       * announced assertively, and must not mark the control invalid. Conflating the two would train
+       * an operator to treat a real refusal as noise.
+       */
+      it('does not report the limit as a validation failure', () => {
+        createMode();
+        type(CONTROL_ID.roleName, AT_LIMIT);
+
+        expect(messagesFor(CONTROL_ID.roleName)).toEqual([]);
+        expect(
+          queryOrFail<HTMLInputElement>(host(), `#${CONTROL_ID.roleName}`).getAttribute(
+            'aria-invalid',
+          ),
+        ).toBeNull();
+        expect(
+          queryOrFail<HTMLElement>(host(), 'p.role-form__notice[aria-live]').getAttribute(
+            'aria-live',
+          ),
+        )
+          .withContext('polite: reaching a limit is not an interruption')
+          .toBe('polite');
+      });
+    });
+
+    describe('R-M21 — a form mid-save states that it is busy', () => {
+      /** The form element's `aria-busy`, or `null`. */
+      function busy(): string | null {
+        return queryOrFail<HTMLFormElement>(host(), 'form.role-form__form').getAttribute(
+          'aria-busy',
+        );
+      }
+
+      /**
+       * ⚠ THE CASE THAT NAMES THE DEFECT. The double-submit guard itself works — runtime testing
+       * confirmed a single POST from five presses — but every one of those presses found the button
+       * enabled, because no change-detection pass had run between them, and the only signal of the
+       * in-flight write was a spinner. Nothing about the state was programmatically determinable.
+       */
+      it('carries aria-busy from the press until the write settles', () => {
+        createMode();
+        fillRoleName('Zzz Busy Probe');
+
+        expect(busy()).withContext('an idle form claims nothing').toBeNull();
+
+        press('Update');
+
+        expect(busy()).withContext('stated as soon as the press is processed').toBe('true');
+
+        expectRequest('POST', ROLES_URL, 'the create').flush(envelope(role(9)), {
+          status: 201,
+          statusText: 'Created',
+        });
+        expectNoListingReread();
+        fixture.detectChanges();
+
+        expect(busy())
+          .withContext('withdrawn once the outcome has been reported, not merely on response')
+          .toBeNull();
+      });
+
+      /**
+       * ⚠ A REFUSED SUBMIT MUST NOT LEAVE THE FORM MARKED BUSY. `onSubmit` returns before issuing
+       * anything when the form is invalid, so a busy state raised optimistically on the press would
+       * stick forever and tell every reader the screen was working when it was waiting for them.
+       */
+      it('never marks a form busy when the submit was refused locally', () => {
+        createMode();
+        press('Update');
+
+        expect(busy()).toBeNull();
+      });
     });
   });
 });

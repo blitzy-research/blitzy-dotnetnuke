@@ -191,4 +191,27 @@ public sealed class UpdateMembershipSettingsRequest
     /// IS the empty string rather than a null reference. Bounded by the setting column's width.
     /// </remarks>
     public string SecurityDisplayNameFormat { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Accepted and IGNORED: the read document's marker saying whether the tenant stores these settings.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS MEMBER EXISTS SO THAT THE READ DOCUMENT CAN BE PUT BACK UNCHANGED, and removing it breaks every
+    /// such caller. This API binds request bodies with unmapped-member handling set to disallow, so a JSON
+    /// document carrying a member this type does not declare is refused with a 400 naming the member - which
+    /// is exactly what happened, in the integration suite and in the browser, the moment
+    /// <see cref="MembershipSettingsDto.IsStored"/> was added to the read: the settings screen reads the
+    /// document, edits a value and puts the whole thing back, so the marker travelled with it.
+    /// </para>
+    /// <para>
+    /// It is deliberately NOT honoured. Whether a tenant has somewhere to store its settings is a fact about
+    /// the installation that the service establishes for itself; a caller cannot assert it, and a caller that
+    /// tried would either be lying or repeating what it was told. The alternative designs were considered and
+    /// declined: carrying the marker in the response envelope's metadata would have made it invisible to the
+    /// generated client contract, and returning it as a response header would have made it invisible to a
+    /// reader of the document.
+    /// </para>
+    /// </remarks>
+    public bool IsStored { get; set; }
 }

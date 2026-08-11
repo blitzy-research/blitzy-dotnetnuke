@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Claims;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
@@ -38,6 +39,31 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
     /// has been placed on the same page more than once.
     /// </summary>
     private const string TabModuleQueryKey = "tabModuleId";
+
+    /// <summary>
+    /// The reason codes the permission service reports when the item a scoped decision addresses does not
+    /// exist in the resolved tenant at all.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// These are NOT denials, and treating them as denials is what produced the defect this list exists to
+    /// prevent: the permission service establishes that the item exists BEFORE it resolves the caller, so a
+    /// request for an identifier that does not exist was refused even for a host account, and the endpoint -
+    /// which would have answered <c>404 Not Found</c> like every other entity in this API - never ran. A
+    /// caller reading "the authenticated caller is not permitted to perform this operation" for a module
+    /// that simply is not there is told something untrue and pointed at the wrong repair.
+    /// </para>
+    /// <para>
+    /// Spelled as literals rather than shared with the application layer deliberately: these strings are
+    /// part of that layer's published reason vocabulary, and a compile-time coupling from the API's
+    /// authorisation to its internal constants would make either side harder to change than the other.
+    /// </para>
+    /// </remarks>
+    private static readonly string[] UnknownScopeItemCodes =
+    {
+        "permission.module_not_found",
+        "permission.tab_not_found",
+    };
 
     private readonly IPermissionService _permissions;
     private readonly ICurrentUser _currentUser;
@@ -255,6 +281,33 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
             return;
         }
 
+        // THE ITEM DOES NOT EXIST, WHICH IS NOT A DENIAL. The permission service proves the item's existence
+        // before it resolves the caller, so this point is reached for an identifier that names nothing - and
+        // for a caller who administers the tenant, "nothing is there" is the endpoint's own answer to give,
+        // as a 404, exactly as the portal, user and role endpoints already answer it. Satisfying the
+        // requirement lets the action run and report the absence itself.
+        //
+        // The administration test is what keeps this from becoming an existence oracle: a caller who does
+        // NOT administer the tenant still receives the refusal below, so an unprivileged caller cannot
+        // distinguish "absent" from "not yours" by probing identifiers.
+        if (decision.IsFailure
+            && decision.Reason?.Code is { } unknownItemCode
+            && UnknownScopeItemCodes.Contains(unknownItemCode, StringComparer.Ordinal)
+            && await AdministersTenantAsync(context.User, httpContext.RequestAborted)
+                .ConfigureAwait(false))
+        {
+            _logger.LogInformation(
+                "A {Scope} {Permission} requirement was satisfied for a tenant administrator so that the "
+                + "endpoint can report that {ScopeId} does not exist in portal {PortalId}.",
+                requirement.Scope,
+                requirement.Permission,
+                scopeId,
+                portalId);
+
+            context.Succeed(requirement);
+            return;
+        }
+
         // Refused, and the reason is recorded because the caller is told nothing beyond the status. A failed
         // evaluation and an honest refusal are separated by the failure code alone - "not_permitted" where
         // the grant was simply absent - which is the only thing that distinguishes them once the response
@@ -384,4 +437,22 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
 
         return resolution.IsSuccess ? _portalContext.Current?.PortalId : null;
     }
+
+    /// <summary>
+    /// Answers whether the caller administers the tenant the request acts on, and may therefore be told
+    /// that an item does not exist rather than that it is not theirs.
+    /// </summary>
+    /// <param name="user">The caller.</param>
+    /// <param name="cancellationToken">Abandons the probe when the caller disconnects.</param>
+    /// <returns>
+    /// <see langword="true"/> for a host account or for an administrator of the resolved tenant.
+    /// </returns>
+    /// <remarks>
+    /// Delegates to the shared evaluator rather than re-deriving the answer, which is what keeps two
+    /// authorisation components from disagreeing about one request: the evaluator resolves the target tenant
+    /// itself, reconciles it against the token and admits host accounts, and it is the same instance the
+    /// tenant-binding check above already used.
+    /// </remarks>
+    private Task<bool> AdministersTenantAsync(ClaimsPrincipal? user, CancellationToken cancellationToken) =>
+        _tenantBinding.IsPortalAdministratorAsync(user, cancellationToken);
 }

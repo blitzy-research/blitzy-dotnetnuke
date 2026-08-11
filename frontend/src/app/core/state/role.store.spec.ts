@@ -224,8 +224,7 @@ import { TestBed } from '@angular/core/testing';
 
 import {
   DEFAULT_ROLE_GROUP_FILTER,
-  MAXIMUM_ROLE_PAGES,
-  ROLES_FETCH_PAGE_SIZE,
+  ROLES_PAGE_SIZE,
   RoleStore,
   billingTermsBound,
 } from './role.store';
@@ -495,6 +494,10 @@ function aRole(overrides: Partial<Role> = {}): Role {
     autoAssignment: false,
     rsvpCode: '',
     iconFile: null,
+    // Present on every served role. Declared BEFORE the spread so a case may replace it - the store
+    // carries it through a read and a write untouched, and a case that needed two different revisions
+    // could not express them otherwise.
+    concurrencyToken: 'revision-1',
     ...overrides,
   };
 }
@@ -979,7 +982,26 @@ describe('RoleStore', () => {
       expect(store.heldRolesUserId()).toBe(HELD_ROLES_USER_ID);
     });
 
-    it('ABANDONS the narrowing when the read fails, rather than showing an empty membership set', () => {
+    it('KEEPS the account as the subject when the read fails, while holding no answer for it', () => {
+      /*
+       * ⚠ THREE DISTINCT FACTS, AND THE THIRD USED TO BE INEXPRESSIBLE. `null` collection with NO
+       * subject means no account is being asked about; the empty sequence WITH a subject means this
+       * account holds nothing; and `null` collection WITH a subject means this account was asked
+       * about and there is no answer. Clearing the subject on failure collapsed the third into the
+       * first, so a consumer comparing the two slices could not tell a refused narrowing from an
+       * ordinary unnarrowed listing.
+       *
+       * ⚠ THE DEFECT THAT COLLAPSE PRODUCED was critical and user-visible. Measured against
+       * `/roles?userId=999`, whose read is refused with `404` "Portal -1 has no member bearing
+       * identifier 999": the listing fell back to the unnarrowed rows and rendered ALL THREE roles
+       * under the subtitle "Roles held by account 999", asserting in writing that a non-existent
+       * account held every role in the tenant. The failure was recorded even then - what was missing
+       * was any way for the screen to know the subject it was still displaying had no answer.
+       *
+       * The original reasoning, that an empty set would read as "this account holds nothing", is
+       * sound and is preserved: the collection stays null rather than becoming empty. Only the
+       * subject is retained.
+       */
       store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
 
       expectGet(USER_ROLES_URL).flush(aProblem(403, null, 'Forbidden'), {
@@ -990,7 +1012,9 @@ describe('RoleStore', () => {
       expect(store.rolesHeldByUser())
         .withContext('an empty set would read as "this account holds nothing"')
         .toBeNull();
-      expect(store.heldRolesUserId()).toBeUndefined();
+      expect(store.heldRolesUserId())
+        .withContext('the account is still what the listing is about, and its address still names it')
+        .toBe(HELD_ROLES_USER_ID);
       expect(store.heldRolesLoading()).toBeFalse();
       expect(present(store.failure(), 'the reported failure').status).toBe(403);
     });
@@ -1064,6 +1088,49 @@ describe('RoleStore', () => {
       expect(store.rolesHeldByUser()).toBeNull();
       expect(store.heldRolesUserId()).toBeUndefined();
       expect(store.heldRolesLoading()).toBeFalse();
+    });
+
+    it('releases the narrowed read\u2019s failure when the narrowing is cleared', () => {
+      /*
+       * ⚠ MEASURED IN A BROWSER, WHICH IS WHY THIS EXISTS. From `/roles?userId=999` - refused with
+       * `404` "Portal -1 has no member bearing identifier 999" - pressing the on-screen affordance
+       * that returns to the unnarrowed listing left the warning banner standing above a correct
+       * three-row listing, unchanged across four seconds of sampling and reproduced twice. That path
+       * re-renders retained rows and starts no new read, so nothing else ever cleared the slot: the
+       * operator was left reading a refusal about an account the screen was no longer about.
+       *
+       * It only became reachable once the narrowed read's failure started being surfaced at all -
+       * before that it was recorded and never shown, so it could not go stale visibly.
+       */
+      store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
+      expectGet(USER_ROLES_URL).flush(aProblem(404, null, 'Not Found'), {
+        status: 404,
+        statusText: 'Not Found',
+      });
+
+      expect(present(store.failure(), 'the refusal is recorded').status).toBe(404);
+
+      store.clearRolesHeldByUser();
+
+      expect(store.failure())
+        .withContext('a refusal about an account the listing is no longer about is released')
+        .toBeNull();
+    });
+
+    it('keeps an UNRELATED failure when the narrowing is cleared', () => {
+      // ⚠ ONE SLOT SERVES THE WHOLE STORE, so clearing it outright above would silently discard a
+      // refusal the reader still needs - merely because they widened the listing. Only the failure
+      // that the clearing actually invalidates is released.
+      store.loadRoles();
+      expectGet(ROLES_URL).flush(aProblem(500, null, 'Server Error'), {
+        status: 500,
+        statusText: 'Internal Server Error',
+      });
+
+      store.clearRolesHeldByUser();
+
+      expect(present(store.failure(), 'an unrelated refusal survives').status).toBe(500);
+      expect(present(store.failure(), 'and it is still the listing read').operation).toBe('loadRoles');
     });
 
     it('cancels a read in flight when the narrowing is cleared, so no answer re-narrows it', () => {
@@ -1505,10 +1572,10 @@ describe('RoleStore', () => {
       // did page converted a one-based control index by subtracting one; nothing here is
       // one-based, so nothing here needs that conversion.
       expect(request.request.params.get('pageIndex')).toBe('0');
-      // The server's own maximum, not a comfortable number: the paging validator refuses a
-      // larger page. It reduces the number of round trips the walk has to make and is NOT by
-      // itself the completeness guarantee - see the walk test below.
-      expect(request.request.params.get('pageSize')).toBe(String(ROLES_FETCH_PAGE_SIZE));
+      // The SHARED default, so the role listing pages like every other listing in the application.
+      // It used to be the endpoint's maximum of a hundred, because the read behind it walked every page
+      // and joined them; the walk is gone and the window is now the unit the pager moves.
+      expect(request.request.params.get('pageSize')).toBe(String(ROLES_PAGE_SIZE));
       expect(request.request.params.keys().sort()).toEqual(['pageIndex', 'pageSize', 'scope']);
 
       // The server's own record total is what ends the walk: one row against a total of one means
@@ -1533,124 +1600,119 @@ describe('RoleStore', () => {
       expect(store.roleItems().length).toBe(1);
     });
 
-    it('refuses the listing rather than publishing a subset when the server stops short', () => {
-      // ⚠ THE M-3 REGRESSION, PINNED. The server reports far more roles than it supplies and then
-      // answers with an empty page. Publishing the rows in hand would present them as the whole
-      // listing on a pager-less screen, so the walk raises instead.
-      store.loadRoles();
-      expectGet(ROLES_URL).flush(pageOf([aRoleListItem()], 137));
 
-      const second = expectGet(ROLES_URL);
 
-      expect(second.request.params.get('pageIndex'))
-        .withContext('a reported total larger than the rows supplied warrants another page')
-        .toBe('1');
-
-      second.flush(pageOf([], 137, 1));
-
-      expect(store.rolesLoading()).toBeFalse();
-      expect(store.roleItems())
-        .withContext('nothing is published, because a subset would look like the whole listing')
-        .toEqual([]);
-      expect(store.failure()?.operation).toBe('loadRoles');
-      expect(store.failure()).not.toBeNull();
-    });
-
-    it('stops at the page ceiling by refusing rather than by truncating', () => {
-      // ⚠ A SERVER WHOSE TOTAL IS NEVER REACHED. Every page carries a row and the reported total
-      // stays out of reach, so neither of the walk's successful endings can ever fire. The walk
-      // must not run for ever, and it must not quietly publish what it managed to collect either.
-      store.loadRoles();
-
-      let issued = 0;
-      let inFlightMoreThanOne = 0;
-
-      for (;;) {
-        const outstanding = httpMock.match(
-          (candidate) => candidate.method === 'GET' && candidate.url === ROLES_URL,
-        );
-
-        if (outstanding.length === 0) {
-          break;
-        }
-
-        if (outstanding.length > 1) {
-          inFlightMoreThanOne += 1;
-        }
-
-        issued += outstanding.length;
-        outstanding.forEach((request) => {
-          const pageIndex = Number(request.request.params.get('pageIndex') ?? '0');
-
-          // One row per page against an unreachable total. Cheap to produce and sufficient: the
-          // walk continues on the TOTAL rather than on a full page, so a single row keeps it going.
-          request.flush(
-            pageOf([aRoleListItem({ roleId: pageIndex })], Number.MAX_SAFE_INTEGER, pageIndex),
-          );
-        });
-      }
-
-      expect(inFlightMoreThanOne)
-        .withContext('the walk is sequential: never more than one request in flight')
-        .toBe(0);
-      expect(issued)
-        .withContext('the walk stops at the declared ceiling rather than running unbounded')
-        .toBe(MAXIMUM_ROLE_PAGES);
-      expect(store.roleItems())
-        .withContext('a ceiling hit publishes nothing rather than a plausible-looking subset')
-        .toEqual([]);
-      expect(store.failure()?.operation).toBe('loadRoles');
-      expect(store.rolesLoading()).toBeFalse();
-    });
-
-    it('walks every page and joins them, so no role is silently left off the listing', () => {
-      // ⚠ THE REGRESSION THIS PINS DOWN. The listing endpoint is paged and the screen that
-      // consumes this slice offers no pager, exactly as the legacy screen offered none, so a
-      // single windowed request would present the first page AS the whole set - a silent data
-      // loss rather than a smaller view. Every page is therefore walked and joined here.
-      const firstPage: readonly RoleListItem[] = Array.from(
-        { length: ROLES_FETCH_PAGE_SIZE },
-        (_unused, index) => aRoleListItem({ roleId: index, roleName: `Role ${index}` }),
-      );
-
+    it('reads ONE page per read and joins nothing, so a second page costs a second command', () => {
+      // ⚠ THIS CASE REPLACED THE COMPLETE-LISTING WALK, AND THE REPLACEMENT IS THE POINT. The walk
+      // requested page after page at a hundred records each and joined them into one unpaged envelope,
+      // because the screen offered no pager and a single window would have presented the first page AS
+      // the whole set. Runtime testing measured the cost on a hundred and forty-five roles: an
+      // eight-thousand-pixel document at 320 units wide, three requests per arrival, the whole walk
+      // re-issued on every Back and after every write. Completeness now comes from being able to REACH
+      // every page, which is how the assignment listing in this same store has always worked.
       store.loadRoles();
 
       const first = expectGet(ROLES_URL);
 
       expect(first.request.params.get('pageIndex')).toBe('0');
-      // A FULL page, which is the signal that another may exist.
-      first.flush(pageOf(firstPage, ROLES_FETCH_PAGE_SIZE + 3));
-
-      const second = expectGet(ROLES_URL);
-
-      expect(second.request.params.get('pageIndex'))
-        .withContext('the walk continues to the next page rather than stopping at the window')
-        .toBe('1');
-      expect(second.request.params.get('pageSize')).toBe(String(ROLES_FETCH_PAGE_SIZE));
-
-      second.flush(
+      // A FULL page against a larger total, which is precisely the shape that used to provoke a second
+      // request. It must now provoke none.
+      first.flush(
         pageOf(
-          [
-            aRoleListItem({ roleId: 100, roleName: 'Role 100' }),
-            aRoleListItem({ roleId: 101, roleName: 'Role 101' }),
-            aRoleListItem({ roleId: 102, roleName: 'Role 102' }),
-          ],
-          ROLES_FETCH_PAGE_SIZE + 3,
-          1,
+          Array.from({ length: ROLES_PAGE_SIZE }, (_unused, index) =>
+            aRoleListItem({ roleId: index, roleName: `Role ${index}` }),
+          ),
+          ROLES_PAGE_SIZE + 3,
         ),
       );
 
-      // A short second page ends the walk, so no third request is issued.
+      // Nothing outstanding: one read, one request.
       httpMock.verify();
 
-      expect(store.roleItems().length).toBe(ROLES_FETCH_PAGE_SIZE + 3);
-      expect(store.roleItems()[0]?.roleName).toBe('Role 0');
-      expect(store.roleItems()[ROLES_FETCH_PAGE_SIZE + 2]?.roleName)
-        .withContext('a role beyond the first window is present rather than truncated away')
-        .toBe('Role 102');
-      expect(store.rolesMeta().totalCount).toBe(ROLES_FETCH_PAGE_SIZE + 3);
+      expect(store.roleItems().length).toBe(ROLES_PAGE_SIZE);
+      expect(store.rolesMeta().totalCount)
+        .withContext("the SERVER'S total is published, which is what lets the pager offer page two")
+        .toBe(ROLES_PAGE_SIZE + 3);
+      expect(store.rolesLoading()).toBeFalse();
+
+      // And the second page is reached by a command rather than by the store having pre-fetched it.
+      store.setRolesPage(1);
+
+      const second = expectGet(ROLES_URL);
+
+      expect(second.request.params.get('pageIndex')).toBe('1');
+      expect(second.request.params.get('pageSize')).toBe(String(ROLES_PAGE_SIZE));
+      second.flush(pageOf([aRoleListItem({ roleId: 100, roleName: 'Role 100' })], ROLES_PAGE_SIZE + 3, 1));
+
+      expect(store.roleItems().length).toBe(1);
+      expect(store.roleItems()[0]?.roleName).toBe('Role 100');
+    });
+
+    it('steps back to the last page that exists when a deletion strands the coordinate', () => {
+      // ⚠ THE STRANDING THIS PREVENTS. Remove the only role on the last page and the coordinate the
+      // operator stands on stops existing: the re-read asks for it again, the server answers an empty
+      // window while still reporting the true total, and the grid renders nothing. The pager is drawn on
+      // `pageSize < totalCount`, so it is WITHDRAWN at the same moment - leaving a blank grid with no
+      // way back to the rows that are still there. The unpaged listing could not reach that state; the
+      // row-level delete command on the listing makes it reachable.
+      store.setRolesPage(2);
+      expectGet(ROLES_URL).flush(pageOf([aRoleListItem({ roleId: 20 })], 21, 2));
+
+      store.loadRoles();
+
+      const stranded = expectGet(ROLES_URL);
+
+      expect(stranded.request.params.get('pageIndex'))
+        .withContext('the index is sent exactly as held: an index past the end is a real state')
+        .toBe('2');
+
+      // The server's own answer: an empty window beyond a positive total, reporting two pages.
+      stranded.flush(pageOf([], 20, 2));
+
+      const corrected = expectGet(ROLES_URL);
+
+      expect(corrected.request.params.get('pageIndex'))
+        .withContext("the step-back target is the server's own reported page count, not arithmetic")
+        .toBe('1');
+
+      corrected.flush(pageOf([aRoleListItem({ roleId: 19 })], 20, 1));
+
+      expect(store.rolesPage().pageIndex).toBe(1);
+      expect(store.roleItems().length).toBe(1);
+      expect(store.rolesLoading()).toBeFalse();
+      expect(store.failure()).toBeNull();
+    });
+
+    it('corrects at most once, so a listing shrinking underneath the screen cannot loop', () => {
+      store.setRolesPage(3);
+      expectGet(ROLES_URL).flush(pageOf([aRoleListItem({ roleId: 30 })], 31, 3));
+
+      store.loadRoles();
+      expectGet(ROLES_URL).flush(pageOf([], 30, 3));
+
+      // The corrective read is issued with correction WITHHELD, which is what makes the recursion
+      // terminate: a second past-the-end answer is published as it stands rather than provoking a third
+      // request.
+      expectGet(ROLES_URL).flush(pageOf([], 20, 2));
+
+      httpMock.verify();
+
+      expect(store.roleItems()).toEqual([]);
       expect(store.rolesLoading()).toBeFalse();
     });
+
+    it('leaves an empty first page alone, because no roles is a legitimate answer', () => {
+      store.loadRoles();
+      expectGet(ROLES_URL).flush(pageOf([], 0));
+
+      // A positive total is what separates "past the end" from "this narrowing matches nothing". A
+      // tenant with no roles must not provoke a corrective request.
+      httpMock.verify();
+
+      expect(store.roleItems()).toEqual([]);
+      expect(store.failure()).toBeNull();
+    });
+
 
     it('carries the ordering members and returns to the first page when they change', () => {
       store.setRolesSort('RoleName', 'Ascending');
@@ -3235,7 +3297,7 @@ describe('RoleStore', () => {
 
       expect(present(store.failure(), 'the held failure').operation).toBe(operations[1]);
 
-      store.deleteRole(0);
+      store.deleteRole(0, { thenReadListing: true });
       expectDelete(ROLE_ZERO_URL)
         .flush(aProblem(409, null, 'In use.'), { status: 409, statusText: 'Conflict' });
 
@@ -3451,7 +3513,7 @@ describe('RoleStore', () => {
   // ROLE WRITES
   // -------------------------------------------------------------------------
 
-  describe('role writes reconcile from the response and re-read the listing', () => {
+  describe('role writes reconcile from the response and leave listing reads to the listing', () => {
     it('creates a role, holds the server\u2019s own payload, then re-reads the listing', () => {
       const request: CreateRoleRequest = aCreateRequest();
 
@@ -3465,18 +3527,23 @@ describe('RoleStore', () => {
         statusText: 'Created',
       });
 
-      // Re-read rather than spliced in: where the role falls, and whether it falls on the
-      // current page at all, depends on the narrowing, the ordering and the page size, none of
-      // which the store may re-implement.
-      expectGet(ROLES_URL)
-        .flush(pageOf([aRoleListItem({ roleId: 0, roleName: 'Subscribers' })], 1));
+      // ⚠ NOT RE-READ HERE, AND THAT IS THE FIX FOR A MEASURED DEFECT. The reasoning for the old behaviour
+      // was sound as far as it went - where the role falls, and whether it falls on the current page at all,
+      // depends on the narrowing, the ordering and the page size, none of which this store may re-implement -
+      // but the read that answers those questions is the LISTING'S, not this command's. The listing keeps its
+      // page, narrowing and ordering in its address and reads on entry, and the only caller of this command
+      // leaves for the listing the moment the write settles. Doing it here as well produced a duplicate
+      // measured at 2,466 B sent and 25,283 B decoded per save, with 36 aborted listing refetches in one
+      // session as the two reads raced and the loser was cancelled mid-flight.
+      expect(httpMock.match((candidate) => candidate.url === ROLES_URL))
+        .withContext('a creation must not duplicate the read the listing issues for itself')
+        .toHaveSize(0);
 
       expect(present(store.selectedRole(), 'the created role').roleId).toBe(0);
-      expect(store.roleItems().length).toBe(1);
       expect(store.saving()).toBeFalse();
     });
 
-    it('patches the listing row from the response body, then re-reads', () => {
+    it('patches the listing row from the response body, without re-reading', () => {
       store.loadRoles();
       expectGet(ROLES_URL)
         .flush(
@@ -3506,19 +3573,21 @@ describe('RoleStore', () => {
         'Registered Users',
       ]);
 
-      // The re-read then settles membership, because a changed grouping can move the role out
-      // of the current narrowing entirely, which no local patch can determine.
-      expectGet(ROLES_URL)
-        .flush(pageOf([aRoleListItem({ roleId: 1, roleName: 'Registered Users' })], 1));
-
-      expect(store.roleItems().map((item) => item.roleId)).toEqual([1]);
+      // ⚠ AND NO RE-READ, WHICH IS THE OTHER HALF OF THE SAME FIX. It remains true that a changed grouping
+      // can move a role out of the current narrowing entirely and that no local patch can determine it - but
+      // the read that settles it belongs to the LISTING, which reads itself from its address on arrival, and
+      // the only caller of this command leaves for the listing as soon as the write settles. The patch above
+      // is what keeps a still-mounted listing honest in the meantime.
+      expect(httpMock.match((candidate) => candidate.url === ROLES_URL))
+        .withContext('an update must not duplicate the read the listing issues for itself')
+        .toHaveSize(0);
     });
 
     it('deletes the role keyed zero, discards the matching selection, then re-reads', () => {
       store.selectRole(0);
       expectGet(ROLE_ZERO_URL).flush(envelopeOf(aRole({ roleId: 0 })));
 
-      store.deleteRole(0);
+      store.deleteRole(0, { thenReadListing: true });
 
       const removal = expectDelete(ROLE_ZERO_URL);
 
@@ -3534,11 +3603,33 @@ describe('RoleStore', () => {
       expect(store.roleItems()).toEqual([]);
     });
 
+    it('leaves the listing alone when the caller has not asked for a read', () => {
+      store.selectRole(0);
+      expectGet(ROLE_ZERO_URL).flush(envelopeOf(aRole({ roleId: 0 })));
+
+      store.deleteRole(0, { thenReadListing: false });
+      expectDelete(ROLE_ZERO_URL).flush(null, { status: 204, statusText: 'No Content' });
+
+      // ⚠ THE SELECTION IS STILL DISCARDED ON THIS BRANCH TOO. What is HELD and what is DISPLAYED are
+      // different questions: the deleted role is gone from the store either way, and only the listing
+      // READ is at the caller's discretion.
+      expect(store.selectedRole()).toBeNull();
+
+      // A caller that passes `false` is one that departs for the listing, and the listing reads itself
+      // from its own address on arrival. Reading here as well issued a second, identical request that
+      // the route teardown then cancelled mid-flight: runtime measurement caught exactly that shape on
+      // this path, two listing reads with different correlation ids, the first `net::ERR_ABORTED` after
+      // some seven milliseconds and the second supplying the rows actually shown.
+      expect(httpMock.match((candidate) => candidate.url === ROLES_URL))
+        .withContext('a deletion must not read the listing when it was told not to')
+        .toHaveSize(0);
+    });
+
     it('keeps a selection that is not the deleted role', () => {
       store.selectRole(7);
       expectGet(ROLE_SEVEN_URL).flush(envelopeOf(aRole({ roleId: 7 })));
 
-      store.deleteRole(0);
+      store.deleteRole(0, { thenReadListing: true });
       expectDelete(ROLE_ZERO_URL)
         .flush(null, { status: 204, statusText: 'No Content' });
       expectGet(ROLES_URL).flush(pageOf([], 0));
@@ -3793,24 +3884,25 @@ describe('RoleStore', () => {
       expect(store.assignmentItems()).toEqual([]);
     });
 
-    it('abandons the complete-listing walk mid-flight rather than finishing it', () => {
-      const fullPage: readonly RoleListItem[] = Array.from(
-        { length: ROLES_FETCH_PAGE_SIZE },
-        (_unused, index) => aRoleListItem({ roleId: index, roleName: `Role ${index}` }),
-      );
+    it('abandons a corrective page read mid-flight rather than letting it land', () => {
+      // ⚠ THIS CASE USED TO ABANDON A COMPLETE-LISTING WALK. The walk is gone, but the property it
+      // proved still matters and now has a different second request to prove it on: the corrective read
+      // a past-the-end answer dispatches. It is issued from inside the first read's `next`, so it is the
+      // one request that could outlive a reset if the handle were not replaced.
+      store.setRolesPage(2);
+      expectGet(ROLES_URL).flush(pageOf([aRoleListItem({ roleId: 20 })], 21, 2));
 
       store.loadRoles();
-      expectGet(ROLES_URL).flush(pageOf(fullPage, ROLES_FETCH_PAGE_SIZE * 3));
+      expectGet(ROLES_URL).flush(pageOf([], 20, 2));
 
-      // The walk has issued its second request and is waiting on it.
-      const second = expectGet(ROLES_URL);
+      const corrective = expectGet(ROLES_URL);
 
-      expect(second.request.params.get('pageIndex')).toBe('1');
+      expect(corrective.request.params.get('pageIndex')).toBe('1');
 
       store.reset();
 
-      expect(second.cancelled)
-        .withContext('a multi-request walk must be abandonable as one unit')
+      expect(corrective.cancelled)
+        .withContext('a read dispatched from inside another read must still be abandonable')
         .toBeTrue();
       expect(store.roleItems()).toEqual([]);
       expect(store.rolesLoading()).toBeFalse();
@@ -3850,8 +3942,6 @@ describe('RoleStore', () => {
         'Site Administrators',
       );
       expect(store.roleItems()).not.toBe(readEarlier);
-
-      expectGet(ROLES_URL).flush(pageOf([], 0));
     });
 
     it('replaces the group sequence rather than editing it in place', () => {
@@ -3919,9 +4009,10 @@ describe('RoleStore', () => {
         .withContext('the reset target is the ungrouped intent, per the measured legacy default')
         .toBe('GlobalRoles');
       expect(store.rolesPage().pageIndex).toBe(0);
-      // The role listing is read WHOLE, so its coordinate reports the size its requests
-      // actually carry rather than the shared paged default the assignments use.
-      expect(store.rolesPage().pageSize).toBe(ROLES_FETCH_PAGE_SIZE);
+      // Both listings now take the shared default. They keep SEPARATE coordinate constants so that
+      // resetting one cannot silently move the other, which is why the two assertions are written out
+      // rather than compared to each other.
+      expect(store.rolesPage().pageSize).toBe(ROLES_PAGE_SIZE);
       expect(store.assignmentsPage().pageIndex).toBe(0);
       expect(store.assignmentsPage().pageSize).toBe(DEFAULT_PAGE_SIZE);
     });
@@ -4142,7 +4233,6 @@ describe('RoleStore', () => {
         status: 201,
         statusText: 'Created',
       });
-      expectGet(ROLES_URL).flush(pageOf([aRoleListItem()], 1));
       expectPost(ROLE_GROUPS_URL).flush(envelopeOf(aRoleGroup({ roleGroupId: 3 })), {
         status: 201,
         statusText: 'Created',
@@ -4151,7 +4241,7 @@ describe('RoleStore', () => {
     });
 
     it('publishes a result naming the write that settled, its operation and its own outcome', () => {
-      const issued = store.deleteRole(7);
+      const issued = store.deleteRole(7, { thenReadListing: true });
 
       expect(store.mutation())
         .withContext('nothing is published while the write is open')
@@ -4210,7 +4300,6 @@ describe('RoleStore', () => {
         .toBeTrue();
 
       roleCreate.flush(envelopeOf(aRole({ roleId: 7 })), { status: 201, statusText: 'Created' });
-      expectGet(ROLES_URL).flush(pageOf([aRoleListItem()], 1));
 
       expect(present(store.mutation(), 'the settled write').id).toBe(firstWrite);
       expect(store.saving())
@@ -4266,7 +4355,7 @@ describe('RoleStore', () => {
     });
 
     it('clears the published result and the pending count on a session boundary', () => {
-      store.deleteRole(7);
+      store.deleteRole(7, { thenReadListing: true });
       expectDelete(ROLE_SEVEN_URL).flush(null, { status: 204, statusText: 'No Content' });
       expectGet(ROLES_URL).flush(pageOf([], 0));
 
@@ -4529,5 +4618,8 @@ function anUpdateRequest(): UpdateRoleRequest {
     trialFrequency: 'N',
     rsvpCode: '',
     iconFile: null,
+    // The awkward-values fixture carries a token too, because a replacement composed against a read
+    // has one; sending null would be a different case, not a tidier version of this one.
+    concurrencyToken: 'revision-1',
   };
 }

@@ -1,0 +1,29 @@
+// -----------------------------------------------------------------------------
+//  THE FALLBACK VIEW
+// -----------------------------------------------------------------------------
+//  Almost nothing belongs here, and that is the point. The view is two shared
+//  components stacked, and both already own their own appearance: the page header
+//  styles the heading and the empty state styles the glyph, the sentence and the
+//  action slot. Restating any of it would be this screen overruling a shared
+//  component that eight other screens depend on looking identical to.
+//
+//  ⚠ NO RAW `@media` - the workspace permits one only in `_mixins.scss`, and this
+//  surface needs none: it is a single column at every width.
+//
+//  ZERO HARDCODED VALUES. The one declaration below resolves to a token.
+// -----------------------------------------------------------------------------
+
+// The gap between the heading block and the explanation block.
+//
+// The only rule this file needs. Both children are block-level and neither carries a
+// trailing margin, so without it the sentence sits flush against the heading rule.
+// `--space-4` is the same step the feature screens put between a page header and the
+// first content block, so the fallback opens with the rhythm every other address does.
+:host {
+  display: block;
+}
+
+app-empty-state {
+  display: block;
+  margin-block-start: var(--space-4);
+}

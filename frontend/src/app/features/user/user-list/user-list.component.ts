@@ -61,6 +61,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   TemplateRef,
   ViewChild,
   computed,
@@ -72,11 +73,25 @@ import {
   type OnInit,
   type Signal,
 } from '@angular/core';
-import { RouterLink } from '@angular/router';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+
+import {
+  addressStatesQuery,
+  FILTER_PARAM,
+  firstPageParameter,
+  PAGE_PARAM,
+  parsePageIndex,
+  parseSortDirection,
+  parseSortKey,
+  SORT_BY_PARAM,
+  SORT_DIR_PARAM,
+} from '../../../core/utils/list-query.util';
+
+import type { ParamMap, Params } from '@angular/router';
 
 import { NotificationService } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
-import { PortalStore } from '../../../core/state/portal.store';
 import { UserStore } from '../../../core/state/user.store';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { DataTableComponent } from '../../../shared/components/data-table/data-table.component';
@@ -88,12 +103,14 @@ import { SearchInputComponent } from '../../../shared/components/search-input/se
 import { DateDisplayPipe } from '../../../shared/pipes/date-display.pipe';
 import { YesNoPipe } from '../../../shared/pipes/yes-no.pipe';
 
+import type { SortDirection } from '../../../core/models/paged-result.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
-import type { MembershipSettings, UserListItem } from '../../../core/models/user.model';
-import type { UserFailure, UserMutation } from '../../../core/state/user.store';
+import type { MembershipSettings, UserListItem, UserSortField } from '../../../core/models/user.model';
+import type { UserFailure, UserMutation, UserSearch } from '../../../core/state/user.store';
 import type {
   DataTableCellContext,
   DataTableColumn,
+  DataTableSortChange,
 } from '../../../shared/components/data-table/data-table.component';
 
 // ---------------------------------------------------------------------------
@@ -123,6 +140,24 @@ const MEMBERSHIP_SETTINGS_LABEL = 'User Settings';
 
 /** `Users.ascx.resx` `ManageProfile.Action`. */
 const PROFILE_DEFINITIONS_LABEL = 'Manage Profile Properties';
+
+/**
+ * Disclosed when the tenant's account policy could not be read, so this listing is running on its
+ * documented fallbacks — #5.
+ *
+ * AUTHORED, and reported as a net addition. There is no legacy wording to recover because the
+ * legacy screen could not reach this state: `Website/admin/Users/Users.ascx.vb` read every setting
+ * through `UserModuleBase.GetSetting(PortalId, key)`, which answered the hard-coded default for an
+ * unreadable or absent key WITHOUT reporting that it had done so, and `Page_Init` L508-L517 then
+ * applied that answer to the grid. The legacy screen was therefore structurally incapable of
+ * saying this, and its silence is the reason a fallback could be mistaken for a preference.
+ *
+ * It names the two things the policy actually decides on this screen and nothing else, because
+ * over-claiming here would repeat in a quieter voice the very error being fixed: the accounts
+ * themselves are unaffected and the sentence must not imply otherwise.
+ */
+const POLICY_DEGRADED_NOTICE =
+  'This site\u2019s user settings could not be read, so this list is shown at the default page size with the default columns. The accounts themselves are unaffected.';
 
 /** `Users.ascx.resx` `Search.Text`, from `users.ascx` L5 `lblSearch resourcekey="Search"`. */
 const SEARCH_LABEL = 'Search:';
@@ -237,8 +272,114 @@ const LAST_LOGIN_HEADING = 'Last Login';
 /** `Users.ascx.resx` `Authorized.Header`. */
 const AUTHORIZED_HEADING = 'Authorized';
 
-/** Placeholder for the free-text search control. Authored: the legacy textbox had none. */
-const SEARCH_PLACEHOLDER = 'Search accounts';
+/**
+ * Placeholder for the free-text search control. Authored: the legacy textbox had none.
+ *
+ * ⚠ U-M13 — IT STATES THE PREDICATE, AND THE PREVIOUS WORDING PROMISED THE WRONG ONE. It read
+ * "Search accounts", which an operator reasonably takes to mean a search of the account — anywhere
+ * in it. The match is a STARTS-WITH: `Website/admin/Users/Users.ascx.vb` L269, L271 and L274 each
+ * append a single TRAILING wildcard and nothing leading, and the target endpoint reproduces that
+ * appending exactly. So typing `smith` finds `smithers` and does not find `johnsmith`, and an
+ * operator working from the old wording would read that as missing data rather than as the rule.
+ *
+ * ⚠ IT NAMES NO FIELD, DELIBERATELY, and that is not vagueness. The axis is chosen in the selector
+ * beside this box and is an OPEN SET — account name, electronic-mail address, or any profile
+ * property the tenant has declared — so the field is what the selector says and the predicate is
+ * what this says. Naming a field here would contradict the selector for two of its three kinds of
+ * entry.
+ */
+const SEARCH_PLACEHOLDER = 'Begins with';
+
+/**
+ * The filter-in-force disclosure — U-M12 and the other half of #7.
+ *
+ * ⚠ WHY THIS EXISTS AT ALL. The alphabet strip announces the entry in force through `aria-pressed`,
+ * and it is TRUTHFUL for it to announce none while a free-text term is filtering the listing —
+ * none of the twenty-seven entries is what is in force. But truthful silence still leaves an
+ * operator unable to see that a filter is applied: the strip shows nothing pressed, exactly as it
+ * does on an unfiltered listing, and the two states look identical.
+ *
+ * ⚠ IT ALSO CLOSES THE COMPOUND HALF OF #7, WHICH NOTHING ELSE COULD. Changing the search axis
+ * re-queries nothing — `users.ascx` L8 declared `ddlSearchType` with no auto-post-back, and
+ * `Users.ascx.vb` L586 read the selection at QUERY time — so after switching from account name to
+ * electronic-mail address, the listing on screen is still filtered by the OLD axis until a search
+ * is run. That is parity and is kept. What was missing is any way to see it: this sentence names
+ * the axis the LISTING is filtered on, so an operator comparing it against the selector can see at
+ * a glance that their new selection has not been applied yet.
+ *
+ * AUTHORED. The legacy screen rendered no such statement, because its filter travelled in the
+ * query string and was therefore visible in the address bar of every filtered listing
+ * (`FilterURL`, L446-L456). The target keeps the filter in a store, so the address no longer says
+ * it and the screen must.
+ *
+ * `{field}` is substituted with the axis in words and `{text}` with the term exactly as it is being
+ * matched. See {@link UserListComponent.filterDisclosure}.
+ */
+const FILTER_DISCLOSURE_TEMPLATE = 'Filtered: {field} begins with \u201c{text}\u201d.';
+
+/** The axis wording for {@link FILTER_DISCLOSURE_TEMPLATE} when the search is on the account name. */
+const USERNAME_AXIS_WORDING = 'user name';
+
+/** The axis wording when the search is on the electronic-mail address. */
+const EMAIL_AXIS_WORDING = 'email';
+
+/**
+ * The mark painted where a profile value the tenant has chosen to show is not recorded — U-M2.
+ *
+ * ⚠ MEASURED BEFORE IT WAS DESIGNED, AND THE MEASUREMENT CHANGED THE ANSWER. The postal address and
+ * the telephone number are two of the columns this tenant's policy SHOWS, and both render nothing on
+ * every row: measured across all two hundred and fifty-three accounts, `address` and `telephone` are
+ * null on every one — on the detail endpoint as well as on the listing, so nothing is being dropped
+ * in projection and there is no server-side value to recover. They are simply not recorded. An empty
+ * cell is therefore TRUTHFUL, and the defect is that it is indistinguishable from a cell that failed
+ * to render: two hundred and thirty-eight units of a grid saying nothing at all, with no way to tell
+ * "nobody recorded this" from "this is broken".
+ *
+ * ⚠ NOT AN INVENTED PLACEHOLDER, AND SPECIFICALLY NOT A WORD. An em dash paints the absence without
+ * ever being mistaken for a value — no address and no telephone number can be spelled this way,
+ * whereas "None", "N/A" or "Unknown" are all things a person could have typed into a free-text
+ * profile field. The same mark and the same reasoning already carry the absent host name on the
+ * portal alias listing, so a reader meets one convention for absence across the console rather than
+ * two.
+ */
+const ABSENT_PROFILE_VALUE_MARK = '\u2014';
+
+/**
+ * What the mark above MEANS, for a reader who cannot see it.
+ *
+ * The mark itself is hidden from assistive technology and this sentence is exposed in its place,
+ * because an em dash announces as punctuation or as nothing at all depending on the reader's
+ * verbosity setting — so on its own it would restore exactly the silence it is there to break.
+ */
+const ABSENT_PROFILE_VALUE_DESCRIPTION = 'not recorded';
+
+/**
+ * The qualifier shown beside the approval word when an account is LOCKED OUT — U-M1.
+ *
+ * ⚠ THE APPROVAL WORD ALONE IS MISLEADING FOR THESE ACCOUNTS, WHICH IS WHY THIS EXISTS. The column
+ * is the legacy `Authorized` column and it reports approval, which is genuinely a different fact
+ * from lock-out — but an operator reads the column to answer one question, "can this account be
+ * used", and for a locked-out account the answer is no while the cell says `Yes`. Measured on this
+ * tenant: eleven of two hundred and fifty-three accounts are locked out and every one of them
+ * rendered an unqualified `Yes`, so the only accounts an operator could actually find were the
+ * thirty-four unapproved ones.
+ *
+ * MIGRATION: a net addition to the LISTING, and reported as one. Lock-out was legacy-visible only on
+ * the per-account panel — `Website/admin/Users/Membership.ascx` is a read-only panel hosted beside
+ * the account editor at `manageusers.ascx` L59-L63, and it carried the unlock command — so the
+ * capability is legacy and only its DISCOVERABILITY is new. The approval word itself is unchanged
+ * and no column is added: the fact is attached to the cell whose meaning it qualifies, which keeps
+ * the tenant's `Column_Authorized` gate governing both.
+ */
+const LOCKED_OUT_QUALIFIER = 'Locked';
+
+/**
+ * What the qualifier above means, spelled out for a reader who meets it without the column heading.
+ *
+ * Exposed alongside the visible word rather than replacing it: the short word is what fits a grid
+ * cell, and the sentence is what makes it unambiguous.
+ */
+const LOCKED_OUT_DESCRIPTION = 'locked out, cannot sign in';
 
 /**
  * Accessible name for the alphabet strip's navigation landmark.
@@ -318,11 +459,259 @@ const USERNAME_SEARCH_FIELD = 'Username';
 /** The second of the two account fields the legacy switch matched by name. */
 const EMAIL_SEARCH_FIELD = 'Email';
 
+// ---------------------------------------------------------------------------
+//  THE ADDRESS
+//
+//  This listing keeps its search, its search AXIS and its page in the address, so a reload, a bookmark and
+//  the browser's own back and forward buttons all reproduce what is on screen. Runtime testing on the
+//  sibling portal listing measured what the absence of that cost: pager clicks advanced the grid while the
+//  address stayed on the bare route, pressing back from page three was not possible because paging created no
+//  history entry at all, and a fresh arrival landed on a page and a filter the operator could not see,
+//  because this store is provided at the application root and OUTLIVES this route.
+//
+//  ⚠ THIS LISTING HAS A THIRD STATE THE OTHER THREE DO NOT, and the address has to express it. An empty
+//  address does NOT mean "show everything": it means NOTHING HAS BEEN ASKED FOR, which is a real legacy state
+//  - `Users.ascx.vb` L266 compared against a magic string that fell through every branch and left the grid
+//  unbound - and it is distinct from the unfiltered listing, which really does ask the server for every
+//  account. Absence therefore leaves the tenant's policy to choose the opening view exactly as it does on a
+//  first ever visit, and the unfiltered listing is stated explicitly as `?searchby=all`.
+
+/**
+ * Address parameter carrying the axis a search applies to.
+ *
+ * The axis is an OPEN SET: the two account fields below plus any profile property the tenant declares, which
+ * is why this parameter carries the field NAME rather than an index into a closed list. It also carries the
+ * reserved {@link ALL_ACCOUNTS_TOKEN}, which names no axis at all.
+ */
+const SEARCH_BY_PARAM = 'searchby';
+
+/**
+ * The {@link SEARCH_BY_PARAM} value standing for every account in the tenant, unfiltered.
+ *
+ * Reserved, and therefore unusable as a profile property name. That collision is accepted: it would require a
+ * tenant to declare a property called exactly `all`, and the alternative - a second boolean parameter beside
+ * the axis - would make two parameters able to contradict each other.
+ */
+const ALL_ACCOUNTS_TOKEN = 'all';
+
 /** Identifier for the search-type selector, so the shared form field can name it. */
 const SEARCH_FIELD_CONTROL_ID = 'user-list-search-field';
 
 /** The character `HtmlUtils.FormatEmail` tested for at `HtmlUtils.vb` L94. */
 const MAILBOX_SEPARATOR = '@';
+
+/**
+ * The search, axis and page this listing is showing, as the address states them.
+ *
+ * Held as one object because they are restored TOGETHER on entry: every search command returns the listing to
+ * the first page, so applying a search and a page separately would discard the page the address asked for.
+ */
+/**
+ * The grid columns this listing offers an ordering on, each mapped to the field the endpoint binds.
+ *
+ * ⚠ A MAP RATHER THAN A LIST, because the two vocabularies genuinely differ: the grid keys its columns in
+ * camel case, while {@link UserSortField} is the endpoint's own Pascal-cased member set. Sending a column key
+ * would work today - the model binder is case-insensitive, verified - but the STORE is typed to
+ * `UserSortField`, so the translation has to exist somewhere and a declared map is the one place it can be
+ * read off rather than inferred.
+ *
+ * ⚠ EVERY ENTRY WAS VERIFIED AGAINST THE RUNNING ENDPOINT, and so was every exclusion, because an affordance
+ * that produces a refused request is worse than no affordance. `GET /api/v1/users` accepts exactly
+ * DisplayName, Email, FirstName, IsSuperUser, LastName, UserId and Username, and answers anything else with a
+ * field-level `400`. The five below were each issued and observed to return `200` with a genuinely different
+ * order; `address`, `telephone`, `createdDate`, `lastLoginDate` and `approved` were each issued and observed
+ * to be REFUSED, which is why those five headings stay inert. `UserId` and `IsSuperUser` are accepted by the
+ * endpoint but have no heading here to attach an ordering to - this grid renders neither.
+ *
+ * MIGRATION: sorting is a NET ADDITION; the legacy grid declared no `AllowSorting`. It is offered because AAP
+ * 0.3.2 specifies `sortBy`, `sortDir` and `sortChange` on the shared record grid and the review recorded
+ * their absence here as an AAP compliance failure rather than a design choice.
+ */
+const SORTABLE_COLUMNS: Readonly<Record<string, UserSortField>> = Object.freeze({
+  userName: 'Username',
+  firstName: 'FirstName',
+  lastName: 'LastName',
+  displayName: 'DisplayName',
+  email: 'Email',
+});
+
+/** The column keys of {@link SORTABLE_COLUMNS}, derived rather than restated so the two cannot drift. */
+const SORTABLE_COLUMN_KEYS: readonly string[] = Object.freeze(Object.keys(SORTABLE_COLUMNS));
+
+/**
+ * The grid column key an endpoint field came from, or `null`.
+ *
+ * Derived by reversing {@link SORTABLE_COLUMNS} at each call rather than by keeping a second frozen table,
+ * because two tables can disagree and one cannot. The map has five entries, so the scan is free.
+ *
+ * @param field The endpoint field the store is holding, or undefined when it holds none.
+ * @returns The column key to mark active in the grid, or `null` when no column corresponds.
+ */
+function columnKeyForSortField(field: UserSortField | undefined): string | null {
+  if (field === undefined) {
+    return null;
+  }
+
+  const match = Object.entries(SORTABLE_COLUMNS).find(([, bound]) => bound === field);
+
+  return match === undefined ? null : match[0];
+}
+
+interface UserListAddressQuery {
+  /** The search to apply. Mode `none` means the address asked for nothing. */
+  readonly search: UserSearch;
+
+  /**
+   * The axis the search-type selector should show.
+   *
+   * Carried separately from {@link search} because the selector holds a value even in modes that have no
+   * axis of their own - the unfiltered listing and the nothing-asked-for state - and an operator returning
+   * to a bookmarked unfiltered listing should still find the selector where they left it.
+   */
+  readonly axis: string;
+
+  /** The page to read, counted from nought. */
+  readonly pageIndex: number;
+
+  /**
+   * The grid column to order by, or `null` to accept the endpoint's own default ordering.
+   *
+   * A COLUMN KEY, not an endpoint field: the address speaks the grid's vocabulary so that what is in the
+   * address matches what the heading is called. {@link SORTABLE_COLUMNS} performs the translation at the one
+   * point the store is spoken to.
+   */
+  readonly sortBy: string | null;
+
+  /** The direction, or `null`. Only ever set alongside {@link UserListAddressQuery.sortBy}. */
+  readonly sortDir: SortDirection | null;
+}
+
+/**
+ * Reads a search out of an address.
+ *
+ * The three prefix modes are distinguished by the AXIS, reproducing the legacy switch: the two account fields
+ * are matched by name and anything else is a profile property, which is what keeps the third axis an open set
+ * (`Users.ascx.vb` L268-L274).
+ *
+ * @param axis The axis parameter, or `null` when absent.
+ * @param text The filter parameter, or `null` when absent.
+ * @returns The search to apply.
+ */
+function parseAddressSearch(axis: string | null, text: string | null): UserSearch {
+  if (axis !== null && axis.trim().toLowerCase() === ALL_ACCOUNTS_TOKEN) {
+    return { mode: 'all' };
+  }
+
+  // ⚠ AN ABSENT FILTER IS NOT AN EMPTY ONE. With no text there is nothing to match on, so the address has
+  // asked for nothing and the policy chooses the opening view - which is NOT the same as searching for the
+  // empty string, a query the legacy screen treated as no filter at all.
+  if (text === null) {
+    return { mode: 'none' };
+  }
+
+  const field: string = axis ?? USERNAME_SEARCH_FIELD;
+
+  if (field === EMAIL_SEARCH_FIELD) {
+    return { mode: 'email', text };
+  }
+
+  if (field === USERNAME_SEARCH_FIELD) {
+    return { mode: 'username', text };
+  }
+
+  return { mode: 'profileProperty', propertyName: field, text };
+}
+
+/**
+ * Reads the whole listing query out of an address.
+ *
+ * @param address The route's query parameters.
+ * @returns The query to apply, with every unusable value resolved to its default.
+ */
+function parseUserListQuery(address: ParamMap): UserListAddressQuery {
+  const axis: string | null = address.get(SEARCH_BY_PARAM);
+  // Byte for byte, and NOT trimmed: the server is the one that trims, and the trailing wildcard is the
+  // server's to append. Only an entirely absent parameter means no filter.
+  const text: string | null = address.get(FILTER_PARAM);
+  const search: UserSearch = parseAddressSearch(axis, text);
+
+  // Resolved before the direction, because a direction is only meaningful once a field has survived
+  // validation against what the endpoint will actually accept.
+  const sortBy: string | null = parseSortKey(address.get(SORT_BY_PARAM), SORTABLE_COLUMN_KEYS);
+
+  return {
+    search,
+    // The reserved token names no axis, so the selector falls back to its default rather than displaying it.
+    axis:
+      axis === null || axis.trim().toLowerCase() === ALL_ACCOUNTS_TOKEN ? USERNAME_SEARCH_FIELD : axis,
+    pageIndex: parsePageIndex(address.get(PAGE_PARAM)),
+    sortBy,
+    // A direction with no field to apply it to is DROPPED, so the address can never carry half an ordering.
+    sortDir: sortBy === null ? null : parseSortDirection(address.get(SORT_DIR_PARAM)),
+  };
+}
+
+/**
+ * The two search parameters a search should be written as.
+ *
+ * @param search The search in force.
+ * @param axis The axis the selector is showing, used by the modes that carry one.
+ * @returns The axis and filter parameters, either of which may be `null` to omit it.
+ */
+function searchParameters(search: UserSearch, axis: string): Params {
+  switch (search.mode) {
+    case 'none':
+      // Nothing asked for is the BARE address, which is what leaves the policy free to choose.
+      return { [SEARCH_BY_PARAM]: null, [FILTER_PARAM]: null };
+    case 'all':
+      return { [SEARCH_BY_PARAM]: ALL_ACCOUNTS_TOKEN, [FILTER_PARAM]: null };
+    case 'username':
+      // The default axis is omitted rather than stated, so a plain name search reads as `?filter=A`.
+      return {
+        [SEARCH_BY_PARAM]: axis === USERNAME_SEARCH_FIELD ? null : axis,
+        [FILTER_PARAM]: search.text,
+      };
+    case 'email':
+      return { [SEARCH_BY_PARAM]: EMAIL_SEARCH_FIELD, [FILTER_PARAM]: search.text };
+    case 'profileProperty':
+      return { [SEARCH_BY_PARAM]: search.propertyName, [FILTER_PARAM]: search.text };
+  }
+}
+
+/**
+ * Whether an address states a search at all, as opposed to leaving the choice to the tenant's policy.
+ *
+ * Either parameter is enough: `?searchby=all` carries no filter and `?filter=A` carries no axis, and both are
+ * searches the operator asked for.
+ *
+ * @param address The route's query parameters.
+ * @returns True when the address expresses a search of its own.
+ */
+function addressStatesSearch(address: ParamMap): boolean {
+  return address.get(SEARCH_BY_PARAM) !== null || address.get(FILTER_PARAM) !== null;
+}
+
+/**
+ * Writes a listing query back out as address parameters.
+ *
+ * @param query The query in force.
+ * @returns The parameters to merge into the address.
+ */
+function serialiseUserListQuery(query: UserListAddressQuery): Params {
+  return {
+    ...searchParameters(query.search, query.axis),
+    // ⚠ A SEARCH-LESS ADDRESS CARRIES NO MEANINGFUL PAGE, so one is corrected away rather than obeyed. Which
+    // page four IS depends on a result set nobody has asked for: with no search stated the tenant's policy
+    // chooses the opening view and returns to the first page, so an address naming a page would describe a
+    // screen that cannot exist. Every affordance on this screen writes the search ALONGSIDE the page for
+    // exactly this reason, so this branch is only ever reached by a hand-edited or truncated address.
+    [PAGE_PARAM]: query.search.mode === 'none' ? null : firstPageParameter(query.pageIndex),
+    [SORT_BY_PARAM]: query.sortBy,
+    // Emitted only alongside a field, matching exactly what the reader accepts back, so a round trip through
+    // the address is stable rather than shedding a parameter on the way through.
+    [SORT_DIR_PARAM]: query.sortBy === null || query.sortDir === null ? null : query.sortDir,
+  };
+}
 
 /** The scheme `HtmlUtils.FormatEmail` emitted at `HtmlUtils.vb` L95. */
 const MAILTO_SCHEME = 'mailto:';
@@ -373,6 +762,49 @@ export interface UserSearchFieldOption {
 
   /** The wording shown, resolved by {@link searchFieldLabel}. */
   readonly label: string;
+
+  /**
+   * The template's tracking key: this entry's ordinal joined to its value.
+   *
+   * ⚠ CARRIED AS DATA RATHER THAN DERIVED IN THE TEMPLATE, and the composition is load-bearing on both
+   * halves. The ORDINAL is what keeps the key unique when a tenant declares a profile property literally
+   * named `Username` or `Email`: that produces a genuine duplicate of an account field's value, which the
+   * paired component preserves rather than de-duplicating because the legacy switch tested the account
+   * field first, so a key of the value alone would raise a duplicated-key error on exactly the tenant
+   * configuration this screen goes out of its way to keep working. The VALUE is what keeps the key STABLE:
+   * the entries are rebuilt by a `computed()` whenever the declared properties are re-read, so tracking by
+   * object identity re-created the entire list on every recomputation - Angular reports that as NG0956 -
+   * and tracking by ordinal alone would silently reuse a row for a different axis when the declarations
+   * change.
+   *
+   * The separator is the unit separator (U+001F), a control character that cannot occur in a profile
+   * property name, so no pair of ordinal and value can collide with another by concatenation.
+   */
+  readonly trackKey: string;
+}
+
+/**
+ * The separator joining an entry's ordinal to its value in {@link UserSearchFieldOption.trackKey}.
+ *
+ * The unit separator rather than a printable character: a profile property name is free text from the
+ * tenant, so any printable choice - a colon, a hyphen, a pipe - is a character a name may legitimately
+ * contain, and two different pairs could then compose the same key.
+ */
+const SEARCH_FIELD_KEY_SEPARATOR = '\u001F';
+
+/**
+ * Builds one entry of the search-type selector, key included.
+ *
+ * @param ordinal The entry's position in the selector, which the legacy `Items.Add` order fixes.
+ * @param value The search axis transmitted verbatim: an account field name or a profile property name.
+ * @returns The entry, carrying its resolved wording and its stable tracking key.
+ */
+function searchFieldOption(ordinal: number, value: string): UserSearchFieldOption {
+  return {
+    value,
+    label: resolveSearchFieldLabel(value),
+    trackKey: `${ordinal}${SEARCH_FIELD_KEY_SEPARATOR}${value}`,
+  };
 }
 
 /**
@@ -495,6 +927,25 @@ function plainProfileText(value: string | null): string {
 }
 
 /**
+ * Whether a profile value the tenant has chosen to show carries nothing to paint — U-M2.
+ *
+ * ⚠ THE EMPTY STRING COUNTS AS ABSENT HERE, AND THAT IS A DELIBERATE DEPARTURE FROM
+ * {@link plainProfileText}'s null-only comparison. The two are answering different questions. That
+ * function asks "what is the value", where an empty string is a legitimate stored value the legacy
+ * null contract makes indistinguishable from an absence (`Null.vb` L71-L75) and must not be
+ * rewritten. This one asks "is there anything for a reader to see", and the answer for an empty
+ * string is no — the cell paints nothing either way, so leaving it unmarked would reinstate exactly
+ * the blank cell the mark exists to explain. Whitespace is treated the same way and for the same
+ * reason: a cell holding three spaces looks identical to one holding nothing.
+ *
+ * @param value The stored value, or null when the profile carries none.
+ * @returns True when the cell would otherwise paint nothing at all.
+ */
+function isProfileValueAbsent(value: string | null): boolean {
+  return value === null || value.trim().length === 0;
+}
+
+/**
  * Decides the electronic-mail cell for one address.
  *
  * Reproduces `HtmlUtils.FormatEmail` (`HtmlUtils.vb` L89-L102) branch for branch: a blank or
@@ -546,10 +997,17 @@ function toEmailCell(value: string): UserEmailCell {
  * never tinted, and L23 set `GridLines="None"` so no cell carried a rule. The shared table is
  * therefore rendered without either affordance.
  *
- * MIGRATION: NO COLUMN OFFERS SORTING. `users.ascx` L22-L23 declares no `AllowSorting` and the
- * code-behind has no sort handler, so the legacy grid could not be reordered. Offering sorting
- * would be an enhancement rather than a port, so no column below sets `sortable` and the
- * table's ordering output is not handled. The ordering the server chooses applies.
+ * MIGRATION: FIVE COLUMNS OFFER SORTING, AS A NET-NEW AFFORDANCE RATHER THAN A PORTED ONE. It
+ * was previously declined here because `users.ascx` L22-L23 declares no `AllowSorting` and the
+ * code-behind has no sort handler, which is true - and a case-insensitive census across BOTH
+ * legacy trees finds the attribute exactly ONCE in either of them, in
+ * `Website/admin/Files/filemanager.ascx`, a screen the AAP places out of scope. Not one in-scope
+ * legacy grid could be reordered, INCLUDING the module listing which has offered sorting since
+ * it was written, so the census says the same thing about every grid in this application and
+ * cannot support having the affordance on one screen and not the rest. What bounds it instead is
+ * the endpoint's own permitted set; the sortable columns, the endpoint field each carries and the
+ * reasons the remaining columns are excluded are all recorded on
+ * {@link SORTABLE_COLUMNS}.
  *
  * MIGRATION: NO ROW IS SELECTABLE. The legacy grid declared a selected-item style at
  * `users.ascx` L28 but no select command and no selection handler, so the style never
@@ -609,6 +1067,25 @@ export class UserListComponent implements OnInit {
    */
   private readonly store = inject(UserStore);
 
+  /** The address this screen reads its search, axis and page from, and writes them back to. */
+  private readonly route = inject(ActivatedRoute);
+
+  /** Used to write the listing coordinates into the address rather than holding them privately. */
+  private readonly router = inject(Router);
+
+  /** Ties the address subscription to this component's lifetime. */
+  private readonly destroyRef = inject(DestroyRef);
+
+  /**
+   * Whether the opening sequence has already been started for this visit.
+   *
+   * Held as a plain field rather than a signal because nothing renders from it. It exists so the FIRST
+   * address emission only STAGES its search and lets the policy read that follows do the dispatching, while
+   * every later emission dispatches for itself.
+   */
+  private hasOpened = false;
+
+
   /** Carries the transient outcome of a reader-initiated removal. */
   private readonly notifications = inject(NotificationService);
 
@@ -628,16 +1105,6 @@ export class UserListComponent implements OnInit {
    */
   private readonly auth = inject(AuthStore);
 
-  /**
-   * The tenant's protected facts, read for ONE of them: the designated administrator account.
-   *
-   * ⚠ NOTHING ON AN ACCOUNT SAYS IT IS THE TENANT'S ADMINISTRATOR. The designation is the
-   * portal-scoped column `Portals.AdministratorId`, and the account listing contract carries
-   * no flag for it, so the guard the legacy screen applied at `Users.ascx.vb:L693-L694` is
-   * unanswerable without the tenant's own record. This store resolves it once per session and
-   * every screen that needs it shares that one read.
-   */
-  private readonly portals = inject(PortalStore);
 
   // -------------------------------------------------------------------------
   // CELL AND COMMAND TEMPLATES
@@ -659,6 +1126,20 @@ export class UserListComponent implements OnInit {
   /** Row roles command. Legacy `users.ascx` L34 `CommandName="UserRoles"`. */
   @ViewChild('manageRolesCommand', { static: true })
   private manageRolesCommandTemplate?: TemplateRef<DataTableCellContext<UserListItem>>;
+
+  /**
+   * Postal address cell — U-M2. Legacy `users.ascx` L44-L49 `Profile.Street`.
+   *
+   * A TEMPLATE column rather than a formatted-text one, and the change of kind is what the fix
+   * needed: a formatted-text column emits one string, and this cell has to emit a painted mark and
+   * a hidden explanation of it as two separate elements when the value is absent.
+   */
+  @ViewChild('addressCell', { static: true })
+  private addressCellTemplate?: TemplateRef<DataTableCellContext<UserListItem>>;
+
+  /** Telephone cell — U-M2. Legacy `users.ascx` L50-L55 `Profile.Telephone`. Same kind change. */
+  @ViewChild('telephoneCell', { static: true })
+  private telephoneCellTemplate?: TemplateRef<DataTableCellContext<UserListItem>>;
 
   /** Electronic-mail cell. Legacy `users.ascx` L56-L61 `DisplayEmail(Membership.Email)`. */
   @ViewChild('emailCell', { static: true })
@@ -688,6 +1169,21 @@ export class UserListComponent implements OnInit {
 
   /** `UserSettings.Action`. */
   protected readonly membershipSettingsLabel = MEMBERSHIP_SETTINGS_LABEL;
+
+  /** {@link POLICY_DEGRADED_NOTICE}. Rendered only while {@link policyDegraded} holds. */
+  protected readonly policyDegradedNotice = POLICY_DEGRADED_NOTICE;
+
+  /** {@link ABSENT_PROFILE_VALUE_MARK} — U-M2. Painted, and hidden from assistive technology. */
+  protected readonly absentProfileValueMark = ABSENT_PROFILE_VALUE_MARK;
+
+  /** {@link ABSENT_PROFILE_VALUE_DESCRIPTION} — U-M2. Exposed, and hidden from the painted page. */
+  protected readonly absentProfileValueDescription = ABSENT_PROFILE_VALUE_DESCRIPTION;
+
+  /** {@link LOCKED_OUT_QUALIFIER} — U-M1. Painted beside the approval word. */
+  protected readonly lockedOutQualifier = LOCKED_OUT_QUALIFIER;
+
+  /** {@link LOCKED_OUT_DESCRIPTION} — U-M1. Exposed beside the painted qualifier. */
+  protected readonly lockedOutDescription = LOCKED_OUT_DESCRIPTION;
 
   /** `ManageProfile.Action`. */
   protected readonly profileDefinitionsLabel = PROFILE_DEFINITIONS_LABEL;
@@ -927,6 +1423,20 @@ export class UserListComponent implements OnInit {
   protected readonly isEmptyResult: Signal<boolean> = this.store.isEmptyResult;
 
   /**
+   * Whether there is a result COUNT worth stating, which is what mounts the shared pager.
+   *
+   * ⚠ WIDER THAN "MORE THAN ONE PAGE", AND NARROWER THAN "ALWAYS". The pager decides its own shape - the
+   * range summary alone when everything fits on one page, the summary plus the steps when it does not -
+   * so mounting it on navigability would remove the only on-screen confirmation of how many records
+   * matched, which runtime testing measured happening on every list screen. Mounting it unconditionally
+   * would instead leave an empty custom element in the document on a zero-result screen, where the
+   * empty-state component already says what happened in words. Counting from one upwards is the
+   * condition that gives both statements a place to live.
+   */
+  protected readonly hasResults: Signal<boolean> = computed(() => this.totalCount() > 0);
+
+
+  /**
    * Whether the listing has been asked for nothing at all, as distinct from having matched nothing.
    *
    * True when the tenant's `Display_Mode` selects the no-query view — which is also the mode the
@@ -956,16 +1466,26 @@ export class UserListComponent implements OnInit {
    * validated, never case-folded and never checked against a fixed list. `Users.ascx.vb`
    * L272-L274 passed its field name straight through as the property name for exactly that
    * reason, and an unrecognised name is the server's to refuse.
+   *
+   * ⚠ EACH ENTRY CARRIES ITS OWN TRACKING KEY, and that is what makes the template's `@for` cheap.
+   * This is a `computed()` over the store's declared-property slice, and that slice is itself derived,
+   * so it publishes a NEW array - and this one rebuilds NEW entry objects - every time the declarations
+   * are re-read. Tracking by object identity therefore re-created the whole selector on each
+   * recomputation, which Angular reports as NG0956 (measured: 6 occurrences across three collections in
+   * the test suite before this change). The key composed by {@link searchFieldOption} is stable across
+   * recomputation and unique per entry, so an unchanged list re-uses its rows and a grown list keeps the
+   * two leading account rows. See {@link UserSearchFieldOption.trackKey} for why neither the value alone
+   * nor the ordinal alone would do.
    */
   protected readonly searchFieldOptions: Signal<readonly UserSearchFieldOption[]> = computed(
     () => {
       const options: UserSearchFieldOption[] = [
-        { value: USERNAME_SEARCH_FIELD, label: resolveSearchFieldLabel(USERNAME_SEARCH_FIELD) },
-        { value: EMAIL_SEARCH_FIELD, label: resolveSearchFieldLabel(EMAIL_SEARCH_FIELD) },
+        searchFieldOption(0, USERNAME_SEARCH_FIELD),
+        searchFieldOption(1, EMAIL_SEARCH_FIELD),
       ];
 
       for (const propertyName of this.store.profilePropertyNames()) {
-        options.push({ value: propertyName, label: resolveSearchFieldLabel(propertyName) });
+        options.push(searchFieldOption(options.length, propertyName));
       }
 
       return options;
@@ -1035,6 +1555,15 @@ export class UserListComponent implements OnInit {
     // `undefined` off the row and render an empty cell with no error anywhere.
     set.push({
       key: 'userName',
+      // The row's NAME. Emitted as `<th scope="row">` so a screen reader announces which record
+      // each cell belongs to - without it, traversing a row gives the column name and the value
+      // and never the record's identity. This column is the one a person would read aloud to say
+      // which row they mean. No visual change: the shared stylesheet restores a body row
+      // header's normal weight.
+      rowHeader: true,
+      // Ordering: see SORTABLE_COLUMNS, which is the sortable set and the only place a column key
+      // is paired with the endpoint's own sort name.
+      sortable: true,
       label: USERNAME_HEADING,
       headerAlign: 'center',
       bodyAlign: 'start',
@@ -1045,6 +1574,7 @@ export class UserListComponent implements OnInit {
     if (visible.firstName === true) {
       set.push({
         key: 'firstName',
+        sortable: true,
         label: FIRST_NAME_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
@@ -1056,6 +1586,7 @@ export class UserListComponent implements OnInit {
     if (visible.lastName === true) {
       set.push({
         key: 'lastName',
+        sortable: true,
         label: LAST_NAME_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
@@ -1067,6 +1598,7 @@ export class UserListComponent implements OnInit {
     if (visible.displayName === true) {
       set.push({
         key: 'displayName',
+        sortable: true,
         label: DISPLAY_NAME_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
@@ -1090,7 +1622,8 @@ export class UserListComponent implements OnInit {
         label: ADDRESS_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
-        value: (row: UserListItem): string => plainProfileText(row.address),
+        kind: 'template',
+        cellTemplate: this.requireTemplate(this.addressCellTemplate, 'addressCell'),
       });
     }
 
@@ -1110,7 +1643,8 @@ export class UserListComponent implements OnInit {
         label: TELEPHONE_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
-        value: (row: UserListItem): string => plainProfileText(row.telephone),
+        kind: 'template',
+        cellTemplate: this.requireTemplate(this.telephoneCellTemplate, 'telephoneCell'),
       });
     }
 
@@ -1119,6 +1653,8 @@ export class UserListComponent implements OnInit {
     if (visible.email === true) {
       set.push({
         key: 'email',
+        // Ordered on the STORED address, not on the anchor the cell template builds from it.
+        sortable: true,
         label: EMAIL_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
@@ -1237,8 +1773,20 @@ export class UserListComponent implements OnInit {
   /**
    * The problem document behind a failed READ, or null when no read has failed.
    *
-   * Confined to the three read operations on purpose. A failed WRITE is reported through the
-   * notification service instead — see {@link reportRemovalOutcome} — because the legacy screen
+   * ⚠ #5 — CONFINED TO THE TWO READS WHOSE SUBJECT IS THIS SCREEN'S OWN CONTENT, AND THE ACCOUNT
+   * POLICY IS DELIBERATELY NOT ONE OF THEM. It used to be, and that was the defect: a failed
+   * policy read raised an assertive screen-level banner reading "Not Found", with a Try-again
+   * command, directly above a listing of two hundred and fifty-one healthy accounts. Nothing was
+   * missing from the screen — the listing had loaded, the rows were correct, and the only casualty
+   * was the tenant's preferred page size and column selection, for which this screen already holds
+   * a documented fallback. The banner therefore reported a failure of the listing that had not
+   * happened, and gave the operator a retry for a listing that needed none. The policy is an
+   * ENHANCEMENT to this screen, not a prerequisite of it, so its failure is disclosed quietly
+   * through {@link policyDegraded} instead of asserted here. See also the store's own
+   * `dispatchSettings`, which already dispatches the listing on BOTH policy outcomes for the same
+   * reason.
+   *
+   * A failed WRITE is reported through the notification service instead — see {@link reportRemovalOutcome} — because the legacy screen
    * reported a failed removal as a transient module message rather than as a permanent surface,
    * and because a refusal must be presented at WARNING severity rather than as an error, which
    * the notification path and the shared summariser between them already arrange.
@@ -1250,11 +1798,7 @@ export class UserListComponent implements OnInit {
       return null;
     }
 
-    if (
-      held.operation !== 'loadUsers' &&
-      held.operation !== 'loadMembershipSettings' &&
-      held.operation !== 'loadProfileDefinitions'
-    ) {
+    if (held.operation !== 'loadUsers' && held.operation !== 'loadProfileDefinitions') {
       return null;
     }
 
@@ -1288,11 +1832,7 @@ export class UserListComponent implements OnInit {
       return null;
     }
 
-    if (
-      held.operation !== 'loadUsers' &&
-      held.operation !== 'loadMembershipSettings' &&
-      held.operation !== 'loadProfileDefinitions'
-    ) {
+    if (held.operation !== 'loadUsers' && held.operation !== 'loadProfileDefinitions') {
       return null;
     }
 
@@ -1318,6 +1858,99 @@ export class UserListComponent implements OnInit {
   protected readonly hasReadFailure: Signal<boolean> = computed(
     () => this.readFailure() !== null || this.readFailureSummary() !== null,
   );
+
+  /**
+   * Whether the tenant's account policy could not be read, so this screen is running on its
+   * documented fallbacks.
+   *
+   * ⚠ #5 — THIS IS WHAT THE SCREEN-LEVEL BANNER WAS DOING WRONG, DONE RIGHT. The policy decides two
+   * things here and nothing else: how many accounts a page holds, and which of the nine optional
+   * columns are shown. Both already have a fallback that this file declares and documents — the
+   * shared default page size and {@link LEGACY_DEFAULT_COLUMN_VISIBILITY} — so an unread policy
+   * costs the operator a preference, not a listing. What it must NOT cost them is the truth: a
+   * screen silently showing ten rows a page when the tenant asked for fifty, with no indication
+   * that its preference was not honoured, is the mirror of the defect being fixed.
+   *
+   * Both conditions are required. The failure slot is at the application root and holds whatever
+   * failed most recently ANYWHERE, so naming the operation is what confines this to a policy read;
+   * and a policy that arrived on an earlier visit is still in the store and still being applied, so
+   * a later failure of a REFRESH has degraded nothing and must say nothing.
+   *
+   * ⚠ AN ABSENT POLICY COUNTS AS WELL AS A FAILED ONE, AND ONLY THIS SURFACE SAYS SO. The store
+   * deliberately sorts absence from failure: a tenant that has stored no policy is answered 404, which
+   * is a defined answer rather than a fault, so the store records it as UNCONFIGURED and publishes no
+   * failure - which is what stopped three working screens from carrying a "Not Found" banner, a support
+   * reference and a "Try again" button over a perfectly healthy listing. None of that is undone here.
+   * What this notice reports is narrower and is true in both cases: the columns and the page size on
+   * screen are this file's documented fallbacks rather than the tenant's choices. Reading only the
+   * failure slot made the quieter half - by far the more common one - silent again, which is the
+   * original defect in a quieter voice.
+   */
+  protected readonly policyDegraded: Signal<boolean> = computed(() => {
+    if (this.store.membershipSettings() !== null) {
+      return false;
+    }
+
+    if (this.store.membershipSettingsUnconfigured()) {
+      return true;
+    }
+
+    const held: UserFailure | null = this.store.failure();
+
+    return held !== null && held.operation === 'loadMembershipSettings';
+  });
+
+  /**
+   * The sentence naming the filter the LISTING is currently applying, or `null` when the strip
+   * already says it.
+   *
+   * ⚠ U-M12 AND THE COMPOUND HALF OF #7. Rendered only for the states the alphabet strip cannot
+   * announce, so the two surfaces never say the same thing twice:
+   *
+   *   - `'all'` and a single-letter account-name prefix are both announced by a pressed strip
+   *     entry, so this is `null` for them;
+   *   - `'none'` is the tenant's own opening view choosing to issue no query, which the screen's
+   *     existing no-query notice already explains, so this stays out of it;
+   *   - every other state — a multi-character account-name prefix, ANY electronic-mail prefix, and
+   *     any profile-property prefix — leaves every strip entry unpressed, which is truthful and
+   *     silent, and is exactly where this speaks.
+   *
+   * The axis it names is the axis the LISTING is filtered on, taken from the store's own search
+   * discriminator, and NOT the axis currently showing in the selector. The distinction is the point:
+   * a selector change applies nothing until a search is run, so an operator who has changed it sees
+   * this sentence still naming the old axis and can tell their change is not yet in force.
+   *
+   * The term is rendered exactly as it is being matched — not trimmed, not case-folded, not
+   * decorated — because a disclosure that tidied the term would describe a query the server is not
+   * running. It is interpolated as plain text, so no markup can reach the document through it.
+   */
+  protected readonly filterDisclosure: Signal<string | null> = computed(() => {
+    const search = this.store.search();
+
+    if (search.mode === 'none' || search.mode === 'all') {
+      return null;
+    }
+
+    if (search.mode === 'username') {
+      // A single letter is exactly what the strip announces, so saying it again here would put the
+      // same fact on the screen twice. Compared on length rather than against the strip's entries,
+      // because `isFilterApplied` already owns that comparison and duplicating it would let the two
+      // disagree.
+      if (search.text.length <= 1) {
+        return null;
+      }
+
+      return this.composeFilterDisclosure(USERNAME_AXIS_WORDING, search.text);
+    }
+
+    if (search.mode === 'email') {
+      return this.composeFilterDisclosure(EMAIL_AXIS_WORDING, search.text);
+    }
+
+    // A profile property is named by the tenant, so its own name is the only wording available and
+    // it is used verbatim. `propertyName` is an open set and is never validated here.
+    return this.composeFilterDisclosure(search.propertyName, search.text);
+  });
 
   // -------------------------------------------------------------------------
   // OUTCOME REPORTING
@@ -1405,6 +2038,82 @@ export class UserListComponent implements OnInit {
   }
 
   // -------------------------------------------------------------------------
+  /**
+   * How a row identifies itself to the shared grid, so a re-read of the page already shown reuses its row
+   * elements instead of rebuilding them.
+   *
+   * ⚠ THE DATABASE KEY, NOT THE ARRAY POSITION AND NOT THE OBJECT. The grid's own fallback is the row
+   * OBJECT, which is a correct key only while the same objects stay in play; every read from the server
+   * decodes fresh objects, so without this a refetch of the same page presents entirely new keys and the
+   * whole body is rebuilt to display records that never changed. `userId` is unique by definition, being
+   * the record's own identifier, which is what `@for` requires - a repeated key is an error there.
+   *
+   * Declared as a bound field rather than an inline arrow so the reference is stable across change
+   * detection; a new function each redraw would set the grid's input every time and defeat its purpose.
+   *
+   * @param row The row about to be rendered.
+   * @returns The record's identifier.
+   */
+  protected readonly userRowKey = (row: UserListItem): number => row.userId;
+
+  /**
+   * The grid column the listing is ordered by, or `null` for the endpoint's default ordering.
+   *
+   * Projected from the STORE and translated back into the grid's vocabulary, so the heading marked active and
+   * the field the request actually carried can never disagree - the failure a locally-held copy invites.
+   */
+  protected readonly sortBy: Signal<string | null> = computed(() =>
+    columnKeyForSortField(this.store.sortField()),
+  );
+
+  /** The direction the listing is ordered in, or `null`. Projected from the store for the same reason. */
+  protected readonly sortDir: Signal<SortDirection | null> = computed(
+    () => this.store.sortDirection() ?? null,
+  );
+
+  /**
+   * Re-orders the listing on the heading that was activated.
+   *
+   * The ordering goes into the ADDRESS and nowhere else. The subscription watching the query parameters is
+   * the single thing that stages state and issues the read, so writing the address is the whole of the
+   * change; touching the store as well would stage the ordering twice and read twice.
+   *
+   * ⚠ THE SEARCH IS RE-STATED RATHER THAN LEFT TO `merge`, and on this screen that matters more than on the
+   * others. A bare address here means "nothing was asked for", a mode that deliberately issues no request
+   * and holds no rows - so an ordering written on its own would name a column of a result set that does not
+   * exist. Re-stating the search in force keeps the two coordinates one fact, exactly as every other
+   * affordance on this screen does.
+   *
+   * The page is cleared alongside it: which page an account falls on depends on the ordering.
+   *
+   * @param change The heading that was activated and the direction to apply. The shared grid owns the
+   * direction - it toggles on the active column and starts ascending on any other.
+   */
+  protected onSortChange(change: DataTableSortChange): void {
+    // A KEY WITH NO MAPPING IS REFUSED RATHER THAN TRANSMITTED. Only the mapped columns declare
+    // `sortable`, so this is unreachable through the rendered grid; it exists so a later column added
+    // without its entry in SORTABLE_COLUMNS fails silently at the boundary instead of asking the server
+    // to order by a field it does not accept.
+    if (SORTABLE_COLUMNS[change.key] === undefined) {
+      return;
+    }
+
+    // A NULL DIRECTION CLEARS THE ORDERING RATHER THAN DEFAULTING IT. The shared grid’s cycle has a
+    // third step which asks for no ordering at all, and that is the state this screen arrives in - so
+    // the KEY leaves the address alongside the direction. An address carrying a key with no direction,
+    // or a direction with no key, would be a different question asked of the server.
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        ...searchParameters(this.store.search(), this._searchField()),
+        [SORT_BY_PARAM]: change.direction === null ? null : change.key,
+        [SORT_DIR_PARAM]: change.direction,
+        [PAGE_PARAM]: null,
+      },
+      queryParamsHandling: 'merge',
+    });
+  }
+
   // LIFECYCLE
   // -------------------------------------------------------------------------
 
@@ -1442,29 +2151,94 @@ export class UserListComponent implements OnInit {
    */
   ngOnInit(): void {
     this.commandColumns.set(this.buildCommandColumns());
+    // ⚠ BEFORE anything is asked for. This screen's free-text box and axis control are component
+    // state and are rebuilt EMPTY on every mount, while the store outlives the screen and kept the
+    // previous search. Measured: filter, open an account, come back — the controls claimed no
+    // filter, the strip showed no letter applied, and the store re-issued the retained search
+    // anyway, so the grid read "Nothing to Display" with nothing on screen explaining why. Clearing
+    // the criteria here makes a fresh arrival genuinely fresh, so every control on it is telling the
+    // truth about the rows beside it. It clears rather than re-queries, which lets the opening path
+    // below decide what to ask for exactly as it does on a first visit — the tenant's display-mode
+    // policy, not a remembered filter. Measured on a tenant whose membership settings are
+    // unavailable: the return arrival now shows the full listing with an empty box and no letter
+    // applied, identical in every respect to the session's very first arrival.
+    this.store.resetSearchCriteria();
+    // ⚠ THE ADDRESS IS SUBSCRIBED BEFORE THE POLICY IS READ, AND THE ORDER IS THE WHOLE DESIGN. Subscribing
+    // emits synchronously, so the address's search is STAGED before `initialise` dispatches; the policy read
+    // then finishes, sees a search already chosen, and honours it instead of choosing an opening view of its
+    // own. That yields exactly ONE listing read at the address's coordinates. Reversed, the policy would pick
+    // a view, dispatch for it, and the address would then dispatch again over the top - two reads and a
+    // visible flicker between two different result sets.
+    this.route.queryParamMap
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((address: ParamMap): void => {
+        const query: UserListAddressQuery = parseUserListQuery(address);
+        // An address that says something unusable is CORRECTED rather than obeyed silently, so that what is
+        // on screen and what is in the address never disagree. The correction REPLACES the entry rather than
+        // adding one, and returns without reading, because the replacement navigation emits again and that
+        // emission does the read.
+        if (!addressStatesQuery(address, serialiseUserListQuery(query))) {
+          void this.router.navigate([], {
+            relativeTo: this.route,
+            queryParams: serialiseUserListQuery(query),
+            queryParamsHandling: 'merge',
+            replaceUrl: true,
+          });
+          return;
+        }
+        // The selector is restored too, so an operator returning to a bookmarked search finds the axis it was
+        // made on rather than the default. Set directly rather than through the change handler, which exists
+        // to read a real control's value.
+        this._searchField.set(query.axis);
+        // ⚠ AN ADDRESS THAT STATES NO SEARCH ALWAYS MEANS THE NOTHING-ASKED-FOR STATE, on every emission and
+        // not merely on arrival. That is what makes a fresh entry start clean - this store is provided at the
+        // application root and OUTLIVES this route, so a previous visit's search is still held, and runtime
+        // testing measured a fresh sidebar click landing on a filter the operator could not see - and it is
+        // equally what makes pressing Back onto the bare address return to the bare view rather than leaving
+        // the previous rows and a pressed letter on screen.
+        //
+        // An earlier revision kept the search in force for a bare address once the screen had opened, to stop
+        // a page turn discarding the opening view the tenant's policy had chosen. That is no longer needed and
+        // was measurably wrong: `onPageChange` now writes the search in force ALONGSIDE the page, so an
+        // affordance never produces a bare address carrying a page, and the only way to reach one is to ask
+        // for it.
+        this.store.stageSearch(
+          query.search,
+          query.pageIndex,
+          query.sortBy === null ? undefined : SORTABLE_COLUMNS[query.sortBy],
+          query.sortDir ?? undefined,
+        );
+        // ⚠ THE BOX IS RECONCILED FROM THE ADDRESS, so a filter in force is visible and clearable. Runtime
+        // testing measured the alternative on the sibling portal listing: a listing narrowed to 231 of 250
+        // rows while the search box read empty and every letter reported itself unpressed, leaving the pager
+        // string as the only clue that anything was hidden.
+        this.searchBox()?.cancelPendingSearch(this.searchTermFor(query.search));
+        if (!this.hasOpened) {
+          // The opening read belongs to the policy chain `initialise` starts below, which honours the search
+          // staged just now instead of choosing its own opening view.
+          this.hasOpened = true;
+          return;
+        }
+        this.store.loadUsers();
+      });
     this.store.initialise();
     this.store.loadProfileDefinitions();
-    this.resolveProtectedFacts();
   }
 
   /**
-   * Asks for the tenant's protected facts, which the row-level removal guard needs.
+   * The text a search should show in the box, which is empty for the modes that carry none.
    *
-   * ⚠ THE CALLER'S OWN TENANT, never a browsed one, and read from the identity rather than from
-   * a route: this screen names no portal segment. The read is idempotent in the store, so
-   * several screens asking on initialisation issue one request between them.
-   *
-   * ⚠ PRESENCE IS TESTED EXPLICITLY. `Portals.PortalID` is `IDENTITY(-1, 1)`, so `-1` and `0`
-   * are both real tenants and a truthiness test would silently skip the request for either.
+   * @param search The search in force.
+   * @returns The term to display.
    */
-  private resolveProtectedFacts(): void {
-    const portalId: number | undefined = this.auth.currentUser()?.portalId;
-
-    if (portalId === undefined) {
-      return;
+  private searchTermFor(search: UserSearch): string {
+    switch (search.mode) {
+      case 'none':
+      case 'all':
+        return '';
+      default:
+        return search.text;
     }
-
-    this.portals.loadCurrentPortalContext(portalId);
   }
 
   /**
@@ -1516,12 +2290,19 @@ export class UserListComponent implements OnInit {
       return false;
     }
 
-    const designatedAdministrator: number | null = this.portals.administratorUserId();
-
-    if (designatedAdministrator !== null && designatedAdministrator === account.userId) {
-      return false;
-    }
-
+    // ⚠ U-M5 — THE DESIGNATED-ADMINISTRATOR COMPARISON USED TO BE REPEATED HERE, AND REMOVING IT IS
+    // WHAT TOOK THIS SCREEN FROM FOUR REQUESTS PER LOAD TO THREE. It read the tenant's record purely to
+    // learn `Portals.AdministratorId` and compare it against the row — which is EXACTLY the comparison
+    // the server has already made: `UserMappings.ToListItem` computes `canDelete` as
+    // `!user.IsSuperUser && (portalAdministratorId is not { } designated || designated != user.UserId)`,
+    // so the flag consulted above already withholds the designated administrator. The client was issuing
+    // a whole extra request, on every visit, to recompute a verdict it was already being handed.
+    //
+    // It is not merely redundant, it was WEAKER: the flag is published by the endpoint that enforces the
+    // removal and withholds every host account as well, while this clause covered one account only. And
+    // it was RACY: the tenant read settles independently of the listing, so for the interval before it
+    // arrived the clause protected nobody and the command was rendered on a row the server would refuse.
+    // Deferring wholly to the flag removes the request, the duplication and the window together.
     const caller: number | undefined = this.auth.currentUser()?.userId;
     const callerIsThisAccount: boolean = caller !== undefined && caller === account.userId;
 
@@ -1611,7 +2392,19 @@ export class UserListComponent implements OnInit {
     // is about to dispatch itself.
     if (affordance === ALL_FILTER_LABEL) {
       this.searchBox()?.cancelPendingSearch('');
-      this.store.showAllAccounts();
+
+      // The unfiltered listing is stated EXPLICITLY in the address, because absence means something else
+      // here - that nothing has been asked for and the policy should choose - and the two are different
+      // queries against the server.
+      void this.router.navigate([], {
+        relativeTo: this.route,
+        queryParams: {
+          [SEARCH_BY_PARAM]: ALL_ACCOUNTS_TOKEN,
+          [FILTER_PARAM]: null,
+          [PAGE_PARAM]: null,
+        },
+        queryParamsHandling: 'merge',
+      });
 
       return;
     }
@@ -1708,7 +2501,22 @@ export class UserListComponent implements OnInit {
    * @param pageIndex The page to read, counted from nought.
    */
   protected onPageChange(pageIndex: number): void {
-    this.store.goToPage(pageIndex);
+    // A page turn is a PUSHED history entry, not a replaced one: runtime testing found that pressing back
+    // from page three was not possible because paging created no entry at all, and returning to the page you
+    // came from is the ordinary meaning of that button.
+    // ⚠ THE SEARCH IS WRITTEN ALONGSIDE THE PAGE, and it is what makes the page meaningful. The tenant's
+    // policy may have chosen the opening view, in which case the address still states no search of its own -
+    // and a page on a search-less address describes a screen that cannot exist, so it is corrected away.
+    // Stating the search in force turns the address into a complete description of what is on screen, which
+    // is the whole point of keeping it there.
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        ...searchParameters(this.store.search(), this._searchField()),
+        [PAGE_PARAM]: firstPageParameter(pageIndex),
+      },
+      queryParamsHandling: 'merge',
+    });
   }
 
   /**
@@ -1902,22 +2710,93 @@ export class UserListComponent implements OnInit {
    *
    * @param text The reader's text, raw and exactly as typed.
    */
+  /**
+   * Whether one row's postal address is absent, so the cell paints the mark instead — U-M2.
+   *
+   * A method rather than a precomputed index, deliberately, and this is the one place on this class
+   * where that is the right call: it is a single comparison over a value already on the row, with no
+   * allocation and no lookup, so the cost the precomputed indexes on this class exist to avoid does
+   * not arise. Precomputing it would add a second map keyed by identifier for a Boolean.
+   *
+   * @param row The account being rendered.
+   * @returns True when nothing would be painted.
+   */
+  protected isAddressAbsent(row: UserListItem): boolean {
+    return isProfileValueAbsent(row.address);
+  }
+
+  /**
+   * Whether one row's telephone number is absent — U-M2. See {@link isAddressAbsent}.
+   *
+   * @param row The account being rendered.
+   * @returns True when nothing would be painted.
+   */
+  protected isTelephoneAbsent(row: UserListItem): boolean {
+    return isProfileValueAbsent(row.telephone);
+  }
+
+  /**
+   * Fills {@link FILTER_DISCLOSURE_TEMPLATE}.
+   *
+   * A method rather than a template expression so the substitution happens in one place and the
+   * wording stays a single constant. Both substitutions are literal replacements of a distinct
+   * token; neither value can introduce the other's token because the field wording comes from a
+   * closed set or from a tenant-declared property name, and the term is placed last.
+   *
+   * @param field The axis in words.
+   * @param text The term exactly as it is being matched.
+   * @returns The disclosure sentence.
+   */
+  private composeFilterDisclosure(field: string, text: string): string {
+    return FILTER_DISCLOSURE_TEMPLATE.replace('{field}', field).replace('{text}', text);
+  }
+
   private dispatchSearch(text: string): void {
+    // ⚠ THE ADDRESS IS WRITTEN AND THE STORE IS NOT TOUCHED. The subscription in `ngOnInit` applies the search
+    // and issues the read, so writing the address is the whole of the change: the navigation emits, the
+    // emission applies, and the operator's browser history records that they searched. Calling the store as
+    // well would apply it twice and read twice.
+    //
+    // The axis is carried from the selector rather than being written by it, which is what preserves the
+    // legacy behaviour: the legacy selector had no auto-post-back (`Users.ascx.vb` L205-L218 builds it with
+    // none), so changing it re-queries nothing until a search is actually run. It reaches the address here, on
+    // the search that uses it, and not on the change that chose it.
+    //
+    // The page is cleared alongside: a different search yields a different result set in which the page the
+    // operator was on has no counterpart. `FilterURL` (L446-L456) was called from the strip with a literal
+    // page argument of "1" and L631 shows a new search doing the same, so the reset is the legacy behaviour
+    // and it now lives in the address, where it survives a reload with the search it belongs to.
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        ...searchParameters(this.searchFor(text), this._searchField()),
+        [PAGE_PARAM]: null,
+      },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /**
+   * The search the chosen axis makes of some text.
+   *
+   * Reproduces the legacy switch (`Users.ascx.vb` L268-L274): the two account fields are matched by name and
+   * anything else is a profile property, which is what keeps the third axis an open set.
+   *
+   * @param text The caller's text, raw and exactly as typed.
+   * @returns The search to state in the address.
+   */
+  private searchFor(text: string): UserSearch {
     const field: string = this._searchField();
 
     if (field === EMAIL_SEARCH_FIELD) {
-      this.store.searchByEmail(text);
-
-      return;
+      return { mode: 'email', text };
     }
 
     if (field === USERNAME_SEARCH_FIELD) {
-      this.store.searchByUsername(text);
-
-      return;
+      return { mode: 'username', text };
     }
 
-    this.store.searchByProfileProperty(field, text);
+    return { mode: 'profileProperty', propertyName: field, text };
   }
 
   /**

@@ -1,4 +1,13 @@
-import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  ElementRef,
+  computed,
+  inject,
+  input,
+  signal,
+} from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { NavigationEnd, Router, RouterLink } from '@angular/router';
 import { filter, map } from 'rxjs';
@@ -505,24 +514,100 @@ export class SidebarComponent {
    * state carried through a postback — so the legacy rail could not have been
    * collapsed without a server request.
    */
-  private readonly collapsedSignal = signal(false);
+  private readonly collapsedSignal = signal<boolean | null>(null);
+
+  /**
+   * Whether the shell has placed the rail BESIDE the content rather than above it.
+   *
+   * Read from the resolved value of `--app-sidebar-side-by-side`, which the paired
+   * stylesheet publishes through the shared breakpoint mixin. The threshold itself is
+   * therefore declared exactly once, in `_mixins.scss`, and this class never restates it:
+   * a `window.matchMedia('(min-width: 48rem)')` here would be a second definition of the
+   * same number with nothing able to detect the two drifting apart.
+   */
+  private readonly sideBySideSignal = signal(true);
 
   /**
    * Whether the rail is currently collapsed.
    *
-   * Exposed read-only, so the template and the paired specification can observe the
-   * state while neither can assign to it. {@link toggleCollapsed} is the only way to
-   * change it, which keeps every transition expressible in one place.
+   * ⚠ DERIVED FROM THE LAYOUT UNTIL SOMEBODY SAYS OTHERWISE, which is what lets one control
+   * serve two layouts honestly. The stored value is three-state: `null` means nobody has
+   * expressed a preference, so the answer comes from the layout - expanded when docked,
+   * collapsed when stacked - and a real boolean means the operator pressed the control and
+   * their choice stands from then on, in either layout.
    *
-   * Starts expanded. An administration console's navigation is the thing a user
-   * arrives wanting, so the rail earns its width until they say otherwise.
+   * TWO SOURCES, AND THE OPERATOR'S OWN CHOICE ALWAYS WINS. Until the disclosure has been
+   * pressed the writable slot holds null, and the state is then DERIVED from the shell
+   * arrangement: expanded beside the content, collapsed above it. Pressing the disclosure
+   * writes a real value into the slot, and from that moment the derivation stops applying -
+   * a rail the operator opened on a handset stays open, and one they closed on a desktop
+   * stays closed, including across a resize.
+   *
+   * MIGRATION: defaulting to collapsed in the stacked arrangement is a correction, not a
+   * preference, and the measurement is the argument. Expanded-at-every-width made the rail
+   * a full-width 441.8px block sitting between the header and the content, which pushed the
+   * page heading to y≈545 and the first row command to y≈804 on a 320-wide viewport - so
+   * reaching any content at all meant scrolling past the whole of the navigation, on every
+   * screen. Beside the content the rail costs nothing it does not earn, so it opens there,
+   * which is the reading the original "navigation is what a user arrives wanting" note was
+   * after; above the content it does, so it waits to be asked.
    */
-  public readonly collapsed = this.collapsedSignal.asReadonly();
+  public readonly collapsed: Signal<boolean> = computed(() => {
+    const chosen = this.collapsedSignal();
 
-  /**
+    return chosen ?? this.sideBySideSignal() === false;
+  });
 
   /** The router, read for the address currently showing. */
   private readonly router = inject(Router);
+
+  /** This component's own element, read for the arrangement the stylesheet publishes on it. */
+  private readonly hostElement = inject<ElementRef<HTMLElement>>(ElementRef);
+
+  /**
+   * Seeds and maintains {@link sideBySideSignal} from the stylesheet's published arrangement.
+   *
+   * A resize listener rather than a media-query listener, for the reason recorded on
+   * {@link sideBySideSignal}: the threshold belongs to `_mixins.scss` and is read back as a
+   * RESOLVED value, so this class never names a width. The listener is registered as passive
+   * and non-capturing and is released with the component, so it cannot outlive the rail.
+   *
+   * The seed is taken synchronously in the constructor, before the first render, so the rail's
+   * very first paint is already in the correct default state - reading it in an `afterNextRender`
+   * hook would let the wrong state paint for one frame and produce exactly the layout jump this
+   * work is removing elsewhere.
+   */
+  public constructor() {
+    this.readArrangement();
+
+    const onResize = (): void => {
+      this.readArrangement();
+    };
+
+    globalThis.addEventListener('resize', onResize, { passive: true });
+
+    inject(DestroyRef).onDestroy(() => {
+      globalThis.removeEventListener('resize', onResize);
+    });
+  }
+
+  /**
+   * Reads `--app-sidebar-side-by-side` off this component's own element and publishes it.
+   *
+   * Tolerant by construction. A custom property that is missing, empty or unresolvable yields
+   * an empty string, and the comparison below then reports the SIDE-BY-SIDE arrangement - the
+   * expanded default, which is the safe answer because it withholds nothing from the operator.
+   * That is also what makes the component render sensibly in a unit test with no stylesheet
+   * attached.
+   */
+  private readArrangement(): void {
+    const published: string = globalThis
+      .getComputedStyle(this.hostElement.nativeElement)
+      .getPropertyValue('--app-sidebar-side-by-side')
+      .trim();
+
+    this.sideBySideSignal.set(published !== '0');
+  }
 
   /**
    * The address currently showing, as a signal.
@@ -663,6 +748,47 @@ export class SidebarComponent {
   }
 
   /**
+   * The `aria-current` value for one navigation entry: `'page'`, `'true'`, or `null`.
+   *
+   * ⚠ TWO VALUES RATHER THAN ONE, AND THE DISTINCTION IS THE WHOLE POINT. The rail marks an
+   * entry while the operator is on a DESCENDANT of it, because exact matching left every
+   * descendant screen with nothing marked at all — see {@link SidebarComponent.activePath},
+   * where that measured defect is recorded. But marking is not the same claim as identity:
+   * on `/portals/3/settings` the Portals entry is the branch the operator is inside, and it
+   * is NOT the page they are on. Announcing `aria-current="page"` there tells a screen-reader
+   * user that this link IS the current page, and following it then arrives somewhere else.
+   *
+   * `page` is reserved for the exact address, and an ancestor resolves to `true` — the
+   * unqualified value, which says "this is the current item in this set" without claiming a
+   * relationship the rail cannot honour. Both values keep the entry marked, so the visual
+   * treatment is unchanged and nothing regresses on the descendant screens that motivated the
+   * longest-match rule; only the strength of the claim differs.
+   *
+   * `null` when the entry is not in the current branch at all, so the attribute is removed
+   * rather than left behind as a stale claim.
+   *
+   * ⚠ COMPARED BY SEGMENTS, NEVER BY RAW ADDRESS. A string comparison would demote `page` to
+   * `true` the moment a listing carried a query — `/users?filter=A` is the same destination as
+   * `/users`, and every letter the operator typed into a filter would flip the announcement
+   * back and forth. {@link pathSegments} drops the query and the fragment for exactly this
+   * reason, and reusing it here keeps this decision consistent with the one that chose the
+   * entry in the first place.
+   *
+   * @param item The entry to describe.
+   * @returns The attribute value, or null when the attribute must not be present.
+   */
+  public ariaCurrent(item: SidebarNavItem): 'page' | 'true' | null {
+    if (!this.isCurrent(item)) {
+      return null;
+    }
+
+    const showing: readonly string[] = pathSegments(this.currentUrl());
+    const entry: readonly string[] = pathSegments(item.path);
+
+    return showing.length === entry.length ? 'page' : 'true';
+  }
+
+  /**
    * Collapses the rail if it is expanded, expands it if it is collapsed.
    *
    * The template's collapse control calls this. Derives the next value from the
@@ -670,7 +796,15 @@ export class SidebarComponent {
    * it, so the transition cannot be based on a value that has since changed.
    */
   public toggleCollapsed(): void {
-    this.collapsedSignal.update((collapsed) => !collapsed);
+    // Derived from the EFFECTIVE state rather than from the writable slot, because the slot
+    // opens as null and negating null would resolve to the same value twice in a row: on a
+    // handset the rail is effectively collapsed, `!null` is true, and the first press would
+    // have collapsed an already-collapsed rail and appeared to do nothing. Reading the derived
+    // signal makes the first press always reverse what the operator can see, and writing a real
+    // boolean is what retires the arrangement-derived default from then on.
+    const next: boolean = this.collapsed() === false;
+
+    this.collapsedSignal.set(next);
   }
 }
 

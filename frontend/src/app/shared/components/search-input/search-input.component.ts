@@ -197,6 +197,38 @@ export class SearchInputComponent implements OnInit {
   @Input() public debounceMs: number = DEFAULT_DEBOUNCE_MS;
 
   /**
+   * Declares that the consumer has already given this control a visible, associated
+   * label, so this component must not render one of its own.
+   *
+   * Default `false`: standing alone, the component labels itself, and that label is
+   * mandatory rather than optional because a placeholder is a hint and never an
+   * accessible name.
+   *
+   * It exists because a second label is not a harmless duplicate. A control referenced
+   * by two `<label for>` elements has two visible captions and an accessible name
+   * assembled from both, and whichever caption sits nearest the field is then no longer
+   * the whole name - which is the exact mismatch WCAG 2.1 SC 2.5.3 Label in Name
+   * describes, and which a speech-input user feels directly: they say what they can see
+   * and the control does not answer to it.
+   *
+   * Suppression rather than an overridable caption, deliberately. A consumer that wants
+   * different wording already has the shared field wrapper, which owns the caption, the
+   * help affordance and the message slot as one unit; letting this component take a
+   * caption too would put the same string in two places, free to disagree. So the
+   * consumer keeps ONE labelling mechanism and this component steps out of the way.
+   *
+   * The bound direction is the safe one: anything other than a positive assertion leaves
+   * the label rendered, so a mistake produces a redundant caption rather than an unnamed
+   * control.
+   *
+   * A consumer that sets this MUST label the control it wraps by pointing a real
+   * `<label for>` at {@link fieldId} - the component publishes that identifier precisely
+   * so the association can be made from outside. It has no way to verify the consumer
+   * did so, which is why the default is to name itself.
+   */
+  @Input() public labelledExternally: boolean = false;
+
+  /**
    * Emits the search term, verbatim.
    *
    * The payload is the raw term exactly as typed - never trimmed, case-folded,
@@ -451,8 +483,15 @@ export class SearchInputComponent implements OnInit {
    * "Bypassing" is achieved by emitting now and letting the duplicate guard absorb the
    * debounced tail: the pending emission still arrives a moment later carrying the same
    * term, and {@link emitTerm} discards it. This is exactly why both paths must funnel
-   * through one guard — a guard placed on the stream alone would never observe this
-   * immediate emission, and the tail would emit the same term a second time.
+   * through one place — the memory a guard reads has to be written by this immediate
+   * emission too, or the tail would emit the same term a second time.
+   *
+   * ⚠ #7 — THIS PATH IS EMITTED UNCONDITIONALLY, AND IS THE ONE PATH THAT IS. It asks
+   * {@link emitTerm} NOT to deduplicate, because pressing the button or pressing Enter is a
+   * command rather than a change of state: an operator who runs the same term twice asked for it
+   * twice, and something this component cannot see may well have changed between the two — a
+   * consumer's search-axis selector being the case that made this defect visible. It still WRITES
+   * the duplicate memory, which is what keeps the debounced tail absorbed.
    *
    * The event parameter exists to suppress the browser's own default action, and it is
    * needed on exactly one of the two call paths. Pressing Enter inside a text control that
@@ -477,7 +516,26 @@ export class SearchInputComponent implements OnInit {
    */
   public submit(event?: Event): void {
     event?.preventDefault();
-    this.emitTerm(this.term.value);
+
+    // ⚠ FORCED, AND WITHOUT THIS THE BUTTON IS DEAD IN EVERY SCENARIO A USER WOULD REACH IT.
+    // The duplicate guard in `emitTerm` exists for the debounced stream, and applying it to this
+    // path too made the two mechanisms cancel each other out: the box already searches on a
+    // debounce, so by the time a hand has travelled from the keyboard to the button the term has
+    // ALREADY been emitted and `lastEmittedTerm` equals it - so the click emitted nothing, silently.
+    // Measured across five controlled trials on two screens: typing then clicking Search issued
+    // ZERO requests; clearing the box and clicking Search issued ZERO requests; only a freshly
+    // mounted screen whose term had never been applied fired at all.
+    //
+    // An explicit submit is a COMMAND to re-query, not an observation that the term changed, so it
+    // is the one path the change gate must not govern. The guard still governs the stream, which is
+    // what it was for.
+    //
+    // The debounced tail is still absorbed, because forcing does not skip the bookkeeping: the
+    // emission updates `lastEmittedTerm` on its way out, so the pending emission that arrives a
+    // moment later carrying the same term is discarded by the guard exactly as before. Forcing
+    // widens what may emit; it does not remove the memory that makes a single keystroke produce a
+    // single request.
+    this.emitTerm(this.term.value, true);
   }
 
   /**
@@ -543,8 +601,12 @@ export class SearchInputComponent implements OnInit {
    * encoded or wildcarded, and no character is ever added.
    *
    * @param term The term to emit, as held by the control.
+   * @param force When true, the duplicate guard is bypassed but still updated. Reserved for an
+   *   EXPLICIT submit - a deliberate command to re-query - and never passed by the debounced
+   *   stream, which is the path the guard exists to govern. See {@link SearchInputComponent.submit}
+   *   for the measured defect that made this distinction necessary.
    */
-  private emitTerm(term: string): void {
+  private emitTerm(term: string, force = false): void {
     // A disabled control must not produce queries, and this is the only place that
     // guarantee can be made exhaustively. Blocking the button alone would not be enough,
     // because there are three distinct routes into this funnel and only one of them
@@ -571,9 +633,36 @@ export class SearchInputComponent implements OnInit {
 
     const boundedTerm = boundSearchTerm(term);
 
+    // ⚠ #7 — THE DUPLICATE GUARD BELONGS TO TYPING AND TO NOTHING ELSE, AND CONFLATING THE TWO MADE
+    // THE SUBMIT AFFORDANCE INERT. Every route into this funnel used to be deduplicated, which is
+    // right for the debounced stream — successive keystrokes that leave the term unchanged, and the
+    // tail of a delay whose term has already been emitted, are both genuinely the same query asked
+    // for once. It is WRONG for an explicit submit. Pressing the button, or pressing Enter, is a
+    // COMMAND, and a command asked for twice was asked for twice.
+    //
+    // The measured consequence: an operator types a term, the delay elapses and the query runs, and
+    // then pressing Search does nothing at all — zero requests — because the guard recognises the
+    // term as one already emitted. Worse, on a consumer that pairs this box with a SEARCH-AXIS
+    // selector, the axis is legacy-faithfully applied only when a search is run: so with the guard
+    // in force, switching from account name to electronic-mail address and pressing Search issued
+    // nothing, and the selector could never take effect at all. Neither behaviour was wrong on its
+    // own; jointly they made a control inert. This component cannot see the axis and must not try
+    // to — the fix is simply to stop second-guessing an explicit request.
+    //
+    // ⚠ THE DOCUMENTED DEBOUNCE BYPASS STILL WORKS, AND IT IS THIS ASSIGNMENT THAT PRESERVES IT.
+    // An immediate submit records its term here exactly as before, so the pending debounced tail
+    // that arrives a moment later carrying the same term is compared against it on the
+    // deduplicated path and discarded. Removing the guard from the submit path therefore does NOT
+    // reintroduce the double query; it would only do so if the memory stopped being written.
+    //
     // Comparing against `null` when nothing has been emitted yet is always false, so a
     // first emission of the empty term is correctly allowed through.
-    if (this.lastEmittedTerm === boundedTerm) {
+    //
+    // The `force` escape is checked here rather than at the call site so that the assignment below
+    // still runs on a forced emission. That ordering is the whole reason forcing is safe: the guard
+    // is bypassed for THIS emission and simultaneously re-armed for the next one, so a forced submit
+    // cannot leave the memory stale and let the debounced tail emit the same term a second time.
+    if (!force && this.lastEmittedTerm === boundedTerm) {
       return;
     }
 

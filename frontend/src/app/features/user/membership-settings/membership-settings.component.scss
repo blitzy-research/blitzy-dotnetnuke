@@ -8,6 +8,7 @@
 //
 //     .membership-settings                     the <form>
 //     .membership-settings__transport-failure   a <p role="alert">
+//     .membership-settings__unconfigured        a plain <p>, shown INSTEAD of the form
 //     .membership-settings__section             a <details open>
 //     .membership-settings__section-summary     its <summary>
 //     .membership-settings__section-heading     an <h2> NESTED INSIDE that summary
@@ -68,6 +69,30 @@
   font-family: var(--font-family-base);
   font-size: var(--font-size-md);
   line-height: var(--line-height-tight);
+
+  //  ⚠ THIS SCREEN NEEDS A WIDER LABEL COLUMN THAN THE SHARED DEFAULT, AND THE LEGACY SOURCE IS WHAT SAYS
+  //  SO. `--field-label-inline-size` is 9.375rem, the 150px that `<td class="SubHead" width="150">` carries
+  //  on 229 of 240 label cells across the whole admin surface, and it is the right default for the whole
+  //  application. It is the wrong value HERE, because this screen's labels are the longest in the admin
+  //  surface: runtime measurement found every label cell capped at 150px with an inner text box of 93px,
+  //  TWENTY-ONE labels wrapping to three or more lines and three of them - "Default Profile Visibility
+  //  Mode", "Require a valid Profile for Registration" and "Users display mode in Manage Roles" - wrapping
+  //  to SIX, while roughly 800px of the 1182px row sat empty beside them.
+  //
+  //  THE BOUND IS MEASURED, NOT CHOSEN, following the same method the module-settings screen's own cap
+  //  records. This screen consolidates three legacy screens, and all three declare their label width
+  //  EXPLICITLY rather than inheriting the 150px table convention, because their authors hit the same
+  //  problem: `Website/admin/Users/UserSettings.ascx` L21 and L44 both declare `labelwidth="300px"`, L62
+  //  declares `labelwidth="250px"` and L8 declares `labelwidth="200px"`, while
+  //  `Website/admin/Users/MemberServices.ascx` L12 carries `width="175px"`. Every one of the five is WIDER
+  //  than the shared default, and 300px is the value the two property editors that render the bulk of these
+  //  fields both chose. The cap is therefore that measured value expressed in the root unit.
+  //
+  //  It overrides only the token the shared field's own track is BUILT from, so nothing inside
+  //  `app-form-field` is reached into and the track keeps its zero minimum - a short label still takes only
+  //  the room it needs, the column still yields entirely when the viewport cannot afford it, and the stacked
+  //  layout below the `md` step is untouched.
+  --field-label-inline-size: 18.75rem;
 }
 
 // MIGRATION: the legacy screen was four nested layout tables - `Website/admin/Users/
@@ -101,7 +126,38 @@
 .membership-settings__transport-failure {
   margin: 0;
   max-inline-size: mx.breakpoint('md');
-  color: var(--color-danger);
+  color: var(--color-danger-text);
+}
+
+// The provenance disclosure - #6. Whether the values on this screen are a stored policy or the
+// platform defaults. Its measure is capped on the same terms as the sentence above it.
+//
+// ⚠ THE TWO STATES ARE DISTINGUISHED BY WEIGHT AND NOT BY COLOUR, deliberately. Colour alone is
+// never the carrier of a distinction here, and the two states are not error states in any case:
+// neither one is a fault, so neither takes the danger token. The defaults state is the one an
+// operator needs to notice, so it alone is emphasised; the stored state is the ordinary case and
+// reads as ordinary text.
+.membership-settings__provenance {
+  margin: 0;
+  max-inline-size: mx.breakpoint('md');
+  color: var(--color-text-muted);
+
+  &[data-provenance='defaults'] {
+    color: var(--color-primary);
+    font-weight: var(--font-weight-bold);
+  }
+}
+
+// The tenant stores no policy, so there is nothing to read and nowhere to write.
+//
+// ⚠ DELIBERATELY NOT STYLED AS AN ERROR, which is the visual half of the same correction the
+// template records. It shares the measure of the failure note above it so the two occupy the same
+// column, but it takes the body ink rather than the danger ink: this is a stable configuration
+// state an operator can act on, not something that went wrong, and painting it red would restore
+// exactly the alarm the removed "Not Found" banner used to raise.
+.membership-settings__unconfigured {
+  margin: 0;
+  max-inline-size: mx.breakpoint('md');
 }
 
 // -----------------------------------------------------------------------------

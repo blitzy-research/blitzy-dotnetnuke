@@ -77,7 +77,9 @@
 import { Injectable, inject } from '@angular/core';
 import { finalize } from 'rxjs';
 
-import { AuthStore } from './auth.store';
+import { NotificationService } from '../services/notification.service';
+
+import { AuthStore, REVOCATION_FAILED_MESSAGE, SIGNED_OUT_MESSAGE } from './auth.store';
 import { SessionTeardownService } from './session-teardown.service';
 
 import type { Observable } from 'rxjs';
@@ -120,6 +122,34 @@ export class SessionLifecycleService {
    * application has almost certainly built already.
    */
   private readonly teardown = inject(SessionTeardownService);
+
+  /**
+   * The surface both sign-out statements are raised on.
+   *
+   * ⚠ THE STATEMENTS BELONG HERE RATHER THAN IN THE STORE, AND THAT PLACEMENT WAS FORCED BY
+   * MEASUREMENT. Both were originally raised inside {@link AuthStore.logout}, which is where
+   * the facts they report are established — and both were destroyed a few milliseconds later,
+   * every time, without ever being rendered legibly. A real browser observing the message
+   * region caught the confirmation being added and then removed 10 ms afterwards; a
+   * point-in-time read of the region and even a 40 ms poller both reported it absent, because
+   * 10 ms is shorter than one display frame.
+   *
+   * The cause is this file's own {@link SessionLifecycleService.signOut}. It runs
+   * {@link SessionLifecycleService.endSession} in a `finalize`, so the teardown happens AFTER
+   * the revocation settles — and therefore after the store has already spoken.
+   * `SessionTeardownService.purge` empties the message queue outright, and it must: a notice
+   * belonging to the previous session can name that operator's records, so a teardown that
+   * spared queue entries would leak them to whoever signs in next on the same page load. The
+   * reprieve carried by {@link AppNotification.survivesNavigation} cannot help either, because
+   * it survives a change of SCREEN and this is a change of SESSION. Counted on the deliberate
+   * sign-out path, the queue is emptied THREE times: once by the store's own discard before
+   * the statement, then twice more after it — by the purge below and again by
+   * {@link AuthStore.reset}'s discard.
+   *
+   * So the rule this file follows is: the party that speaks must be the party that OUTLIVES the
+   * teardown. Nothing purges after this service, which makes it the only correct speaker.
+   */
+  private readonly notifications = inject(NotificationService);
 
   /**
    * Discards every trace of the current session from this browser.
@@ -181,6 +211,64 @@ export class SessionLifecycleService {
    * with the caller rather than outliving it.
    */
   signOut(): Observable<void> {
-    return this.authStore.logout().pipe(finalize(() => this.endSession()));
+    return this.authStore.logout().pipe(
+      finalize(() => {
+        /*
+         * ⚠ READ BEFORE THE TEARDOWN, BECAUSE THE TEARDOWN ERASES IT. The revocation residue is
+         * recorded by `AuthStore.logout`'s own error handler, which has already run by the time a
+         * `finalize` fires — but `AuthStore.reset`, called from `endSession` below, routes through
+         * the store's private discard, and that discard sets this flag back to `false`. Reading it
+         * afterwards would therefore report "nothing outstanding" on exactly the runs where
+         * something is, and the residue is the one fact about a sign-out an operator may still have
+         * to act on. Captured into a local so the ordering is visible rather than implied.
+         */
+        const revocationOutstanding = this.authStore.revocationOutstanding();
+
+        this.endSession();
+
+        /*
+         * ⚠ A DELIBERATE SIGN-OUT CONFIRMS ITSELF, and before this it confirmed itself to nobody.
+         * The redirect to the sign-in screen was the only evidence the operator's request had been
+         * carried out, and a sign-in form appearing is weak evidence because it is also what a
+         * session lapsing on its own produces — two events that want different responses from the
+         * person reading the screen. Both live regions were measured empty at zero height on this
+         * path, with nothing written to the console either.
+         *
+         * `'info'` rather than `'success'`: this reports a state the operator asked for, not the
+         * outcome of a task that could have gone the other way.
+         *
+         * DELIBERATELY WORDED DIFFERENTLY from the sentence the bearer interceptor raises when a
+         * session ends WITHOUT being asked. One says an instruction was carried out; the other says
+         * something happened to them. Sharing a sentence would erase the distinction the two
+         * screens exist to draw.
+         *
+         * THE REPRIEVE IS CORRECT UNDER BOTH ORDERINGS, which is why it is not conditional on the
+         * navigation having happened yet. The shell navigates from this observable's `complete`
+         * handler, and RxJS delivers `complete` to the subscriber BEFORE finalizing the
+         * subscription — so the departure is already under way when this runs, but its
+         * `NavigationEnd` (which must load the sign-in route's chunk) has almost certainly not
+         * fired. If it fires after this, the reprieve is spent on it and the statement survives
+         * onto the sign-in screen, which is where it is meant to be read. If it has somehow
+         * already fired, the reprieve is simply never spent — and the next sign-in purges the queue
+         * through `purge('signedIn')`, so it cannot outstay its welcome either way.
+         */
+        this.notifications.info(SIGNED_OUT_MESSAGE, true);
+
+        /*
+         * Reported SECOND and as its own statement, never folded into the confirmation above. Both
+         * facts are true: the local sign-out completed, which is the part that was asked for, AND a
+         * credential was left un-revoked on the server. Retracting the first to report the second
+         * would misdescribe what happened, and an operator who reads only one of the two is better
+         * served reading that they are signed out.
+         *
+         * `'warning'` rather than `'error'`: nothing the operator did failed, and the remedy named
+         * by the sign-in screen — which renders this same sentence from its own copy — is available
+         * to them.
+         */
+        if (revocationOutstanding) {
+          this.notifications.warning(REVOCATION_FAILED_MESSAGE, true);
+        }
+      }),
+    );
   }
 }

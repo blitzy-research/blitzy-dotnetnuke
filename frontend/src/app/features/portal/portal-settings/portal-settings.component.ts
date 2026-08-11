@@ -163,6 +163,7 @@
 
 import {
   ChangeDetectionStrategy,
+  ChangeDetectorRef,
   Component,
   DestroyRef,
   ElementRef,
@@ -175,13 +176,11 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import type { Subscription } from 'rxjs';
+import { finalize } from 'rxjs/operators';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
-import { Router } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 
-import {
-  BannerAdvertisingMode,
-  UserRegistrationMode,
-} from '../../../core/models/portal.model';
+import { BannerAdvertisingMode, UserRegistrationMode } from '../../../core/models/portal.model';
 import { NotificationService } from '../../../core/services/notification.service';
 import { TabService } from '../../../core/services/tab.service';
 import { AuthStore } from '../../../core/state/auth.store';
@@ -195,7 +194,9 @@ import {
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
-import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
+import {
+  LoadingSpinnerComponent,
+} from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 
 import type { AbstractControl, ValidationErrors } from '@angular/forms';
@@ -207,6 +208,12 @@ import type {
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { TabListItem } from '../../../core/models/tab.model';
 import type { PortalFailure } from '../../../core/state/portal.store';
+import {
+  FocusFirstInvalidDirective,
+  INVALID_CONTROL_SELECTOR,
+} from '../../../shared/directives/focus-first-invalid.directive';
+import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 
 // ---------------------------------------------------------------------------
 // The two tabs, and the disclosures nested inside them
@@ -303,6 +310,30 @@ const NO_PAGE_SELECTED = -1;
  * the legacy display string, not markup.
  */
 const NO_PAGE_SELECTED_LABEL = '<None Specified>';
+
+/**
+ * The in-flight wording for a WRITE this screen issued.
+ *
+ * The action row's own measured wording, unchanged - it is only the CONDITION under which it shows
+ * that changed. See {@link PortalSettingsComponent.busyLabel}.
+ */
+/**
+ * The wording of the link to this portal's host names.
+ *
+ * `ControlTitle_.Text` in `PortalAlias.ascx.resx` is "Portal Aliases", which is also the title
+ * the route declares — so the link and the screen it opens are named identically.
+ */
+const ALIASES_LINK_LABEL = 'Portal Aliases';
+
+const SAVING_LABEL = 'Saving…';
+
+/**
+ * The in-flight wording for a READ that refreshes a screen already on display.
+ *
+ * Matches the full-screen indicator's wording for the FIRST read, so a refetch and an initial read
+ * describe themselves the same way and no third phrasing enters the screen.
+ */
+const REFRESHING_LABEL = 'Loading site settings…';
 
 /**
  * The administrator selector's value when no account is chosen.
@@ -458,6 +489,29 @@ const HOST_FEE_INVALID_MESSAGE = 'Invalid fee, needs to be a currency value!';
 
 /** The measured whole-number message for the three quota boxes. */
 const WHOLE_NUMBER_INVALID_MESSAGE = 'Enter a whole number.';
+
+/**
+ * Reported when the site title is left empty.
+ *
+ * ⚠ #24 — THE WORDING IS THE SERVER'S OWN, VERBATIM.
+ * `DnnMigration.Application/Validation/UpdatePortalRequestValidator.cs:L349` declares
+ * `"Site Title is required."` and its rule at L386 answers a 400 with it. Restating the
+ * server's exact sentence is what makes the two authorities agree rather than merely
+ * coexist: an operator who submits an empty title now reads the same sentence whether the
+ * client caught it or the server did, and a reader who has already been told the field is
+ * required is not then told something different by the round trip.
+ *
+ * This has NO LEGACY RESOURCE PROVENANCE, and that is the point of the finding. A
+ * case-insensitive sweep of `Website/admin/Portal/sitesettings.ascx` finds exactly THREE
+ * validators on the 568-line screen, all of them comparisons, and NO `RequiredFieldValidator`
+ * anywhere — `txtPortalName` carries `MaxLength="128"` and nothing else. The legacy screen
+ * therefore let an empty title reach the server, and the legacy server accepted it. The
+ * modern server does NOT: its rule is `NotEmpty()`, which is a documented tightening that
+ * predates this checkpoint. The defect is that the CLIENT had not been told, so the only
+ * feedback for an empty title was a 400 the operator had to provoke. Closing the gap on the
+ * client changes no accepted input set whatsoever; it changes only when the operator is told.
+ */
+const PORTAL_NAME_REQUIRED_MESSAGE = 'Site Title is required.';
 
 /** The measured whole-number message for the time-zone offset. */
 const TIME_ZONE_INVALID_MESSAGE = 'Enter the offset as a whole number of minutes.';
@@ -1067,18 +1121,46 @@ function buildPageOptions(
   selector: 'app-portal-settings',
   standalone: true,
   imports: [
+    FocusFirstInvalidDirective,
+    SubmitGuardDirective,
     ReactiveFormsModule,
+    RouterLink,
     PageHeaderComponent,
     FormFieldComponent,
     LoadingSpinnerComponent,
     ErrorBannerComponent,
     ConfirmDialogComponent,
+    FocusFirstInvalidDirective,
+    // ⚠ #22 — for the host-name listing link in the page header.
+    RouterLink,
   ],
   templateUrl: './portal-settings.component.html',
   styleUrl: './portal-settings.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PortalSettingsComponent {
+
+  /**
+   * Registers this screen's unsaved-entry probe with the application's tracker.
+   *
+   * ⚠ WHY A REGISTRATION RATHER THAN A ROUTE-LEVEL READ. Leaving a screen happens two ways and
+   * only one of them is a router navigation: Cancel, an in-application link and the browser's Back
+   * button are navigations a route guard can refuse, while closing or reloading the tab is not, and
+   * only the browser's own unload prompt covers that - which needs the dirty state at an arbitrary
+   * moment rather than at a navigation. One tracker holding probes answers both, and the probe is
+   * released automatically when this screen is destroyed, so a screen that has gone can never hold
+   * a navigation up. Measured before this existed: a dirty form was discarded in silence by all
+   * four exits, with instrumented `confirm`, `alert` and `beforeunload` recording nothing at all.
+   *
+   * A form that is being SAVED is not dirty in the sense that matters here - the entry is on its
+   * way to the server, and prompting about it would ask the operator to confirm discarding work
+   * they have already committed.
+   */
+  private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
+    // `busy` is declared further down the class; the arrow body is only evaluated when the
+    // tracker asks, so the ordering is irrelevant at construction time.
+    () => this.form.dirty && this.busy() === false,
+  );
   // -------------------------------------------------------------------------
   // Collaborators. Injected as fields rather than through the constructor, which is
   // this workspace's convention, and every one of them is a state or presentation
@@ -1089,6 +1171,24 @@ export class PortalSettingsComponent {
   private readonly identity = inject(AuthStore);
   private readonly pages = inject(TabService);
   private readonly notifications = inject(NotificationService);
+
+  /**
+   * This screen's own element, searched for the first control a refused submit is standing on.
+   *
+   * Scoped to the host and never to the document, so the search cannot reach a control belonging to
+   * another screen still in the DOM during a route transition.
+   */
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+
+  /**
+   * Used to render the tab and section changes a refusal makes BEFORE focus is moved.
+   *
+   * A control that is not in the document cannot take focus, and this screen keeps only the active
+   * tab's panel in the DOM, so revealing a control and focusing it are two steps that must be
+   * separated by a render. Under on-push nothing renders until change detection runs, and by the time
+   * it would run on its own the focus call has already been made and has already failed silently.
+   */
+  private readonly changeDetector = inject(ChangeDetectorRef);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
 
@@ -1164,9 +1264,23 @@ export class PortalSettingsComponent {
    * non-null: they are reached as properties of this group.
    */
   protected readonly form = new FormGroup<PortalSettingsFormModel>({
+    // ⚠ #24 — REQUIRED, MIRRORING THE SERVER RATHER THAN THE LEGACY MARKUP.
+    //
+    // The legacy screen declared no required rule on this field (see
+    // PORTAL_NAME_REQUIRED_MESSAGE for the sweep), but the modern server declares
+    // `NotEmpty()` on it, so the field IS required and the client was simply silent about
+    // it. Runtime testing measured the consequence: clearing the title and submitting
+    // produced a 400 with no field-level indication of which field or why.
+    //
+    // `Validators.required` is deliberately paired with the server's own message rather
+    // than left to a generic one, and the whitespace question is settled by the server's
+    // choice: FluentValidation's `NotEmpty` treats a whitespace-only string as empty, and
+    // Angular's `Validators.required` does NOT. The component normalises this field before
+    // it judges the form — see the submit path — so a whitespace-only title is refused by
+    // the same rule that refuses a blank one, and the two authorities cannot disagree.
     portalName: new FormControl('', {
       nonNullable: true,
-      validators: [Validators.maxLength(PORTAL_NAME_MAX_LENGTH)],
+      validators: [Validators.required, Validators.maxLength(PORTAL_NAME_MAX_LENGTH)],
     }),
     description: new FormControl('', {
       nonNullable: true,
@@ -1236,7 +1350,24 @@ export class PortalSettingsComponent {
   protected readonly fieldHelp = FIELD_HELP;
   protected readonly bannerHostLockNotice = BANNER_HOST_LOCK_NOTICE;
   protected readonly deleteConfirmTitle = DELETE_CONFIRM_TITLE;
-  protected readonly deleteConfirmMessage = DELETE_CONFIRM_MESSAGE;
+  /**
+   * The confirmation body: the measured question, then WHICH portal it will destroy.
+   *
+   * ⚠ THE PROMPT NAMED A TYPE AND NOT AN INSTANCE. "Are You Sure You Wish To Delete This
+   * Portal ?" is the legacy wording and is kept verbatim, but the dialog is modal and covers the
+   * screen it was raised from - including the heading that was the only thing on the page saying
+   * which tenant is open. So at the moment of the single irreversible action in this feature, the
+   * name was hidden by the very prompt asking about it.
+   *
+   * The name is appended only when it is known: the shared header suppresses an absent or blank
+   * name, and this does the same rather than rendering a dangling separator or the word
+   * "undefined" inside a destructive confirmation.
+   */
+  protected readonly deleteConfirmMessage = computed<string>(() => {
+    const name: string | undefined = this.portalName();
+
+    return name === undefined ? DELETE_CONFIRM_MESSAGE : `${DELETE_CONFIRM_MESSAGE} ${name}`;
+  });
   protected readonly deleteConfirmLabel = DELETE_CONFIRM_LABEL;
   protected readonly formInvalidMessage = FORM_INVALID_MESSAGE;
   protected readonly pagesUnavailableMessage = PAGES_UNAVAILABLE_MESSAGE;
@@ -1247,6 +1378,7 @@ export class PortalSettingsComponent {
   /** The wording shown while the administrator candidates are being read. */
   protected readonly administratorsLoadingMessage = ADMINISTRATORS_LOADING_MESSAGE;
   protected readonly portalIdMissingMessage = PORTAL_ID_MISSING_MESSAGE;
+
   protected readonly noPageSelectedLabel = NO_PAGE_SELECTED_LABEL;
 
   /** The measured character limits, so the template need not restate a number. */
@@ -1413,6 +1545,28 @@ export class PortalSettingsComponent {
         control.enable({ emitEvent: false });
       }
     });
+
+    // ⚠ WITHDRAW THE REFUSAL NOTICE ONCE IT STOPS BEING TRUE. The notice reads "correct the
+    // highlighted fields and try again", and runtime measurement found it still saying so after the
+    // one offending field had been corrected and the form had returned to valid, with zero field
+    // errors left on screen — an assertion about the present tense that was no longer about anything.
+    // The field-level messages cleared reactively because they are bound to their own controls; only
+    // this screen-level one was latched, set on refusal and cleared on the next submit or on hydration.
+    //
+    // Watched through the form's own status stream rather than recomputed, because a `FormGroup` is not
+    // a signal and its validity cannot be derived reactively. Only the transition INTO validity clears
+    // the marker: an edit that leaves the form invalid must not withdraw a notice that still holds.
+    //
+    // The Warning toast raised alongside it is deliberately left to stand. A toast records that
+    // something HAPPENED — a submit was refused, which remains true however the form looks now — and
+    // this application's notification surface deliberately keeps warnings and errors on screen until
+    // they are dismissed or the reader leaves the screen. The notice is a statement about the form's
+    // CURRENT state and is the only one of the two that can go stale.
+    this.form.statusChanges.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(() => {
+      if (this.form.valid && this._submitRejected()) {
+        this._submitRejected.set(false);
+      }
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -1422,6 +1576,35 @@ export class PortalSettingsComponent {
   /** True once an identifier was resolved from the address. */
   protected readonly hasPortalId = computed<boolean>(() => this._portalId() !== undefined);
 
+  /**
+   * The address of this portal's host names, or `null` when the route named no portal.
+   *
+   * ⚠ THIS IS THE APPLICATION'S ONLY LINK TO THAT SCREEN. Every anchor the console renders was
+   * enumerated and none addressed `:portalId/aliases`; the listing's single row command targets
+   * this screen, and nothing led onwards from it. So a portal's host names — which every action
+   * of the alias resource grants a tenant administrator by right — could be managed only by
+   * typing an address, and the migration's parity requirement does not treat a workflow reachable
+   * solely by typing as reachable.
+   *
+   * An array rather than an interpolated string, so the router composes the segments: the
+   * identifier can be `0` or `-1` and both are real tenants.
+   */
+  protected readonly aliasesLink = computed<(string | number)[] | null>(() => {
+    const id: number | undefined = this._portalId();
+
+    return id === undefined ? null : ['/portals', id, 'aliases'];
+  });
+
+  /**
+ * The wording of that link.
+ *
+ * ⚠ LEGACY-VERBATIM. `Website/admin/Portal/App_LocalResources/PortalAlias.ascx.resx` declares
+ * `ControlTitle_.Text` as `Portal Aliases`, which is what the legacy module titled itself. Using the
+ * destination's own title as the link text is what lets an operator who knew the legacy application
+ * recognise where it goes.
+ */
+  protected readonly aliasesLinkLabel: string = ALIASES_LINK_LABEL;
+
   /** The settings resource on screen, or `null` before the first read completes. */
   protected readonly settings = this.portals.settings;
 
@@ -1430,9 +1613,45 @@ export class PortalSettingsComponent {
     () => this.portals.settingsLoading() && this.portals.settings() === null,
   );
 
-  /** True while a save or a delete is in flight. */
+  /**
+   * True while ANY request this screen depends on is outstanding - a save, a delete or a re-read.
+   *
+   * The doc comment used to say "a save or a delete", and the expression never matched it: the
+   * store raises `settingsLoading` for its READ of the settings projection as well as for its
+   * write, and `detailLoading` is a read slice outright. The wider meaning is the correct one for
+   * what this signal is FOR - both actions are disabled while it holds, and submitting over an
+   * outstanding re-read would post a projection the screen is about to replace. Only the name and
+   * the description were wrong.
+   */
   protected readonly busy = computed<boolean>(
     () => this.portals.settingsLoading() || this.portals.detailLoading(),
+  );
+
+  /**
+   * Whether the outstanding request is a WRITE this screen issued, rather than a read.
+   *
+   * ⚠ THE AFFORDANCE WAS MISLABELLED WITHOUT IT. The action row renders a progress indicator
+   * whenever {@link PortalSettingsComponent.busy} holds, labelled "Saving…" - and that label was
+   * measured appearing on a plain REVISIT to this screen, where the store already holds settings
+   * so the form renders immediately and the refetch merely flips the same flag. The operator was
+   * told their work was being saved when nothing had been submitted at all. A progress affordance
+   * that misreports WHICH operation is in flight is worse than none, because it cannot be
+   * disbelieved selectively.
+   *
+   * Written by this component rather than derived from the store, because the store cannot answer
+   * it: one flag covers both directions of the settings slice. It is set immediately before the
+   * write is issued and cleared when the outcome ticket completes, whichever way it completes.
+   */
+  private readonly writing = signal(false);
+
+  /**
+   * The wording for the in-flight indicator, chosen by what is actually in flight.
+   *
+   * Both strings are the ones already in use on this screen - the full-screen indicator's own
+   * wording for a read, and the action row's for a write - so no new vocabulary is introduced.
+   */
+  protected readonly busyLabel = computed<string>(() =>
+    this.writing() ? SAVING_LABEL : REFRESHING_LABEL,
   );
 
   /**
@@ -1847,6 +2066,13 @@ export class PortalSettingsComponent {
 
     const messages: string[] = [];
 
+    // ⚠ #24 — THE REQUIRED RULE IS REPORTED FIRST, because it is the one that describes the
+    // whole field rather than one property of the value in it, and because a field that is
+    // empty cannot also be too long, so the two never compete for the reader's attention.
+    if (errors['required'] !== undefined) {
+      messages.push(PORTAL_NAME_REQUIRED_MESSAGE);
+    }
+
     // The two measured data-type checks and the two derived ones all report their own
     // measured wording as the error value, so it is surfaced directly.
     for (const key of ['expiryDateType', 'hostFeeType', 'wholeNumber', 'timeZoneOffset']) {
@@ -1888,27 +2114,136 @@ export class PortalSettingsComponent {
       return;
     }
 
+    // ⚠ #24 — NORMALISE THE TITLE BEFORE JUDGING IT, so the client's required rule and the
+    // server's `NotEmpty` agree on what "empty" means. FluentValidation counts a
+    // whitespace-only string as empty and Angular's `Validators.required` does not, so
+    // without this a title of three spaces would pass here and be refused there. Writing the
+    // trimmed value back into the control - rather than trimming only on the way out - is
+    // what makes the refusal visible in the field the operator must fix.
+    const titleControl = this.form.controls.portalName;
+    const enteredTitle = titleControl.value;
+    const normalisedTitle = enteredTitle.trim();
+
+    if (normalisedTitle !== enteredTitle) {
+      titleControl.setValue(normalisedTitle);
+    }
+
     if (this.form.invalid) {
       this.form.markAllAsTouched();
       this._submitRejected.set(true);
       this.notifications.warning(FORM_INVALID_MESSAGE);
+      this.revealFirstInvalidControl();
 
       return;
     }
 
     this._submitRejected.set(false);
     this.portals.clearFailures();
+    this.writing.set(true);
 
     this.portals
       .saveSettings(target, this.toRequest(this.hydratedFrom))
-      .pipe(takeUntilDestroyed(this.destroyRef))
+      .pipe(
+        takeUntilDestroyed(this.destroyRef),
+        // Cleared on EVERY termination, not in the success handler: the ticket completes without
+        // emitting when the write is refused, and a flag left set would label a later re-read as a
+        // save for the rest of the screen's life.
+        finalize(() => {
+          this.writing.set(false);
+        }),
+      )
       .subscribe((stored: PortalSettings) => {
         // The store has already replaced its slice with the stored resource, and the
         // hydration effect will move it into the form. Recording it here as well keeps the
         // preserved-member source in step even if the effect has not run yet.
         this.hydratedFrom = stored;
+
+        // ⚠ THE FORM IS RETURNED TO PRISTINE HERE, EXPLICITLY, AND NOT LEFT TO THE EFFECT.
+        // The comment above is right that hydration resets the control state when it runs -
+        // `hydrate` ends in `markAsPristine`/`markAsUntouched` - but the form was MEASURED
+        // still carrying `ng-dirty` after a successful save while the profile screen reset
+        // correctly, so that path is not reliably reached: the effect observes the store's
+        // slice, and a save that stores exactly what was already held gives it nothing to
+        // react to. Depending on a value CHANGING to clear a flag means an idempotent save
+        // never clears it.
+        //
+        // Two things went wrong while the flag survived, and the second is the serious one.
+        // A saved form kept advertising unsaved work, so the screen contradicted the success
+        // notification beside it. And the unsaved-changes guard declared at the top of this
+        // class reads `form.dirty` once a write is no longer in flight, so navigating away
+        // after a SUCCESSFUL save raised a confirmation asking the operator to discard work
+        // they had just committed - a prompt that teaches operators to dismiss the prompt.
+        //
+        // Marking untouched as well as pristine matches `hydrate`, so submit-time validation
+        // messages do not persist over an entry that has since been stored.
+        this.form.markAsPristine();
+        this.form.markAsUntouched();
+
         this.notifications.success(SAVE_SUCCEEDED_MESSAGE);
       });
+  }
+
+  /**
+   * Opens whatever is hiding the first offending control, then focuses it.
+   *
+   * ⚠ WITHOUT THIS, A REFUSED SUBMIT ON THIS SCREEN LEAVES THE OPERATOR ON THE BUTTON. The shared
+   * focus directive cannot help here, and the reason is specific rather than incidental: it refuses
+   * to act when the form is VALID at the moment the submit event fires, and on this screen it is. A
+   * title of three spaces satisfies Angular's `required`, so the form is valid when the event is
+   * raised and only becomes invalid inside this handler, where the title is normalised and the value
+   * collapses to the empty string. Both the directive and this handler listen to the same event and
+   * Angular does not order them, so the directive is as likely as not to look before the normalisation
+   * and find nothing to do.
+   *
+   * Runtime measurement recorded the consequence exactly, by object identity: after a refused
+   * whitespace submit `document.activeElement` was the Update button and not the Title input, with
+   * the error the operator had to fix roughly six hundred pixels above them, and the button carrying
+   * no visible focus ring because the submit came from a pointer.
+   *
+   * ⚠ THE SEARCH HAS TO CROSS TWO KINDS OF HIDING, WHICH IS WHY THIS IS NOT ONE `querySelector`.
+   * Every collapsed section is opened first: a refusal must not seal its own explanation inside a
+   * region the operator closed. Then, because this screen keeps only the ACTIVE tab's panel in the
+   * document, the tabs are tried in order until one of them contains an offending control - so a
+   * negative fee on Advanced Settings is reached from a submit pressed on Basic Settings without this
+   * method holding a map from control to tab, which would be a second place for the truth to live.
+   * The active tab is tried first by construction, since the loop starts from the tab already showing.
+   *
+   * A render is forced between revealing and focusing. Under on-push a control revealed this instant
+   * is not in the document yet, and `focus()` on an element that is not there succeeds as a call and
+   * moves focus nowhere - which is the same silent failure this method exists to remove.
+   *
+   * The selector is IMPORTED from the shared directive rather than restated, so the control this
+   * reveals is by definition the one the directive would have chosen; a hand-copied approximation
+   * would drift and the two would act on different elements.
+   */
+  private revealFirstInvalidControl(): void {
+    this._collapsed.set(new Set<PortalSettingsSection>());
+
+    const startedOn = this._activeTab();
+    const order: readonly PortalSettingsTab[] = [
+      startedOn,
+      ...TAB_ORDER.filter((tab) => tab !== startedOn),
+    ];
+
+    for (const tab of order) {
+      this._activeTab.set(tab);
+      this.changeDetector.detectChanges();
+
+      const target = this.host.nativeElement.querySelector<HTMLElement>(INVALID_CONTROL_SELECTOR);
+
+      if (target !== null) {
+        if (target !== target.ownerDocument.activeElement) {
+          target.focus();
+        }
+
+        return;
+      }
+    }
+
+    // Nothing was found on any tab. The tab the operator was on is restored rather than left wherever
+    // the search ended, because moving somebody to a different tab and then giving them no reason for
+    // it is worse than the refusal they already have.
+    this._activeTab.set(startedOn);
   }
 
   /**
@@ -1963,8 +2298,28 @@ export class PortalSettingsComponent {
       .deletePortal(target)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe(() => {
-        this.notifications.success(DELETE_SUCCEEDED_MESSAGE);
-        void this.router.navigateByUrl(PORTAL_LIST_PATH);
+        // ⚠ THE FORM IS SETTLED BEFORE LEAVING, OR THE UNSAVED-ENTRY GUARD ASKS THE OPERATOR TO
+        // CONFIRM DISCARDING EDITS TO A PORTAL THAT NO LONGER EXISTS. The probe reads
+        // `dirty && saving() === false`, and a delete is not a save, so an operator who typed
+        // something and then deleted the portal would be prompted about the typing on the way out.
+        // There is nothing left to save, so pristine is the honest state.
+        this.form.markAsPristine();
+        this.form.markAsUntouched();
+
+        this.notifications.success(DELETE_SUCCEEDED_MESSAGE, true);
+
+        // ⚠ EXEMPTED FROM THE NAVIGATION SWEEP, WITHOUT WHICH THIS CONFIRMATION IS NEVER SEEN. The
+        // shell retires notifications on a completed navigation, and this one is raised in the same
+        // task as the navigation below, so it was swept before it could be painted. The deleted
+        // portal's own settings screen cannot show the confirmation - the record it described is
+        // gone - so the listing is the only place it can be read.
+        this.notifications.retainAcrossNavigation();
+
+        // ⚠ THE ADDRESS IS REPLACED RATHER THAN PUSHED. The screen being left describes a record that
+        // no longer exists, so leaving a history entry for it would offer the browser’s Back button as a
+        // route to a settings form for a deleted portal - and the unsaved-entry gate reads the replacement
+        // as an application-initiated departure, so it does not question a navigation nobody chose.
+        void this.router.navigateByUrl(PORTAL_LIST_PATH, { replaceUrl: true });
       });
   }
 

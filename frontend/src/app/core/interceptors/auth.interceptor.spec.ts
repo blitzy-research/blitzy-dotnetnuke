@@ -19,8 +19,9 @@ import type { AuthSession, CurrentUser, LoginResponse } from '../models/auth.mod
 
 import { ModuleStore } from '../state/module.store';
 import { RoleStore } from '../state/role.store';
+import { NotificationService } from '../services/notification.service';
 import { TokenStorageService } from '../services/token-storage.service';
-import { SessionTeardownService } from '../state/session-teardown.service';
+import { SESSION_ENDED_MESSAGE, SessionTeardownService } from '../state/session-teardown.service';
 import { authInterceptor } from './auth.interceptor';
 import { correlationIdInterceptor } from './correlation-id.interceptor';
 
@@ -531,11 +532,43 @@ async function reasonFor(pending: Promise<unknown>): Promise<unknown> {
   );
 }
 
+/**
+ * The options every ejection to the sign-in screen must carry.
+ *
+ * ⚠ DECLARED ONCE, AND FOR THE SAME REASON THE PRODUCTION CODE NOW IMPORTS THE PARAMETER NAME
+ * FROM ONE PLACE. Seven cases in this file assert this navigation, and until this constant existed
+ * each spelled the expectation itself — so seven copies had to agree that a bare `['/login']` was
+ * correct, and they did agree, which is exactly how they came to guard the defect together. The
+ * ejection used to carry no options at all: no destination, so signing in again returned the
+ * operator to the default landing screen rather than to the work they were interrupted in, and no
+ * replacement, so the abandoned screen stayed in history as an entry that could never be restored.
+ *
+ * `returnUrl` is `'/'` in this harness because no navigation is performed in it, so that is
+ * genuinely the address the refused request was issued from.
+ */
+const SIGN_IN_EJECTION_OPTIONS = {
+  replaceUrl: true,
+  queryParams: { returnUrl: '/' },
+} as const;
+
 describe('authInterceptor', () => {
   let http: HttpClient;
   let httpMock: HttpTestingController;
   let tokens: TokenStorageService;
   let navigate: jasmine.Spy<Router['navigate']>;
+
+  /**
+   * Asserts the operator was ejected to the sign-in screen exactly once, on the full contract.
+   *
+   * Written as a helper rather than repeated so that the contract has ONE definition in this file.
+   * A case that wants to assert something different about the navigation still asserts it inline;
+   * this covers only the plain ejection, which is what most of the terminal cases are about.
+   */
+  function expectEjectedToSignIn(): void {
+    expect(navigate)
+      .withContext('the operator is ejected to sign-in, told where they were, and not pushed')
+      .toHaveBeenCalledOnceWith([LOGIN_ROUTE], SIGN_IN_EJECTION_OPTIONS);
+  }
 
   /**
    * Builds the injector for a case, with the chain the case is about.
@@ -1017,7 +1050,7 @@ describe('authInterceptor', () => {
       expect(tokens.accessToken()).toBeNull();
       expect(navigate)
         .withContext('and the operator is asked to sign in rather than left on a dead screen')
-        .toHaveBeenCalledWith(['/login']);
+        .toHaveBeenCalledWith([LOGIN_ROUTE], SIGN_IN_EJECTION_OPTIONS);
 
       // Still exactly two attempts and one renewal: ending the session is not another attempt.
       httpMock.expectNone(PROTECTED_URL);
@@ -1129,7 +1162,7 @@ describe('authInterceptor', () => {
 
       // The terminal behaviour, asserted here as well because it is the same event.
       expect(tokens.session()).withContext('the session is discarded').toBeNull();
-      expect(navigate).toHaveBeenCalledOnceWith([LOGIN_ROUTE]);
+      expectEjectedToSignIn();
     });
 
     it('reports the ORIGINAL refusal even when the renewal fails for another reason', async () => {
@@ -1167,7 +1200,7 @@ describe('authInterceptor', () => {
       expect(tokens.session())
         .withContext('a renewal credential the server refuses cannot be retried')
         .toBeNull();
-      expect(navigate).toHaveBeenCalledOnceWith([LOGIN_ROUTE]);
+      expectEjectedToSignIn();
     });
 
     it('does not recover the identity read that follows a renewal', async () => {
@@ -1195,7 +1228,7 @@ describe('authInterceptor', () => {
       expect(tokens.session())
         .withContext('a half-established session is never left behind')
         .toBeNull();
-      expect(navigate).toHaveBeenCalledOnceWith([LOGIN_ROUTE]);
+      expectEjectedToSignIn();
     });
 
     it('issues ONE renewal for several requests refused together', async () => {
@@ -1273,7 +1306,7 @@ describe('authInterceptor', () => {
 
       httpMock.expectNone(REFRESH_URL);
       expect(tokens.session()).toBeNull();
-      expect(navigate).toHaveBeenCalledOnceWith([LOGIN_ROUTE]);
+      expectEjectedToSignIn();
     });
 
     it('does not attempt a renewal when no session is held at all', async () => {
@@ -1379,7 +1412,7 @@ describe('authInterceptor', () => {
       expect(modules.modules())
         .withContext('module content is session content and goes with the credential')
         .toEqual([]);
-      expect(navigate).toHaveBeenCalledOnceWith([LOGIN_ROUTE]);
+      expectEjectedToSignIn();
     });
 
     it('still reports the original refusal when routing to sign-in itself fails', async () => {
@@ -1400,7 +1433,7 @@ describe('authInterceptor', () => {
         .withContext('the caller still hears about their own request')
         .toBe(401);
       expect(tokens.session()).toBeNull();
-      expect(navigate).toHaveBeenCalledOnceWith([LOGIN_ROUTE]);
+      expectEjectedToSignIn();
     });
   });
 
@@ -1599,7 +1632,7 @@ describe('authInterceptor', () => {
 
       expect(httpStatusOf(await reasonFor(pending))).toBe(401);
       expect(tokens.session()).toBeNull();
-      expect(navigate).toHaveBeenCalledOnceWith([LOGIN_ROUTE]);
+      expectEjectedToSignIn();
     });
   });
 
@@ -1687,6 +1720,60 @@ describe('authInterceptor', () => {
         .withContext('a credential refused straight after issue ends the session, footprint too')
         .toHaveBeenCalledTimes(1);
       expect(tokens.session()).toBeNull();
+    });
+
+    it('tells the operator why the session ended, in a message that survives the navigation', async () => {
+      // ⚠ THE TEARDOWN WAS ALREADY CORRECT AND THE SCREEN WAS STILL WRONG. Measured in a browser: the
+      // credential was cleared, every domain slice purged and the operator returned to sign-in, with BOTH
+      // live regions empty - so someone mid-task was left looking at a sign-in screen with no account, no
+      // work and no explanation, and a non-visual operator had nothing at all to go on.
+      //
+      // ⚠ AND THIS FILE NO LONGER RAISES IT, WHICH IS WHY THE CASE STAYS HERE. The sentence comes from
+      // the purge this interceptor delegates to, because a SECOND path ends a session un-asked-for - the
+      // navigation gate's renewal - and one sentence raised from two files could not have covered it.
+      // What is asserted here is that ending a session THROUGH THIS PATH still reaches the operator; the
+      // purge's own conditions are proven in `core/state/session-teardown.service.spec.ts`.
+      const notifications = TestBed.inject(NotificationService);
+      const retain = spyOn(notifications, 'retainAcrossNavigation').and.callThrough();
+
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      refuse(httpMock.expectOne(PROTECTED_URL));
+      refuse(httpMock.expectOne(REFRESH_URL));
+
+      expect(httpStatusOf(await reasonFor(pending))).toBe(401);
+
+      const queued = notifications.notifications();
+
+      expect(queued.length).toBe(1);
+      expect(queued[0]?.message).toBe(SESSION_ENDED_MESSAGE);
+      // A warning, not an error: nothing failed on the operator's part, and the severity carries the
+      // longer on-screen lifetime a message read on ARRIVAL at another screen needs.
+      expect(queued[0]?.severity).toBe('warning');
+
+      // Exempted from the navigation sweep, or the shell would clear it on the very `NavigationEnd`
+      // this message exists to accompany - which is how it would come to be raised and never seen.
+      expect(retain).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not announce anything when the refusal was recoverable', async () => {
+      // The negative half. A renewal that succeeds is not a session ending, so there is nothing to
+      // explain and no message may appear.
+      const notifications = TestBed.inject(NotificationService);
+
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      refuse(httpMock.expectOne(PROTECTED_URL));
+      completeRenewal();
+      httpMock.expectOne(PROTECTED_URL).flush({ ok: true });
+
+      await pending;
+
+      expect(notifications.notifications().length).toBe(0);
     });
 
     it('does not purge when the retry fails for a reason other than authentication', async () => {

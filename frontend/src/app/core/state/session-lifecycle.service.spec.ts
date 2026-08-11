@@ -34,7 +34,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 
-import { AuthStore } from './auth.store';
+import { AuthStore, REVOCATION_FAILED_MESSAGE, SIGNED_OUT_MESSAGE } from './auth.store';
 import { ModuleStore } from './module.store';
 import { NotificationService } from '../services/notification.service';
 import { PortalStore } from './portal.store';
@@ -370,7 +370,88 @@ describe('SessionLifecycleService', () => {
       expect(authStore.isAuthenticated()).toBeFalse();
       expect(portals.portals()).toEqual([]);
       expect(roles.roleItems()).toEqual([]);
-      expect(notifications.notifications()).toEqual([]);
+
+      /*
+       * ⚠ THIS ASSERTION REPLACES `expect(notifications.notifications()).toEqual([])`, WHICH
+       * ENCODED A DEFECT.
+       *
+       * That earlier expectation was written when nothing announced a sign-out at all, so an empty
+       * queue looked like the clean outcome. Once a confirmation was added it kept passing anyway —
+       * because the confirmation was raised from inside `AuthStore.logout`, and this service's own
+       * `finalize` teardown then emptied the queue on top of it. A real browser measured the
+       * resulting lifetime at 10 ms, invisible to the operator and invisible to this line.
+       *
+       * A bare emptiness check cannot tell "nothing was ever said" from "something was said and
+       * destroyed", which is exactly why it guarded the fault. The queue's CONTENTS are asserted
+       * instead, which distinguishes them.
+       */
+      expect(notifications.notifications().length)
+        .withContext('the sign-out is confirmed, and confirmed exactly once')
+        .toBe(1);
+
+      const confirmation = notifications.notifications()[0];
+
+      expect(confirmation.message)
+        .withContext('the operator is told their instruction was carried out')
+        .toBe(SIGNED_OUT_MESSAGE);
+      expect(confirmation.severity)
+        .withContext('a state they asked for, not the outcome of a task that could have failed')
+        .toBe('info');
+      // Survives the departure to the sign-in screen, which is where it is meant to be read.
+      expect(confirmation.survivesNavigation).toBeTrue();
+
+      /*
+       * AND THE SESSION-ISOLATION PROPERTY STILL HOLDS, which the emptiness check used to carry on
+       * its own. `loadOperatorAData` queues a notice naming operator A's record; the only survivor
+       * is the fixed sentence above, so nothing that operator could see is legible to whoever signs
+       * in next on this page load.
+       */
+      expect(confirmation.message)
+        .withContext('the survivor is a fixed sentence, carrying nothing from the ended session')
+        .not.toContain('Operator A');
+    });
+
+    it('confirms the sign-out AFTER its own teardown, not before it', () => {
+      holdSession();
+
+      /*
+       * The ordering is the whole defect, so it is asserted directly rather than inferred from the
+       * end state. `purge` is what empties the message queue, and a confirmation raised before it
+       * cannot survive it — so this case proves the queue was written last by watching the two
+       * events in sequence.
+       */
+      const order: string[] = [];
+
+      // The QUEUE-EMPTYING is watched rather than a store's reset, because emptying the queue is
+      // the act that destroyed the statement. Both spies call through, so the end state stays real.
+      spyOn(notifications, 'clear').and.callFake(() => {
+        order.push('clear');
+      });
+      spyOn(notifications, 'info').and.callThrough();
+      (notifications.info as jasmine.Spy).and.callFake(() => {
+        order.push('announce');
+      });
+
+      service.signOut().subscribe();
+      httpMock
+        .expectOne('/api/v1/auth/logout')
+        .flush(null, { status: 204, statusText: 'No Content' });
+
+      /*
+       * The queue is emptied SEVERAL times on this path — once by the store's discard at subscribe
+       * time, then again by `purge` and by `AuthStore.reset`'s own discard inside the teardown — so
+       * the count is not asserted and must not be. The load-bearing property is that the statement
+       * comes after the LAST of them.
+       */
+      expect(order.filter((event) => event === 'clear').length)
+        .withContext('the teardown does empty the queue, so the ordering question is real')
+        .toBeGreaterThan(0);
+      expect(order[order.length - 1])
+        .withContext('the statement is raised last: any clear after it is the 10 ms toast')
+        .toBe('announce');
+      expect(order.indexOf('announce'))
+        .withContext('and it is raised exactly once, at the end, not once per clear')
+        .toBe(order.length - 1);
     });
 
     it('still ends the session when the revocation FAILS', () => {
@@ -398,6 +479,50 @@ describe('SessionLifecycleService', () => {
       expect(authStore.isAuthenticated()).toBeFalse();
       expect(portals.portals()).toEqual([]);
       expect(modules.modules()).toEqual([]);
+
+      /*
+       * ⚠ BOTH FACTS ARE REPORTED, AS TWO STATEMENTS. The local sign-out completed, which is the
+       * part the operator asked for, AND a refresh credential was left un-revoked on the server.
+       * Folding the second into the first would misdescribe the outcome, and retracting the first to
+       * make room for the second would tell someone who asked to sign out that they had not.
+       *
+       * This also guards a read-ordering trap that no type can catch: the residue is recorded on the
+       * store by `logout`'s error handler, and `AuthStore.reset` — reached from the teardown — sets
+       * that flag back to `false`. The service must therefore read it BEFORE tearing down. If it
+       * ever reads it afterwards this case fails with one statement instead of two, while every
+       * other assertion here still passes.
+       */
+      const raised = notifications.notifications();
+
+      expect(raised.length)
+        .withContext('the sign-out is confirmed AND the residue is reported')
+        .toBe(2);
+      expect(raised.map((entry) => entry.message)).toEqual([
+        SIGNED_OUT_MESSAGE,
+        REVOCATION_FAILED_MESSAGE,
+      ]);
+      expect(raised.map((entry) => entry.severity))
+        .withContext('nothing the operator did failed, so the residue is a warning not an error')
+        .toEqual(['info', 'warning']);
+      expect(raised.every((entry) => entry.survivesNavigation))
+        .withContext('both are meant to be read on the sign-in screen this departs to')
+        .toBeTrue();
+    });
+
+    it('says nothing about a residue when the revocation succeeded', () => {
+      holdSession();
+
+      service.signOut().subscribe();
+      httpMock
+        .expectOne('/api/v1/auth/logout')
+        .flush(null, { status: 204, statusText: 'No Content' });
+
+      // The negative control for the case above: without it, a service that raised the residue
+      // warning unconditionally would satisfy that one and mislead on every ordinary sign-out.
+      expect(notifications.notifications().map((entry) => entry.message))
+        .withContext('a clean sign-out reports one thing, not two')
+        .toEqual([SIGNED_OUT_MESSAGE]);
+      expect(authStore.revocationOutstanding()).toBeFalse();
     });
 
     it('issues nothing at all until it is subscribed', () => {

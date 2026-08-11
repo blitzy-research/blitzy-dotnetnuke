@@ -68,17 +68,54 @@ internal static class RoleTermsRules
         "Service Fee Must Be Greater Than or Equal to Zero";
 
     /// <summary>
-    /// Wording of <c>valBillingPeriod2</c> (<c>editroles.ascx</c> L113), carried across unchanged
-    /// even though the operator it accompanies is strictly greater than zero.
+    /// Wording of <c>valBillingPeriod2</c> (<c>editroles.ascx</c> L113).
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: THIS SENTENCE WAS MISTRANSCRIBED AND IS NOW THE LEGACY'S OWN. It previously read
+    /// "Billing Period Must Be Greater Than or Equal to Zero", under a remark explaining that the
+    /// legacy message disagreed with its own operator. The legacy resource says otherwise:
+    /// <c>Website/admin/Security/App_LocalResources/EditRoles.ascx.resx</c> declares
+    /// <c>valBillingPeriod2.Text</c> as "Billing Period Must Be Greater Than Zero", which AGREES with
+    /// the <c>Operator="GreaterThan" ValueToCompare="0"</c> it accompanies. There was no legacy
+    /// self-contradiction to preserve; the mismatch existed only here, and the explanation for it was
+    /// written to account for a transcription error rather than to a measured source.
+    ///
+    /// It mattered in three ways at once. The sentence told an operator that zero was acceptable for a
+    /// value the server then refused - measured on the wire: <c>PUT /api/v1/roles/2</c> carrying
+    /// <c>billingPeriod: 0</c> answered <c>400</c> with this very message, advising that zero was
+    /// allowed. It diverged from the legacy wording the migration discipline requires. And it
+    /// disagreed with the browser, which had transcribed the same resource CORRECTLY as
+    /// <c>BILLING_PERIOD_NOT_POSITIVE_MESSAGE</c> in <c>role-form.component.ts</c>, so the two sides
+    /// described one rule in two different sentences. All three close with the legacy string.
+    ///
+    /// The OPERATOR is unchanged and remains strictly positive: a billing cycle of zero units could
+    /// never advance an expiry date.
+    /// </remarks>
     internal const string BillingPeriodNotPositiveMessage =
-        "Billing Period Must Be Greater Than or Equal to Zero";
+        "Billing Period Must Be Greater Than Zero";
 
     /// <summary>
-    /// Wording of <c>valTrialFee2</c> (<c>editroles.ascx</c> L127), carried across unchanged even
-    /// though the operator it accompanies admits zero.
+    /// Wording of <c>valTrialFee2</c> (<c>editroles.ascx</c> L127).
     /// </summary>
-    internal const string TrialFeeNegativeMessage = "Trial Fee Must Be Greater Than Zero";
+    /// <remarks>
+    /// MIGRATION: MISTRANSCRIBED IN THE OPPOSITE DIRECTION TO
+    /// <see cref="BillingPeriodNotPositiveMessage"/>, and corrected the same way. It previously read
+    /// "Trial Fee Must Be Greater Than Zero" while its operator admits zero, and the remark here
+    /// explained that as inherited legacy inconsistency. The legacy resource declares
+    /// <c>valTrialFee2.Text</c> as "Trial Fee Must Be Greater Than or Equal to Zero", which AGREES
+    /// with its <c>Operator="GreaterThanEqual" ValueToCompare="0"</c>.
+    ///
+    /// So the legacy was internally consistent on ALL FOUR of these rules, and the two apparent
+    /// contradictions were this file's own - the two strings had in effect been swapped between the
+    /// period rule and the fee rule. This one told an operator that a free trial would be refused
+    /// while the server accepted it, which is the same lie as the other constant told, pointing the
+    /// other way. The browser again had the resource right, as
+    /// <c>TRIAL_FEE_NEGATIVE_MESSAGE</c> in <c>role-form.component.ts</c>.
+    ///
+    /// The OPERATOR is unchanged and still admits zero: a free trial is a real configuration.
+    /// </remarks>
+    internal const string TrialFeeNegativeMessage =
+        "Trial Fee Must Be Greater Than or Equal to Zero";
 
     /// <summary>
     /// Wording of <c>valTrialPeriod2</c> (<c>editroles.ascx</c> L145). Message and operator agree.

@@ -78,19 +78,46 @@
     create mode there is no account identifier to address, so `/users/undefined/profile`
     is the alternative to withholding them.
 
-    MIGRATION: the role action targets the role listing rather than a per-user route.
-    `Roles.Action` reads 'Manage Roles for this User', but no per-user role route exists in
-    the closed route set, so the link goes where the work can actually be done. The
-    divergence is annotated rather than hidden behind wording that promises more.
+    MIGRATION: the role action CARRIES THE ACCOUNT, so its caption is honest. It previously
+    linked bare `/roles` under a note claiming "no per-user role route exists in the closed
+    route set" - and that premise was false, disproved by this application's own sibling
+    screen: the account listing already links `/roles` with `queryParams {userId}`
+    (`user-list.component.ts` `manageRolesQueryParams`), and that address renders a genuinely
+    account-scoped listing - the roles the account holds, a subtitle naming the person, and a
+    way back to the account. Measured before this change: an operator who pressed an action
+    captioned "Manage Roles for this User" landed on the unfiltered listing of every role in
+    the tenant, so the round trip was one-way - the account-keyed view could offer "Back to
+    Account" but nothing on the account could reach it except the row action one screen back.
+    The parameter is the same one the listing sends, so both entry points now address one
+    screen the same way.
 
     MIGRATION: the legacy actions were image buttons. Their raster assets have no target
     equivalent — the only static asset this workspace ships is a favicon — so each action
     is text, which also gives it a discernible accessible name the images often lacked.
   -->
-  @if (isEditMode()) {
-    <a [routerLink]="['/users', resolvedUserId(), 'profile']">Manage User's Profile</a>
-    <a [routerLink]="['/users', resolvedUserId(), 'password']">Manage User's Password</a>
-    <a routerLink="/roles">Manage Roles for this User</a>
+  <!--
+    ⚠ U-M10 — WITHHELD ONCE THE ACCOUNT IS GONE, AND `isEditMode()` ALONE WAS NOT ENOUGH TO DO THAT.
+    That projection answers "does the route name an account", which stays true for an account that has
+    been REMOVED: measured on a deleted account, this screen reported that the account did not exist and
+    went on offering all three actions pointing at its identifier. Every one of them led to a second
+    not-found on a screen the operator had been invited to visit — three dead ends offered by a screen
+    that already knew the record was gone.
+
+    `userMissing()` is the read's own not-found refusal, so this gate asks the stronger and correct
+    question: does the account exist. It is deliberately NOT `formDisabled()`, which also covers a
+    permission refusal — a refusal means the account is there and the operator lacks a right, and the
+    three target screens enforce their own rights, so withholding on that basis would remove a
+    capability rather than a dead end.
+  -->
+  @if (isEditMode() && !userMissing()) {
+    <a class="page-action" [routerLink]="['/users', resolvedUserId(), 'profile']">Manage User's Profile</a>
+    <a class="page-action" [routerLink]="['/users', resolvedUserId(), 'password']">Manage User's Password</a>
+    <a
+      class="page-action"
+      routerLink="/roles"
+      [queryParams]="{ userId: resolvedUserId() }"
+      >Manage Roles for this User</a
+    >
   }
 </app-page-header>
 
@@ -162,7 +189,7 @@
   </section>
 }
 
-@if (userMissing()) {
+@if (userMissing() || addressUnreadable()) {
   <!--
     The READ was refused as not-found, so there is no record to edit. The measured
     `NoUser.Text` wording is rendered in place of the form.
@@ -180,6 +207,14 @@
 
     No live region is declared here: the shared refusal announcer already speaks this
     wording once, and a second announcement would repeat it.
+
+    ⚠ AN UNREADABLE ADDRESS IS ANSWERED BY THIS SAME BRANCH, deliberately reusing the measured
+    wording rather than authoring a second sentence. `/users/abc` names no account, so
+    "This account doesn't exist" is literally true of it, and the outcome the legacy screen
+    produced - hide the form - is the outcome wanted for both. The alternative was a new sentence
+    saying the same thing in different words. What must NOT happen, and used to, is the third
+    outcome: falling through to the `@else` below and offering a live create form for an address
+    that names nothing.
   -->
   <p>This account doesn't exist</p>
 } @else {
@@ -203,6 +238,29 @@
 
     <div class="user-form__panels">
       <!--
+        ⚠ #8 — THE CREDENTIAL COLUMN IS ONE GRID ITEM, AND WRAPPING IT IS THE FIX. Every field set
+        below used to be a direct child of the two-column panels grid, so grid AUTO-PLACEMENT laid them
+        out rather than the measured arrangement doing it. In create mode that produced three items in
+        two columns: credentials at the top left, `New Account Options` at the top RIGHT, and the
+        password group below on the left — a zigzag in which the visual order disagreed with the
+        document order, and in which the second column held a field set that belongs to the same panel
+        as the first. Measured description of the same defect from the other side: the right-hand panel
+        appeared BETWEEN the two left-hand field sets.
+
+        `Website/admin/Users/manageusers.ascx` L59-L63 is the authority and it is unambiguous: ONE
+        table row named `UserRow` holding exactly TWO cells, `ctlUser` in the first and `ctlMembership`
+        in the second, separated by a spacer. Everything the credential control rendered — all three of
+        its measured layout tables — was inside the FIRST cell. So the panels grid must have exactly
+        two items, and this wrapper is the first of them.
+
+        Consequence in create mode, stated rather than hidden: there is no account yet, so there is no
+        membership panel and the grid has ONE item, which occupies one column and leaves the other
+        empty above the two-column step. That is the legacy arrangement — `User.ascx` L14 measures the
+        credential panel at 350 units wide whether or not the membership panel is beside it, and the
+        legacy row simply had one populated cell while adding an account.
+      -->
+      <div class="user-form__panel">
+      <!--
         PANEL 1 — CREDENTIALS.
 
         The field set is RECOVERED from `User.ascx.resx`, prefix `UserInfo_`, because the
@@ -214,21 +272,30 @@
         the legacy tab strip used for this very panel.
       -->
       <fieldset class="user-form__section">
-        <legend class="user-form__legend">Manage User Credentials</legend>
+        <legend class="user-form__legend"><h2>Manage User Credentials</h2></legend>
 
         <!--
           The disclosure control. It carries the state rather than the group name, because
           the caption above already names the group and rendering the name twice would be a
           visual regression against the single legacy section head.
 
-          `aria-controls` is deliberately NOT declared: the body is removed from the
-          document when collapsed, so the reference would dangle and report as an error to
-          any auditing tool. `aria-expanded` alone is accurate in both states.
+          `aria-controls` IS declared, but ONLY WHILE THE SECTION IS OPEN. The earlier
+          revision omitted it outright, reasoning that the body is removed from the document
+          when collapsed so any reference would dangle. That reasoning was sound about the
+          collapsed state and wrong to conclude from it that the attribute could never be
+          declared: assistive technology could not identify the region this control governs
+          even when the region WAS present. Binding it to `null` while collapsed removes the
+          attribute entirely — Angular omits a null attribute rather than emitting an empty
+          one — so the IDREF is published exactly when it resolves and never when it would
+          dangle. `aria-expanded` remains accurate in both states and still carries the
+          state on its own. Same shape as `portal-settings.component.html`, which already
+          binds its section toggles this way.
         -->
         <button
           type="button"
           class="user-form__section-toggle"
           [attr.aria-expanded]="credentialsExpanded()"
+          [attr.aria-controls]="credentialsExpanded() ? 'user-form-section-credentials' : null"
           (click)="toggleCredentials()"
         >
           <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
@@ -238,7 +305,7 @@
         </button>
 
         @if (credentialsExpanded()) {
-          <div class="user-form__section-body user-form__grid">
+          <div id="user-form-section-credentials" class="user-form__section-body user-form__grid">
             <!--
               The sign-in name. Rendered while editing and DISABLED there by the component,
               because the legacy marked it read-only and offered no rename and the update
@@ -376,13 +443,46 @@
           nothing would have left the group unnamed. Only the caption is authored; both
           labels and both help strings below are measured values.
 
-          No disclosure here: the measured markup gave these two rows no section head, so
-          adding a fourth collapsible group would be an affordance the legacy never had.
+          THIS GROUP NOW CARRIES A DISCLOSURE LIKE ITS THREE SIBLINGS, reversing an earlier
+          note that read "the measured markup gave these two rows no section head, so adding a
+          fourth collapsible group would be an affordance the legacy never had". That reasoning
+          does not survive checking. It is equally true of ALL FOUR groups on this screen:
+          `User.ascx` registers the collapsible-section control at L4 and then uses it ZERO
+          times, which the note at the top of this file records and DEFECT 10 beside the toggle
+          handlers records again. So the legacy gave no group a section head, the disclosure
+          pattern here is entirely this screen's own addition, and applying it to three of four
+          sibling groups was arbitrary rather than faithful - an operator met two groups that
+          collapse and one that does not, with nothing to explain the difference. Removing the
+          other three was the alternative and was rejected: it would take a working affordance
+          away and undo the `aria-controls` wiring these toggles were deliberately given.
+
+          Built from the same three parts as its siblings and nothing else: a real button
+          carrying `aria-expanded`, `aria-controls` published ONLY while the body exists so the
+          reference can never dangle, and the body gated on the same signal.
         -->
         <fieldset class="user-form__section">
-          <legend class="user-form__legend">New Account Options</legend>
+          <legend class="user-form__legend"><h2>New Account Options</h2></legend>
 
-          <div class="user-form__section-body user-form__grid">
+          <button
+            type="button"
+            class="user-form__section-toggle"
+            [attr.aria-expanded]="newAccountOptionsExpanded()"
+            [attr.aria-controls]="
+              newAccountOptionsExpanded() ? 'user-form-section-new-account-options' : null
+            "
+            (click)="toggleNewAccountOptions()"
+          >
+            <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+              <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+            </svg>
+            {{ newAccountOptionsExpanded() ? 'Hide' : 'Show' }} new account options
+          </button>
+
+          @if (newAccountOptionsExpanded()) {
+          <div
+            id="user-form-section-new-account-options"
+            class="user-form__section-body user-form__grid"
+          >
             <!--
               `plAuthorize`. Initial value TRUE, from the measured `checked="True"` at
               `User.ascx` L21, which the code-behind does not override.
@@ -417,18 +517,20 @@
               <input id="user-form-notify" type="checkbox" formControlName="notify" />
             </app-form-field>
           </div>
+          }
         </fieldset>
 
         <!--
           The password group. Caption from the measured `Password.Text`.
         -->
         <fieldset class="user-form__section">
-          <legend class="user-form__legend">Password</legend>
+          <legend class="user-form__legend"><h2>Password</h2></legend>
 
           <button
             type="button"
             class="user-form__section-toggle"
             [attr.aria-expanded]="passwordExpanded()"
+            [attr.aria-controls]="passwordExpanded() ? 'user-form-section-password' : null"
             (click)="togglePassword()"
           >
             <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
@@ -438,7 +540,7 @@
           </button>
 
           @if (passwordExpanded()) {
-            <div class="user-form__section-body user-form__grid">
+            <div id="user-form-section-password" class="user-form__section-body user-form__grid">
               <!--
                 The help line is MODE-DEPENDENT in the legacy: `User.ascx.vb` L287 selects
                 `PasswordHelpAdmin.Text` on the administrator path and L284 selects
@@ -447,7 +549,16 @@
                 `pnlRegister` — so only the administrator wording is carried, and the
                 component holds it so the specification can assert the exact sentence.
               -->
-              <p>{{ passwordHelp }}</p>
+              <!--
+                ⚠ #8 — IT IS HELP TEXT AND MUST READ AS HELP TEXT. This sentence used to be a bare
+                paragraph with no class at all, so it inherited body ink and body size and sat above two
+                credential boxes looking exactly like the screen's own prose — measured as unstyled black
+                text. It states what an operator MAY do, which is guidance, and the class below puts it
+                on the same two tokens the shared field uses for the help text beside every other
+                control on this form. Nothing about the wording changes: it is `PasswordHelpAdmin.Text`
+                verbatim.
+              -->
+              <p class="user-form__group-help">{{ passwordHelp }}</p>
 
               <!--
                 `plRandom`.
@@ -539,12 +650,14 @@
                   [error]="messageFor('password')"
                 >
                   <input
-                    id="user-form-password"
+                    [id]="passwordControlId"
                     type="password"
                     autocomplete="new-password"
                     [attr.maxlength]="credentialMaxLength"
                     [attr.aria-required]="true"
                     [attr.aria-invalid]="passwordMessage() ? 'true' : null"
+                    [attr.aria-describedby]="passwordMessage() ? passwordGroupErrorId : null"
+                    [attr.aria-errormessage]="passwordMessage() ? passwordGroupErrorId : null"
                     formControlName="password"
                   />
                 </app-form-field>
@@ -563,6 +676,8 @@
                     [attr.maxlength]="credentialMaxLength"
                     [attr.aria-required]="true"
                     [attr.aria-invalid]="passwordMessage() ? 'true' : null"
+                    [attr.aria-describedby]="passwordMessage() ? passwordGroupErrorId : null"
+                    [attr.aria-errormessage]="passwordMessage() ? passwordGroupErrorId : null"
                     formControlName="confirmPassword"
                   />
                 </app-form-field>
@@ -580,8 +695,36 @@
                 component delegates to. It is not re-implemented here and is never defeated
                 by rendering the value as markup.
               -->
+              <!--
+                ⚠ #8 — THE RULE IS NOW INSIDE A REAL ERROR CONTAINER THAT BOTH BOXES CITE. It used to be
+                a bare `<p role="alert">` with no class and no identifier: it announced, but it was
+                painted in body ink at body size so it read as prose rather than as a refusal, and
+                because nothing referenced it, neither password box carried `aria-describedby` or
+                `aria-errormessage` — so a reader who moved to the box that was wrong was told nothing
+                about why. The container now carries the identifier both boxes point at, and the paired
+                stylesheet puts it on the accessible danger ink at bold weight, which is the same
+                treatment the shared field gives a message belonging to ONE control.
+
+                ⚠ WHY THE SHARED FIELD CANNOT OWN THIS. The field component wires a message to its own
+                control and generates the identifier itself. This rule belongs to NEITHER box — a
+                matching pair of weak passwords is two individually valid values in an invalid
+                combination — so there is no single field to attach it to, and the group has to declare
+                its own container. That is also why the paired class has to supply the focus move: a
+                group error leaves both controls valid, so the shared focus directive's invalid-control
+                query matches nothing and it declines.
+
+                It renders only once a submission has been attempted or the form dirtied, so a form
+                nobody has typed into is never marked as failing.
+
+                Plain text. The legacy prepended a break tag to this very message at `User.ascx.vb`
+                L187 — an annotated defect shared by 28 of 34 measured messages — and the stripping is
+                owned by the shared error helper the component delegates to. It is not re-implemented
+                here and is never defeated by rendering the value as markup.
+              -->
               @if (passwordMessage()) {
-                <p role="alert">{{ passwordMessage() }}</p>
+                <p class="user-form__group-error" role="alert" [id]="passwordGroupErrorId">
+                  {{ passwordMessage() }}
+                </p>
               }
 
               <!--
@@ -628,6 +771,8 @@
       }
 
 
+      </div>
+
       <!--
         PANEL 2 — MEMBERSHIP. EDIT MODE ONLY, AND READ-ONLY THROUGHOUT.
 
@@ -644,12 +789,13 @@
       -->
       @if (isEditMode()) {
         <fieldset class="user-form__section user-form__membership">
-          <legend class="user-form__legend">{{ membershipTitle }}</legend>
+          <legend class="user-form__legend"><h2>{{ membershipTitle }}</h2></legend>
 
           <button
             type="button"
             class="user-form__section-toggle"
             [attr.aria-expanded]="membershipExpanded()"
+            [attr.aria-controls]="membershipExpanded() ? 'user-form-section-membership' : null"
             (click)="toggleMembership()"
           >
             <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
@@ -683,7 +829,7 @@
               for real form controls; these are not form controls, so the text is shown
               outright rather than behind a disclosure that would have nothing to reveal.
             -->
-            <div class="user-form__section-body">
+            <div id="user-form-section-membership" class="user-form__section-body">
               <dl>
                 <!--
                   MIGRATION: rendered as the measured shared wording 'Yes' and 'No'
@@ -778,6 +924,19 @@
                   divergence, annotated rather than absorbed.
                 -->
                 <div class="user-form__membership-row">
+                  <!--
+                    THE MISSING COLON IS LEGACY-VERBATIM AND IS DELIBERATELY NOT "FIXED".
+                    Eight of the nine terms in this list end in a colon and this one does not, which
+                    reads like a defect here until the resource is checked:
+                    Website/admin/Users/App_LocalResources/Membership.ascx.resx declares
+                    `UserMembership_UpdatePassword.Text` as "Update Password" with NO trailing colon,
+                    while its eight siblings - Approved, CreatedDate, LastActivityDate, LastLoginDate,
+                    LastPasswordChangeDate, LastLockoutDate, IsOnLine and LockedOut - all carry one.
+                    The inconsistency is the legacy author's own, every one of these captions is
+                    reproduced exactly as its resource declares it, and adding a colon here would be
+                    this screen inventing wording the source does not have. Recorded at the site so it
+                    is not silently "corrected" later.
+                  -->
                   <dt class="user-form__membership-term">Update Password</dt>
                   <dd class="user-form__membership-value">
                     @if (mustChangePassword() === true) {
@@ -809,10 +968,21 @@
               unlocked while its credential form still holds an invalid address, which is
               precisely what the legacy allowed.
 
-              The only condition that withholds them is a refusal from the server, which is
-              the faithful counterpart of the measured `DisableForm()` making this very panel
-              unavailable. Offering an action whose only possible outcome is another refusal
-              is worse than not offering it.
+              ⚠ EACH IS RENDERED ONLY WHEN ITS OWN PRECONDITION HOLDS. An earlier revision of
+              this template offered all four at once, on the strength of this markup declaring
+              all four unconditionally — but the measured screen assigns every one of their
+              `Visible` properties on each data-bind at `Membership.ascx.vb` L135-L145, and
+              those assignments are the real contract. The four gating conditions, the two
+              identities the self-check compares, and the reason the translation may not use a
+              plain negation are all set out on the component's own gate signals. The mechanism
+              there is `Visible`, so the counterpart here is conditional rendering rather than a
+              disabled control: these preconditions are facts about the ACCOUNT, so a disabled
+              button could never be made live by anything the operator typed into this form.
+
+              A refusal from the server also withholds them, which is the faithful counterpart
+              of the measured `DisableForm()` making this very panel unavailable. Offering an
+              action whose only possible outcome is another refusal is worse than not offering
+              it.
 
               MIGRATION: each was an image button sharing one icon asset with the other
               three, so the images distinguished nothing. Text labels carry the distinction
@@ -825,20 +995,34 @@
               and there is no measured sentence to copy. The wording is authored, and the
               gap is annotated rather than presented as measured.
             -->
-            <div class="user-form__membership-actions">
-              <button type="button" [disabled]="formDisabled()" (click)="onAuthorize()">
-                Authorize User
-              </button>
-              <button type="button" [disabled]="formDisabled()" (click)="onUnauthorize()">
-                UnAuthorize User
-              </button>
-              <button type="button" [disabled]="formDisabled()" (click)="onUnlock()">
-                Unlock Account
-              </button>
-              <button type="button" [disabled]="formDisabled()" (click)="onForcePasswordChange()">
-                Force Password Change
-              </button>
-            </div>
+            @if (hasMembershipActions()) {
+              <div class="user-form__membership-actions">
+                @if (canAuthorize()) {
+                  <button type="button" [disabled]="formDisabled()" (click)="onAuthorize()">
+                    Authorize User
+                  </button>
+                }
+                @if (canUnauthorize()) {
+                  <button type="button" [disabled]="formDisabled()" (click)="onUnauthorize()">
+                    UnAuthorize User
+                  </button>
+                }
+                @if (canUnlock()) {
+                  <button type="button" [disabled]="formDisabled()" (click)="onUnlock()">
+                    Unlock Account
+                  </button>
+                }
+                @if (canForcePasswordChange()) {
+                  <button
+                    type="button"
+                    [disabled]="formDisabled()"
+                    (click)="onForcePasswordChange()"
+                  >
+                    Force Password Change
+                  </button>
+                }
+              </div>
+            }
           }
         </fieldset>
       }
@@ -882,7 +1066,8 @@
       as content cannot respond to the layout around it.
     -->
     <div class="user-form__actions">
-      <button type="submit" [disabled]="!canSubmit()">
+      <button type="submit" [disabled]="!canSubmit()"
+          [attr.aria-busy]="loading() ? 'true' : null">
         @if (isCreateMode()) {
           Create User
         } @else {
@@ -927,8 +1112,16 @@
   Rendered only while open, so the dialog cannot take focus or trap it when it is not in use.
 -->
 @if (deleteDialogOpen()) {
+  <!-- ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application
+       shows the SAME title, which the shared dialog declares as its default; binding one here is how
+       five different titles for one action came about - runtime testing found `Delete`,
+       `Confirm Delete`, `Delete Module`, `Delete Profile Property` and `Delete role group` across the
+       screens. The legacy had no title to preserve either: every in-scope delete confirmation was a
+       `window.confirm()` carrying the single shared string `DeleteItem`
+       (`Website/App_GlobalResources/SharedResources.resx` L120-L122), with no title at all. The
+       MESSAGE is still bound where a screen has its own legacy wording, because that wording is a
+       resource value this migration must preserve. -->
   <app-confirm-dialog
-    [title]="deleteLabel"
     [message]="confirmDeleteMessage"
     [confirmLabel]="deleteLabel"
     danger

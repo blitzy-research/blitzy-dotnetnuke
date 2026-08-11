@@ -1,8 +1,20 @@
 <!--
   `for` is bound through `attr.` because the DOM property of a label is `htmlFor`, not
   `for`, so a plain property binding would not compile under strict template checking.
+
+  MIGRATION: the wording is `lblSearch` from `Website/admin/Users/users.ascx` L5, which is
+  the one legacy screen that captioned this affordance at all.
+
+  Withheld only when the consumer states it has already labelled this control itself. A
+  control named by two labels carries a composite accessible name in which the caption
+  nearest the field is no longer the whole name, which is the SC 2.5.3 Label in Name
+  mismatch; see `labelledExternally`. The guard is written so that anything other than a
+  positive assertion still renders the label - an unnamed control is the one outcome that
+  must not be reachable by mistake.
 -->
-<label class="search-input__label" [attr.for]="fieldId">Search:</label>
+@if (!labelledExternally) {
+  <label class="search-input__label" [attr.for]="fieldId">Search:</label>
+}
 
 <!--
   No `form` element wraps this row. A feature screen may legitimately render the component

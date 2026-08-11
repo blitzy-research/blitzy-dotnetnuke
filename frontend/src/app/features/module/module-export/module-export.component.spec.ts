@@ -2021,6 +2021,64 @@ describe('ModuleExportComponent', () => {
       expect(fieldMessages()).toEqual([]);
       expect(raisedNotifications()).toEqual([]);
     });
+
+    /**
+     * A REFUSED READ LEAVES NOTHING TO EXPORT, AND THE CONFIRMING ACTION USED TO SAY OTHERWISE.
+     *
+     * The server answers `GET /api/v1/modules/{id}` with 403 when the caller may not see the module. The
+     * gate on this button tested the ADDRESS - `Number.isInteger(moduleId)` - which is satisfied by a
+     * refusal, so the button stayed enabled over a screen that held no module. Pressing it could never
+     * succeed, and it actively made the screen lie: `submit` clears the store failure as it begins, so the
+     * press erased the banner that was accurately reporting the refusal and replaced it with a sentence
+     * about the address.
+     *
+     * The presentation of a refusal is now the banner and nothing else - the same presentation the sibling
+     * module form and settings screens give the same status, and the same severity the legacy
+     * access-denied page used (`Website/admin/Security/AccessDenied.ascx.vb:L41-L45`).
+     *
+     * ⚠ THIS IS NOT A PORTABILITY GATE, and the case below it proves the distinction survives: a module
+     * that WAS read stays exportable however unlikely the export is to succeed, because the server owns
+     * that answer.
+     */
+    it('withholds the export when the read was refused, and says so once', () => {
+      addressModule(String(MODULE_ID));
+
+      expectModuleRead().flush(
+        problemOf(403, 'You are not permitted to export this module.'),
+        { status: 403, statusText: 'Forbidden' },
+      );
+      fixture.detectChanges();
+
+      expect(requireActionButton(EXPECTED_EXPORT_LABEL).disabled)
+        .withContext('there is no module in hand to export')
+        .toBeTrue();
+
+      // One statement, and it is the server's own. The address sentence must NOT accompany it: the address
+      // is perfectly well formed.
+      expect(bannerMessage()).toContain('You are not permitted to export this module.');
+      expect(notice()).toBeNull();
+      expect(raisedNotifications()).toEqual([]);
+    });
+
+    it('keeps the export offered for a module that WAS read, whatever its portability', () => {
+      // The counterpart to the case above: the widened gate must not have become a portability judgement.
+      openOn();
+
+      expect(requireActionButton(EXPECTED_EXPORT_LABEL).disabled).toBeFalse();
+      expect(bannerMessage()).toBeNull();
+    });
+
+    it('withholds the export while the read is still in flight', () => {
+      addressModule(String(MODULE_ID));
+
+      // Nothing has arrived yet, so there is nothing to export and the press would only have produced the
+      // address sentence for an address that is not at fault.
+      expect(requireActionButton(EXPECTED_EXPORT_LABEL).disabled).toBeTrue();
+
+      answerModuleRead(moduleOf());
+
+      expect(requireActionButton(EXPECTED_EXPORT_LABEL).disabled).toBeFalse();
+    });
   });
 
   // ---------------------------------------------------------------------------------------------------

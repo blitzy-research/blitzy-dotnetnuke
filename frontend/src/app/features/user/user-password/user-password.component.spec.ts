@@ -456,6 +456,7 @@ function account(userId: number, overrides: Partial<UserDetail> = {}): UserDetai
     lastLockoutDate: null,
     lastPasswordChangeDate: '2024-02-01T10:00:00Z',
     roles: ['Registered Users'],
+    canDelete: true,
   };
 
   return { ...base, ...overrides };
@@ -1956,25 +1957,66 @@ describe('UserPasswordComponent', () => {
       }
     });
 
-    it('groups the two sections with a real grouping element and a real caption', () => {
+    it('captions its one section with the operation the submit will actually perform', () => {
+      /*
+       * ⚠ ONE SECTION, NOT TWO, AND THIS ASSERTION IS THE POINT RATHER THAN THE COUNT. This test
+       * previously required BOTH captions to be present, which is the structure that produced the
+       * defect: a section captioned "Change Password" held the credential boxes, a second captioned
+       * "Reset Password" held a sentence and no control at all, and the single command at the foot of
+       * the form read "Reset Password". An administrator setting a replacement for another account
+       * therefore read a caption naming an operation they cannot perform - the change endpoint is
+       * restricted to the account holder - directly above the boxes their own operation needs.
+       *
+       * Exactly one operation is authorised for any caller and target, so exactly one caption is
+       * correct, and the wrong one must be ABSENT rather than merely deprioritised. Both directions are
+       * asserted, because a caption hard-wired to either operation would pass a one-sided test.
+       *
+       * MIGRATION: caption and command share one resource key per panel in the legacy markup -
+       * `Password.ascx` L30 and L46 both `ChangePassword`, L53 and L69 both `ResetPassword` - so
+       * agreement between the two is the legacy contract, not a new refinement.
+       */
       arriveAsAdministrator(account(7));
 
-      const groups = queryAll('fieldset');
+      const adminGroups = queryAll('.user-password__group');
 
-      expect(groups.length)
-        .withContext('both the change section and the reset section are grouped')
-        .toBeGreaterThanOrEqual(2);
+      expect(adminGroups.length)
+        .withContext('one section, holding the boxes and the command together')
+        .toBe(1);
 
-      for (const group of groups) {
+      const adminCaptions = queryAll('legend').map((node) => textOf(node));
+
+      expect(adminCaptions).toEqual([RESET_HEADING]);
+      expect(adminCaptions)
+        .withContext('an operation this caller is not authorised for is not captioned')
+        .not.toContain(CHANGE_HEADING);
+
+      // The command lives INSIDE that section, which is where the legacy put it. A command outside
+      // every section is what left a captioned section holding no control.
+      expect(adminGroups[0]?.querySelector('button[type="submit"]'))
+        .withContext('the command is inside the section its caption names')
+        .not.toBeNull();
+      expect(textOf(adminGroups[0]?.querySelector('button[type="submit"]') ?? null))
+        .withContext('and it names the same operation as the caption')
+        .toBe(RESET_HEADING);
+
+      // Every grouping element is captioned, which is the accessibility half of the original test.
+      for (const group of queryAll('fieldset')) {
         expect(textOf(group.querySelector('legend')))
           .withContext('every group is captioned')
           .not.toBe('');
       }
+    });
+
+    it('captions the section for the account holder with the change operation instead', () => {
+      arriveAsSelf(account(7));
 
       const captions = queryAll('legend').map((node) => textOf(node));
 
-      expect(captions).toContain(CHANGE_HEADING);
-      expect(captions).toContain(RESET_HEADING);
+      expect(captions).toEqual([CHANGE_HEADING]);
+      expect(captions)
+        .withContext('the account holder is not offered an administrative reset')
+        .not.toContain(RESET_HEADING);
+      expect(queryAll('.user-password__group').length).toBe(1);
     });
 
     it('puts no interactive control out of the keyboard order', () => {
@@ -2319,7 +2361,12 @@ describe('UserPasswordComponent', () => {
     it('issues NO account read, because the API refuses that read in this state', () => {
       arriveRemediating(7);
 
-      httpMock.expectNone(accountUrl(7));
+      // Counted rather than asserted through `expectNone`, which throws and therefore records no
+      // expectation of its own: the emptiness of what `match` returns IS the claim. The predicate names
+      // the one address the API refuses in this state, so the teardown's `verify()` still guards the rest.
+      expect(httpMock.match(accountUrl(7)))
+        .withContext('the account read the API refuses in this state is never attempted')
+        .toEqual([]);
     });
 
     it('offers the credential form even though no account details were read', () => {
@@ -2411,9 +2458,11 @@ describe('UserPasswordComponent', () => {
 
       // THE ROOT, NOT A SCREEN. Naming a screen here would put the both-advisories-outstanding
       // precedence in a second place; the root redirect owns that decision alone.
+      // ⚠ REPLACES: a completed credential change must not sit in BACK history, and the
+      // unsaved-changes gate reads this flag to recognise an application-initiated departure.
       expect(navigate)
         .withContext('the caller is handed to the root, which decides where remediation leads next')
-        .toHaveBeenCalledWith('/');
+        .toHaveBeenCalledWith('/', { replaceUrl: true });
     });
 
     it('leaves a profile completion outstanding when the account owes both', async () => {
@@ -2448,7 +2497,7 @@ describe('UserPasswordComponent', () => {
       expect(renewed?.mustUpdateProfile)
         .withContext('and the one the caller still owes is untouched')
         .toBe(true);
-      expect(navigate).toHaveBeenCalledWith('/');
+      expect(navigate).toHaveBeenCalledWith('/', { replaceUrl: true });
 
       // The session is still restricted by the remaining advisory, so the account read stays
       // withheld and nothing further is issued.

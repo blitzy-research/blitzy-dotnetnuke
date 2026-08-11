@@ -54,6 +54,7 @@
 //      .module-form__choices             the visibility radiogroup
 //      .module-form__choice              one option within it
 //      .module-form__notice              an unreadable address, or a missing module
+//      .module-form__schedule-notice     an end date that precedes its own start
 //      .module-form__action              a command, projected into the page heading
 //      .module-form__action--primary     save
 //      .module-form__action--danger      remove
@@ -417,5 +418,37 @@
 // label is legible. Colour is not the sole indicator: the command is worded
 // destructively and it opens a confirmation dialog before anything is removed.
 .module-form__action--danger {
-  color: var(--color-danger);
+  color: var(--color-danger-text);
+}
+
+// -----------------------------------------------------------------------------
+//  THE REVERSED-SCHEDULE NOTICE
+// -----------------------------------------------------------------------------
+//
+// A STATEMENT, NOT A REFUSAL, and the styling has to say so. It uses the muted ink
+// rather than the danger ink precisely because the value it describes is accepted:
+// painting it in the error colour would tell the operator their entry was rejected
+// when it was saved exactly as typed. The vocabulary measures the muted ink at 5.49
+// to 1 on the page background, so it clears the text threshold on its own.
+//
+// Deliberately NOT rendered through the shared field's error channel, which means
+// "this was refused" and carries the danger treatment with it.
+//
+// WHY THIS IS ITS OWN CLASS AND NOT `.module-form__notice`
+// -------------------------------------------------------
+// `.module-form__notice` already exists above and already carries the muted ink, so
+// reusing it looked free. It is not. That class styles the two PAGE-LEVEL prose
+// paragraphs — the unreadable address and the missing module — which are capped at a
+// readable measure and render at the base step because they are the only thing on the
+// screen when they appear. This notice is FIELD-LEVEL: it sits directly beneath the
+// two date controls inside their group, so it needs the leading gap that separates it
+// from the control above and the dense supporting step the vocabulary reserves for
+// helper copy. A single class cannot be both without one of the two consumers
+// silently changing size, and a second rule under the same name would simply
+// overwrite the first for every consumer of it.
+.module-form__schedule-notice {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-base);
 }

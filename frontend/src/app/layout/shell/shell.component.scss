@@ -88,13 +88,25 @@
 // pair and measures 12.61 to 1.
 //
 // ACCESSIBILITY. Nothing here removes a focus indicator, hides content from assistive technology, or
-// uses colour as the sole carrier of meaning. A focus ring on the main region is deliberately not
-// authored: _reset.scss applies the shared ring to every natively focusable element and explicitly
-// excludes elements made programmatically focusable only, which is what a skip-link target is, and the
-// user agent draws its own indicator on an element it has focused programmatically. Re-declaring the
-// ring here would CONTRADICT the reset's stated intent, whereas the ink correction above RESTORES an
-// intent that was being overridden. That distinction is the line this file does not cross, and it is
-// the whole test for whether a component stylesheet may reach a value another layer owns.
+// uses colour as the sole carrier of meaning. Two corrections live in this file, and both RESTORE an
+// intent rather than override one: the ink correction above, and the ring on the main region below.
+//
+// ⚠ THIS NOTE PREVIOUSLY ARGUED THE OPPOSITE ABOUT THE RING, AND THE ARGUMENT DID NOT SURVIVE
+// MEASUREMENT. It reasoned that _reset.scss applies the shared ring to natively focusable elements and
+// excludes elements made programmatically focusable only - `[tabindex]:not([tabindex='-1'])` - so
+// declaring one here would contradict it. But read what the reset gives as its reason: those elements
+// are excluded because they are "deliberately outside the tab order", which is a statement about being
+// reachable BY TAB, not about never receiving focus. The main region is the one element in the
+// application that is a DESIGNED focus destination: the skip link exists solely to put focus there.
+// Measured in a browser, it landed with the user agent's own `outline: 1px auto rgb(16, 16, 16)` -
+// visible, so nothing was broken, but a thin black hairline where every other focus in the application
+// is the two-tone brand ring. The blanket exclusion is right; this single element is its exception, and
+// stating the exception at the element's own site is what the reset's selector cannot do.
+
+// Sass module scoping is per-file, so this `@use` is what makes `mx.*` available here; a `@use`
+// elsewhere does not. It is the file's first non-comment statement because Sass requires that.
+@use '../../../styles/mixins' as mx;
+
 :host(:not(.shell)) {
   display: block;
 }
@@ -144,6 +156,12 @@
 // sizing of every descendant of main, and switching this to a scrolling overflow value would incur the
 // two functional costs named above; neither is a trade this file may make on the table partial's behalf.
 main {
+  // The application's own focus indicator on the skip link's landing place, for the reason set out in
+  // the accessibility note above. The mixin scopes itself to `:focus-visible`, so this appears for the
+  // keyboard activation that puts focus here and never for a mouse press that happens to land in the
+  // region; and an outline participates in no layout, so a ring on a region this large shifts nothing.
+  @include mx.focus-ring;
+
   min-inline-size: 0;
   overflow-wrap: break-word;
 }

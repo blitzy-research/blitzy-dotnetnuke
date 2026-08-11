@@ -1,5 +1,20 @@
-import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  ElementRef,
+  HostListener,
+  NgZone,
+  computed,
+  effect,
+  inject,
+  signal,
+} from '@angular/core';
 import type { Signal } from '@angular/core';
+
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { NavigationEnd, Router } from '@angular/router';
+import { filter, map, distinctUntilChanged } from 'rxjs';
 
 import { NotificationService } from '../../core/services/notification.service';
 
@@ -46,6 +61,59 @@ const DISMISS_LABEL = 'Dismiss this message';
  * reachable by landmark navigation. The name is an attribute, so it adds no visible content.
  */
 const REGION_LABEL = 'Notifications';
+
+/**
+ * The accessible name and visible wording of the clear-everything control.
+ *
+ * MIGRATION: a net addition with no legacy counterpart - the legacy surface rendered ONE module
+ * message per page render, so there was never a stack to clear. It exists because a queue that only
+ * empties one row at a time is a queue an operator abandons: runtime testing measured nine entries
+ * on screen at once, and dismissing them individually is nine pointer trips.
+ */
+const CLEAR_ALL_LABEL = 'Dismiss all';
+
+/**
+ * How long a self-dismissing entry stays on screen, in milliseconds.
+ *
+ * ⚠ CHOSEN AGAINST READING SPEED, NOT AESTHETICS, AND IT IS DELIBERATELY LONG. The bound on a
+ * message is 1024 code units, and 8 seconds is comfortably longer than an average adult takes to
+ * read the longest sentence this surface realistically shows. It is also only half of the safeguard:
+ * the countdown STOPS while the pointer is over the region or focus is inside it, so a person who is
+ * reading, or who has tabbed in to dismiss something, is never timed out mid-sentence.
+ */
+const AUTO_DISMISS_MS = 8_000;
+
+/**
+ * The severities that dismiss themselves.
+ *
+ * ⚠ ONLY THE OUTCOMES THAT REQUIRE NOTHING OF THE READER. A success and an advisory are
+ * acknowledgements - the operator caused them, they confirm what they expected, and leaving them on
+ * screen indefinitely is what turned a save into permanent furniture. A WARNING or an ERROR is the
+ * opposite: it reports something that did NOT happen, it frequently carries the support reference an
+ * operator has to quote, and removing it on a timer would destroy the only record of a failure. Those
+ * two persist until they are dismissed.
+ *
+ * Frozen so the set cannot be widened at runtime, and expressed as a set rather than a predicate so
+ * the membership is legible at a glance.
+ */
+const SELF_DISMISSING_SEVERITIES: ReadonlySet<NotificationSeverity> = Object.freeze(
+  new Set<NotificationSeverity>(['success', 'info']),
+);
+
+/**
+ * The greatest number of entries rendered at once.
+ *
+ * ⚠ A DISPLAY CEILING, NOT A QUEUE CEILING - the service keeps up to twenty-five, and every one of
+ * them stays dismissible and stays in the accessibility tree's announcement history. This bounds only
+ * how much of the viewport the surface may occupy at any moment. Runtime testing measured the
+ * unbounded version: nine entries came to 442 pixels, which on a 900-pixel viewport is 49 per cent of
+ * the screen given over to notification chrome.
+ *
+ * Four rather than one, because related outcomes genuinely arrive together - a save that succeeded
+ * followed by an advisory about what could not be included - and because the NEWEST are kept, which
+ * are the ones describing what just happened.
+ */
+const MAX_VISIBLE_ENTRIES = 4;
 
 /**
  * Renders the queued notifications and lets a person dismiss them.
@@ -127,6 +195,29 @@ export class NotificationListComponent {
   private readonly notifications = inject(NotificationService);
 
   /**
+   * The surface's own root, used to find a sibling dismissal control after one is removed.
+   *
+   * Read from the host rather than through a template query because the control that must
+   * receive focus is chosen AFTER the framework has removed the dismissed entry, and a view
+   * query resolved before that removal would name the button that no longer exists.
+   */
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+
+  /**
+   * The router, observed only to learn that the operator has changed SCREEN.
+   *
+   * Injected here rather than into the service, and the reason is architectural rather than stylistic. The
+   * service is depended upon by `core/interceptors/error.interceptor.ts`, so giving it a router dependency
+   * would put the router on the construction path of an HTTP interceptor. This component is already the one
+   * party that owns the queue's lifetime - it arms and cancels the dismissal timers, suspends them under the
+   * pointer and cancels them on teardown - so screen lifetime belongs here beside elapsed-time lifetime, and
+   * the service stays free of both.
+   */
+  private readonly router = inject(Router);
+  /** The component host, read only to tell "focus left the region" from "focus moved within it". */
+  private readonly hostElement = inject<ElementRef<HTMLElement>>(ElementRef);
+
+  /**
    * The queue, oldest entry first, exactly as the service publishes it.
    *
    * Re-exposed rather than copied or re-ordered: the service's order is append order, which is
@@ -140,6 +231,216 @@ export class NotificationListComponent {
 
   /** The accessible name of every dismissal control. */
   protected readonly dismissLabel: string = DISMISS_LABEL;
+
+  /** The wording of the clear-everything control. */
+  protected readonly clearAllLabel: string = CLEAR_ALL_LABEL;
+
+  /**
+   * The entries actually rendered: the newest {@link MAX_VISIBLE_ENTRIES}, still oldest-first.
+   *
+   * Slicing from the END and then keeping the service's order is what makes the surface bounded
+   * without reordering anything: the rows a person reads are still in the order the outcomes
+   * happened, and the ones dropped from view are the oldest, which are the least likely to describe
+   * what just happened.
+   */
+  protected readonly visibleEntries: Signal<readonly AppNotification[]> = computed(() =>
+    this.entries().slice(-MAX_VISIBLE_ENTRIES),
+  );
+
+  /**
+   * How many queued entries are not on screen, or zero when all of them are.
+   *
+   * Stated to the reader rather than silently swallowed. A surface that quietly hides messages is
+   * indistinguishable from one that loses them, and a person who has just triggered several outcomes
+   * needs to know that the count they can see is not the whole story.
+   */
+  protected readonly hiddenCount: Signal<number> = computed(() =>
+    Math.max(this.entries().length - MAX_VISIBLE_ENTRIES, 0),
+  );
+
+  /**
+   * Whether more than one entry is queued, which is when clearing them together is worth offering.
+   */
+  protected readonly canClearAll: Signal<boolean> = computed(() => this.entries().length > 1);
+
+  /**
+   * Whether the countdown is suspended because a person is reading or operating the region.
+   *
+   * ⚠ THIS IS THE SAFEGUARD THAT MAKES AUTO-DISMISS ACCEPTABLE AT ALL. A timed removal is a time
+   * limit on reading, and the mitigation is that the limit stops the moment there is evidence someone
+   * is engaged with it: the pointer resting over the region, or focus inside it - which is the state a
+   * keyboard or screen-reader user is in for the whole time they are working through the messages.
+   */
+  private readonly paused = signal(false);
+
+  /**
+   * The pending removal for each self-dismissing entry, by identifier.
+   *
+   * Held per entry rather than as one timer for the queue, because entries arrive at different moments
+   * and each is owed its own full reading time. Cleared wholesale while {@link paused}, and rebuilt
+   * from scratch when the pause ends, which is what gives a person the FULL interval again rather than
+   * whatever was left of it.
+   */
+  private readonly pendingDismissals = new Map<number, ReturnType<typeof setTimeout>>();
+
+  private readonly destroyRef = inject(DestroyRef);
+
+  /** The application's zone, used only to keep the dismissal countdown OUT of it. */
+  private readonly zone = inject(NgZone);
+
+  constructor() {
+    // Reacts to the queue and to the pause state together. Reading both signals inside the effect is
+    // what registers it as a dependent of both, so unpausing re-arms the timers and a new entry gets
+    // one without any manual subscription.
+    effect(() => {
+      const entries = this.entries();
+      const paused = this.paused();
+
+      this.clearPendingDismissals();
+
+      if (paused) {
+        return;
+      }
+
+      for (const entry of entries) {
+        if (SELF_DISMISSING_SEVERITIES.has(entry.severity)) {
+          this.scheduleDismissal(entry.id);
+        }
+      }
+    });
+
+    /*
+     * Discards the previous screen's notifications once a new screen has actually rendered.
+     *
+     * ⚠ COMPARED ON THE PATH, WITH THE QUERY STRING DISCARDED. Paging, filtering and sorting are all
+     * carried in the query string on every listing in this application, so reacting to the full address
+     * would clear a refusal the operator was still reading the instant they turned a page. `distinctUntil-
+     * Changed` over the path is what makes "the operator left the screen" the trigger rather than "the
+     * address changed", and it also absorbs a repeat navigation to the address already held - re-clicking
+     * the sidebar entry for the current screen is not a departure from it.
+     *
+     * `NavigationEnd` rather than `NavigationStart`, because a navigation can be cancelled by a gate or by
+     * an unsaved-changes prompt. Clearing on start would discard the messages belonging to a screen the
+     * operator then never left, which is a second way to lose a message unread.
+     *
+     * The first emission is a departure from nothing and clears an empty queue, which the service answers
+     * by publishing an unchanged reference - so bootstrap costs nothing.
+     */
+    this.router.events
+      .pipe(
+        filter((event): event is NavigationEnd => event instanceof NavigationEnd),
+        // `urlAfterRedirects`, not `url`: a gate that answers with a redirect is one navigation whose
+        // destination is the redirected address, and reading the requested address would treat the
+        // refused one as the screen now shown.
+        map((event) => event.urlAfterRedirects.split('?')[0]),
+        distinctUntilChanged(),
+        takeUntilDestroyed(this.destroyRef),
+      )
+      .subscribe(() => {
+        this.notifications.dismissStale();
+      });
+
+    // A pending timer outliving the component would call into the service after the surface is gone,
+    // which on a route change is a removal nobody asked for.
+    this.destroyRef.onDestroy(() => {
+      this.clearPendingDismissals();
+    });
+  }
+
+  /**
+   * Suspends the countdown while the pointer is over the region.
+   */
+  @HostListener('mouseenter')
+  protected onPointerEnter(): void {
+    this.paused.set(true);
+  }
+
+  /**
+   * Resumes the countdown when the pointer leaves, giving every entry its full interval again.
+   */
+  @HostListener('mouseleave')
+  protected onPointerLeave(): void {
+    this.paused.set(false);
+  }
+
+  /**
+   * Suspends the countdown while focus is inside the region.
+   *
+   * `focusin` rather than `focus`, because the event has to be observed on the region while the focus
+   * itself lands on a dismissal control inside it - `focus` does not bubble and would never be seen
+   * here.
+   */
+  @HostListener('focusin')
+  protected onFocusEnter(): void {
+    this.paused.set(true);
+  }
+
+  /**
+   * Resumes the countdown when focus leaves the region entirely.
+   *
+   * The related target is checked because `focusout` also fires when focus moves from one dismissal
+   * control to the next INSIDE the region, and treating that as leaving would restart the countdown
+   * under a person who is still working through the messages.
+   *
+   * @param event The focus event, whose related target is where focus is going.
+   */
+  @HostListener('focusout', ['$event'])
+  protected onFocusLeave(event: FocusEvent): void {
+    const next = event.relatedTarget;
+    const host = this.hostElement.nativeElement;
+
+    if (next instanceof Node && host.contains(next)) {
+      return;
+    }
+
+    this.paused.set(false);
+  }
+
+  /**
+   * Removes every queued entry.
+   */
+  protected clearAll(): void {
+    this.notifications.clear();
+  }
+
+  /**
+   * Arms the removal of one entry.
+   *
+   * ⚠ THE TIMER MUST NOT BE A ZONE TASK, and this is a correctness requirement rather than a
+   * performance one. A pending timer inside the zone leaves the application permanently "unstable",
+   * and anything that waits for stability then waits for the timer: the framework's own test
+   * stability promise, server-side rendering readiness, and any `whenStable`-based coordination.
+   * Measured: three specifications that await stability after a successful write timed out, because a
+   * success notification had just armed an eight-second countdown inside the zone.
+   *
+   * Running it outside the zone costs nothing in correctness. The callback writes a SIGNAL through the
+   * service, and signal writes mark their consumers dirty and schedule change detection independently
+   * of the zone, so this surface still updates when the entry goes.
+   *
+   * @param id The entry to remove when the interval elapses.
+   */
+  private scheduleDismissal(id: number): void {
+    this.pendingDismissals.set(
+      id,
+      this.zone.runOutsideAngular(() =>
+        setTimeout(() => {
+          this.pendingDismissals.delete(id);
+          this.notifications.dismiss(id);
+        }, AUTO_DISMISS_MS),
+      ),
+    );
+  }
+
+  /**
+   * Cancels every pending removal without removing anything.
+   */
+  private clearPendingDismissals(): void {
+    for (const handle of this.pendingDismissals.values()) {
+      clearTimeout(handle);
+    }
+
+    this.pendingDismissals.clear();
+  }
 
   /**
    * The word for one entry's severity.
@@ -168,5 +469,63 @@ export class NotificationListComponent {
    */
   protected dismiss(id: number): void {
     this.notifications.dismiss(id);
+
+    this.restoreFocusAfterDismissal();
+  }
+
+  /**
+   * Puts focus somewhere deliberate after a dismissal removes the control that had it.
+   *
+   * ⚠ THE DEFECT: dismissing a notification dropped focus to `<body>`. The button holding focus
+   * is the very element the dismissal destroys, and when focus has nowhere to go the browser
+   * gives it to the document — which for a keyboard reader means the next Tab restarts from the
+   * top of the page, losing whatever position they had reached. It is also silent: a screen
+   * reader announces nothing, so the only feedback that the dismissal worked was the message
+   * vanishing, which a reader who cannot see it never receives.
+   *
+   * THE ORDER OF PREFERENCE, and the reason for each step:
+   *   1. ANOTHER NOTIFICATION'S DISMISS BUTTON, when the queue still holds entries. Focus stays
+   *      in the surface the reader was working in, so clearing several messages is a sequence of
+   *      presses in one place rather than a hunt after each one.
+   *   2. THE MAIN REGION, when that was the last entry. The surface is now empty and has no
+   *      focusable control at all, so focus moves to the region the notification sat in - the
+   *      same target the skip link uses, and the reason `<main>` carries `tabindex="-1"`. A
+   *      reader resumes at the content rather than at the document.
+   *
+   * Neither step scrolls or steals focus from anywhere else: this runs only in response to the
+   * reader's own press on a control inside this surface.
+   *
+   * ⚠ READ AFTER THE REMOVAL HAS RENDERED. The queue is a signal and the entry's button is gone
+   * only once change detection has run, so the surviving controls are collected on a macrotask -
+   * a microtask would resolve before that render and would find the dismissed button still
+   * present, and focus it. The timer is deliberately NOT wrapped for the zone: this component
+   * needs the framework to see the focus move so the change is reflected, and the callback does
+   * no further work that could keep the application unstable.
+   */
+  private restoreFocusAfterDismissal(): void {
+    setTimeout(() => {
+      const surviving: HTMLButtonElement | null =
+        this.host.nativeElement.querySelector<HTMLButtonElement>('.notification-list__dismiss');
+
+      if (surviving !== null) {
+        surviving.focus();
+
+        return;
+      }
+
+      // `closest` rather than a document lookup by identifier: the surface is mounted inside the
+      // main region by the shell, so its own ancestry names the target without this component
+      // having to know the identifier the shell generates for it.
+      const main: HTMLElement | null = this.host.nativeElement.closest('main');
+
+      // ⚠ `preventScroll`, AND ITS ABSENCE WAS MEASURED AS A DEFECT. The main region begins
+      // above this surface, so focusing it without the option scrolled the viewport - measured
+      // at 17px (window.scrollY 0 → 17) on a screen the reader had not scrolled at all, and by
+      // as much as the reader HAS scrolled on a long grid. That trades a focus defect for a
+      // scroll-position one: the reader is returned to the top of a screen they were working
+      // down. Focus moves; the viewport does not. The same option is passed for the same reason
+      // where the shared confirmation dialog falls back to this element on teardown.
+      main?.focus({ preventScroll: true });
+    });
   }
 }

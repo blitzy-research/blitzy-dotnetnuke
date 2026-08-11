@@ -34,6 +34,19 @@
 
 @if (loading) {
   <app-loading-spinner label="Loading module settings…"></app-loading-spinner>
+} @else if (readRefused()) {
+  <!--
+    THE READ WAS REFUSED, OR FAILED. The banner above IS the presentation, and this branch exists to
+    render nothing beneath it - which is what makes the refusal one statement rather than two.
+
+    Reaching this branch suppresses both empty states below and the form itself: a refusal is not an
+    absence, so neither "could not be found" nor "no settings are available" describes it, and a form
+    seeded from no module would offer a save the server has already said it will refuse.
+
+    MIGRATION: this is the legacy access-denied page's entire content - a heading and one
+    `YellowWarning` module message (`Website/admin/Security/AccessDenied.ascx.vb:L41-L45`) - and it is
+    the identical presentation the sibling module form and export screens now give the same status.
+  -->
 } @else if (notFound()) {
   <!-- An identifier that resolves to nothing is a legitimate state - a stale bookmark, or a module already
        removed - and is reported as such rather than as an error. -->
@@ -43,34 +56,40 @@
 } @else {
   <form class="module-settings" [formGroup]="form" (ngSubmit)="onSubmit()">
     <section class="module-settings__section">
-      <button
-        class="module-settings__toggle module-settings__toggle--ruled"
-        type="button"
-        [id]="sectionHeadingId('moduleSettings')"
-        [attr.aria-expanded]="isExpanded('moduleSettings')"
-        (click)="toggle('moduleSettings')"
-      >
-        {{ headings['moduleSettings'] }}
-      </button>
+      <h2 class="module-settings__section-heading">
+        <button
+          class="module-settings__toggle module-settings__toggle--ruled"
+          type="button"
+          [id]="sectionHeadingId('moduleSettings')"
+          [attr.aria-expanded]="isExpanded('moduleSettings')"
+          [attr.aria-controls]="isExpanded('moduleSettings') ? sectionBodyId('moduleSettings') : null"
+          (click)="toggle('moduleSettings')"
+        >
+          {{ headings['moduleSettings'] }}
+        </button>
+      </h2>
 
       @if (isExpanded('moduleSettings')) {
-        <div class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('moduleSettings')">
+        <div [id]="sectionBodyId('moduleSettings')" class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('moduleSettings')">
           <p class="module-settings__intro">{{ intros['moduleSettings'] }}</p>
 
           <section class="module-settings__section module-settings__section--nested">
-            <button
-              class="module-settings__toggle"
-              type="button"
-              [id]="sectionHeadingId('details')"
-              [attr.aria-expanded]="isExpanded('details')"
-              [attr.aria-describedby]="sectionHeadingId('moduleSettings')"
-              (click)="toggle('details')"
-            >
-              {{ headings['details'] }}
-            </button>
+            <h3 class="module-settings__section-heading">
+              <button
+                class="module-settings__toggle"
+                type="button"
+                [id]="sectionHeadingId('details')"
+                [attr.aria-expanded]="isExpanded('details')"
+                [attr.aria-controls]="isExpanded('details') ? sectionBodyId('details') : null"
+                [attr.aria-describedby]="sectionHeadingId('moduleSettings')"
+                (click)="toggle('details')"
+              >
+                {{ headings['details'] }}
+              </button>
+            </h3>
 
             @if (isExpanded('details')) {
-              <div class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('details')">
+              <div [id]="sectionBodyId('details')" class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('details')">
                 <div class="module-settings__fields">
                   <!-- The definition's name is shown, never edited: which definition a module instantiates
                        is fixed when it is created. Rendered as a description list rather than a disabled
@@ -97,6 +116,7 @@
                         [id]="controlId('moduleTitle')"
                         [maxlength]="limits.moduleTitle"
                         [attr.aria-describedby]="describedBy('moduleTitle')"
+                        [attr.aria-errormessage]="errorMessageId('moduleTitle')"
                         [attr.aria-invalid]="form.controls.moduleTitle.touched && form.controls.moduleTitle.invalid"
                       />
                       <!-- track $index, not the message: two model-state entries for one key can carry
@@ -110,6 +130,19 @@
                             <small class="form-error">{{ message }}</small>
                           }
                         </div>
+                      }
+
+                      <!-- WHAT A BLANK HEADING MEANS, said where the decision is made. The heading is
+                           OPTIONAL on every tier - the legacy markup declared no presence validator on
+                           `txtTitle`, both server validators gate their only title rule on the value being
+                           non-empty, and the column is nullable - so leaving it blank is a legitimate
+                           choice rather than a mistake, and it is not refused. What was missing is that
+                           the choice had a consequence nobody stated: the module is then listed under its
+                           definition's name, which is what `ControlPanelBase.vb:192-196` did when it found
+                           `title = ""`. Announced politely, and rendered outside the message container so
+                           it can never read as a refusal. -->
+                      @if (titleFallbackNotice !== null) {
+                        <p class="module-settings__notice" aria-live="polite">{{ titleFallbackNotice }}</p>
                       }
                     </div>
                   </div>
@@ -128,10 +161,44 @@
                           formControlName="inheritViewPermissions"
                           [id]="controlId('inheritViewPermissions')"
                           [attr.aria-describedby]="describedBy('permissions', 'inheritViewPermissions')"
+                          [attr.aria-errormessage]="errorMessageId('inheritViewPermissions')"
                         />
                         {{ labels['inheritViewPermissions'] }}
                       </label>
                       <small class="form-help" [id]="hintId('permissions')">{{ hints['permissions'] }}</small>
+
+                      <!--
+                        THE KEYS THIS MODULE'S DEFINITION DECLARES: read-only, advisory, and rendered only
+                        when there is genuinely something to say.
+
+                        The condition tests `!== null` AND a non-empty length because the two carry
+                        different meanings on the signal behind it: `null` is "not read" - the caller does
+                        not administer the tenant, or the read has not returned, or it failed - and an empty
+                        array is the answer "this definition declares none". Neither has anything to show,
+                        but only the second is an answer, and the signal's own note records the distinction
+                        so a future reader does not collapse them.
+
+                        ⚠ NOT A GATE AND NOT A GRID. This states the definition's VOCABULARY; it does not
+                        say what the caller holds, no control is enabled or disabled by it, and no
+                        submission consults it. Editing the grants themselves is a separate resource with
+                        its own screen, exactly as the note above this field records.
+
+                        `track key` is safe here because the catalogue answers a SET - the API composes it
+                        from distinct keys - so no duplicate can arrive to make the expression collide.
+                      -->
+                      @if (definitionPermissionKeys(); as declaredKeys) {
+                        @if (declaredKeys.length > 0) {
+                          <p class="module-settings__declared-permissions">
+                            <span class="module-settings__declared-permissions-label">
+                              {{ definitionPermissionKeysLabel }}
+                            </span>
+                            @for (key of declaredKeys; track key) {
+                              <span class="module-settings__declared-permission">{{ key }}</span>
+                            }
+                          </p>
+                        }
+                      }
+
                       @if (hasMessages('inheritViewPermissions')) {
                         <div class="module-settings__messages" [id]="messageId('inheritViewPermissions')" role="alert">
                           @for (message of serverMessages('inheritViewPermissions'); track $index) {
@@ -147,19 +214,22 @@
           </section>
 
           <section class="module-settings__section module-settings__section--nested">
-            <button
-              class="module-settings__toggle"
-              type="button"
-              [id]="sectionHeadingId('security')"
-              [attr.aria-expanded]="isExpanded('security')"
-              [attr.aria-describedby]="sectionHeadingId('moduleSettings')"
-              (click)="toggle('security')"
-            >
-              {{ headings['security'] }}
-            </button>
+            <h3 class="module-settings__section-heading">
+              <button
+                class="module-settings__toggle"
+                type="button"
+                [id]="sectionHeadingId('security')"
+                [attr.aria-expanded]="isExpanded('security')"
+                [attr.aria-controls]="isExpanded('security') ? sectionBodyId('security') : null"
+                [attr.aria-describedby]="sectionHeadingId('moduleSettings')"
+                (click)="toggle('security')"
+              >
+                {{ headings['security'] }}
+              </button>
+            </h3>
 
             @if (isExpanded('security')) {
-              <div class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('security')">
+              <div [id]="sectionBodyId('security')" class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('security')">
                 <div class="module-settings__fields">
                   <div class="module-settings__field">
                     <label [for]="controlId('tabId')">
@@ -171,6 +241,7 @@
                         formControlName="tabId"
                         [id]="controlId('tabId')"
                         [attr.aria-describedby]="describedBy('tabId')"
+                        [attr.aria-errormessage]="errorMessageId('tabId')"
                       >
                         @for (page of pages; track page.value) {
                           <option [ngValue]="page.value">{{ page.label }}</option>
@@ -197,6 +268,7 @@
                         formControlName="allTabs"
                         [id]="controlId('allTabs')"
                         [attr.aria-describedby]="describedBy('allTabs')"
+                        [attr.aria-errormessage]="errorMessageId('allTabs')"
                       />
                       @if (hasMessages('allTabs')) {
                         <div class="module-settings__messages" [id]="messageId('allTabs')" role="alert">
@@ -221,6 +293,7 @@
                         formControlName="header"
                         [id]="controlId('header')"
                         [attr.aria-describedby]="describedBy('header')"
+                        [attr.aria-errormessage]="errorMessageId('header')"
                       ></textarea>
                       @if (hasMessages('header')) {
                         <div class="module-settings__messages" [id]="messageId('header')" role="alert">
@@ -243,6 +316,7 @@
                         formControlName="footer"
                         [id]="controlId('footer')"
                         [attr.aria-describedby]="describedBy('footer')"
+                        [attr.aria-errormessage]="errorMessageId('footer')"
                       ></textarea>
                       @if (hasMessages('footer')) {
                         <div class="module-settings__messages" [id]="messageId('footer')" role="alert">
@@ -266,6 +340,7 @@
                         [id]="controlId('startDate')"
                         [maxlength]="limits.startDate"
                         [attr.aria-describedby]="describedBy('startDate')"
+                        [attr.aria-errormessage]="errorMessageId('startDate')"
                         [attr.aria-invalid]="form.controls.startDate.touched && form.controls.startDate.invalid"
                       />
                       @if (hasMessages('startDate')) {
@@ -293,6 +368,7 @@
                         [id]="controlId('endDate')"
                         [maxlength]="limits.endDate"
                         [attr.aria-describedby]="describedBy('endDate')"
+                        [attr.aria-errormessage]="errorMessageId('endDate')"
                         [attr.aria-invalid]="form.controls.endDate.touched && form.controls.endDate.invalid"
                       />
                       @if (hasMessages('endDate')) {
@@ -316,34 +392,40 @@
     </section>
 
     <section class="module-settings__section">
-      <button
-        class="module-settings__toggle module-settings__toggle--ruled"
-        type="button"
-        [id]="sectionHeadingId('pageSettings')"
-        [attr.aria-expanded]="isExpanded('pageSettings')"
-        (click)="toggle('pageSettings')"
-      >
-        {{ headings['pageSettings'] }}
-      </button>
+      <h2 class="module-settings__section-heading">
+        <button
+          class="module-settings__toggle module-settings__toggle--ruled"
+          type="button"
+          [id]="sectionHeadingId('pageSettings')"
+          [attr.aria-expanded]="isExpanded('pageSettings')"
+          [attr.aria-controls]="isExpanded('pageSettings') ? sectionBodyId('pageSettings') : null"
+          (click)="toggle('pageSettings')"
+        >
+          {{ headings['pageSettings'] }}
+        </button>
+      </h2>
 
       @if (isExpanded('pageSettings')) {
-        <div class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('pageSettings')">
+        <div [id]="sectionBodyId('pageSettings')" class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('pageSettings')">
           <p class="module-settings__intro">{{ intros['pageSettings'] }}</p>
 
           <section class="module-settings__section module-settings__section--nested">
-            <button
-              class="module-settings__toggle"
-              type="button"
-              [id]="sectionHeadingId('appearance')"
-              [attr.aria-expanded]="isExpanded('appearance')"
-              [attr.aria-describedby]="sectionHeadingId('pageSettings')"
-              (click)="toggle('appearance')"
-            >
-              {{ headings['appearance'] }}
-            </button>
+            <h3 class="module-settings__section-heading">
+              <button
+                class="module-settings__toggle"
+                type="button"
+                [id]="sectionHeadingId('appearance')"
+                [attr.aria-expanded]="isExpanded('appearance')"
+                [attr.aria-controls]="isExpanded('appearance') ? sectionBodyId('appearance') : null"
+                [attr.aria-describedby]="sectionHeadingId('pageSettings')"
+                (click)="toggle('appearance')"
+              >
+                {{ headings['appearance'] }}
+              </button>
+            </h3>
 
             @if (isExpanded('appearance')) {
-              <div class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('appearance')">
+              <div [id]="sectionBodyId('appearance')" class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('appearance')">
                 <div class="module-settings__fields">
                   <div class="module-settings__field">
                     <label [for]="controlId('iconFile')">
@@ -357,9 +439,21 @@
                         [id]="controlId('iconFile')"
                         [maxlength]="limits.iconFile"
                         [attr.aria-describedby]="describedBy('iconFile')"
+                        [attr.aria-errormessage]="errorMessageId('iconFile')"
+                        [attr.aria-invalid]="form.controls.iconFile.touched && form.controls.iconFile.invalid"
                       />
+                      <!-- BOTH CHANNELS, as the heading and the date fields already do. This container used
+                           to render server messages ALONE, which was invisible while the control carried no
+                           client rule of its own: `hasMessages` would open the container and then emit
+                           nothing. Adding the containment rule made that gap reachable — a refused icon
+                           reference marked the control invalid and blocked the submit while saying nothing
+                           about why — so the client message is emitted here and the control now reports its
+                           own validity to assistive technology. -->
                       @if (hasMessages('iconFile')) {
                         <div class="module-settings__messages" [id]="messageId('iconFile')" role="alert">
+                          @if (clientMessage('iconFile') !== null) {
+                            <small class="form-error">{{ clientMessage('iconFile') }}</small>
+                          }
                           @for (message of serverMessages('iconFile'); track $index) {
                             <small class="form-error">{{ message }}</small>
                           }
@@ -384,6 +478,7 @@
                       role="radiogroup"
                       [attr.aria-labelledby]="labelId('visibility')"
                       [attr.aria-describedby]="describedBy('visibility')"
+                      [attr.aria-errormessage]="errorMessageId('visibility')"
                     >
                       @for (choice of visibilityChoices; track choice.value) {
                         <label [for]="choiceId('visibility', $index)">
@@ -425,6 +520,7 @@
                         formControlName="displayTitle"
                         [id]="controlId('displayTitle')"
                         [attr.aria-describedby]="describedBy('displayTitle')"
+                        [attr.aria-errormessage]="errorMessageId('displayTitle')"
                       />
                       @if (hasMessages('displayTitle')) {
                         <div class="module-settings__messages" [id]="messageId('displayTitle')" role="alert">
@@ -465,6 +561,7 @@
                           [id]="controlId('cacheTime')"
                           [maxlength]="limits.cacheTime"
                           [attr.aria-describedby]="describedBy('cacheTime')"
+                          [attr.aria-errormessage]="errorMessageId('cacheTime')"
                           [attr.aria-invalid]="form.controls.cacheTime.touched && form.controls.cacheTime.invalid"
                         />
                         @if (hasMessages('cacheTime')) {
@@ -486,19 +583,22 @@
           </section>
 
           <section class="module-settings__section module-settings__section--nested">
-            <button
-              class="module-settings__toggle"
-              type="button"
-              [id]="sectionHeadingId('other')"
-              [attr.aria-expanded]="isExpanded('other')"
-              [attr.aria-describedby]="sectionHeadingId('pageSettings')"
-              (click)="toggle('other')"
-            >
-              {{ headings['other'] }}
-            </button>
+            <h3 class="module-settings__section-heading">
+              <button
+                class="module-settings__toggle"
+                type="button"
+                [id]="sectionHeadingId('other')"
+                [attr.aria-expanded]="isExpanded('other')"
+                [attr.aria-controls]="isExpanded('other') ? sectionBodyId('other') : null"
+                [attr.aria-describedby]="sectionHeadingId('pageSettings')"
+                (click)="toggle('other')"
+              >
+                {{ headings['other'] }}
+              </button>
+            </h3>
 
             @if (isExpanded('other')) {
-              <div class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('other')">
+              <div [id]="sectionBodyId('other')" class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('other')">
                 <div class="module-settings__fields">
                   <div class="module-settings__field">
                     <label [for]="controlId('setAsDefaultSettings')">
@@ -513,6 +613,7 @@
                         formControlName="setAsDefaultSettings"
                         [id]="controlId('setAsDefaultSettings')"
                         [attr.aria-describedby]="describedBy('setAsDefaultSettings')"
+                        [attr.aria-errormessage]="errorMessageId('setAsDefaultSettings')"
                       />
                       @if (hasMessages('setAsDefaultSettings')) {
                         <div class="module-settings__messages" [id]="messageId('setAsDefaultSettings')" role="alert">
@@ -537,6 +638,7 @@
                         formControlName="applyToAllModules"
                         [id]="controlId('applyToAllModules')"
                         [attr.aria-describedby]="describedBy('applyToAllModules')"
+                        [attr.aria-errormessage]="errorMessageId('applyToAllModules')"
                       />
                       @if (hasMessages('applyToAllModules')) {
                         <div class="module-settings__messages" [id]="messageId('applyToAllModules')" role="alert">
@@ -556,18 +658,21 @@
     </section>
 
     <section class="module-settings__section">
-      <button
-        class="module-settings__toggle module-settings__toggle--ruled"
-        type="button"
-        [id]="sectionHeadingId('specificSettings')"
-        [attr.aria-expanded]="isExpanded('specificSettings')"
-        (click)="toggle('specificSettings')"
-      >
-        {{ headings['specificSettings'] }}
-      </button>
+      <h2 class="module-settings__section-heading">
+        <button
+          class="module-settings__toggle module-settings__toggle--ruled"
+          type="button"
+          [id]="sectionHeadingId('specificSettings')"
+          [attr.aria-expanded]="isExpanded('specificSettings')"
+          [attr.aria-controls]="isExpanded('specificSettings') ? sectionBodyId('specificSettings') : null"
+          (click)="toggle('specificSettings')"
+        >
+          {{ headings['specificSettings'] }}
+        </button>
+      </h2>
 
       @if (isExpanded('specificSettings')) {
-        <div
+        <div [id]="sectionBodyId('specificSettings')"
           class="module-settings__body"
           role="group"
           [attr.aria-labelledby]="sectionHeadingId('specificSettings')"
@@ -582,12 +687,33 @@
               <ng-content select="[moduleSpecificSettings]"></ng-content>
             </div>
           </div>
+
+          <!-- WHAT THIS MODULE ACTUALLY HAS STORED. Read-only by design: the legacy placeholder hosted the
+               module's OWN settings control, and that control loader is out of scope, so there is no
+               bespoke editor to present and no way to know what a given key permits. Before this existed
+               the screen read both settings maps, wrote them back on every save, and displayed neither -
+               so a module carrying a 750-character stored value showed an empty panel. Values are rendered
+               through interpolation and are therefore text, never markup. -->
+          @if (hasSpecificSettings) {
+            <dl class="module-settings__stored">
+              @for (row of specificSettingRows; track row.scope + '\u001f' + row.name) {
+                <dt class="module-settings__stored-name">
+                  {{ row.name }}
+                  <span class="module-settings__stored-scope">{{ row.scope }}</span>
+                </dt>
+                <dd class="module-settings__stored-value">{{ row.value }}</dd>
+              }
+            </dl>
+          } @else {
+            <p class="module-settings__stored-empty">{{ noSpecificSettingsMessage }}</p>
+          }
         </div>
       }
     </section>
 
     <div class="module-settings__actions">
-      <button type="submit" [disabled]="saving">Update</button>
+      <button type="submit" [disabled]="saving"
+          [attr.aria-busy]="saving ? 'true' : null">{{ saving ? 'Saving…' : 'Update' }}</button>
       <button type="button" (click)="onCancel()">Cancel</button>
       @if (canDelete) {
         <button type="button" [disabled]="saving" (click)="requestRemoval()">Delete</button>
@@ -596,8 +722,16 @@
   </form>
 
   @if (removalPending) {
+    <!-- ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application
+       shows the SAME title, which the shared dialog declares as its default; binding one here is how
+       five different titles for one action came about - runtime testing found `Delete`,
+       `Confirm Delete`, `Delete Module`, `Delete Profile Property` and `Delete role group` across the
+       screens. The legacy had no title to preserve either: every in-scope delete confirmation was a
+       `window.confirm()` carrying the single shared string `DeleteItem`
+       (`Website/App_GlobalResources/SharedResources.resx` L120-L122), with no title at all. The
+       MESSAGE is still bound where a screen has its own legacy wording, because that wording is a
+       resource value this migration must preserve. -->
     <app-confirm-dialog
-      [title]="deleteConfirmTitle"
       [message]="deleteConfirmMessage()"
       [confirmLabel]="deleteConfirmLabel"
       danger

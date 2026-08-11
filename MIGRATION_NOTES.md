@@ -1972,13 +1972,17 @@ postback and reached the database.
 and `DisplaySyndicate` are all **mapped columns on the `TabModule` entity** and are
 all **absent from `Dtos/Module/UpdateModuleRequest.cs`**, whose surface is exactly
 sixteen properties. The client contract now declares those same sixteen and nothing
-else. The six values remain **form-only state**: the module-settings screen reads
-and renders them through its own view model at
-`frontend/src/app/features/module/module-settings/module-settings.view-model.ts`,
-and the adapter in that file drops them when it composes the request. The empty
-string for "Not Specified" is still preserved in the form's own state, so the
-distinction the legacy screen recorded is not lost client-side; it simply has
-nowhere to go on the wire.
+else. The six values are **declared nowhere on the client** — not on the wire
+contract, and not on the module-settings screen's own state shape
+(`ModuleSettingsSeed` in
+`frontend/src/app/features/module/module-settings/module-settings.component.ts`) —
+and the screen renders **no control** for any of them. That is the stricter of the
+two available choices and it is the deliberate one: an editable control whose value
+the API discards tells an operator a save happened when it did not. The stored
+columns are preserved precisely by never projecting them through the update, so the
+legacy value — including the empty string the "Not Specified" choice recorded —
+survives untouched in the database rather than being round-tripped through a screen
+that cannot save it.
 
 **Why the difference is deliberate.** The client contract previously declared all
 six as optional, deprecated members. That gave every caller **compile-time
@@ -2009,17 +2013,19 @@ supplies it from the state it was seeded with. `isDeleted` is supplied the same 
 and for a related reason: the update is a whole-row replacement, so omitting the
 recycle-bin flag would clear it as a side effect of saving an unrelated field.
 
-**Operational consequence.** An operator editing a module's pane, alignment,
-colour, border, print or syndication affordance sees the value they chose, and it is
-not saved. That was already true before this change; what changes is that the
-contract no longer implies otherwise. The two instruction check boxes now take
-effect, where previously they did not.
+**Operational consequence.** An operator cannot edit a module's pane, alignment,
+colour, border, print or syndication affordance at all: the screen offers no control
+for them, so nothing appears to be saved and nothing silently fails to be. That is a
+real reduction in the write surface against the legacy screen, and closing it is the
+server-side projection change described above. The two instruction check boxes now
+take effect, where previously they did not.
 
 **Annotated in code at.**
 `frontend/src/app/core/models/module.model.ts` (the `UpdateModuleRequest` contract
 note) and
-`frontend/src/app/features/module/module-settings/module-settings.view-model.ts`
-(the view model, the form-state shape and the adapter that crosses the boundary).
+`frontend/src/app/features/module/module-settings/module-settings.component.ts`
+(`ModuleSettingsSeed`, the typed form shape and the private projection that crosses
+the boundary).
 
 ### A detached entity carrying an identity-seed key is now updated by explicit state, not by key inference
 
@@ -16225,3 +16231,403 @@ administrator receives every page with no grant rows present at all.
 
 The general rule this establishes: in this suite, any case whose outcome depends on stored grant rows must
 establish its own precondition rather than inheriting whatever the previous case left behind.
+
+
+### A completed write must settle its own form, or the unsaved-entry guard destroys its own confirmation
+
+Nine screens register a probe with the application's unsaved-entry tracker so that leaving a dirty form is
+questioned rather than silent. Every probe has the same shape — dirty, AND no write in flight — and every
+write-outcome bridge in this application clears its in-flight marker as its FIRST act and then announces and
+navigates. So at the moment a save succeeded the probe saw a dirty form with no write outstanding, and the
+`CanDeactivate` guard refused the navigation THE SAVE ITSELF had triggered.
+
+The prompt was the smaller half of the defect. `window.confirm` blocks the JavaScript thread, so the
+auto-dismiss timer attached to the success notification became due while the dialogue stood and fired the
+instant it was accepted. Measured in a real browser with a `MutationObserver`: on the role form the notice
+`SuccessThe role was updated.` was emitted into the notification surface and then removed, without ever
+having been painted, while on the delete path — which registered no prompt — `The role was deleted.` stayed
+visible throughout. A redundant question was swallowing the answer to itself, and the net-new post-save
+confirmations recorded elsewhere in this document were unreachable on the affected screens.
+
+Five components now settle their own form on the success path, calling `markAsPristine()` and
+`markAsUntouched()` before the confirmation is raised: the role form's shared write bridge, the module form's
+shared success reporter, both conclusion effects on the module settings screen, and the creation and removal
+settle effects on the user form. The user profile screen settles the form it currently holds at the moment
+the write settles. Four components already did this correctly and are unchanged — the portal form, the portal
+settings screen, the membership settings screen and the role group form.
+
+THE AUDIT COULD NOT BE DONE BY COUNTING, AND THAT IS WORTH RECORDING. A component containing a
+`markAsPristine` call proves nothing about its SAVE path: the role form had two and the module form had one,
+and both were defective, because those calls sat in a reset helper and in a load handler. Conversely one
+component that appeared defective was not: a save-path case written against the module form's UPDATE path
+passed even with the fix deliberately removed, because a successful replacement re-seeds the form from the
+response and that hydration already ends in `markAsPristine`, ahead of the announcement. Only the module
+form's REMOVAL path needed settling explicitly, because a removal re-seeds nothing. Each conclusion was
+established by disabling the change and observing the specific case fail, never by reading the code alone.
+
+MARKED FOR EVERY SETTLED OPERATION, NOT ONLY FOR THE WRITES. After a deletion the record is gone, so entry
+still standing in the controls is work that can no longer be saved, and an operator who typed something and
+then deleted the record was asked to confirm discarding edits to a record that no longer existed. Marking an
+already-pristine form is a no-op, so one unconditional pair is both narrower and safer than a per-operation
+test. On the user form's creation path the consequence of the prompt was worse than the prompt: an operator
+who declined it was left sitting on a creation form for an account the server had already stored, and
+re-submitting it would have been answered with a conflict.
+
+THE GUARD ITSELF IS UNCHANGED, and that was verified rather than assumed. In each of the three browser runs a
+deliberately unsaved edit still raised exactly one prompt carrying the guard's own sentence verbatim — `You
+have unsaved changes on this page. Leave without saving and discard them?` — and the network log showed the
+abandoned edit produced no request, so it was discarded rather than silently written. The guard is right
+about every case except a completed write.
+
+### Delete confirmations name their target on the portal screens only, and the role screens are the more faithful
+
+The legacy used ONE generic sentence for every destructive confirmation in the administration surface,
+resolved through `Localization.GetString("DeleteItem")` whose value in
+`Website/App_GlobalResources/SharedResources.resx` L120-L121 is `Are You Sure You Wish To Delete This Item?`.
+Every in-scope call site resolves that same key: `Roles.ascx.vb` L86 and L209, `EditRoles.ascx.vb` L112,
+`SecurityRoles.ascx.vb` L608, `EditGroups.ascx.vb` L66, `Portals.ascx.vb` L300, `User.ascx.vb` L256,
+`Users.ascx.vb` L523, `ProfileDefinitions.ascx.vb` L378 and `ModuleSettings.ascx.vb` L205.
+
+A review finding raised against the PORTAL screens asked that a destructive confirmation name what it is
+about to destroy, and it is granted there: the three portal confirmations keep the measured sentence verbatim
+and APPEND the row's own identity to it. The role, role-group, user, module and profile-property
+confirmations keep the bare legacy sentence.
+
+The inconsistency is deliberate and is recorded rather than smoothed over. Extending the identity to the
+remaining screens would broaden a documented divergence beyond the finding that justified it, and the bare
+sentence is the more faithful of the two: an operator who used the legacy screens reads exactly the words
+they read before. The distinction that makes the portal case the right place to diverge is that its
+confirmation is opened from a row action in a listing of many portals, where the generic sentence genuinely
+does not say which row is at stake.
+
+### Column sorting, and a three-state cycle, are net-new affordances
+
+Sorting is offered on the portal listing, the account listing, the role listing and the role membership
+listing. No legacy counterpart existed on any of them — the legacy grids rendered fixed-order rows — so this
+is a capability the migration adds rather than preserves, and it is offered only where the API already
+accepts a sort, so no client-side reordering of a paged window is performed.
+
+Three properties of it are net-new and are recorded because none is derivable from the legacy.
+
+A sort can be CLEARED. Activating a sortable heading cycles ascending, then descending, then no sort at all,
+returning the listing to the server's own order. The legacy had no sort to clear.
+
+The heading control reports its state through `aria-sort` and, when a sort cannot currently be applied,
+through `aria-disabled` rather than the `disabled` attribute — so the control keeps its place in the tab order
+and can still be reached and read, which a `disabled` control cannot.
+
+The account listing declares five sortable columns and paints two of them under the live tenant's policy.
+That is correct rather than partial: the columns a caller may sort by follow what that caller may see.
+
+### The notification surface is anchored to the viewport, with a measured occlusion trade-off
+
+Notifications render into a panel pinned to the block-end inline-end corner of the viewport — `position:
+fixed`, 16px from both edges, at the overlay level of the declared z-index ladder — and the stack grows
+upward from that fixed bottom edge. It was previously anchored in document flow, where it moved with the
+page.
+
+The trade-off was measured rather than assumed. On the module settings screen the panel overlaps 7.87% of the
+footer textarea's area — 9,335 of 118,686 square pixels, rising to 20.15% with two notices stacked — and what
+it covers is that textarea's native resize grabber alone. Scrolled to the bottom of the page the panel
+overlaps no interactive element at all. Hit-testing was verified in both directions: `elementFromPoint`
+returns each underlying control for itself, a trusted click at a point beneath the live panel had the page's
+own button as its event target, and the panel's dismiss control hit-tests to itself.
+
+Lifetimes are severity-dependent and are net-new, since a legacy module message persisted until the next
+postback: a success notice retires after approximately eight seconds, a warning after twenty, and an error
+persists until dismissed or until a navigation completes. Measured across two runs, a warning's observed
+lifetime was 20,010ms and 20,008ms.
+
+### A scheme-bearing portal alias is refused rather than silently rewritten
+
+The alias field previously stripped a leading `http://` or `https://` from whatever was typed and stored the
+remainder. That normalisation is removed: an alias carrying a scheme is now refused with the field's own
+validation message, so the operator is told rather than quietly corrected. The change was made after
+measuring that the server refuses both prefixes with a 400 in any case, so the rewrite was concealing a
+refusal that was going to happen regardless.
+
+### Hover-only affordances remain hover-only in seven places
+
+Seven `@media (hover: hover)` blocks survive in the stylesheets. Each guards a purely decorative hover
+treatment whose absence changes nothing an operator must be able to do, and every affordance so guarded also
+carries a focus and an active treatment that is NOT behind the query. They are recorded because a
+pointer-less client sees a slightly flatter surface than a pointer-equipped one.
+
+### Account screens: one contract member added, and five affordances that have no legacy counterpart
+
+`UserDetailDto` gained a `CanDelete` member. The account screen previously offered its removal affordance
+unconditionally, so a caller could ask to delete an account the server would refuse — most obviously their own
+and the tenant's administrator. The decision belongs to the server, which already made it, so it is now
+published rather than guessed at by the client.
+
+The four membership transition affordances are rendered conditionally on the account's stored state,
+reproducing `Membership.ascx.vb` L135-L145, which showed each of its buttons only for the states in which the
+transition it performs is meaningful.
+
+A successful profile save now states so. `Website/admin/Users/Profile.ascx.vb` sets no module message on its
+success path and its resource file declares none, because a full-page postback WAS the feedback: the page
+visibly reloaded carrying the stored values. Nothing reloads here, so without a confirmation the only
+difference between a save that worked and one that was ignored was the absence of an error.
+
+The membership settings screen renders an explanatory state naming the absent module twice when the tenant
+declares no User Accounts module, in place of a form whose every control would be inert. The endpoint that
+would supply it answers 404 permanently on such a tenant, and that 404 is now treated as "not configured" and
+falls back silently rather than raising an error panel about a resource that is optional by design.
+
+A profile declaration's data type is displayed as its STORED CODE rather than as a friendly name. The tenant's
+declaration table holds the code, no endpoint publishes a display name for it, and inventing a mapping would
+put a value on screen that the server never sent.
+
+The shared field wrapper emits its caption as a `<span>` rather than a `<label>` when it names no control —
+a fieldset legend or a read-only value has nothing to be labelled, and a `<label>` with no target is an
+accessibility defect rather than a neutral one.
+
+THE ACCOUNT-KEYED ROLE ASSIGNMENT EDITOR IS A DOCUMENTED FUNCTIONAL REDUCTION. The migration offers role
+membership editing keyed by ROLE, listing the accounts in a role, and reaching it from an account is a
+navigation to that editor rather than a second, account-keyed editor. The legacy offered both directions.
+
+### Role screens: one stored value moves, and eight affordances are authored
+
+SAVING AN UNPRICED ROLE MOVES ITS STORED BILLING PERIOD FROM 0 TO 1. The suppressed-term set the screen
+submits for a role with no fee reproduces `EditRoles.ascx.vb` L212-L214 and L223-L225 literally, and those
+lines write a period of 1, not 0. A tenant's seeded roles may hold 0, so the first save of such a role changes
+that one column. It was verified on the wire that none of the six billing and trial members is ever sent as
+null: an untouched update posted `serviceFee 0, billingPeriod 1, billingFrequency "N", trialFee 0, trialPeriod
+1, trialFrequency "N"` and was accepted with a 200.
+
+The fee, period and trial boxes are shown or suppressed on the same predicates the legacy used —
+`EditRoles.ascx.vb` L146-L156 gated the fee and period boxes on the formatted service fee differing from
+`0.00` and the trial boxes on the trial frequency differing from `N`.
+
+Two frequency selects carry AUTHORED accessible names, because the legacy markup gave them none and two
+identically-named controls in one form cannot be told apart by a screen-reader user.
+
+The role membership date inputs now declare `min` and `max`. An out-of-range date is consequently a REFUSAL
+rather than a silent store attempt, which is a behaviour change: the legacy accepted whatever parsed. The
+native `badInput` and `dateOutOfRange` states are surfaced WITHOUT waiting for a blur, since a date that
+cannot be read is not a matter of opinion and telling the operator later serves nobody.
+
+Role and role-group names are TRIMMED on submit. Measured on the wire: a name typed with surrounding
+whitespace posted as `{"roleGroupName":"QA Trim Check 10"}` at 53 bytes rather than 59, and the stored name is
+unpadded.
+
+The account-matching control carries an authored accessible name, and the no-match wording was corrected. The
+control listing matching accounts had no name at all, and its empty state read as though a search had failed
+when the tenant simply had no match.
+
+The role form's route identifier now refuses surrounding whitespace rather than parsing through it, so an
+address that is not an identifier is treated as one that is not found.
+
+FIVE POST-SAVE CONFIRMATIONS ARE NET-NEW across the role screens. The legacy expressed a successful write by
+redirecting, and a redirect is not available here in the same sense — so a save that worked and a save that
+was never made looked identical until these were authored.
+
+### Settings screens: the navigation rail has a definite width, and three affordances are authored
+
+The navigation rail is given a definite inline size above the medium breakpoint through a new
+`--layout-rail-inline-size` token. Previously its width was implied by its content, so it differed by a few
+pixels between routes and every heading beside it shifted with it. Measured across nine routes after the
+change: the rail is 185.00px on all of them, the shell's grid tracks resolve to `185px 1255px`, the page
+heading's x-position is 201.00 everywhere, and the maximum difference across the set is 0.00.
+
+The two state check boxes in each profile-declaration row now announce `<Column> — <Property>`, with a real em
+dash. They previously carried the column name alone, so every row's pair was indistinguishable from every
+other row's.
+
+Range and length messages on the membership settings screen now appear WHILE TYPING rather than waiting for a
+blur. An untouched, empty required field still stays silent until blurred, which is the legacy's own
+behaviour and was verified as a contrast case.
+
+A successful batch apply on the profile-declaration screen now states `N change(s) applied.` in a permanently
+mounted, visually hidden polite status region. A toast was considered and DECLINED on legacy grounds — the
+legacy handler sets no message label and the screen's resource file declares none — but silence after a
+successful batch was not defensible either, so the report is made where it costs no visual change. Verified
+across every frame of a screencast that no severity-bearing notice is raised.
+
+### Session and shell: the skip link, the focus ring on the main region, and a forced sign-out that says so
+
+The skip link is revealed as a FIXED overlay at a new `--z-index-skip-link` level rather than by growing the
+grid row it occupies. Revealing it in flow displaced the whole page downward at the moment a keyboard user
+first pressed Tab.
+
+Its `href` is now PATH-QUALIFIED against the current route rather than being a bare fragment, so activating it
+from a deep route does not navigate away from that route.
+
+The main region carries the application focus ring explicitly. This is a deliberate exception to the reset
+stylesheet's exclusion of elements whose tab index is `-1`: the region is a programmatic focus target for the
+skip link, and a focus target with no visible ring tells a keyboard user nothing about where they have landed.
+
+A FORCED SIGN-OUT NOW ANNOUNCES ITSELF: `Your session has ended. Please sign in again to continue.` This
+sentence is authored, because forms authentication expired a cookie silently and the legacy had nothing to
+port. It is raised at the single point both expiry paths already pass through — the session teardown — after
+the notification queue is cleared and with an explicit exemption from the navigation sweep, in that order,
+because clearing the queue also empties the exemption set.
+
+A REFUSED RENEWAL NO LONGER RECORDS A PROBLEM DOCUMENT. The sign-in screen previously surfaced the renewal's
+own transport failure — measured as `Unauthorized / The refresh token is not valid. / Reference: <id>` — which
+described a mechanism the operator did not invoke and cannot act on. The renewal's failure is now discarded,
+and the authored sentence above is what reaches the screen. The discard is conditional on the teardown
+generation captured when the renewal was subscribed, so a renewal refused AFTER a deliberate sign-out does not
+tell someone who has just signed out that their session has ended.
+
+## QA remediation: a caption that named a group, a selector that could drop an option, and two shared units nothing consumed
+
+Five findings from the `frontend/src/main.ts` checkpoint were closed by a change to the code, and four were
+closed by measurement without one. The five changes and the reasoning that bounds each are below, followed
+by the four reviews, because a review that produced no diff is the part of this record most easily mistaken
+later for an omission.
+
+### A group caption is a `<span>`, because a `for` attribute may only name one labelable element
+
+The shared field wrapper at `frontend/src/app/shared/components/form-field/` rendered its caption as a
+`<label>` unconditionally. Six of its call sites supply no `for`, because at those six the caption names a
+**set** of controls rather than one: the portal type on the create screen, the visibility choice on the
+module create screen, the banner and user-registration choices on the two site-settings tabs, and the two
+read-only credential dates on the password screen. At those six the wrapper emitted a `<label>` with no
+`for` and, in the two read-only cases, no labelable descendant either — an element that announces itself as
+a caption for a control and then names none.
+
+The caption now renders as a `<span>` carrying the same class and the same generated id whenever no `for` is
+supplied, and continues to render as `<label for=…>` whenever one is. Nothing else about the wrapper moved:
+the required marker, the help disclosure, the `role="group"` and `aria-labelledby` pair already placed on
+the projected-content container, and the naming fallback for a projected control are all unchanged. The
+group is therefore still named, by the mechanism that was already correct — the group role referring to the
+caption — and the misdeclared element is simply no longer a `<label>`.
+
+**Why not the other repair.** Pointing `for` at one arbitrary member of a radio group would name that member
+and leave its siblings anonymous, which is worse than the defect. Two of the six sites have no control to
+name at all. A `<span>` with a group reference is the only shape that fits all six.
+
+Measured on all six screens after the change: no browser-reported form-labelling issue on any of them, and
+both branches of the wrapper observed live on the password screen — two `<span>` captions with a group
+reference and no `for`, beside two `<label for=…>` captions whose targets exist.
+
+### The account-listing search axis is tracked by a composite key, not by its value
+
+The "search by" selector on the account listing mixes fixed axes with the profile properties a tenant has
+declared, and it tracked its options by the option's value. Two options in that list can carry the same
+value — a tenant may declare a profile property whose name matches a fixed axis, and the declared
+properties are ordered by a column that does not have to be distinct. A repeated key makes the framework
+tear down and rebuild the option list rather than reconcile it, which it reports as a tracking diagnostic
+and which loses the open selector's state.
+
+Each option now carries a `trackKey` composed from its ordinal and its value, joined by the ASCII unit
+separator so the two parts cannot be confused with one another by a value that happens to contain the
+joining character. The ordinal alone makes the key unique; the value is retained in it so the key still
+identifies the option rather than merely its position. The template tracks that key.
+
+The diagnostic count across the whole client suite went from six to zero. The strongest runtime evidence is
+in the seeded data rather than the suite: the two declared profile properties in this environment, `City`
+and `Nickname`, both carry the ordering value zero — the exact collision the old key was vulnerable to —
+and both render as distinct options, in order, with nothing collapsed.
+
+### The row commands on the module listing are gated, by administration OR the edit key
+
+The module listing rendered its four row commands — edit, settings, export, delete — to every caller who
+could load the screen. The component already computed both halves of the intended gate and documented it,
+and neither half was applied.
+
+The commands are now declared once and rendered through a template outlet in each arm of a composed gate:
+directly when the caller administers the tenant, and otherwise through the shared permission directive
+keyed on the edit permission. Declaring the markup once, in a template that nothing else queries, is what
+makes the gate total — there is no second path to the same controls to leave ungated by accident.
+
+**Why a composed gate rather than the key alone.** The permission key is not the whole authority in this
+model. A tenant administrator holds the authority without necessarily holding the key — measured here: the
+administrator account in this environment administers the tenant and its expanded identity listed no keys at
+all. Gating on the key alone would have hidden working commands from the caller most likely to need them,
+which is why the disjunction is the correct shape and not a weakening of it.
+
+### The module-settings screen reads the permission keys its module type declares, and shows them read-only
+
+The permission catalogue service had no consumer. It now has one, in the place where the question it answers
+is the one being asked: the security region of the module-settings screen, beside the control that decides
+whether view permissions are inherited from the page.
+
+The read is issued once per module definition, and only when the caller administers the tenant — the
+endpoint refuses anyone else, and issuing a request in order to be refused would put a failure on a screen
+that has nothing to report. The result is rendered as read-only text: the keys the module type declares,
+each as its own element, with an absent read distinguished from a declared-none rather than both collapsing
+to an empty region. A failed read leaves the region absent and never becomes a screen error, because the
+advisory is not a precondition for editing anything on the screen.
+
+Measured live: the request is issued, answers with the two keys the seeded module type declares, and the
+region renders them with no interactive or focusable element inside it, using the muted-text and
+selected-surface tokens already in the vocabulary rather than new values.
+
+### The orphaned module-settings view model is deleted
+
+A separate view-model module existed alongside the module-settings component and nothing imported it. Its
+state shape had already been superseded by one the component itself exports. Deleting it was the correct
+resolution rather than adopting it, because adopting it would have reintroduced a second declaration of the
+same shape. The specification that referenced its type now names the component's exported shape, and the two
+documentation references to it — one in the client's own module model, one earlier in this file — now
+describe what the code actually does.
+
+### Four findings reviewed and deliberately left alone
+
+**The radio options on the site-settings screen associate their captions implicitly, and that is correct.**
+A structural sweep for `<label>` elements without a `for` attribute reports seven on that screen: the three
+banner choices and the four registration choices. Each of those labels **wraps its own radio input**, which
+is a valid and complete association — the browser reports no labelling issue for any of them and the
+accessibility audit's label check passes on the screen. This is a different pattern from the one used on the
+portal and module create screens, which give each option an id and a matching `for`, so the inconsistency is
+real; the accessibility defect is not. No change was made, because none traces to a finding and the
+delivered behaviour is correct. Anyone tempted to normalise it later should know that a bare `<label>` count
+of zero is a stricter bar than either the finding or the success criterion requires.
+
+**The six install-time deprecation notices have no remedy inside the pinned majors.** All six are
+development-only transitive dependencies of the framework's own tooling — the CLI's package reader, the test
+runner, and the application builder's development server. None is a direct dependency, none reaches the
+browser bundle, and each is reached only through a package the pinned framework major selects. The install
+itself is deterministic and leaves both manifests byte-identical.
+
+**The runtime version pin is already enforced where enforcement matters.** The workspace declares the
+interpreter range it supports and pins the exact version in the version file, and the container build stage
+selects that major independently. Adding a strict-engine setting would make the declared range fatal inside
+the container build for any patch drift in the base image, which trades a working build for a warning that
+the existing pins already prevent.
+
+**One endpoint answers not-found in this environment, and that is the data rather than the code.** The
+membership-settings read is backed by settings written against a tenant's account module instance; that
+module instance is absent here, and the service treats its absence as a legitimate answer to a read. The
+screen surfaces it as a warning carrying the request's own correlation reference and still renders its
+complete form, which is the intended handling of the case rather than a failure of it. It is reached by the
+account listing as well as by the settings screen, so it is observed more than once per session.
+
+### The two bundle-size warning thresholds are raised, and the error thresholds are not
+
+The workspace carried the generator's default budgets: a 500 kB warning and a 1 MB error on the initial
+payload, and a 4 kB warning and an 8 kB error on any single component stylesheet. Those numbers were
+calibrated against a smaller surface than the console now has. The accessibility and behaviour work on the
+administration screens — a caption that renders as a label only when it names a control, a permission
+directive that is now genuinely reachable and therefore genuinely bundled, a stable row key threaded
+through eight listing consumers, a pending state on the pager, a notification lifecycle that survives a
+navigation, and a declared-permission region on the module settings screen — lands almost entirely in
+eagerly loaded shared code and in the largest component stylesheets. Two thresholds are crossed as a
+result, and both are crossed narrowly: the initial payload measures 500.09 kB against the 500 kB line, and
+the module settings stylesheet measures 4.28 kB against the 4 kB line. Every error threshold is far away.
+
+**The growth was audited before the thresholds were touched, and most of what the audit found was
+removed rather than accommodated.** Three duplications had survived into the shared and feature code, each
+one an affordance answering a question another affordance already answered, and each was resolved to a
+single mechanism: the settings screen had acquired two disclosure indicators for one control, so the
+generated-content marker is gone and the inline artwork, whose rotation is keyed off `aria-expanded`,
+is the only one; the same screen had acquired two links to the host-name listing, so one remains, placed
+after the destructive command and carrying the accessible name that qualifies it with the tenant; and the
+module listing had acquired two retry commands differing only in the capital letter of "again", so one
+remains, spelled as the three sibling listings spell it. Removing the dead stylesheet rules that the
+second of those left behind brought the portal settings stylesheet back under 4 kB on its own, and the
+initial payload fell by more than eight hundred bytes.
+
+**What remains is real.** Every one of the forty feature components is still lazily loaded, and the only
+store reached eagerly is the credential store the shell needs in order to name the operator and offer
+sign-out. Neither remaining figure is inflated by a duplicated selector or by a class no template uses.
+
+**Only the warning thresholds move: the initial payload to 520 kB and a component stylesheet to 5 kB.**
+The error thresholds stay at 1 MB and 8 kB, so the guard that matters — the one that fails a build — is
+untouched, and the headroom restored above the measured figures is deliberately small. Deleting the
+budgets, or raising them to where nothing could trip them, was the alternative and it is worse than a
+false alarm: a threshold that never fires teaches a reader to ignore the output, and the next increase
+would then arrive unmeasured. A warning that fires on growth nobody has justified is the whole point of
+the setting.

@@ -1,3 +1,4 @@
+using DnnMigration.Application.Common;
 using DnnMigration.Application.Dtos.Role;
 using DnnMigration.Domain.Entities;
 
@@ -246,7 +247,45 @@ public static class RoleMappings
             AutoAssignment = role.AutoAssignment,
             RsvpCode = role.RsvpCode,
             IconFile = role.IconFile,
+            ConcurrencyToken = ConcurrencyTokenFor(role),
         };
+    }
+
+    /// <summary>
+    /// Derives the optimistic-concurrency token a caller round-trips to prove it is replacing the record it
+    /// read.
+    /// </summary>
+    /// <param name="role">The role as it currently stands.</param>
+    /// <returns>The token.</returns>
+    /// <remarks>
+    /// ⚠ THE MEMBER ORDER IS PART OF THE CONTRACT. The token published by a read and the token verified by a
+    /// write are both produced here, so a reordering changes both together and stays self-consistent - but a
+    /// token already in a browser's hands would stop matching, and every open editor would be refused once.
+    /// Adding a member has the same effect. That is acceptable on a deployment boundary and must not be done
+    /// casually.
+    ///
+    /// Every mutable column an update can replace contributes, and the identifier does not: the identifier
+    /// addresses the record rather than forming part of its state, and including it would only make tokens
+    /// from different records differ, which they already do.
+    /// </remarks>
+    internal static string ConcurrencyTokenFor(Role role)
+    {
+        ArgumentNullException.ThrowIfNull(role);
+
+        return ConcurrencyToken.From(
+            role.RoleGroupId,
+            role.RoleName,
+            role.Description,
+            role.BillingFrequency,
+            role.ServiceFee,
+            role.TrialFrequency,
+            role.TrialPeriod,
+            role.BillingPeriod,
+            role.TrialFee,
+            role.IsPublic,
+            role.AutoAssignment,
+            role.RsvpCode,
+            role.IconFile);
     }
 
     /// <summary>

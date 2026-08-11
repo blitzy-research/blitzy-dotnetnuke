@@ -1,6 +1,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   EventEmitter,
   Input,
   Output,
@@ -9,6 +10,7 @@ import {
   inject,
   signal,
 } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
@@ -19,19 +21,28 @@ import type { ProblemDetails } from '../../../core/models/problem-details.model'
 import type { SelectOption } from '../../../core/models/select-option.model';
 import type { TabListItem } from '../../../core/models/tab.model';
 import { NotificationService } from '../../../core/services/notification.service';
+import { PermissionService } from '../../../core/services/permission.service';
+import { AuthStore } from '../../../core/state/auth.store';
 import { ModuleStore } from '../../../core/state/module.store';
 import {
   CONFLICT,
-  FORBIDDEN,
   NOT_FOUND,
   conflictMessage,
   fieldErrorMessages,
 } from '../../../core/utils/form-errors.util';
+import {
+  containedIconPathValidator,
+  ICON_NOT_CONTAINED_ERROR,
+  ICON_NOT_CONTAINED_MESSAGE,
+} from '../../../core/utils/icon-reference.util';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { EmptyStateComponent } from '../../../shared/components/empty-state/empty-state.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
+import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
+import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 
 /**
  * The seven disclosure regions this screen presents, named after the legacy section heads they replace.
@@ -667,17 +678,6 @@ function parseIdentifier(value: number | string | null | undefined): number | un
   return parsed >= INT32_MIN && parsed <= INT32_MAX ? parsed : undefined;
 }
 
-/**
- * The confirmation the legacy screen raised before a deletion.
- *
- * MIGRATION: the legacy delete ALREADY prompted - `ModuleSettings.ascx.vb:L205` wires
- * `ClientAPI.AddButtonConfirm(cmdDelete, Localization.GetString("DeleteItem"))` - so a confirmation dialog
- * is parity rather than an addition. The shared wording is `DeleteItem.Text`, 'Are You Sure You Wish To
- * Delete This Item?', from `SharedResources.resx`; the module's own name is interpolated below to make the
- * target unambiguous, which the legacy prompt did not do.
- */
-const DELETE_CONFIRM_TITLE = 'Delete Module';
-
 /** The label on the destructive confirmation's accept affordance. */
 const DELETE_CONFIRM_LABEL = 'Delete';
 
@@ -691,6 +691,19 @@ const DELETE_CONFIRM_MESSAGE = 'Are You Sure You Wish To Delete This Item?';
  * error: it is what a stale bookmark or an already-removed module produces.
  */
 const NO_MODULE_MESSAGE = 'No module settings are available.';
+
+/**
+ * The caption for the advisory list of keys this module's definition declares.
+ *
+ * MIGRATION: THE LEGACY SCREEN SHOWED THE VOCABULARY AS GRID COLUMN HEADS, SO IT NEVER NEEDED A CAPTION.
+ * `Website/admin/Modules/modulesettings.ascx` embedded a permission grid whose columns WERE the declared
+ * keys, which is why its own hint text — reproduced verbatim on the permissions field above — instructs the
+ * operator to "check/uncheck the boxes in the grid". That grid is a separate resource with its own screen
+ * here, so without this line the inherit switch would sit alone under a "Permissions:" caption with nothing
+ * naming what it inherits. Read-only, and phrased as a statement about the DEFINITION rather than about the
+ * caller, because that is what the catalogue answers.
+ */
+const DEFINITION_PERMISSION_KEYS_LABEL = 'Permissions defined for this module type:';
 
 /** Confirmation wording for a completed save, at success severity. */
 const SAVED_MESSAGE = 'The module settings were saved.';
@@ -751,6 +764,60 @@ const MODULE_LIST_ROUTE = '/modules';
  * showed above its first section head.
  */
 const DEFAULT_HEADING = 'Module Settings';
+
+/**
+ * One stored setting, as the module-specific section displays it.
+ *
+ * A view-model row rather than a slice of the wire contract: the scope is a LABEL here, resolved once from
+ * which of the bag's two maps the entry came out of, so the template does not have to know that the
+ * distinction exists or how it is spelled.
+ */
+interface ModuleSpecificSettingRow {
+  /** The setting's name, bounded at 50 characters by its column. */
+  readonly name: string;
+
+  /** The stored value, bounded at 2000 characters by its column. Rendered as text and never as markup. */
+  readonly value: string;
+
+  /** Which scope the value belongs to, already worded for display. */
+  readonly scope: string;
+}
+
+/**
+ * How a setting recorded against the module itself is described.
+ *
+ * The wording states the CONSEQUENCE rather than naming the table, because that is what determines whether
+ * an operator should care: a module-scoped value is the same wherever the module appears.
+ */
+/**
+ * What is said when a module carries no stored settings of its own.
+ *
+ * AUTHORED, because the legacy screen had no way to say it: `pnlSpecific` was a placeholder that either
+ * received a control or stayed silently empty, so an operator could not tell "this module has no settings"
+ * apart from "the settings failed to load". Stating it closes that ambiguity.
+ */
+const NO_SPECIFIC_SETTINGS_MESSAGE = 'This module has no stored settings of its own.';
+
+/**
+ * The opening of the blank-heading disclosure, up to the name itself.
+ *
+ * Split from its closing half so the definition's own name is interpolated between them rather than
+ * concatenated into a sentence fragment, which keeps the name a value and the wording a constant.
+ */
+const TITLE_FALLBACK_PREFIX = 'With no heading, this module is listed as “';
+
+/** The close of the blank-heading disclosure, after the name. @see TITLE_FALLBACK_PREFIX */
+const TITLE_FALLBACK_SUFFIX = '”, the name of its module definition.';
+
+const MODULE_SCOPE_LABEL = 'this module, on every page';
+
+/**
+ * How a setting recorded against one placement is described.
+ *
+ * Worded to contrast with {@link MODULE_SCOPE_LABEL} on the one axis that separates them — a
+ * placement-scoped value applies to this occurrence alone, so the same module elsewhere may differ.
+ */
+const PLACEMENT_SCOPE_LABEL = 'this placement only';
 
 /**
  * The label used for the occupied page when the tenant's page list does not contain it.
@@ -851,18 +918,41 @@ const CURRENT_PAGE_LABEL = 'This page';
   // primitives this screen needs. The shared library is closed at ten members, so the collapsible regions
   // are built from semantic markup in the template rather than from an eleventh shared component.
   imports: [
+    FocusFirstInvalidDirective,
+    SubmitGuardDirective,
     ReactiveFormsModule,
     PageHeaderComponent,
     LoadingSpinnerComponent,
     EmptyStateComponent,
     ErrorBannerComponent,
     ConfirmDialogComponent,
+    FocusFirstInvalidDirective,
   ],
   templateUrl: './module-settings.component.html',
   styleUrl: './module-settings.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class ModuleSettingsComponent {
+
+  /**
+   * Registers this screen's unsaved-entry probe with the application's tracker.
+   *
+   * ⚠ WHY A REGISTRATION RATHER THAN A ROUTE-LEVEL READ. Leaving a screen happens two ways and
+   * only one of them is a router navigation: Cancel, an in-application link and the browser's Back
+   * button are navigations a route guard can refuse, while closing or reloading the tab is not, and
+   * only the browser's own unload prompt covers that - which needs the dirty state at an arbitrary
+   * moment rather than at a navigation. One tracker holding probes answers both, and the probe is
+   * released automatically when this screen is destroyed, so a screen that has gone can never hold
+   * a navigation up. Measured before this existed: a dirty form was discarded in silence by all
+   * four exits, with instrumented `confirm`, `alert` and `beforeunload` recording nothing at all.
+   *
+   * A form that is being SAVED is not dirty in the sense that matters here - the entry is on its
+   * way to the server, and prompting about it would ask the operator to confirm discarding work
+   * they have already committed.
+   */
+  private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
+    () => this.form.dirty && this.saving === false,
+  );
   // -----------------------------------------------------------------------------------------------------
   // COLLABORATORS
   // -----------------------------------------------------------------------------------------------------
@@ -878,6 +968,29 @@ export class ModuleSettingsComponent {
 
   /** Used only to return to the listing, which is what the legacy redirect at L421 did. */
   private readonly router = inject(Router);
+
+  /**
+   * The catalogue transport, read for the advisory key list beside the inherit switch.
+   *
+   * Reached DIRECTLY rather than through a store, and deliberately so: the permission catalogue is a
+   * read-only lookup with no client-side state to own, and `core/state/role.store.ts` records the same
+   * decision in as many words — "permissions are a read-only catalogue reached through
+   * `core/services/permission.service.ts`; there is deliberately no permission store".
+   */
+  private readonly permissions = inject(PermissionService);
+
+  /**
+   * The session, read only to decide whether the catalogue may be asked for at all.
+   *
+   * The `/permissions` endpoint is declared under the administrator policy, so a caller without tenant
+   * administration receives a 403. Asking anyway would spend a request to be refused and would put a
+   * refusal in the network log of an ordinary editor who has done nothing wrong, so the request is
+   * withheld instead of recovered from.
+   */
+  private readonly authStore = inject(AuthStore);
+
+  /** Bounds the catalogue subscription to this component's lifetime. */
+  private readonly destroyRef = inject(DestroyRef);
 
   // -----------------------------------------------------------------------------------------------------
   // THE FORM
@@ -913,7 +1026,16 @@ export class ModuleSettingsComponent {
       nonNullable: true,
       validators: [dateDataTypeCheck(END_DATE_INVALID_MESSAGE)],
     }),
-    iconFile: new FormControl('', { nonNullable: true }),
+    // SEC: the SHARED containment rule, and the only validator this control carries. `ctlIcon` on the
+    // legacy screen was a `<portal:url>` PICKER over the portal's own files (`modulesettings.ascx:L116`),
+    // so an arbitrary path could not be entered and there was nothing to validate; replacing the picker
+    // with a text box is what makes the rule necessary. It therefore refuses only references the legacy
+    // screen could never have produced. Measured before it existed: a traversal path submitted from this
+    // screen reached the API and was stored verbatim.
+    iconFile: new FormControl('', {
+      nonNullable: true,
+      validators: [containedIconPathValidator],
+    }),
     visibility: new FormControl<ModuleVisibility>(MODULE_VISIBILITY.maximized, {
       nonNullable: true,
     }),
@@ -998,6 +1120,20 @@ export class ModuleSettingsComponent {
 
   /** The tenant the page lookup was last issued for, so it is issued once per tenant. */
   private tabsRequested: number | undefined = undefined;
+
+  /**
+   * The permission keys this module's DEFINITION declares, or `null` when the list is not available.
+   *
+   * ⚠ `null` AND THE EMPTY ARRAY MEAN DIFFERENT THINGS, and the template distinguishes them. `null` is
+   * "not read" — the caller does not administer the tenant, the read has not returned yet, or it failed —
+   * and renders nothing at all. An empty array is an ANSWER: this definition declares no keys, which is
+   * ordinary for a definition whose access is governed entirely by its page. Collapsing the two would
+   * report "no permissions are declared" on the strength of a request that never happened.
+   */
+  private readonly declaredPermissionKeys = signal<readonly string[] | null>(null);
+
+  /** The definition the catalogue read was last issued for, so it is issued once per definition. */
+  private permissionsRequested: number | undefined = undefined;
 
   /** The failure already surfaced, so one refusal produces one advisory. */
   private failureSurfaced: ProblemDetails | null = null;
@@ -1394,6 +1530,62 @@ export class ModuleSettingsComponent {
   });
 
   /**
+   * Reads the permission keys the loaded module's DEFINITION declares, for the advisory list rendered
+   * beside the inherit switch.
+   *
+   * ⚠ THIS IS AN ADVISORY READ AND ITS FAILURE IS NOT THIS SCREEN'S FAILURE. The keys explain what the
+   * inherit switch is choosing between — the legacy screen sat directly above a permission grid, and
+   * without any indication of the vocabulary in play the switch reads as a bare boolean with no subject.
+   * Nothing on the form depends on the answer, no control is enabled or disabled by it and no submission
+   * consults it, so a refusal or an outage leaves the region simply absent rather than raising a banner
+   * over a screen that is otherwise working. `PermissionService.list` already marks its request as
+   * presented by its caller, so the error interceptor stays silent and the `error` arm below has only to
+   * leave the signal at `null`.
+   *
+   * ⚠ THE READ IS WITHHELD, NOT RECOVERED FROM, when the caller does not administer the tenant. The
+   * endpoint is declared under the administrator policy and would answer 403; issuing it anyway would
+   * write a refusal into the network log of an editor who is entitled to be on this screen and has done
+   * nothing wrong.
+   *
+   * ⚠ THE FILTER IS THE DEFINITION, NOT THE MODULE. `moduleDefinitionId` selects the keys declared for
+   * the definition this placement instantiates, which is what governs the grants a module of this kind
+   * can carry. The unfiltered listing answers from the API's closed key enumeration and touches no store
+   * at all, so it would report the same four keys for every module ever loaded and would say nothing
+   * about this one.
+   *
+   * Issued once per definition, guarded exactly as the definition and page lookups above are, because an
+   * effect re-runs on every dependency change and an unguarded fetch here would re-issue the request on
+   * each keystroke-driven form update.
+   */
+  private readonly loadDeclaredPermissionKeys = effect(() => {
+    const detail = this.store.module();
+
+    if (detail === null || !this.authStore.holdsPortalAdministration()) {
+      return;
+    }
+
+    if (this.permissionsRequested === detail.moduleDefId) {
+      return;
+    }
+
+    this.permissionsRequested = detail.moduleDefId;
+
+    this.permissions
+      .list({ moduleDefinitionId: detail.moduleDefId })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (response) => {
+          this.declaredPermissionKeys.set(response.data);
+        },
+        error: () => {
+          // Deliberately silent, and deliberately not a re-throw: see the advisory note above. The
+          // signal stays `null`, so the region renders nothing and the screen is unaffected.
+          this.declaredPermissionKeys.set(null);
+        },
+      });
+  });
+
+  /**
    * Surfaces a store failure once, at the severity the legacy screen used.
    *
    * MIGRATION: A REFUSAL IS AN ADVISORY, NOT AN ERROR. The legacy access-denied screen raised
@@ -1455,11 +1647,28 @@ export class ModuleSettingsComponent {
       return;
     }
 
+    // ⚠ THE FORM IS SETTLED BEFORE LEAVING, OR THE UNSAVED-ENTRY GUARD ASKS ABOUT WORK THAT IS ALREADY
+    // SAVED - AND DESTROYS THE CONFIRMATION BELOW WHILE IT ASKS. The probe registered on this class reads
+    // `dirty && saving === false`, and the `writing` test above has already established that the write is
+    // no longer in flight, so from here on the probe sees a dirty form with no write outstanding - and
+    // `returnToListing()` on the last line is a navigation it can refuse. `window.confirm` blocks the
+    // JavaScript thread, so the auto-dismiss timer on the notification below becomes due while the dialog
+    // stands and fires the instant it is accepted: the confirmation is queued, exempted, and then never
+    // seen. Marking the form settled is the honest statement of what happened - every control's value is
+    // now what the server holds.
+    this.form.markAsPristine();
+    this.form.markAsUntouched();
+
     // MIGRATION: the announcement and the departure are raised HERE, not at the point of submission, because
     // `Response.Redirect(NavigateURL(), True)` at L421 ran after `UpdateModule` had returned and a throwing
     // postback never reached it. A synchronous postback could not claim "saved" before saving; nor may this.
-    this.notifications.notify('success', SAVED_MESSAGE);
-    this.returnToListing();
+    this.notifications.notify('success', SAVED_MESSAGE, null, true);
+
+    // ⚠ EXEMPTED FROM THE NAVIGATION SWEEP, WITHOUT WHICH THIS CONFIRMATION IS NEVER SEEN. The shell
+    // retires notifications on a completed navigation, and this one is raised in the same task as the
+    // departure below - so it was swept before it could be painted. The legacy announced and then
+    // redirected, so the listing is where this message belongs.
+    this.returnToListing(true);
   });
 
   /**
@@ -1491,9 +1700,19 @@ export class ModuleSettingsComponent {
       return;
     }
 
-    this.notifications.notify('success', REMOVED_MESSAGE);
+    // ⚠ SETTLED BEFORE LEAVING FOR THE REASON RECORDED ON THE SAVE PATH ABOVE, and it applies to a
+    // removal too: an operator who typed into the form and then removed the placement would be asked to
+    // confirm discarding edits to a placement that no longer exists. There is nothing left to save, so
+    // pristine is the honest state, and the prompt would swallow the confirmation below exactly as it
+    // does on the save path.
+    this.form.markAsPristine();
+    this.form.markAsUntouched();
+
+    this.notifications.notify('success', REMOVED_MESSAGE, null, true);
+
+    // Exempted from the navigation sweep, for the reason recorded on the save path above.
     this.remove.emit();
-    this.returnToListing();
+    this.returnToListing(true);
   });
 
   // -----------------------------------------------------------------------------------------------------
@@ -1515,9 +1734,6 @@ export class ModuleSettingsComponent {
   /** The visibility choices. */
   protected readonly visibilityChoices = VISIBILITY_CHOICES;
 
-  /** The heading of the destructive confirmation. */
-  protected readonly deleteConfirmTitle = DELETE_CONFIRM_TITLE;
-
   /** The label on the destructive confirmation's accept affordance. */
   protected readonly deleteConfirmLabel = DELETE_CONFIRM_LABEL;
 
@@ -1526,6 +1742,123 @@ export class ModuleSettingsComponent {
 
   /** `valCacheTime`'s wording, for the template's message slot. */
   protected readonly cacheTimeInvalidMessage = CACHE_TIME_INVALID_MESSAGE;
+
+  /**
+   * @see ICON_NOT_CONTAINED_MESSAGE — the API's own sentence, shared rather than restated, so one rule
+   * reads the same way whether it is caught before the request or reported by the response.
+   */
+  protected readonly iconNotContainedMessage = ICON_NOT_CONTAINED_MESSAGE;
+
+  /** @see NO_SPECIFIC_SETTINGS_MESSAGE */
+  protected readonly noSpecificSettingsMessage = NO_SPECIFIC_SETTINGS_MESSAGE;
+
+  /**
+   * What the module will be listed as while its heading is blank, or `null` when the heading is set.
+   *
+   * THE HEADING IS OPTIONAL AND STAYS OPTIONAL. Three tiers agree: `modulesettings.ascx` declares no
+   * presence validator on `txtTitle`, both `CreateModuleRequestValidator` and `UpdateModuleRequestValidator`
+   * gate their ONLY title rule on the value being non-empty, and `dbo.Modules.ModuleTitle` is nullable. A
+   * module in the measured data stores the empty string, so adding a required rule would not merely refuse
+   * new input — it would make an existing record unsavable, blocking an operator who opened it to change
+   * something else entirely. The minimal-change discipline requires validation rules to MATCH, and this one
+   * matches by staying absent.
+   *
+   * What was genuinely missing is the CONSEQUENCE. A blank heading is not nothing: the module is listed
+   * under its definition's name instead, which is exactly what `ControlPanelBase.vb:192-196` did on finding
+   * `title = ""`. That was invisible here, so an operator clearing the heading could not tell whether the
+   * module would appear nameless or under some other name. Stating it is the same treatment the reversed
+   * schedule gets on the sibling screen: describe the outcome, accept the value.
+   *
+   * Returns `null` — and so renders nothing — when the heading carries anything at all, including
+   * whitespace, because whitespace is a value the legacy screen would have stored and the fallback would
+   * not have applied to. The definition name is likewise only offered when there is one to offer; with
+   * neither a heading nor a definition name there is nothing truthful to say.
+   */
+  protected get titleFallbackNotice(): string | null {
+    if (this.form.controls.moduleTitle.value.length > 0) {
+      return null;
+    }
+
+    // The RESOLVED view model, for the same reason `deleteConfirmMessage` reads it that way: the routed
+    // path never assigns the input, so reading the input directly would find nothing on every routed visit.
+    const current = this.settings;
+    const fallback = current === null ? null : current.friendlyName;
+
+    if (fallback === null || fallback.length === 0) {
+      return null;
+    }
+
+    return `${TITLE_FALLBACK_PREFIX}${fallback}${TITLE_FALLBACK_SUFFIX}`;
+  }
+
+  /**
+   * The stored settings this module carries, as rows for the module-specific section to display.
+   *
+   * ⚠ WHY THIS EXISTS: THE SECTION WAS DISCARDING REAL DATA IN SILENCE. The screen already reads the
+   * settings bag — `loadSettings` runs on arrival and {@link persistSettings} writes both maps back
+   * whole — but the module-specific region rendered nothing except a projection slot no routed use ever
+   * fills. Measured on a module carrying two module-scoped settings, one with a 750-character value: the
+   * request was made, the response was held, and the section still rendered zero controls and zero text.
+   * The operator was shown an empty panel over stored configuration that the application had in hand.
+   *
+   * READ-ONLY, AND DELIBERATELY SO. The legacy `pnlSpecific` placeholder hosted the MODULE'S OWN
+   * settings control, loaded dynamically by the Web Forms control loader; that loader is out of scope, so
+   * there is no bespoke editor to present and no way to know what a given key means, what its permitted
+   * values are, or how it should be rendered. Inventing a generic editor over keys a module defines would
+   * let an operator write values no module ever validates. Disclosing what is stored is the honest
+   * position: it converts a silent discard into something a reader can see, and both maps continue to
+   * round-trip untouched through the save, exactly as before.
+   *
+   * BOTH SCOPES ARE SHOWN, each labelled with its own, because the contract documents them as genuinely
+   * different things — `moduleSettings` is identical on every page the module appears on while a value in
+   * `tabModuleSettings` belongs to one occurrence on one page — and collapsing them would misreport which
+   * is which. Both were being discarded, so both are disclosed.
+   *
+   * The bag is guarded against the addressed module for the same reason {@link persistSettings} guards
+   * it: the store is provided at the root and may still hold the bag read for a neighbouring module, and
+   * presenting one module's settings under another's address would be worse than presenting none. The
+   * comparison is exact and never a truth test — module 0 is a real module.
+   */
+  protected get specificSettingRows(): readonly ModuleSpecificSettingRow[] {
+    const bag = this.store.settings();
+    const addressed = this.addressedModuleId();
+
+    if (bag === null || addressed === undefined || bag.moduleId !== addressed) {
+      return [];
+    }
+
+    // Sorted by name within each scope so the order is stable between reads. A map's enumeration order
+    // follows insertion, which follows whatever order the response happened to arrive in.
+    const moduleScoped: ModuleSpecificSettingRow[] = Object.keys(bag.moduleSettings)
+      .sort((left, right) => left.localeCompare(right))
+      .map((name) => ({
+        name,
+        value: bag.moduleSettings[name] ?? '',
+        scope: MODULE_SCOPE_LABEL,
+      }));
+
+    const placementScoped: ModuleSpecificSettingRow[] = Object.keys(bag.tabModuleSettings)
+      .sort((left, right) => left.localeCompare(right))
+      .map((name) => ({
+        name,
+        value: bag.tabModuleSettings[name] ?? '',
+        scope: PLACEMENT_SCOPE_LABEL,
+      }));
+
+    return [...moduleScoped, ...placementScoped];
+  }
+
+  /**
+   * Whether this module carries any stored settings to disclose.
+   *
+   * Read by the template to choose between the disclosure and the explicit "none recorded" statement. The
+   * section itself is still rendered either way: an operator being able to see that a module has no
+   * settings of its own is information the legacy screen could not convey, and that was a deliberate
+   * choice here before this data was surfaced.
+   */
+  protected get hasSpecificSettings(): boolean {
+    return this.specificSettingRows.length > 0;
+  }
 
   /** `valStartDate`'s wording, for the template's message slot. */
   protected readonly startDateInvalidMessage = START_DATE_INVALID_MESSAGE;
@@ -1621,11 +1954,73 @@ export class ModuleSettingsComponent {
     () =>
       this.addressedModuleId() !== undefined
       && this.store.module() === null
-      && !this.store.moduleLoading(),
+      && !this.store.moduleLoading()
+      && !this.readRefused(),
   );
+
+  /**
+   * Whether one of this screen's two reads FAILED for a reason other than the module being absent.
+   *
+   * A REFUSAL IS NOT AN ABSENCE. The server answers 403 when the caller may not see the module and 404
+   * when there is no such module; both leave this screen holding nothing, so a test for "nothing in
+   * hand" cannot tell them apart. Reporting a refusal through the not-found affordance states something
+   * untrue, and states it beside the accurate sentence the banner is already showing.
+   *
+   * The predicate is "any failed read except an absence" rather than "a 403", because every other
+   * status carries the same defect for the same reason: a read that failed with a fault did not answer
+   * the question of existence either. The one status that DOES answer it is 404, which is left to
+   * {@link notFound} and its shared sentence.
+   *
+   * Both reads are named, because this screen issues both together ({@link loadAddressedModule}) and a
+   * refusal may be raised by either. Writes are excluded: a rejected save must keep the form on screen,
+   * which is what {@link concludeSubmission} depends on.
+   *
+   * MIGRATION: the presentation of a refusal is the shared banner and nothing else, at warning
+   *   severity. `Website/admin/Security/AccessDenied.ascx.vb:L41-L45` raised
+   *   `ModuleMessage.ModuleMessageType.YellowWarning` on BOTH of its branches - a module message
+   *   rendered IN the page rather than a transient advisory - and 403 is exactly the status
+   *   `core/utils/form-errors.util.ts` resolves to warning severity. Holding the document rather than
+   *   reducing it to a sentence is also what retains the trace identifier, the only join key between
+   *   what the operator saw and what the server logged.
+   */
+  protected readonly readRefused = computed<boolean>(() => {
+    if (this.addressedModuleId() === undefined) {
+      return false;
+    }
+
+    const failure = this.store.failure();
+
+    if (failure === null) {
+      return false;
+    }
+
+    if (failure.operation !== 'loadModule' && failure.operation !== 'loadSettings') {
+      return false;
+    }
+
+    return failure.summary.status !== NOT_FOUND_STATUS;
+  });
 
   /** The wording for a not-found module, from the shared vocabulary. */
   protected readonly notFoundMessage = NOT_FOUND;
+
+  /**
+   * The permission keys this module's definition declares, or `null` when the list is not available.
+   *
+   * Exposed read-only for the advisory line beside the inherit switch. The template renders that line
+   * only when this is a non-`null`, non-empty list, so the three unavailable cases — not administered,
+   * not yet returned, and failed — are indistinguishable to the reader, which is correct: in every one of
+   * them this client has nothing to say about the definition's keys.
+   *
+   * ⚠ NOT A PERMISSION CHECK, AND NOTHING IS GATED ON IT. These are the keys the DEFINITION declares,
+   * not the keys the CALLER holds, so testing this list to decide what an operator may do would confuse a
+   * vocabulary with a grant. Element-level gating is the shared `hasPermission` directive's job and it
+   * reads the session, not this list.
+   */
+  protected readonly definitionPermissionKeys = this.declaredPermissionKeys.asReadonly();
+
+  /** The caption for the advisory key line. */
+  protected readonly definitionPermissionKeysLabel = DEFINITION_PERMISSION_KEYS_LABEL;
 
   // -----------------------------------------------------------------------------------------------------
   // TEMPLATE HELPERS
@@ -1727,6 +2122,23 @@ export class ModuleSettingsComponent {
   }
 
   /**
+   * The DOM id of one section's BODY, for the toggle's `aria-controls`.
+   *
+   * Distinct from {@link ModuleSettingsComponent.sectionHeadingId}, which names the toggle itself; a control cannot
+   * point `aria-controls` at its own id and expect assistive technology to find the region.
+   * The reference is published ONLY while the section is open — the body is removed from the
+   * document when collapsed, so a constant attribute would leave a dangling IDREF that an
+   * auditing tool reports as an error. Binding it to `null` in the closed state removes the
+   * attribute outright, so the id is asserted exactly when it resolves.
+   *
+   * @param section The section whose body is being named.
+   * @returns A stable id, unique within the screen.
+   */
+  protected sectionBodyId(section: ModuleSettingsSection): string {
+    return `module-settings-body-${section}`;
+  }
+
+  /**
    * The server-supplied messages for one control, if any.
    *
    * MIGRATION: the per-field dictionary is an INDEX SIGNATURE and `noPropertyAccessFromIndexSignature` is
@@ -1781,6 +2193,11 @@ export class ModuleSettingsComponent {
           && this.form.controls.cacheTime.hasError('integerDataType')
           ? this.cacheTimeInvalidMessage
           : null;
+      case 'iconFile':
+        return this.form.controls.iconFile.touched
+          && this.form.controls.iconFile.hasError(ICON_NOT_CONTAINED_ERROR)
+          ? this.iconNotContainedMessage
+          : null;
       default:
         return null;
     }
@@ -1830,6 +2247,35 @@ export class ModuleSettingsComponent {
     const hint = this.hintId(hintField);
 
     return this.hasMessages(errorField) ? `${hint} ${this.messageId(errorField)}` : hint;
+  }
+
+  /**
+   * Names the region holding a control's failures, for `aria-errormessage`.
+   *
+   * ⚠ THIS IS A SEPARATE ASSOCIATION FROM THE DESCRIPTION, NOT A DUPLICATE OF IT, and this screen
+   * was missing it. `aria-describedby` says "this text describes the control" and is announced
+   * whenever the control is reached; `aria-errormessage` says "this text is the ERROR", and assistive
+   * technology is free to treat the two differently - announcing the failure with its own wording, or
+   * offering a command to jump to it. The shared field component publishes both, so nearly every form
+   * in the application does; this screen predates that component and published only the description.
+   * Runtime measurement caught the gap directly: on the module form the icon control reported
+   * `aria-errormessage="module-form-icon-file-error"`, and on this screen the same rule, refused on
+   * the same control for the same reason, reported none.
+   *
+   * Returns `null` rather than an empty string when there is nothing to name, because Angular removes
+   * an attribute bound to `null` and an `aria-errormessage` pointing at nothing is worse than its
+   * absence - it is a dangling reference the control asserts is an error message.
+   *
+   * The identifier is the SAME region `describedBy` names, and deliberately so: there is one message
+   * region per control, holding the client failure and any server messages together, so both
+   * associations point at it and neither invents a second element.
+   *
+   * @param field The field whose failures are reported. Pass the field messages are reported UNDER,
+   * which for the permission switch differs from the field whose hint describes it.
+   * @returns The message region's identifier, or `null` when the control has nothing to report.
+   */
+  protected errorMessageId(field: ModuleSettingsField): string | null {
+    return this.hasMessages(field) ? this.messageId(field) : null;
   }
 
   // -----------------------------------------------------------------------------------------------------
@@ -1967,6 +2413,17 @@ export class ModuleSettingsComponent {
 
     const request = this.toUpdateRequest(current);
 
+    // THE PREVIOUS REFUSAL IS DISCARDED before this one goes out, matching the portal settings, portal
+    // alias, user form, user list, membership settings and profile definition screens. Without it a
+    // refusal from an earlier attempt stayed on display through the next one, describing a response that
+    // had already been superseded — and after a corrected submission succeeded, the old failure was still
+    // the most prominent thing on the screen.
+    //
+    // Cleared here rather than on each keystroke for the reason those screens clear it here: the banner
+    // reports the server's last answer and holds the correlation reference, both of which stay true until
+    // a new answer arrives.
+    this.store.clearFailure();
+
     this.save.emit(request);
 
     const id = this.addressedModuleId();
@@ -1995,10 +2452,12 @@ export class ModuleSettingsComponent {
   /**
    * Projects the form onto the update contract.
    *
-   * Exactly the sixteen members the server declares, and nothing else. A seventeenth member would be an HTTP
-   * 400 under `JsonUnmappedMemberHandling.Disallow`, and an omitted nullable member would CLEAR its column,
-   * because the request is a whole-row replacement - which is what the legacy postback was too, where an
-   * emptied text box posted an empty value.
+   * Exactly the seventeen members the server declares, and nothing else. An eighteenth member would be an
+   * HTTP 400 under `JsonUnmappedMemberHandling.Disallow`, and an omitted nullable member would CLEAR its
+   * column, because the request is a whole-row replacement - which is what the legacy postback was too, where
+   * an emptied text box posted an empty value. The relocation member is the one exception to the
+   * whole-row reading: it names no column and carries an instruction, so `null` there means "do not move"
+   * rather than "clear something".
    *
    * @param seed The loaded state the round-tripped columns come from.
    * @returns The document to submit.
@@ -2006,12 +2465,25 @@ export class ModuleSettingsComponent {
   private toUpdateRequest(seed: ModuleSettingsSeed): UpdateModuleRequest {
     const raw = this.form.getRawValue();
 
+    // WHICH PLACEMENT, AND WHERE IT IS GOING, ARE TWO SEPARATE ANSWERS. The picker on this screen is
+    // labelled "Move To Page:", so its value is a DESTINATION, never a selector. The page being edited is
+    // the page the module was loaded from, which is the seed's - and the seed is the only trustworthy source
+    // for it, because the picker's value changes the moment the operator touches it.
+    //
+    // Sending the picker's value as `tabId` is what made the control unusable: the server selects the
+    // placement by that member, a page the module does not occupy has no placement, and so choosing any page
+    // other than the current one produced `module.placement_not_found` and moved nothing. The control was
+    // labelled with an action that could not succeed.
+    //
+    // MIGRATION: `ModuleSettings.ascx.vb:L403-L408` performed the relocation as a separate
+    // `MoveModule(ModuleId, TabId, newTabId, "")` call after the update had committed, guarded by
+    // `If TabId <> newTabId`. That guard is reproduced here rather than on the server alone, so an ordinary
+    // save carries no relocation instruction at all instead of one that happens to be a no-op.
+    const movingTo: number | null = raw.tabId === seed.tabId ? null : raw.tabId;
+
     return {
-      // MIGRATION: the move travels as a FIELD ON THE UPDATE. `ModuleSettings.ascx.vb:L403-L408` performed it
-      // as a separate `MoveModule(ModuleId, TabId, newTabId, "")` call after the update had committed; that
-      // procedure has no endpoint, and inventing `POST /modules/{id}/move` would address a route the API does
-      // not serve. The server reads this member to select the placement being edited.
-      tabId: raw.tabId,
+      tabId: seed.tabId,
+      moveToTabId: movingTo,
       moduleTitle: textOrNull(raw.moduleTitle),
       // Round-tripped: the toggle is not offered, but the stored value must survive the replacement.
       allTabs: raw.allTabs,
@@ -2229,8 +2701,25 @@ export class ModuleSettingsComponent {
     const status = problem?.status ?? null;
 
     if (status === FORBIDDEN_STATUS) {
-      this.currentProblem.set(null);
-      this.notifications.notify('warning', problem?.detail ?? problem?.title ?? FORBIDDEN);
+      // A REFUSAL GOES TO THE BANNER, NOT TO THE ADVISORY QUEUE, and that is a correction rather than a
+      // preference. It used to be announced as a warning notification with the document discarded, on the
+      // grounds that `Website/admin/Security/AccessDenied.ascx.vb:L41-L45` used `YellowWarning`. The
+      // severity reading was right and the surface was wrong: `AddModuleMessage` inserted the message
+      // INTO the page, and the shared banner is what ports that - it resolves 403 to the warning band
+      // through `core/utils/form-errors.util.ts` and paints it in place, so the legacy severity survives
+      // either way. Three things did not survive the notification: the document's trace identifier, which
+      // is the only join key between what the operator saw and what the server logged; the problem title,
+      // which names the class of failure; and permanence, because a transient advisory expires while the
+      // condition it describes does not. The sibling module screens present the same status through the
+      // same banner, so one backend condition now has one presentation across the feature.
+      //
+      // NO NULL-DOCUMENT FALLBACK IS NEEDED HERE, and one was written and then removed as provably dead.
+      // The status above is read as `problem?.status ?? null`, so reaching this branch REQUIRES a
+      // non-null document - and the store never produces a bodiless refusal in any case: a 403 whose
+      // response body was empty is synthesised as `{ status: 403 }` by `problemFromCause`, precisely so
+      // that severity and wording still resolve. The banner therefore always has something to render.
+      this.currentProblem.set(problem);
+
       return;
     }
 
@@ -2261,7 +2750,20 @@ export class ModuleSettingsComponent {
   }
 
   /** Returns to the listing, which is what the legacy redirect at L421 did. */
-  private returnToListing(): void {
+  private returnToListing(replaceEntry = false): void {
+    /*
+     * ⚠ THE CALL IS MADE TWO DIFFERENT WAYS ON PURPOSE, rather than always passing an options
+     * object with a computed flag. A pushed departure keeps the exact call it always made, so the
+     * behaviour of the cancel paths - and the specifications that pin them - is untouched by the
+     * addition; only a REPLACING departure carries options, which is the case whose behaviour
+     * genuinely changed. Written this way, the diff says what changed and nothing else.
+     */
+    if (replaceEntry) {
+      void this.router.navigate([MODULE_LIST_ROUTE], { replaceUrl: true });
+
+      return;
+    }
+
     void this.router.navigate([MODULE_LIST_ROUTE]);
   }
 }

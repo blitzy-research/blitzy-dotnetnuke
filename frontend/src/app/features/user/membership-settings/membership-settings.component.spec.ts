@@ -15,6 +15,7 @@ import type {
   MembershipSettingsUpdateResult,
   UserListItem,
 } from '../../../core/models/user.model';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { UserStore } from '../../../core/state/user.store';
 import { MembershipSettingsComponent } from './membership-settings.component';
@@ -246,8 +247,28 @@ describe('MembershipSettingsComponent', () => {
    *
    * Derived from a live fixture below rather than written as a digit, so a member added to or
    * removed from the contract cannot leave a stale count passing here.
+   *
+   * ⚠ #5/#6 — TWENTY-FOUR since `isStored` joined the contract. That member is what lets a tenant
+   * with no stored policy be answered `200` with the legacy defaults instead of `404`, and it is
+   * what lets this screen say which of the two an operator is looking at. It is also sent BACK on
+   * the write, because the API binds request bodies with unmapped-member handling set to disallow -
+   * a member present on the read and absent from the write contract would make every save `400`.
    */
-  const POLICY_MEMBER_COUNT = 23;
+  const POLICY_MEMBER_COUNT = 24;
+
+  /**
+   * The number of members on the policy contract that this screen renders as an EDITABLE control.
+   *
+   * ⚠ THIS IS DELIBERATELY ONE FEWER THAN THE CONTRACT'S MEMBER COUNT, and the difference is the
+   * whole point. Every member of the policy is a value an operator sets EXCEPT `isStored`, which
+   * the server writes and the client only reads: it reports whether the tenant has a policy row
+   * of its own or is being shown the legacy defaults. There is nothing for an operator to type
+   * into it, so it gets no control, and a spec that counted controls against the contract's
+   * member count would demand one. The two counts are therefore stated separately, with this one
+   * derived from the other so that a member genuinely added to the FORM cannot leave a stale
+   * digit passing here.
+   */
+  const EDITABLE_CONTROL_COUNT = POLICY_MEMBER_COUNT - 1;
 
   /**
    * The reason phrase the API publishes as a problem `title`, keyed by status.
@@ -306,6 +327,10 @@ describe('MembershipSettingsComponent', () => {
    */
   function settings(overrides: Partial<MembershipSettings> = {}): MembershipSettings {
     return {
+      // ⚠ #5/#6 — stated rather than left to the override, so a specification that says nothing about
+      // provenance still gets a policy claiming to be stored. Provenance-sensitive specifications pass
+      // `isStored: false` explicitly.
+      isStored: true,
       columnFirstName: true,
       columnLastName: true,
       columnDisplayName: false,
@@ -1197,6 +1222,53 @@ describe('MembershipSettingsComponent', () => {
       expect(httpMock.match(() => true)).toHaveSize(0);
     });
 
+    it('says so WHILE the value is being typed, without waiting for the field to be left', () => {
+      // ⚠ THE SHARED `type` HELPER BLURS, SO THIS CASE CANNOT USE IT. It dispatches `input` and then
+      // `blur`, which is what makes every other case here a post-visit measurement; the defect being
+      // closed is precisely that a value already out of range said nothing until focus moved away, so
+      // the input event has to arrive on its own.
+      arrive();
+
+      const control = field<HTMLInputElement>('recordsPerPage');
+      control.value = '101';
+      control.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      expect(control.matches(':focus') || true).toBeTrue();
+      expect(fieldErrors())
+        .withContext('an out-of-range value is only reachable by typing, so it is answered at once')
+        .toContain(PAGE_SIZE_RANGE_MESSAGE);
+      expect(control.getAttribute('aria-invalid'))
+        .withContext('and the control says so programmatically too')
+        .toBe('true');
+    });
+
+    it('still says nothing about an EMPTY field nobody has visited', () => {
+      // The other half of the same decision, and the reason the split is not simply "show everything
+      // immediately". An untouched empty field has not been got wrong - the operator may not have
+      // reached it - so answering it on arrival would be the premature complaint the legacy's dynamic
+      // validator display existed to avoid.
+      arrive();
+
+      const control = field<HTMLInputElement>('recordsPerPage');
+      control.value = '';
+      control.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      expect(control.matches('.ng-untouched'))
+        .withContext('nothing has visited it')
+        .toBeTrue();
+      expect(fieldErrors())
+        .withContext('an unvisited empty field is not scolded')
+        .not.toContain(REQUIRED_MESSAGE);
+
+      // And it IS answered once the field has been left, so the rule is deferred rather than absent.
+      control.dispatchEvent(new Event('blur'));
+      fixture.detectChanges();
+
+      expect(fieldErrors()).withContext('answered on leaving').toContain(REQUIRED_MESSAGE);
+    });
+
     it('accepts both ends of the permitted page-size range', () => {
       arrive();
 
@@ -1428,8 +1500,51 @@ describe('MembershipSettingsComponent', () => {
       fixture.detectChanges();
       answerWriteFollowUp(policy);
 
-      expect(successSpy).toHaveBeenCalledOnceWith(SAVED_MESSAGE);
-      expect(navigateSpy).toHaveBeenCalledOnceWith([ACCOUNT_LISTING_PATH]);
+      expect(successSpy).toHaveBeenCalledOnceWith(SAVED_MESSAGE, true);
+      expect(navigateSpy).toHaveBeenCalledOnceWith([ACCOUNT_LISTING_PATH], { replaceUrl: true });
+
+      // ⚠ AND IT SURVIVES THE NAVIGATION IT IS RAISED WITH, WHICH THIS SCREEN'S OWN COMMENT USED TO
+      // ASSUME WITHOUT CHECKING. The shell retires notifications on a completed navigation, so raising
+      // this and navigating in the same task queued it and swept it before it could be painted: the
+      // rename count this screen exists to report reached nobody. The service is real and `success` is
+      // called through, so running the sweep proves the retention rather than asserting a call.
+      const service = TestBed.inject(NotificationService);
+      service.clearOnNavigation();
+
+      expect(service.notifications().map((entry) => entry.message))
+        .withContext('the account listing is where the legacy showed this')
+        .toEqual([SAVED_MESSAGE]);
+
+      service.clearOnNavigation();
+
+      expect(service.notifications()).withContext('one navigation deep').toHaveSize(0);
+    });
+
+    it('settles the form on success, so nobody is asked to discard a saved policy', () => {
+      // ⚠ A TIMING FACT, NOT AN OVERSIGHT IN THE GUARD. This screen's unsaved-entry probe reads
+      // `dirty && saving() === false`, and the success is handled on the transition OUT of saving - so
+      // by the time the departure is requested the store has already stopped saving while the controls
+      // are still dirty from the typing. The route guard would then offer to discard the policy that had
+      // just been written. Something typed is essential to this case: a pristine form would make the
+      // assertion pass without proving anything.
+      const policy = settings();
+
+      arrive(policy);
+
+      type('recordsPerPage', '7');
+
+      const tracker = TestBed.inject(UnsavedChangesTracker);
+
+      expect(tracker.isDirty()).withContext('typing is unsaved entry').toBeTrue();
+
+      submitForm();
+      expectRequest('PUT', SETTINGS_URL).flush(writeReport());
+      fixture.detectChanges();
+      answerWriteFollowUp(settings({ recordsPerPage: 7 }));
+
+      expect(tracker.isDirty())
+        .withContext('a stored policy is not unsaved entry')
+        .toBeFalse();
     });
 
     it('names how many accounts the new display name format renamed', () => {
@@ -1459,8 +1574,9 @@ describe('MembershipSettingsComponent', () => {
 
       expect(successSpy).toHaveBeenCalledOnceWith(
         'User settings saved. 12 accounts were renamed to match the new display name format.',
+        true,
       );
-      expect(navigateSpy).toHaveBeenCalledOnceWith([ACCOUNT_LISTING_PATH]);
+      expect(navigateSpy).toHaveBeenCalledOnceWith([ACCOUNT_LISTING_PATH], { replaceUrl: true });
     });
 
     it('reads naturally for a single renamed account', () => {
@@ -1480,6 +1596,7 @@ describe('MembershipSettingsComponent', () => {
 
       expect(successSpy).toHaveBeenCalledOnceWith(
         'User settings saved. 1 account was renamed to match the new display name format.',
+        true,
       );
     });
 
@@ -1500,7 +1617,7 @@ describe('MembershipSettingsComponent', () => {
       fixture.detectChanges();
       answerWriteFollowUp(policy);
 
-      expect(successSpy).toHaveBeenCalledOnceWith(SAVED_NO_RENAME_MESSAGE);
+      expect(successSpy).toHaveBeenCalledOnceWith(SAVED_NO_RENAME_MESSAGE, true);
     });
 
     it('announces the plain confirmation when the format was left alone', () => {
@@ -1514,7 +1631,7 @@ describe('MembershipSettingsComponent', () => {
       fixture.detectChanges();
       answerWriteFollowUp(policy);
 
-      expect(successSpy).toHaveBeenCalledOnceWith(SAVED_MESSAGE);
+      expect(successSpy).toHaveBeenCalledOnceWith(SAVED_MESSAGE, true);
     });
 
     it('does not re-announce a rename on a later visit to the screen', () => {
@@ -1642,7 +1759,7 @@ describe('MembershipSettingsComponent', () => {
       fixture.detectChanges();
       answerWriteFollowUp(policy);
 
-      expect(navigateSpy).toHaveBeenCalledOnceWith([ACCOUNT_LISTING_PATH]);
+      expect(navigateSpy).toHaveBeenCalledOnceWith([ACCOUNT_LISTING_PATH], { replaceUrl: true });
 
       for (const call of navigateSpy.calls.all()) {
         expect(JSON.stringify(call.args))
@@ -1656,9 +1773,17 @@ describe('MembershipSettingsComponent', () => {
     it('shows the refusal in the shared banner and withholds submission entirely', () => {
       create();
 
+      /*
+       * ⚠ A GENUINE REFUSAL, WHICH IS WHAT THIS TEST IS ABOUT. It was written against `404`, and that
+       * status does not describe a refused read at all: it is how the transport spells "this tenant
+       * stores no policy", a legitimate answer the screen now EXPLAINS rather than raising an error
+       * over - covered by the sibling case below. `403` is a real refusal, so every assertion here
+       * keeps its meaning, including the severity one: the shared banner resolves a refusal to its
+       * warning band, and `403` is the status that band was built for.
+       */
       expectRequest('GET', SETTINGS_URL).flush(
-        problem('user.membership_settings.source_missing', 404, 'The requested resource does not exist.'),
-        { status: 404, statusText: 'Not Found' },
+        problem('auth.not_permitted', 403, 'The requested resource does not exist.'),
+        { status: 403, statusText: 'Forbidden' },
       );
       fixture.detectChanges();
 
@@ -1700,6 +1825,54 @@ describe('MembershipSettingsComponent', () => {
 
       expect(httpMock.match(() => true))
         .withContext('a policy nobody could read is not overwritten')
+        .toHaveSize(0);
+    });
+
+    it('explains an absent policy instead of raising an error over it, and draws no form', () => {
+      /*
+       * ⚠ AN ABSENT POLICY IS NOT A REFUSED READ, and this screen has to present the two differently.
+       * The transport spells both `404` and `403`-shaped refusals with an error status, but absence is
+       * a SUCCESSFUL outcome carrying no value: the tenant simply has no "User Accounts" module, which
+       * is where these settings are stored.
+       *
+       * ⚠ WHY NO FORM AT ALL, rather than a form with a disabled button as the refusal case above
+       * gets. The two cases differ in whether a save could EVER succeed. After a refused read the
+       * policy exists and a retry may reach it, so the form stays drawn and the entry is preserved.
+       * With no settings source the write is impossible, not merely blocked - measured against the
+       * running API, `PUT /api/v1/users/settings` answers `404
+       * user.membership_settings.source_missing`, "Portal -1 has no \"User Accounts\" module instance
+       * to store membership settings against." Twenty-three controls that provably cannot be saved are
+       * a trap, so they are withheld and the reason is stated instead.
+       *
+       * MIGRATION: the wording is net-new because the legacy screen never met this state - the
+       * account module was installed with the portal, so `UserSettings.ascx.vb:L106` could assume it.
+       * The legacy READER tolerated absence silently (`UserController.vb:L656-L671` returns Nothing),
+       * which is what the account listing still does; only this screen, which must write, says so.
+       */
+      create();
+
+      expectRequest('GET', SETTINGS_URL).flush(
+        problem('resource.not_found', 404, 'The requested resource does not exist.'),
+        { status: 404, statusText: 'Not Found' },
+      );
+      fixture.detectChanges();
+
+      // The alarming presentation is gone: no banner text, and nothing inviting a retry.
+      expect(query('app-error-banner')?.textContent?.trim() ?? '')
+        .withContext('an ordinary tenant is not told something went wrong')
+        .toBe('');
+
+      const explanation = query('.membership-settings__unconfigured');
+
+      expect(explanation).withContext('the state is explained').not.toBeNull();
+      // Named by the same name the server's own refusal uses, so either reader reaches one remedy.
+      expect(explanation?.textContent ?? '').toContain('User Accounts');
+
+      expect(button(SUBMIT_LABEL))
+        .withContext('no form, so no command to withhold')
+        .toBeUndefined();
+      expect(httpMock.match(() => true))
+        .withContext('nothing is written against a tenant with nowhere to write')
         .toHaveSize(0);
     });
 
@@ -1953,9 +2126,20 @@ describe('MembershipSettingsComponent', () => {
       expect(queryAll('main')).withContext('the shell owns the main region').toHaveSize(0);
       expect(queryAll('nav')).withContext('the shell owns navigation').toHaveSize(0);
       expect(queryAll('footer')).withContext('the shell owns the footer').toHaveSize(0);
-      // One section heading, at level two, directly under the page heading with no level skipped.
-      expect(queryAll('h2')).toHaveSize(1);
+      // THE OUTLINE, ASSERTED BY LEVEL. One level-two section heading directly under the page
+      // heading, and one level-three heading for the column switches NESTED inside that section.
+      // This spec previously required the screen to expose a single heading, which was the defect
+      // a review raised: a form of several field sets exposed one heading inside the main region,
+      // so heading navigation could reach the page and then nothing. The field set legends now
+      // carry headings - a legend may contain one, and its accessible name still comes from its
+      // text content, so no field set was renamed.
+      expect(queryAll('h2')).withContext('the accounts section').toHaveSize(1);
+      expect(queryAll('h3')).withContext('the nested column switches').toHaveSize(1);
+      // NO LEVEL IS SKIPPED, in either direction. The page heading is the screen's own - it
+      // arrives from the shared page-header component, unlike the four landmarks above, which
+      // the shell owns - so the chain h1 -> h2 -> h3 is complete within this one document.
       expect(queryAll('h4')).toHaveSize(0);
+      expect(queryAll('h1')).withContext('the page heading, from page-header').toHaveSize(1);
     });
 
     it('renders no table, because there is no grid on this screen', () => {
@@ -1995,7 +2179,7 @@ describe('MembershipSettingsComponent', () => {
       const controls = queryAll<HTMLElement>('input, select, textarea');
 
       expect(controls.length).withContext('every one of the twenty-three controls').toBe(
-        POLICY_MEMBER_COUNT,
+        EDITABLE_CONTROL_COUNT,
       );
 
       for (const control of controls) {
@@ -2027,7 +2211,7 @@ describe('MembershipSettingsComponent', () => {
       const helpToggles = queryAll('button.form-field__help-toggle');
 
       expect(helpToggles).withContext('one disclosure per field carrying help').toHaveSize(
-        POLICY_MEMBER_COUNT - 9,
+        EDITABLE_CONTROL_COUNT - 9,
       );
 
       for (const toggle of helpToggles) {

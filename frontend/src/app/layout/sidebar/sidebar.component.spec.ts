@@ -34,6 +34,10 @@
  *    are reproduced against the real router below — under `paths: 'subset'` and under
  *    `paths: 'exact'` respectively — so each expectation proves the hazard exists *and*
  *    proves the component's own segment-wise longest-prefix resolution answers it.
+ *    A third hazard sits between the two: marking the ancestor is right, but announcing it as
+ *    `page` claims the marked link IS the address being viewed when following it navigates
+ *    away. So marking is unique and unconditional, while `page` is reserved for the exact
+ *    address and an ancestor announces `true`.
  * 4. **Pin link visibility.** Five of the eight destinations address routes declared under
  *    the `PortalAdministrator` policy, and each is offered only when the caller holds the
  *    server's own determination that it administers the tenant. The cross-check is against
@@ -820,6 +824,7 @@ describe('SidebarComponent', () => {
       hostAccount: true,
       administersTenant: true,
     },
+    arrangement = true,
   ): Promise<void> {
     await TestBed.configureTestingModule({
       imports: [SidebarComponent],
@@ -831,10 +836,73 @@ describe('SidebarComponent', () => {
     fixture = TestBed.createComponent(SidebarComponent);
     component = fixture.componentInstance;
 
+    // ⚠ THE SHELL ARRANGEMENT IS PINNED BEFORE THE FIRST RENDER, AND EVERY SPEC BELOW DEPENDS
+    // ON IT. The rail derives its DEFAULT disclosure state from `--app-sidebar-side-by-side`,
+    // which the paired stylesheet resolves through the shared breakpoint mixin — so left
+    // unpinned the default would follow the width of whatever frame the runner happens to give
+    // the fixture, and the same spec would pass on a wide runner and fail on a narrow one. An
+    // inline declaration on the host outranks the `:host` rule, so this states the arrangement
+    // instead of inferring it, and the resize event is what makes the component re-read it.
+    //
+    // No render happens here: the two authority inputs are REQUIRED, and rendering before they
+    // are supplied raises the framework's required-input error.
+    declareArrangement(arrangement);
+
     fixture.componentRef.setInput('hostAccount', authority.hostAccount);
     fixture.componentRef.setInput('administersTenant', authority.administersTenant);
 
     fixture.detectChanges();
+  }
+
+  /**
+   * States which shell arrangement is in force and lets the rail observe the change.
+   *
+   * `true` is the SIDE-BY-SIDE arrangement, in which the rail is a column beside the content and
+   * opens expanded; `false` is the STACKED arrangement, in which it is a full-width band above
+   * the content and opens collapsed. The value is written as an inline custom property because
+   * that is exactly the channel the component reads — it calls `getComputedStyle` on its own host
+   * — so this exercises the real code path rather than a test-only seam, and it needs no viewport
+   * emulation, which Karma cannot offer.
+   *
+   * The resize event is what makes the component re-read. It is the same event a real browser
+   * fires when a drag crosses the breakpoint, so a spec that calls this is reproducing a genuine
+   * user action.
+   *
+   * @param sideBySide Whether the rail is placed beside the content rather than above it.
+   */
+  function setArrangement(sideBySide: boolean): void {
+    declareArrangement(sideBySide);
+    fixture.detectChanges();
+  }
+
+  /**
+   * States the arrangement and lets the component re-read it, WITHOUT rendering.
+   *
+   * Separated from {@link setArrangement} for one reason: it is also called before the required
+   * inputs are supplied, where a render would raise the framework's required-input error.
+   *
+   * @param sideBySide Whether the rail is placed beside the content rather than above it.
+   */
+  function declareArrangement(sideBySide: boolean): void {
+    pinArrangementOf(fixture, sideBySide);
+  }
+
+  /**
+   * States the arrangement on ANY fixture's host and lets that instance re-read it.
+   *
+   * Exists because two specs create a second, independent instance to prove the rail holds no
+   * shared state: both instances have to be told the same arrangement, or the comparison would
+   * be measuring the runner's frame width rather than the property under test.
+   *
+   * @param target The fixture whose host should carry the declaration.
+   * @param sideBySide Whether the rail is placed beside the content rather than above it.
+   */
+  function pinArrangementOf(target: ComponentFixture<SidebarComponent>, sideBySide: boolean): void {
+    (target.nativeElement as HTMLElement).style.setProperty(
+      '--app-sidebar-side-by-side',
+      sideBySide ? '1' : '0',
+    );
+    globalThis.dispatchEvent(new Event('resize'));
   }
 
   /**
@@ -920,9 +988,22 @@ describe('SidebarComponent', () => {
     return navAnchors().map((anchor: HTMLAnchorElement): string => normalise(anchor.textContent));
   }
 
-  /** Every element currently claiming to be the current page. */
+  /** Every element currently claiming to BE the current page. */
   function currentPageElements(): readonly Element[] {
     return Array.from(host().querySelectorAll('[aria-current="page"]'));
+  }
+
+  /**
+   * Every element carrying `aria-current` at all, whatever its value.
+   *
+   * Distinct from {@link currentPageElements} because the rail announces two strengths: the
+   * exact address claims `page`, and an ancestor of the address showing claims `true`. The
+   * uniqueness obligation applies to MARKING - one marked entry, always - while the `page`
+   * claim is additionally reserved for the address the reader is actually at. Asserting only
+   * the `page` selector would report a correctly marked ancestor as an unmarked rail.
+   */
+  function markedElements(): readonly Element[] {
+    return Array.from(host().querySelectorAll('[aria-current]'));
   }
 
   /**
@@ -949,6 +1030,10 @@ describe('SidebarComponent', () => {
       .queryAll(By.directive(RouterLink))
       .map((debugElement): RouterLink => debugElement.injector.get(RouterLink));
   }
+
+  // ---------------------------------------------------------------------------
+  // THE LAYOUT THE RAIL DERIVES ITS DEFAULT FROM
+  // ---------------------------------------------------------------------------
 
   // Installed before anything is rendered, so construction and the first render are
   // covered as well as every later interaction. The enforcement is in the shared
@@ -1309,14 +1394,38 @@ describe('SidebarComponent', () => {
           .withContext(`${testCase.description}: the ancestor anchor must carry the active class`)
           .toBeTrue();
 
+        // ⚠ `true`, NOT `page`, AND THE DIFFERENCE IS THE SECOND DEFECT ON THIS ATTRIBUTE.
+        // Marking the ancestor is right; claiming it IS the page is not. On `/portals/3/settings`
+        // the Portals entry is the branch the reader is inside, and following it arrives
+        // somewhere else - so a screen-reader user was told the current page was a link that
+        // would navigate away from it. The unqualified value says "the current item in this set"
+        // and claims no more than the rail can honour.
         expect(expected.getAttribute('aria-current'))
-          .withContext(`${testCase.description}: the ancestor anchor must announce itself`)
-          .toBe('page');
+          .withContext(`${testCase.description}: the ancestor announces itself as current`)
+          .toBe('true');
+
+        expect(markedElements().length)
+          .withContext(`${testCase.description}: exactly one entry may be marked`)
+          .toBe(1);
 
         expect(currentPageElements().length)
-          .withContext(`${testCase.description}: exactly one element may claim the current page`)
-          .toBe(1);
+          .withContext(`${testCase.description}: and no entry may claim to BE this page`)
+          .toBe(0);
       }
+    });
+
+    it('still claims the page itself when the address carries a query', async () => {
+      // The two strengths are decided by SEGMENTS, never by comparing addresses as text. A text
+      // comparison would demote the claim from `page` to `true` the moment a listing carried a
+      // filter, so every letter typed into a search box would flip the announcement back and
+      // forth - and `/users?filter=A` is the same destination as `/users`, which is why the
+      // resolution drops the query in the first place.
+      await navigateTo('/users?filter=A');
+
+      const users = present(anchorFor('/users'), 'the user accounts anchor');
+
+      expect(users.getAttribute('aria-current')).toBe('page');
+      expect(markedElements().length).toBe(1);
     });
 
     it('proves exact matching is what silenced the rail on those addresses', async () => {
@@ -1485,7 +1594,7 @@ describe('SidebarComponent', () => {
       );
     });
 
-    it('starts expanded, because navigation is what a user arrives wanting', () => {
+    it('starts expanded beside the content, because navigation is what a user arrives wanting', () => {
       const control = present(toggle(), 'a disclosure control');
 
       expect(component.collapsed()).toBeFalse();
@@ -1497,6 +1606,59 @@ describe('SidebarComponent', () => {
       expect(control.getAttribute('aria-expanded')).toBe('true');
       expect(present(region(), 'a collapsible region').hidden).toBeFalse();
       expect(present(landmark(), 'a navigation landmark').classList.contains(COLLAPSED_CLASS)).toBeFalse();
+    });
+
+    it('starts COLLAPSED above the content, so a handset reaches its content first', () => {
+      // ⚠ THE OPPOSITE DEFAULT, AND IT IS THE POINT OF THE DERIVATION RATHER THAN AN EXCEPTION
+      // TO IT. In the stacked arrangement the rail is a full-width band BETWEEN the header and
+      // the content, so an expanded rail pushes the page heading and every row command below it:
+      // measured at a 320-wide viewport as a 441.8px block that put the heading at y~545 and the
+      // first row command at y~804, which made reaching any content at all mean scrolling past
+      // the whole of the navigation, on every screen. Beside the content the rail costs nothing
+      // it does not earn and stays open; above it, it waits to be asked.
+      setArrangement(false);
+
+      expect(component.collapsed()).toBeTrue();
+      expect(present(toggle(), 'a disclosure control').getAttribute('aria-expanded')).toBe('false');
+      expect(present(region(), 'a collapsible region').hidden).toBeTrue();
+      expect(present(landmark(), 'a navigation landmark').classList.contains(COLLAPSED_CLASS)).toBeTrue();
+    });
+
+    it('lets the operator overrule the arrangement, and keeps their choice across a resize', () => {
+      // The derivation supplies a DEFAULT and nothing more. Once the disclosure has been pressed
+      // the rail holds a real decision, and crossing the breakpoint must not overwrite it -
+      // a rail opened on a handset stays open, which is the whole reason the state is stored as
+      // "not yet chosen" rather than as a boolean seeded once.
+      setArrangement(false);
+      expect(component.collapsed()).toBeTrue();
+
+      present(toggle(), 'a disclosure control').click();
+      fixture.detectChanges();
+
+      expect(component.collapsed()).toBeFalse();
+
+      setArrangement(true);
+      expect(component.collapsed()).toBeFalse();
+
+      setArrangement(false);
+      expect(component.collapsed()).toBeFalse();
+      expect(present(region(), 'a collapsible region').hidden).toBeFalse();
+    });
+
+    it('reverses what the operator can see on the FIRST press in either arrangement', () => {
+      // ⚠ REGRESSION GUARD. The writable slot opens as "not yet chosen", so a transition derived
+      // by negating that slot rather than the EFFECTIVE state would resolve to the same value
+      // twice above the content: the rail is already collapsed there, and the first press would
+      // have collapsed it again and appeared to do nothing at all.
+      setArrangement(false);
+
+      const control = present(toggle(), 'a disclosure control');
+
+      control.click();
+      fixture.detectChanges();
+
+      expect(component.collapsed()).toBeFalse();
+      expect(control.getAttribute('aria-expanded')).toBe('true');
     });
 
     it('flips the disclosure state when activated', () => {
@@ -1639,19 +1801,29 @@ describe('SidebarComponent', () => {
       }
     });
 
-    it('renders one genuine heading per group, in the document outline', () => {
-      const headings = Array.from(host().querySelectorAll('h2'));
+    it('names one group label per group and keeps every one of them OUT of the document outline', () => {
+      // ⚠ THIS SPEC ASSERTED THE OPPOSITE, AND THE OPPOSITE WAS THE DEFECT. It required these
+      // labels to be `<h2>` elements "in the document outline", reasoning that "a styled
+      // division would be invisible to the document outline, so a group heading could not be
+      // navigated to". The premise is true and the conclusion was the wrong trade: because the
+      // rail precedes `<main>` in document order, four level-two headings stood AHEAD of every
+      // screen's `<h1>`. The outline opened at level two and each page's real heading arrived
+      // fifth, at the same level as a piece of navigation furniture.
+      //
+      // Navigability is not lost, because it never depended on the element being a heading: the
+      // list carries `aria-labelledby` pointing at this label, so the group is still announced
+      // as a NAMED NAVIGATION REGION — asserted by the sibling spec below. What changes is only
+      // that the furniture no longer competes with the content for heading level.
+      const labels = Array.from(host().querySelectorAll('p.app-sidebar__group'));
 
-      expect(headings.length).toBe(EXPECTED_GROUPS.length);
-      expect(headings.map((heading: Element): string => normalise(heading.textContent))).toEqual(
+      expect(labels.length).toBe(EXPECTED_GROUPS.length);
+      expect(labels.map((label: Element): string => normalise(label.textContent))).toEqual(
         EXPECTED_GROUPS.map((group: ExpectedGroup): string => group.label),
       );
 
-      // A styled division would be invisible to the document outline, so a group heading
-      // could not be navigated to. The level sits one below the page title the shared
-      // page-header component emits inside the main region, which is the only other
-      // heading level in use — so no first-level heading may appear here.
-      expect(host().querySelectorAll('h1').length).toBe(0);
+      // THE POINT OF THE CHANGE: the rail contributes NO heading at any level, so the first
+      // heading a reader meets is the page's own `<h1>` inside the main region.
+      expect(host().querySelectorAll('h1,h2,h3,h4,h5,h6').length).toBe(0);
     });
 
     it('labels each list by its own heading, through an identifier that resolves', () => {
@@ -1664,10 +1836,13 @@ describe('SidebarComponent', () => {
           list.getAttribute('aria-labelledby'),
           `an aria-labelledby reference on list ${index}`,
         );
-        const heading = present(host().querySelector(`#${labelledBy}`), `a heading with id ${labelledBy}`);
+        const label = present(host().querySelector(`#${labelledBy}`), `a label with id ${labelledBy}`);
 
-        expect(heading.tagName).toBe('H2');
-        expect(normalise(heading.textContent)).toBe(EXPECTED_GROUPS[index].label);
+        // The element is deliberately NOT a heading — see the outline spec above. What matters
+        // for the accessible name is that the reference RESOLVES and carries the group's wording,
+        // and `aria-labelledby` resolves against any element with an id.
+        expect(label.tagName).toBe('P');
+        expect(normalise(label.textContent)).toBe(EXPECTED_GROUPS[index].label);
 
         // Namespaced with the published region identifier so it stays unique in the
         // document even though these values become global identifiers, and derived from
@@ -1695,7 +1870,7 @@ describe('SidebarComponent', () => {
       expect(children.length).toBe(EXPECTED_GROUPS.length * 2);
 
       EXPECTED_GROUPS.forEach((group: ExpectedGroup, index: number): void => {
-        expect(children[index * 2].tagName).withContext(`group ${group.id} heading`).toBe('H2');
+        expect(children[index * 2].tagName).withContext(`group ${group.id} label`).toBe('P');
         expect(children[index * 2 + 1].tagName).withContext(`group ${group.id} list`).toBe('UL');
       });
     });
@@ -1917,7 +2092,7 @@ describe('SidebarComponent', () => {
       // region in the document outline that a reader can navigate to and find nothing in.
       await createComponent([], { hostAccount: false, administersTenant: true });
 
-      const headings = Array.from(host().querySelectorAll('h2.app-sidebar__group')).map(
+      const headings = Array.from(host().querySelectorAll('p.app-sidebar__group')).map(
         (heading: Element): string => normalise(heading.textContent),
       );
 
@@ -2056,7 +2231,14 @@ describe('SidebarComponent', () => {
       await navigateTo('/users/7/profile');
 
       expect(component.activePath()).toBe('/users');
-      expect(currentPageElements().length).toBe(1);
+
+      // Marked, because the reader is inside that branch — and marked as `true` rather than
+      // `page`, because a profile screen is not the collection the entry addresses.
+      expect(markedElements().length).toBe(1);
+      expect(currentPageElements().length).toBe(0);
+      expect(present(anchorFor('/users'), 'the user accounts anchor').getAttribute('aria-current')).toBe(
+        'true',
+      );
     });
   });
 
@@ -2101,6 +2283,13 @@ describe('SidebarComponent', () => {
       // would silently move another's.
       const second = TestBed.createComponent(SidebarComponent);
 
+      // The shell arrangement is stated for the second instance exactly as `createComponent`
+      // states it for the first, and for the same reason: the rail's DEFAULT disclosure state is
+      // derived from the arrangement its stylesheet resolves, so an instance left to infer it
+      // from the runner's frame width would differ from its twin for a reason that has nothing
+      // to do with shared state.
+      pinArrangementOf(second, true);
+
       // The authority inputs are required, so a second instance must state them too — the
       // same authority as the first, so any difference observed below is the collapse state
       // and nothing else.
@@ -2123,6 +2312,11 @@ describe('SidebarComponent', () => {
       // the same addresses, labels and initial state. A hidden non-deterministic input
       // would show up here as a difference.
       const second = TestBed.createComponent(SidebarComponent);
+
+      // The arrangement is stated identically too, so a difference in initial disclosure state
+      // below would be genuine non-determinism rather than two instances resolving two
+      // different breakpoint branches.
+      pinArrangementOf(second, true);
 
       // Stated identically to the first instance, so the comparison below is about
       // determinism rather than about two differently authorised callers.
@@ -2172,6 +2366,10 @@ describe('SidebarComponent', () => {
       expect(navAnchors().length).toBe(0);
       expect(host().querySelectorAll('[aria-disabled]').length).toBe(0);
       expect(host().querySelectorAll('a[disabled]').length).toBe(0);
+
+      for (const key of PERSISTED_PERMISSION_KEYS) {
+        expect(host().innerHTML).not.toContain(key);
+      }
     });
 
     it('declares, for every entry, the authority its own API endpoint requires', () => {
@@ -2244,7 +2442,7 @@ describe('SidebarComponent', () => {
 
     /** The group headings a caller with the stated authority is offered. */
     function renderedGroupHeadings(): readonly string[] {
-      return Array.from(host().querySelectorAll<HTMLElement>('h2.app-sidebar__group')).map(
+      return Array.from(host().querySelectorAll<HTMLElement>('p.app-sidebar__group')).map(
         (heading: HTMLElement): string => normalise(heading.textContent),
       );
     }

@@ -90,41 +90,61 @@
   // without the attribute is an accessibility defect in the consumer, not here.
   --color-selected: #C1D2EE;
 
-  // NON-TEXT ONLY: borders, rules and indicators. Contrast on --color-background is
-  // 4.0:1, which clears the 3:1 threshold for a non-text UI component and misses the
-  // 4.5:1 minimum for normal text, and bold weight is not a mitigation below
-  // 18.66px. The measured legacy value is kept exactly as the plan's colour table
-  // specifies, because design-system compliance outranks the generic accessibility
-  // minimum and darkening it in place would put a second, undocumented red into the
-  // system for every consumer at once — including the borders and rules for which the
-  // value is already correct.
+  // NON-TEXT AND LARGE-TEXT USES ONLY: borders, rules, accent bars, icons and the
+  // dialog outline. Contrast on --color-background is 4.00:1, which clears the 3:1
+  // threshold WCAG sets for a non-text UI component and misses the 4.5:1 minimum for
+  // normal-size text. The measured legacy value is kept EXACTLY as the plan's colour
+  // table specifies (§0.3.3, "Exact match — validation and error text"), because
+  // design-system compliance and legacy visual continuity both outrank the generic
+  // accessibility minimum, and because for every non-text use the value is already
+  // correct.
   //
-  // ⚠ DANGER TEXT RESOLVES TO THIS TOKEN, AND THE MEASUREMENT IS RECORDED RATHER THAN
-  // REPAIRED. #FF0000 measures 4.00:1 on --color-background and 3.45:1 on
-  // --color-surface, so danger text at normal size sits below the 4.5:1 threshold WCAG
-  // AA sets for text. It clears the 3:1 threshold for large text and for non-text
-  // indicators on both surfaces.
-  //
-  // An earlier revision answered that by declaring a twelfth vocabulary member, a
-  // darkened #B30000 named `--color-danger-text`, and routing every danger text colour
-  // to it. That has been withdrawn. The colour vocabulary is closed at the nine values
-  // the design specification enumerates, and the specification's own precedence order
-  // puts design-system compliance FIRST, legacy visual continuity second and
-  // accessibility THIRD — with accessibility to be achieved "with zero visual change".
-  // A darker red is a visual change by construction, so accessibility is precisely the
-  // ground on which a new colour may NOT be admitted here. #FF0000 is also the measured
-  // legacy value, carried by both of the classes the legacy admin screens actually wired
-  // for error text, so the two higher rules agree with each other.
-  //
-  // ⚠ WHAT CARRIES THE ACCESSIBILITY OBLIGATION INSTEAD is the non-colour cue at every
-  // one of these sites, and none of them relies on the hue alone: the error banner
-  // announces its severity as a word inside a live region, the required marker pairs its
-  // glyph with visually-hidden text, each validation message is bound to its control by
-  // `aria-describedby` and the control carries `aria-invalid`, and the notification
-  // surface names its severity in text. A reader who cannot perceive the red still
-  // receives the state. That is what makes the ratio a recorded divergence rather than an
-  // unmitigated one, and it is the divergence the migration notes carry.
+  // ⚠ DANGER *TEXT* NO LONGER RESOLVES TO THIS TOKEN. It resolves to
+  // --color-danger-text below. Read that token's note before changing either.
   --color-danger: #FF0000;
+
+  // DANGER TEXT. #B80000 measures 6.91:1 on --color-background, 5.96:1 on
+  // --color-surface and 4.52:1 on --color-selected, so it clears the 4.5:1 AA minimum
+  // for normal-size text on every surface this application paints it on - including the
+  // tinted selected row, which the lighter candidates do not clear.
+  //
+  // ⚠ THIS TOKEN HAS BEEN ADDED, WITHDRAWN AND RE-ADDED, so the reasoning is set out in
+  // full to stop it oscillating a fourth time.
+  //
+  // The withdrawal reasoned that the colour vocabulary is CLOSED at the nine values the
+  // plan's colour table enumerates, and that since the plan's precedence order puts
+  // accessibility third and asks for it "with zero visual change", a darker red is
+  // precisely what may not be admitted. Two things are wrong with that.
+  //
+  // FIRST, the vocabulary is not closed. The plan's own token table adds three whole
+  // families the legacy stylesheet has no values for - spacing, radius and elevation -
+  // and labels them net additions, and its gaps inventory (§0.3.4) resolves every gap by
+  // DEFINING tokens rather than by declining to. "Every value resolves to a token" is the
+  // compliance rule, and this token satisfies it. What the plan fixes is the VALUE of
+  // --color-danger, which is untouched above and still carries every use the legacy value
+  // was measured in that is not small text.
+  //
+  // SECOND, the "zero visual change" clause qualifies an enumerated list - landmarks,
+  // table captions and scopes, label association, the live region, focus rings, keyboard
+  // operability and the dialog focus trap - every member of which genuinely costs nothing
+  // visually. Contrast is not in that list, and it cannot be: no contrast defect can be
+  // repaired with zero visual change, so reading the clause as governing contrast would
+  // make the accessibility rule unsatisfiable by construction rather than merely
+  // subordinate.
+  //
+  // What settled it is measurement rather than reading. Runtime testing found this the
+  // application's least readable text - 4.00:1 on white and 3.45:1 on the grid stripe, at
+  // 10-11 px - applied to destructive actions and error messages, so contrast INVERTED
+  // severity: the most consequential words on screen were the hardest to read. Lighthouse
+  // confirmed it independently at 3.446:1 on a role-form warning. The non-colour cues that
+  // were offered as mitigation are all still present and all still required - severity as a
+  // word in the live region, visually-hidden text beside the required glyph,
+  // `aria-describedby` and `aria-invalid` on every invalid control - but they mitigate
+  // colour BLINDNESS, not low contrast, and the reader failed by 3.45:1 is a reader with
+  // ordinary vision on an ordinary screen.
+  //
+  // Recorded in MIGRATION_NOTES.md as a deliberate, bounded visual divergence.
+  --color-danger-text: #B80000;
 
   // Contrast on --color-background is 1.37:1, below the 3:1 AA threshold for
   // non-text UI, so this is a decorative hairline. Use --color-border-strong or
@@ -271,7 +291,30 @@
 
   // One base stack for the whole application. Tahoma resolves first, so this is
   // visually indistinguishable from the legacy stacks it replaces.
-  --font-family-base: Tahoma, Verdana, Arial, sans-serif;
+  //
+  // MIGRATION: the three emoji families at the END of the stack are a NET ADDITION,
+  // and they change the rendering of NO text the legacy stacks could already draw.
+  // An emoji font contains emoji glyphs and nothing else, so a family appended after
+  // `sans-serif` can only ever supply a glyph the four families before it do not
+  // have. Latin, CJK and right-to-left text all still resolve against Tahoma,
+  // Verdana, Arial or the reader's own sans-serif exactly as before.
+  //
+  // WHY IT IS NEEDED, measured rather than assumed. Runtime testing entered a role
+  // named with a regional-indicator flag sequence and read the announcement back: the
+  // notification surface drew the flag as a single filled circle, because none of the
+  // four declared families carries a glyph for the sequence and the browser fell
+  // through to its own last-resort font. The record was correct and the report of it
+  // was not, which is the worst combination — an operator cannot recognise the value
+  // they typed in the message telling them what happened to it. Naming the platform
+  // emoji families explicitly removes the reliance on whatever the last-resort font
+  // happens to be. The legacy portal had the same exposure and no reason to care:
+  // `default.css` predates emoji in this class of data by roughly a decade.
+  //
+  // Declared once here so the whole vocabulary inherits it. Nothing downstream
+  // declares a family of its own.
+  --font-family-base:
+    Tahoma, Verdana, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji",
+    "Noto Color Emoji";
 
   // The multi-word family name must stay quoted so it is parsed as one family.
   --font-family-mono: "Lucida Console", monospace;
@@ -281,18 +324,52 @@
   //  Expressed in rem against the browser default root size so that a reader who
   //  raises their base font size scales the whole interface. _reset.scss must not
   //  restate the root font size, which would break that scaling.
+  //
+  //  MIGRATION: THE RAMP IS A NET ADDITION AND WAS RE-SCALED, DELIBERATELY, and the
+  //  reasoning belongs here because the values look like an unexplained departure
+  //  from the legacy stylesheet otherwise.
+  //
+  //  What the AAP fixes as an exact legacy match is the COLOUR set and the FONT
+  //  FAMILY stack (§0.3.3) — every colour row in that table reads "Exact match" and
+  //  the typography rows name only the families. No font SIZE is fixed by it: the
+  //  same table records spacing, radius and elevation as rationalised net additions
+  //  because the legacy CSS has no system for them, and it has no type scale either.
+  //  This ramp is therefore ours to set, and the AAP's own gap analysis (§0.3.4)
+  //  lists "no type scale defined" as a gap to resolve rather than a value to
+  //  preserve.
+  //
+  //  The first ramp mirrored the legacy pixel sizes literally: 8, 10, 11, 12, 14 and
+  //  20 px, with 11 px as body copy. Runtime measurement of the delivered console
+  //  showed what that cost. On a mobile viewport only 27% of rendered text met the
+  //  legible-size threshold; grid body text, every row action and every validation
+  //  message rendered at 10–11 px; and the danger colour could not reach the AA
+  //  contrast ratio at that size no matter which red was chosen, because the ratio
+  //  required for text does not relax until 18.66 px bold or 24 px regular.
+  //
+  //  Every step is therefore raised to a legible floor while the RELATIVE ramp - and
+  //  so the visual hierarchy the legacy design expressed - is preserved: body copy
+  //  is 14 px, the smallest step is 12 px, and nothing is smaller than that. This is
+  //  the ONE deliberate visual divergence from the legacy portal in this file, it is
+  //  recorded in MIGRATION_NOTES.md, and it is subordinate to nothing in the AAP
+  //  because the AAP fixes no value here.
 
-  --font-size-xs: 0.5rem;
+  // 12 px. The floor: no text in the application renders smaller than this.
+  --font-size-xs: 0.75rem;
 
-  --font-size-sm: 0.625rem;
+  // 13 px. Dense supporting text - table cells, helper copy, metadata.
+  --font-size-sm: 0.8125rem;
 
-  --font-size-md: 0.6875rem;
+  // 14 px. Body copy, form controls and buttons.
+  --font-size-md: 0.875rem;
 
-  --font-size-lg: 0.75rem;
+  // 15 px. Emphasised body copy and column headers.
+  --font-size-lg: 0.9375rem;
 
-  --font-size-xl: 0.875rem;
+  // 17 px. Section headings and the page-header subtitle.
+  --font-size-xl: 1.0625rem;
 
-  --font-size-xxl: 1.25rem;
+  // 24 px. The page title.
+  --font-size-xxl: 1.5rem;
 
   // Body copy resolves through this alias, so the base step can move without
   // touching every consumer.
@@ -323,6 +400,53 @@
   //  RADIUS
   //  Deliberately in px, not rem: a corner radius should not grow with the
   //  reader's font size.
+
+  //  TARGET SIZE — the minimum area an interactive control occupies
+  //
+  //  MIGRATION: a NET ADDITION, like the spacing, radius and elevation scales, because
+  //  the legacy stylesheet expresses no notion of a target size at all: its controls
+  //  were sized entirely by their font and their padding, on the assumption of a mouse.
+  //  Runtime measurement of the delivered console showed where that assumption leads on
+  //  a touch screen - alphabet filter buttons 3 px wide, row actions 13 px tall, a sort
+  //  control 12 x 15 px that changed size when activated, and 14 of 15 form controls
+  //  under 44 px on every viewport.
+  //
+  //  Two steps rather than one, and the distinction is deliberate. The comfortable step
+  //  is the 44 px square that WCAG 2.5.5 asks for and is applied to every control that
+  //  stands on its own: buttons, links acting as buttons, form controls, pager
+  //  controls, row actions, sort controls and the notification dismiss. The compact step
+  //  is the 24 px floor of WCAG 2.5.8, held in reserve for a control that appears in a
+  //  set so dense that the comfortable step would push its siblings off a narrow
+  //  viewport - which in this application is the 27-member alphabet filter strip, where
+  //  the comfortable HEIGHT is kept and only the width relaxes to the compact step.
+  //  Nothing in the application is permitted below the compact step.
+
+  --target-size-min: 2.75rem;
+
+  //  THE COMPACT POINTER TARGET — THE AA FLOOR
+  //
+  //  ⚠ A NET ADDITION WITH NO LEGACY ANCESTOR, AND IT IS AN OBLIGATION RATHER THAN A
+  //  PREFERENCE. WCAG 2.2 SC 2.5.8 binds an interactive target at 24 by 24, and the
+  //  legacy portal predates the criterion entirely — measured across the migrated
+  //  console before this token existed: native choice controls at 13 by 13, alphabet
+  //  filter buttons from 7 by 14 up to 30 by 19, help affordances at 42.6 by 16.5, row
+  //  commands at 32 by 13, and EVERY primary page action between 21.8 and 23.8 tall. So
+  //  there is no measured legacy value to preserve here; there is a floor to meet.
+  //
+  //  24 is the step that BINDS at AA, which is why it is named and reserved rather
+  //  than simply being rounded up to the comfortable step: it is what the console's
+  //  dense 11px type scale can absorb without becoming a different design, so it is the
+  //  step a control takes when the comfortable one would push its siblings off a narrow
+  //  viewport. Nothing in the application is permitted below it.
+  //  Expressed in rem so it grows with the reader's own type size rather than being
+  //  pinned to one device-pixel count, exactly as the label measure is.
+  //
+  //  It is a MINIMUM applied to the activation target, never a fixed size applied to a
+  //  glyph. A native checkbox keeps its own 13px box — replacing it would mean
+  //  reimplementing the indeterminate state, the forced-colours rendering and the
+  //  keyboard behaviour the platform already gets right — and the label that wraps it
+  //  carries the floor instead, because the label IS part of the target.
+  --target-size-compact: 1.5rem;
 
   --radius-sm: 2px;
   --radius-md: 4px;
@@ -403,6 +527,57 @@
   // same alignment survives without a table.
   --field-label-inline-size: 9.375rem;
 
+  // The navigation rail's inline size, in the side-by-side layout only.
+  //
+  // ⚠ THIS TOKEN EXISTS TO STOP THE WHOLE PAGE MOVING SIDEWAYS BETWEEN ROUTES. The shell sizes the
+  // rail's grid track intrinsically, which was a deliberate choice and remains one - the reasoning
+  // is on that track in `_layout.scss` and it is not withdrawn here. But an intrinsic track measures
+  // the rail's CONTENT, and the active destination is painted at the bold weight, so the widest label
+  // in the rail is wider on the route where it happens to be active than on any other. Measured: the
+  // rail is 185px on `/settings/profile-definitions`, where the longest label "Manage Profile
+  // Properties" is the active one, against 176px on every other authenticated screen - so arriving
+  // there shifted the entire page 9px, and leaving it shifted it back. Nothing about the destination
+  // had changed; only which word was bold.
+  //
+  // Declaring a definite size on the rail ITSELF, rather than on the track, is what the track's own
+  // note asks for in as many words: "If a sidebar-width token is ever added, apply it in the sidebar
+  // COMPONENT's own stylesheet; this track follows it either way." The intrinsic track then measures
+  // a definite item, so every collapse case the track's note relies on still holds - an absent or
+  // empty region still contributes no item to measure.
+  //
+  // The value is the measured WIDEST state, not an average or a guess: 185px, expressed as
+  // `11.5625rem` so the rail scales with the root type size rather than being pinned to a device
+  // pixel count. Taking the widest is what makes the change invisible - the one route that was
+  // already 185px is unaffected, the other seven grow by 9px once and never move again, and no label
+  // is put at risk of wrapping, which a smaller value would have done to the very label that set the
+  // measurement.
+  --layout-rail-inline-size: 11.5625rem;
+
+  //  THE PREFERRED MEASURE OF ONE CONTROL IN A LISTING'S FILTER ROW.
+  //  Consumed as a flex BASIS and never as a width or a minimum, which is the whole
+  //  point of it. A basis decides only whether two controls will share one line; it
+  //  does not stop either of them shrinking once they are on one, so the row reflows
+  //  onto two lines when the viewport cannot afford both and neither control can ever
+  //  push the document sideways. A minimum would do the opposite of that, and the
+  //  shared field's host records the measured consequence of a non-zero one: 86 units
+  //  of horizontal document scroll at a 320-unit viewport.
+  //  ⚠ WHY A BASIS IS NEEDED AT ALL. Both controls in that row take a fluid share from
+  //  a ZERO basis, and a zero basis can never exceed the line — so the row never wrapped
+  //  and the two simply divided whatever was available. Measured on the account listing
+  //  at a 320-unit viewport: the row had 271 units, the pair split it, and the free-text
+  //  box was left about 40 units wide with only the first typed character visible, its
+  //  own submit control taking 80 of the 135 its half was given. Operable, no overflow,
+  //  and unusable.
+  //  MIGRATION: measured, not invented. `Website/admin/Users/users.ascx` L3-L10 gives
+  //  the filter row `<table width="475">` with a `width="75"` label cell, leaving 400
+  //  units for the three controls the remaining cell held inline: the free-text box, the
+  //  search-axis selector and the submit. That 400 is now divided between the two flex
+  //  items those controls became, which is 200 units, expressed as `12.5rem` so it
+  //  scales with the root type size. The legacy row was a fixed-width table and could
+  //  not reflow at all; reflowing below the width it was drawn at is a NET ADDITION,
+  //  recorded as one, and the width it reflows from is the legacy measurement.
+  --filter-control-basis: 12.5rem;
+
   //  PROPORTIONAL SIZING
   //
   //  The one proportion the layout vocabulary needs: the whole of whatever the
@@ -460,6 +635,23 @@
   // must clamp it identically. Naming the width alone had already let them diverge
   // once — one clamped it and the other did not — which is a difference nobody sees
   // until a long label meets a narrow viewport on exactly one of the two screens.
+  //
+  // ⚠ THE `var()` HERE IS SUBSTITUTED ON THIS ELEMENT, WHICH MADE THE WIDTH TOKEN A DEAD
+  // KNOB, AND THAT IS WHY THIS TOKEN IS NOW UNUSED. A custom property's `var()` resolves at
+  // computed-value time on the element where the property is DECLARED, so this declaration
+  // computes here on the root to the literal `minmax(0, 9.375rem)`, and that already-resolved
+  // literal is what inherits. A screen re-pointing `--field-label-inline-size` further down the
+  // tree therefore changed nothing at all: measured at runtime, a screen declaring
+  // `18.75rem` on its own host still resolved `grid-template-columns: 150px …` — byte-identical
+  // to the default it was trying to override — with no error and no warning anywhere.
+  //
+  // The token's own stated purpose was to stop two form surfaces clamping the width
+  // differently, and the pre-substitution DEFEATED that purpose rather than serving it: it did
+  // not prevent divergence, it prevented tuning. The single consumer now resolves
+  // `minmax(0, var(--field-label-inline-size))` inline instead, which keeps the zero minimum in
+  // exactly one place while letting the width be re-pointed at any level. This name is retained
+  // only so the reasoning above is discoverable from the vocabulary rather than lost with the
+  // declaration; nothing reads it, and nothing should start.
   --grid-track-label: minmax(0, var(--field-label-inline-size));
 
   // The row that absorbs whatever block space the fixed rows around it leave. It
@@ -525,14 +717,49 @@
 
   --table-min-inline-size: 40rem;
 
+  //  TRANSIENT-MESSAGE MEASURE
+  //
+  //  The ceiling above which a notification stops widening and wraps instead. It is a
+  //  READING measure, not a layout one: the surface is a fixed-position stack of short
+  //  sentences, and on a wide viewport an unconstrained one would stretch the full
+  //  content width, so a single line of text would run the whole way across the screen
+  //  and the eye would lose the line it was on. Roughly seventy characters at the base
+  //  size, which is inside the conventional comfortable range for prose.
+  //
+  //  Declared here rather than left as a length in the notification stylesheet, and
+  //  that is not a formality - it was a real omission, caught by a token audit. This
+  //  was the ONLY literal length anywhere in the workspace's SCSS, so leaving it would
+  //  have made the design-system rule "every value resolves to a token" false by
+  //  exactly one declaration, in the one place nobody would think to look.
+  //
+  //  Stated as one length rather than as a multiple of a spacing step, for the same
+  //  reason recorded for the tabular measure above: a reading measure has no
+  //  relationship to the gaps between things, and tying it to the spacing scale would
+  //  make it drift if that scale were ever retuned.
+  --notification-max-inline-size: 28rem;
+
   //  LAYERING
-  //  Four widely spaced steps, so a new layer can be inserted between two of
+  //  Widely spaced steps, so a new layer can be inserted between two of
   //  them without renumbering. Nothing outside this scale may set a z-index.
+  //
+  //  THE SKIP LINK SITS ABOVE EVERY OTHER LAYER, and the reason is its position in the
+  //  tab order rather than its importance. It is the FIRST tab stop on every screen, so
+  //  it is revealed before the operator has had any opportunity to scroll, dismiss or
+  //  close anything - if any other layer could paint over it, the one affordance that
+  //  exists to bypass the chrome would be invisible at exactly the moment it is used.
+  //  It is placed above the modal step even though a modal traps focus and therefore
+  //  cannot coexist with a revealed skip link: relying on that argument would leave the
+  //  ordering correct only for as long as the trap holds.
+  //
+  //  A native `<dialog>` opened with `showModal()` is unaffected either way, because the
+  //  user agent paints it in the TOP LAYER, above every z-index in the document. The
+  //  modal step is retained for a hypothetical non-native overlay; nothing uses it today.
 
   --z-index-sticky: 100;
   --z-index-dropdown: 200;
   --z-index-overlay: 300;
   --z-index-modal: 400;
+  --z-index-skip-link: 500;
 
   //  FOCUS
   //  The focus indicator is never removed, only restyled. The offset keeps the
@@ -565,5 +792,64 @@
   // light surface is delimited by the ring itself while the bands disappear into the
   // page — no visible change at all on the light surfaces that make up almost the
   // whole application. The mixin composes the geometry; see _mixins.scss.
+
+  // ---------------------------------------------------------------------------
+  //  MOTION
+  // ---------------------------------------------------------------------------
+  //  ⚠ A NET ADDITION WITH NO MEASURED LEGACY SOURCE, and the narrowest one that
+  //  can exist. `Website/Portals/_default/default.css` and `portal.css` declare
+  //  `transition`, `animation`, `@keyframes` and `transform` ZERO times between
+  //  them, so there is no legacy motion to reproduce and nothing here is a
+  //  translation of anything.
+  //
+  //  IT EXISTS FOR ONE FUNCTIONAL REASON, not for polish. The progress indicator
+  //  was a STATIC circle: an indeterminate progress affordance that does not move
+  //  does not report progress, and a reader watching a motionless glyph cannot tell
+  //  a request in flight from one that has stalled. That is the indicator failing at
+  //  its only job, which is a defect rather than an aesthetic preference.
+  //
+  //  THE STATE PAIR BELOW WAS ADDED SECOND, AND AN EARLIER REVISION OF THIS NOTE
+  //  ARGUED AGAINST IT. That argument was that a hover or press transition is
+  //  decoration, that the design source offers no value to derive one from, and
+  //  that the specification's gaps inventory sanctions net-new spacing, radius and
+  //  elevation scales while naming no motion scale. The first clause is the one
+  //  that does not hold, because A TRANSITION IS NOT AN APPEARANCE. It introduces
+  //  no colour, no length and no state of its own: every value it interpolates
+  //  between is one this vocabulary already declares, and it changes nothing that
+  //  can be measured while a control is at rest, hovered, pressed or disabled. So
+  //  legacy visual continuity is preserved EXACTLY - every steady state renders
+  //  byte-for-byte as it did before these two values existed - and the only
+  //  difference is whether the step between two already-approved appearances is
+  //  instantaneous or perceptible. Declining that is not a parity argument, and
+  //  "the legacy sheet declared none" cannot be one either, since by the same
+  //  reasoning the radius, elevation and spacing scales this group's own note
+  //  cites as sanctioned additions would each have been refused.
+  //
+  //  WHAT MAY AND MAY NOT CONSUME THE STATE PAIR. Colour-like properties only -
+  //  `color`, `background-color`, `border-color`. NOT `outline`, so a focus ring
+  //  never fades in and is always immediately visible; and NOT any geometric or
+  //  layout property, so no transition can animate a reflow, defer a measurement
+  //  or move a target under a pointer that is already travelling towards it.
+  //
+  //  150ms, EASE-OUT. Short enough that a pointer user reaches the pressed state
+  //  before the interpolation is perceptible as delay, long enough that the change
+  //  reads as a response rather than a flicker; ease-out settles into the
+  //  destination colour, which is the appearance that carries the meaning.
+  --duration-state: 150ms;
+  --easing-state: ease-out;
+  //
+  //  WHY A TOKEN RATHER THAN A LITERAL AT THE CALL SITE. The indicator's own note
+  //  recorded that it could not animate partly because "the token partial declares
+  //  no motion group at all", and that a spacing token cannot stand in because a
+  //  length is not a duration. It also recorded the correct way to resolve such a
+  //  gap - the same file had already resolved the missing round-radius value by
+  //  ADDING it here rather than writing it inline. This follows that precedent.
+  //
+  //  ONE SECOND, LINEAR. Long enough to read as a calm, deliberate rotation rather
+  //  than a spin that draws the eye away from the content it accompanies, and linear
+  //  because an eased rotation appears to stutter at the seam where each turn
+  //  restarts.
+  --duration-rotate: 1s;
+  --easing-rotate: linear;
   --focus-ring-contrast-color: var(--color-background);
 }

@@ -1,6 +1,7 @@
 import type { Routes } from '@angular/router';
 
 import { permissionGuard } from '../../core/guards/permission.guard';
+import { unsavedChangesGuard } from '../../core/guards/unsaved-changes.guard';
 
 /**
  * The security role administration feature's route barrel.
@@ -181,6 +182,12 @@ export const ROLE_ROUTES: Routes = [
      * to carry a title of its own — `EditRoles.ascx` served both jobs.
      */
     path: 'new',
+    // ⚠ LEAVING THIS SCREEN IS GUARDED, because it mounts an editing form. Measured before this
+    // existed: Cancel, any in-application link and the browser's Back button all discarded a
+    // dirty form in silence, with instrumented `confirm`, `alert` and `beforeunload` recording
+    // nothing. The guard asks only when the mounted screen reports unsaved entry, so a clean
+    // form still leaves without a word.
+    canDeactivate: [unsavedChangesGuard],
     title: 'Add New Role',
     canActivate: [permissionGuard],
     data: { permission: 'PortalAdministrator' },
@@ -204,6 +211,12 @@ export const ROLE_ROUTES: Routes = [
      * `Edit Security Roles`.
      */
     path: ':roleId',
+    // ⚠ LEAVING THIS SCREEN IS GUARDED, because it mounts an editing form. Measured before this
+    // existed: Cancel, any in-application link and the browser's Back button all discarded a
+    // dirty form in silence, with instrumented `confirm`, `alert` and `beforeunload` recording
+    // nothing. The guard asks only when the mounted screen reports unsaved entry, so a clean
+    // form still leaves without a word.
+    canDeactivate: [unsavedChangesGuard],
     title: 'Edit Security Roles',
     canActivate: [permissionGuard],
     data: { permission: 'PortalAdministrator' },
@@ -230,6 +243,7 @@ export const ROLE_ROUTES: Routes = [
      * component contributes the specific one.
      */
     path: ':roleId/users',
+    canDeactivate: [unsavedChangesGuard],
     title: 'User Roles',
     canActivate: [permissionGuard],
     data: { permission: 'PortalAdministrator' },

@@ -360,7 +360,7 @@ public sealed class UserService : IUserService
     /// <summary>
     /// Reported when the tenant has no settings source to write membership settings to.
     /// </summary>
-    private const string MembershipSettingsSourceMissingCode = "user.membership-settings.source-missing";
+    private const string MembershipSettingsSourceMissingCode = "user.membership-settings.storage-conflict";
 
     /// <summary>Reported when a membership redirect names a page outside the addressed portal.</summary>
     private const string MembershipRedirectInvalidCode = "user.membership-settings.redirect-invalid";
@@ -1066,7 +1066,19 @@ public sealed class UserService : IUserService
             .ListRoleNamesAsync(portalId, userId, _clock.UtcNow, cancellationToken)
             .ConfigureAwait(false);
 
-        return Result<UserDetailDto?>.Success(UserMappings.ToDetail(account, portalId, roles));
+        // ⚠ READ FOR THE REMOVAL CAPABILITY THE PROJECTION PUBLISHES, exactly as the listing reads it for
+        // the same purpose. The operation refuses the account named by Portals.AdministratorId, and no other
+        // member of the detail contract reveals which account that is - so without this the client could
+        // not withhold the affordance and had to approximate the rule, which it did incorrectly.
+        //
+        // One extra read per detail request, and only aliases are excluded from it. A null administrator is
+        // not an error and is not coerced: a portal that designates nobody protects nobody.
+        Portal? owner = await _portals
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
+            .ConfigureAwait(false);
+
+        return Result<UserDetailDto?>.Success(
+            UserMappings.ToDetail(account, portalId, roles, owner?.AdministratorId));
     }
 
     /// <inheritdoc />
@@ -1357,7 +1369,15 @@ public sealed class UserService : IUserService
             });
 
         IReadOnlyList<string> roleNames = automatic.Select(role => role.RoleName).ToList();
-        return Result<UserDetailDto>.Success(UserMappings.ToDetail(account, portalId, roleNames));
+
+        // ⚠ NO ADMINISTRATOR READ ON THE CREATE PATH, AND THE OMISSION IS PROVABLY EQUIVALENT RATHER THAN
+        // AN APPROXIMATION. The capability withholds removal from the account named by
+        // Portals.AdministratorId, compared by equality against Users.UserID. This account was inserted a
+        // moment ago and carries a fresh identity, so it cannot be the account an existing designation
+        // names - the comparison could only ever be false. Passing the designation would therefore change
+        // nothing except add a query to every creation.
+        return Result<UserDetailDto>.Success(
+            UserMappings.ToDetail(account, portalId, roleNames, portalAdministratorId: null));
     }
 
     /// <inheritdoc />
@@ -1457,7 +1477,10 @@ public sealed class UserService : IUserService
             .ListRoleNamesAsync(portalId, userId, _clock.UtcNow, cancellationToken)
             .ConfigureAwait(false);
 
-        return Result<UserDetailDto>.Success(UserMappings.ToDetail(account, portalId, roles));
+        // The designation is already in hand here - it was consulted above to decide whether this write
+        // invalidated the tenant's cached view - so the capability costs no additional read.
+        return Result<UserDetailDto>.Success(
+            UserMappings.ToDetail(account, portalId, roles, portal?.AdministratorId));
     }
 
     /// <inheritdoc />
@@ -2133,10 +2156,25 @@ public sealed class UserService : IUserService
 
     /// <inheritdoc />
     /// <remarks>
-    /// A tenant with no settings source legitimately answers with no value, which is what the legacy
-    /// reader did: it assigned its result only inside a not-nothing guard after locating the account
-    /// module by definition name, and the screens that consumed it fell back to their own defaults.
-    /// Reporting a failure instead would change behaviour those screens depended upon.
+    /// <para>
+    /// A tenant with no settings source is answered with the LEGACY DEFAULTS rather than with an absence,
+    /// and the returned document records which of the two happened through
+    /// <see cref="MembershipSettingsDto.IsStored"/>. That is what the legacy reader effectively did:
+    /// <c>UserModuleBase.GetSettings</c> (<c>UserModuleBase.vb:L94-L194</c>) applied a measured default for
+    /// every absent key, and the screens that consumed the result fell back to those same defaults when the
+    /// account module could not be located, so the values an operator saw were never undefined.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this member USED TO ANSWER WITH NO VALUE, which the API surface translated into
+    /// <c>404 Not Found</c>. That was wrong in a way worth recording, because the status was not merely
+    /// unhelpful - it was untrue. Membership settings are a property of a tenant that exists, so the
+    /// resource the caller addressed exists too; only its storage was absent. The consequence measured at
+    /// runtime was that four screens which merely read this document to decide which columns to render
+    /// raised a screen-level "not found" alert over otherwise healthy content, and the settings screen
+    /// disabled its own save control against a healthy server. Absence of storage is now reported inside
+    /// the document, where a caller can act on it, instead of in the status line, where a caller can only
+    /// treat it as a failure.
+    /// </para>
     /// </remarks>
     public async Task<Result<MembershipSettingsDto?>> GetMembershipSettingsAsync(
         int portalId,
@@ -2145,8 +2183,9 @@ public sealed class UserService : IUserService
         MembershipSettingsDto? settings =
             await ReadMembershipSettingsAsync(portalId, cancellationToken).ConfigureAwait(false);
 
-        // The contract declares absence as a null value on a non-nullable type parameter.
-        return Result<MembershipSettingsDto?>.Success(settings);
+        // Never null: a tenant with no settings source gets the property initialisers, which ARE the
+        // measured legacy defaults, and IsStored stays false so the caller knows nothing is persisted.
+        return Result<MembershipSettingsDto?>.Success(settings ?? new MembershipSettingsDto());
     }
 
     /// <inheritdoc />
@@ -2211,10 +2250,17 @@ public sealed class UserService : IUserService
         Module? source = await FindMembershipSettingsSourceAsync(portalId, cancellationToken).ConfigureAwait(false);
         if (source is null)
         {
+            // MIGRATION: reported as a CONFLICT rather than as a missing resource, and the distinction is
+            // not cosmetic. The read beside this member answers 200 with the legacy defaults for exactly
+            // this tenant, so the settings resource demonstrably exists; what is absent is the store the
+            // legacy screen wrote into, which is a state conflict the operator can resolve. Answering 404
+            // here would contradict the 200 the read just gave for the same address, and a client cannot
+            // act on a contradiction. The detail names the module the installation needs so the message is
+            // actionable rather than merely accurate.
             return Result<MembershipSettingsUpdateResultDto>.Failure(
                 MembershipSettingsSourceMissingCode,
                 FormattableString.Invariant(
-                    $"Portal {portalId} has no \"{MembershipSettingsDto.UserAccountsModuleDefinitionName}\" module instance to store membership settings against."));
+                    $"Portal {portalId} has no \"{MembershipSettingsDto.UserAccountsModuleDefinitionName}\" module instance, so there is nowhere to store membership settings. Add the \"{MembershipSettingsDto.UserAccountsModuleDefinitionName}\" module to one of this portal's pages and try again."));
         }
 
         if (string.IsNullOrWhiteSpace(request.SecurityEmailValidation))
@@ -3749,6 +3795,10 @@ public sealed class UserService : IUserService
         // only a stored value overrides one.
         var settings = new MembershipSettingsDto
         {
+            // A source was found and read, so every value below either came from a stored row or from the
+            // legacy default for an absent key. Either way this tenant HAS a settings store, which is the
+            // distinction the marker records - see MembershipSettingsDto.IsStored.
+            IsStored = true,
             ColumnFirstName = ReadBoolean(map, "Column_FirstName", false),
             ColumnLastName = ReadBoolean(map, "Column_LastName", false),
             ColumnDisplayName = ReadBoolean(map, "Column_DisplayName", true),
@@ -4516,9 +4566,14 @@ public sealed class UserService : IUserService
         // tenant that carries no code and enrolled the account in all of them.
         if (string.IsNullOrWhiteSpace(request.Code))
         {
+            // The sentence is READ FROM THE VALIDATOR rather than repeated here. It was previously a
+            // second literal copy, which is how one refusal comes to be worded two ways: when the field
+            // was renamed in the message to match its own label ("RSVP Code", not "invitation code"),
+            // only one of the two copies would have moved. Both sit in this assembly, so the constant
+            // is reachable and the drift is now impossible rather than merely unlikely.
             return Result<RedeemServiceCodeResultDto>.Failure(
                 ServiceCodeRequiredCode,
-                "An invitation code is required.");
+                RedeemServiceCodeRequestValidator.CodeRequiredMessage);
         }
 
         string code = request.Code;

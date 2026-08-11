@@ -14,6 +14,7 @@ import {
 } from '../../../core/models/profile.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { UserDetail } from '../../../core/models/user.model';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { TokenStorageService } from '../../../core/services/token-storage.service';
 import { NOT_SPECIFIED_OPTION_TEXT, UserProfileComponent } from './user-profile.component';
@@ -232,6 +233,7 @@ describe('UserProfileComponent', () => {
     lastLockoutDate: null,
     lastPasswordChangeDate: '2024-01-05T09:20:00Z',
     roles: ['Registered Users'],
+    canDelete: true,
   };
 
   /**
@@ -598,6 +600,94 @@ describe('UserProfileComponent', () => {
       expect(host().querySelector('dl')).toBeNull();
     });
   });
+
+  describe('when the address names no readable account', () => {
+    // TWO SITUATIONS THAT USED TO COLLAPSE INTO ONE SENTENCE. `hasProperties()` is false both when
+    // the tenant declares no property AND when nothing was ever FETCHED, and an unreadable identifier
+    // produces the second, because no request is issued for a key that cannot be parsed. With no
+    // branch of its own, `/users/abc/profile` therefore reached the empty-properties branch and
+    // claimed "This site declares no profile properties" against a tenant declaring TWELVE - not
+    // merely unhelpful but factually wrong about the tenant's configuration, and it sent the operator
+    // to define a property to fix an address that no property could ever fix.
+    const UNREADABLE_IDENTIFIER = 'abc';
+
+    // ⚠ RESTATED HERE RATHER THAN IMPORTED. The component owns both sentences, and comparing its
+    // constant against itself would pass for ANY wording - including the wording this block exists to
+    // forbid. A literal is the only assertion that can fail if the sentence changes.
+    const NO_USER_SENTENCE = "This account doesn't exist";
+    const NO_PROPERTIES_OPENING = 'This site declares no profile properties';
+
+    /**
+     * Puts an unparseable identifier on the route and renders.
+     *
+     * Deliberately NOT `load()`, which flushes two responses: the point of this situation is that no
+     * request is ever made, so there is nothing to flush and `load()` would fail looking for one.
+     */
+    function arriveAtUnreadableAddress(): void {
+      fixture.componentRef.setInput('userId', UNREADABLE_IDENTIFIER);
+      fixture.detectChanges();
+    }
+
+    it('states that the account does not exist', () => {
+      arriveAtUnreadableAddress();
+
+      expect(
+        (present(host().querySelector('.user-profile__notice'), 'the notice').textContent ?? '').trim(),
+      ).toBe(NO_USER_SENTENCE);
+    });
+
+    it('does not claim the tenant declares no profile property', () => {
+      // THE DEFECT, ASSERTED NEGATIVELY. Scoped to the whole rendered document rather than to the
+      // empty-state element, so the claim cannot reappear anywhere else on the screen.
+      arriveAtUnreadableAddress();
+
+      expect(host().textContent ?? '').not.toContain(NO_PROPERTIES_OPENING);
+      expect(host().querySelector('app-empty-state')).toBeNull();
+    });
+
+    it('offers no spinner, because no request is ever going to be made', () => {
+      // The branch sits above the loading branch on purpose. A spinner would promise a request that
+      // cannot be issued, leaving the screen waiting forever on an address that is already answered.
+      arriveAtUnreadableAddress();
+
+      expect(host().querySelector('app-loading-spinner')).toBeNull();
+      expect(httpMock.match(() => true).length).toBe(0);
+    });
+
+    it('offers no form, no control and no submit action', () => {
+      // ABSENT FROM THE DOCUMENT rather than disabled: a control that merely looks inert is still
+      // reachable by keyboard and still announced, and there is no account here for it to write to.
+      arriveAtUnreadableAddress();
+
+      expect(host().querySelector('form')).toBeNull();
+      expect(controls().length).toBe(0);
+      expect(host().querySelector('button[type="submit"]')).toBeNull();
+      expect(host().querySelector('.user-profile__actions')).toBeNull();
+    });
+
+    it('says it once, and not also as a banner or a toast', () => {
+      // One fault, one presentation. An unreadable address is a statement about the address and not a
+      // transport failure, so the banner stays empty and nothing is announced.
+      arriveAtUnreadableAddress();
+
+      expect((present(host().querySelector('app-error-banner'), 'the banner').textContent ?? '').trim())
+        .toBe('');
+      expect(notifications.notifications().length).toBe(0);
+    });
+
+    it('still gives the declared-nothing tenant its OWN sentence, not the account one', () => {
+      // NEGATIVE CONTROL. Without this, every assertion above would also pass if the new branch had
+      // swallowed the empty-properties case as well - trading one wrong sentence for another. A
+      // READABLE identifier whose tenant declares nothing must still be told about the tenant.
+      load([]);
+
+      const emptyState = present(host().querySelector('app-empty-state'), 'the empty state');
+      expect(emptyState.textContent ?? '').toContain(NO_PROPERTIES_OPENING);
+      expect(host().textContent ?? '').not.toContain(NO_USER_SENTENCE);
+      expect(host().querySelector('.user-profile__notice')).toBeNull();
+    });
+  });
+
 
   describe('ordering and grouping', () => {
     it('orders properties by the declared view order, not by arrival order', () => {
@@ -1950,7 +2040,13 @@ describe('UserProfileComponent', () => {
       expect(host().querySelectorAll('textarea').length).toBe(1);
       expect(host().querySelectorAll('input[type="text"]').length).toBe(18);
       expect(controls().length).toBe(19);
-      expect(biography.getAttribute('rows')).withContext('a real multi-line box').toBe('4');
+      // ⚠ U-M6 — TWELVE ROWS, NOT FOUR, AND THE DECLARATION IS WHY. Every multi-line control used to
+      // render exactly four rows however much it could hold; the row count is now derived from the
+      // declared length. Biography is seeded with `@Length = 0`, which is the ABSENCE of a bound rather
+      // than a bound of nothing — the same rule the length validator and the published `maxlength`
+      // attribute both follow — so a field that can hold anything takes the CEILING rather than the
+      // floor. That is the right direction for the one seeded property that is unambiguously prose.
+      expect(biography.getAttribute('rows')).withContext('a real multi-line box').toBe('12');
 
       // The label proves it is Biography that got the box rather than some other property.
       expect(
@@ -2249,6 +2345,68 @@ describe('UserProfileComponent', () => {
       expect((submit.textContent ?? '').trim()).toBe('Update');
     });
 
+    it('leaves the form settled the moment the write settles, without waiting for the re-read', () => {
+      const tracker = TestBed.inject(UnsavedChangesTracker);
+
+      load([
+        entry(declaration(), { propertyValue: 'John', lastUpdatedDate: '2024-01-01T00:00:00Z' }),
+      ]);
+
+      const control = present(
+        host().querySelector<HTMLInputElement>('input[type="text"]'),
+        'the value control',
+      );
+      control.value = 'Edited';
+      control.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      // THE CONTROL. Without it a later `false` would be indistinguishable from a probe that was never
+      // registered, or from a form that was never dirty. `isDirty()` is the guard's own public surface, so
+      // this is asserted through the very call the guard makes.
+      expect(tracker.isDirty())
+        .withContext('a dirty form with no write in flight is what the guard exists to catch')
+        .toBeTrue();
+
+      present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
+      fixture.detectChanges();
+
+      httpMock
+        .expectOne((request) => request.method === 'PUT' && request.url === profileUrl(USER_ID))
+        .flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+
+      // ⚠ ASSERTED IN THE WINDOW BETWEEN THE WRITE SETTLING AND THE RE-READ BEING ANSWERED, WHICH IS THE
+      // ONLY WINDOW THAT DISCRIMINATES. This screen's form is a `computed()` over the profile, so once the
+      // re-read below lands a brand-new pristine form replaces this one and any assertion made afterwards
+      // would hold whether or not the settling was done deliberately. Three real cases live in this window:
+      // the asynchronous gap itself, a re-read that FAILS - which would leave a saved form advertising
+      // unsaved work for the rest of the screen's life - and the mandatory-completion path, which navigates
+      // in this same task and would have had its navigation refused by the guard.
+      expect(tracker.isDirty())
+        .withContext('a saved profile must not advertise unsaved work before its re-read has landed')
+        .toBeFalse();
+
+      httpMock
+        .expectOne((request) => request.method === 'GET' && request.url === profileUrl(USER_ID))
+        .flush({
+          data: {
+            userId: USER_ID,
+            properties: [
+              entry(declaration(), {
+                propertyValue: 'Edited',
+                lastUpdatedDate: '2024-02-02T00:00:00Z',
+              }),
+            ],
+            displayVisibilityEnabled: false,
+          },
+        });
+      fixture.detectChanges();
+
+      expect(tracker.isDirty())
+        .withContext('and it still must not once the rebuilt form has replaced it')
+        .toBeFalse();
+    });
+
     it('reports that a write is in flight and refuses a second one', () => {
       load([
         entry(declaration(), { propertyValue: 'John', lastUpdatedDate: '2024-01-01T00:00:00Z' }),
@@ -2302,7 +2460,23 @@ describe('UserProfileComponent', () => {
       expect(present(actions()[1], 'the cancel action').disabled).toBeFalse();
       expect((present(host().querySelector('app-error-banner'), 'the banner').textContent ?? '').trim())
         .toBe('');
-      expect(notifications.notifications().length).toBe(0);
+
+      /*
+       * ⚠ THE SAVE IS NOW CONFIRMED, AND THIS ASSERTION USED TO REQUIRE THE OPPOSITE. It read
+       * `toBe(0)`, which encoded a measured defect rather than a decision: `PUT /users/1/profile`
+       * answered `204`, the value DID persist, and the notification region stayed empty for a polled
+       * six seconds with no `[role=alert]` anywhere - so the only difference between a save that
+       * worked and one that was silently ignored was the absence of an error. The identical action on
+       * the site-settings screen has always confirmed itself.
+       *
+       * Exactly ONE notification, at the success severity: a second would be noise, and an error or
+       * warning severity would contradict a `204`.
+       */
+      expect(notifications.notifications().length)
+        .withContext('a save that kept the values says so')
+        .toBe(1);
+      expect(notifications.notifications()[0]?.severity).toBe('success');
+      expect(notifications.notifications()[0]?.message).toBe('The profile was saved.');
     });
   });
 
@@ -2879,9 +3053,13 @@ describe('UserProfileComponent', () => {
         .flush({ data: account, meta: null } satisfies ApiResponse<UserDetail>);
       fixture.detectChanges();
 
+      // ⚠ REPLACES: a completed remediation must not sit in BACK history, and
+      // `core/guards/unsaved-changes.guard.ts` reads this flag to tell an application-initiated
+      // departure from an operator's. Pushing would make the gate offer to discard a profile that
+      // had already been saved successfully.
       expect(navigate)
         .withContext('the root decides where a remediated caller goes, so it is asked')
-        .toHaveBeenCalledWith('/');
+        .toHaveBeenCalledWith('/', { replaceUrl: true });
     });
 
     it('does NOT renew after an ordinary save by a caller who owes nothing', () => {

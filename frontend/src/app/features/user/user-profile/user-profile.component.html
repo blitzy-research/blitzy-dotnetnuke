@@ -86,7 +86,20 @@
   `.user-profile`; the two content branches carry that class on the element that also carries the form, so
   the group stack and the action row share one rhythm without an extra wrapper.
 -->
-@if (loading()) {
+@if (addressUnreadable()) {
+<!--
+    ⚠ THIS BRANCH SITS BEFORE THE EMPTY-PROPERTIES BRANCH, AND THE ORDER IS THE FIX. `hasProperties()`
+    is false in two unrelated situations - the tenant declares none, and nothing was ever fetched - and
+    an unreadable identifier produces the second, because no request is issued for a key that cannot be
+    parsed. With this branch absent, `/users/abc/profile` therefore claimed "This site declares no
+    profile properties" on a tenant declaring TWELVE: not merely unhelpful but factually wrong about the
+    configuration, and it sent the operator to fix something that was not broken.
+
+    The spinner branch is also below this one, deliberately: nothing is loading, so offering a spinner
+    would suggest a request that is never going to be made.
+  -->
+  <p class="user-profile__notice">{{ unreadableAddressMessage }}</p>
+} @else if (loading()) {
   <app-loading-spinner label="Loading profile…" />
 } @else if (!hasProperties()) {
 <!--
@@ -125,10 +138,12 @@
       @for (section of sections(); track section.key) {
         <fieldset class="user-profile__group">
           <legend>
+            <h2>
             <button
               type="button"
               class="user-profile__toggle"
               [attr.aria-expanded]="!isCollapsed(section.key)"
+              [attr.aria-controls]="!isCollapsed(section.key) ? sectionBodyId(section.key) : null"
               (click)="toggleSection(section.key)"
             >
 <!--
@@ -147,6 +162,7 @@
               </svg>
               {{ section.heading }}
             </button>
+            </h2>
           </legend>
 
           @if (!isCollapsed(section.key)) {
@@ -154,7 +170,7 @@
               A description list, so the association between a property name and its value
               is structural and survives with no styling at all.
             -->
-            <dl class="user-profile__values">
+            <dl [id]="sectionBodyId(section.key)" class="user-profile__values">
               @for (value of section.values; track value.definition.propertyDefinitionId) {
                 <dt>{{ labelFor(value) }}</dt>
                 <dd class="user-profile__value">{{ displayValue(value) }}</dd>
@@ -196,6 +212,7 @@
               type="button"
               class="user-profile__toggle"
               [attr.aria-expanded]="!isCollapsed(section.key)"
+              [attr.aria-controls]="!isCollapsed(section.key) ? sectionBodyId(section.key) : null"
               (click)="toggleSection(section.key)"
             >
               <svg
@@ -218,7 +235,7 @@
             - the referenced element does not exist while it is collapsed.
           -->
           @if (!isCollapsed(section.key)) {
-            <div class="user-profile__fields">
+            <div [id]="sectionBodyId(section.key)" class="user-profile__fields">
               @for (value of section.values; track value.definition.propertyDefinitionId) {
                 @if (valueControl(value); as control) {
 <!--
@@ -253,7 +270,20 @@
                     recorded visible divergence. The shared component owns all of that, and
                     this template only supplies the text.
                   -->
+                  <!--
+                    ⚠ `form-field--stacked` IS NOT A STYLE CHOICE, IT IS U-M7's FIX, AND IT IS APPLIED HERE
+                    AND NOT TO THE VISIBILITY FIELD BELOW ON PURPOSE. The label on THIS field is
+                    `labelFor(value)` — a property name authored by the tenant, of unbounded length. The
+                    shared field's two-column arrangement sizes its label column from a measure taken off
+                    fixed admin captions, so a tenant-authored name meets that measure by wrapping, and
+                    wraps WORSE the wider the viewport gets because the column stops growing while the
+                    stacked arrangement below the breakpoint does not. Measured: three lines at 768 and
+                    above against one below 767. The variant keeps the stacked arrangement at every width,
+                    so the label always has the whole content width. The visibility field below keeps the
+                    default because "Visible to" is application wording that was measured and fits.
+                  -->
                   <app-form-field
+                    class="form-field--stacked"
                     [label]="labelFor(value)"
                     [for]="controlId(value)"
                     [required]="value.definition.required"
@@ -280,7 +310,7 @@
                       -->
                       <textarea
                         [id]="controlId(value)"
-                        [rows]="multilineRows"
+                        [rows]="multilineRowsFor(value)"
                         [formControl]="control"
                         [attr.maxlength]="maxLengthFor(value)"
                         [attr.aria-required]="value.definition.required ? 'true' : null"
@@ -408,7 +438,8 @@
         administrator bypass, which treated an administrator as valid unconditionally, is
         deliberately not reproduced, and the server validates independently in either case.
       -->
-      <button type="submit" [disabled]="saving()">
+      <button type="submit" [disabled]="saving()"
+          [attr.aria-busy]="saving() ? 'true' : null">
         {{ saving() ? 'Saving…' : 'Update' }}
       </button>
       <button type="button" [disabled]="saving()" (click)="onReset()">Cancel</button>

@@ -48,3 +48,29 @@
  * it to the router as an absolute address rather than composing it onto a base.
  */
 export const SIGN_IN_ROUTE = '/login';
+
+/**
+ * The query parameter the sign-in address carries the refused destination under.
+ *
+ * ⚠ EVERY PARTY THAT WRITES THIS VALUE AND THE ONE PARTY THAT READS IT MUST AGREE, and
+ * until this constant existed nothing made them. The address itself was consolidated here
+ * for exactly the reason recorded at the head of this module; the KEY it is carried under
+ * survived that consolidation as three private copies — one in each route gate and one in
+ * the sign-in screen that consumes it — and the bearer interceptor held no copy at all,
+ * which is how it came to navigate to a bare sign-in address with no destination attached.
+ *
+ * The failure mode is worse than the address's was, because it is asymmetric rather than
+ * total. A gate-blocked navigation preserved the destination and a refused-request ejection
+ * did not, so the two paths disagreed about the same operator's session and the one that
+ * lost the destination was the COMMON one — a token lapsing mid-session, rather than the
+ * rarer deliberate navigation to a screen the account may not use. Nothing failed loudly:
+ * the operator signed in again and simply arrived somewhere else, having lost whatever
+ * screen they were on.
+ *
+ * Consumed by both route gates, by the bearer interceptor's terminal-renewal path, and by
+ * the sign-in screen that reads the destination back. The value is a bare parameter name
+ * and is deliberately NOT pre-encoded: percent-encoding it for transport is the router's
+ * own job when it serialises the tree, and doing it here as well would double-encode the
+ * destination and hand the sign-in screen an address it could not navigate back to.
+ */
+export const RETURN_URL_QUERY_KEY = 'returnUrl';

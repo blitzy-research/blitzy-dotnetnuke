@@ -5,12 +5,31 @@ import {
   EventEmitter,
   Input,
   Output,
+  NgZone,
   ViewChild,
   booleanAttribute,
   inject,
   type AfterViewInit,
   type OnDestroy,
 } from '@angular/core';
+
+/**
+ * How long focus loss is watched for after the invoker is re-focused, in milliseconds.
+ *
+ * The window exists because the event that strips focus is NOT the dialog closing - it is
+ * the response to the request the confirmation triggered. Measured on a real confirmed
+ * alias deletion: the dialog tore down at t+18ms and returned focus correctly to its
+ * still-connected opener, and the `204` landed at t+50ms and destroyed the row that opener
+ * lived in. A single macrotask check scheduled at teardown resolved ~30ms too early, found
+ * focus on a live element, and correctly declined to act - after which nothing looked again
+ * and focus stayed on `<body>` indefinitely.
+ *
+ * 2000ms is chosen to cover a slow response by a wide margin - forty times the measured
+ * gap - while staying short enough that the watch cannot outlive the interaction that
+ * started it. A longer window would keep a document-wide observer alive across unrelated
+ * work; a shorter one would reintroduce the defect on a loaded server.
+ */
+const FOCUS_RESCUE_WINDOW_MS = 2000;
 
 /*
  * Default wording.
@@ -157,6 +176,75 @@ function resolveFocusedElement(): HTMLElement | undefined {
 }
 
 /**
+ * The class that hides the root element's overflow while a modal dialog is open.
+ *
+ * Declared in `styles/_reset.scss` alongside the `scrollbar-gutter` reservation that stops the
+ * lock shifting the page sideways. The two halves must stay together: without the gutter the lock
+ * removes the scrollbar and lurches the content, and without the lock the page scrolls behind the
+ * confirmation.
+ */
+const SCROLL_LOCK_CLASS = 'dnn-scroll-locked';
+
+/**
+ * How many dialogs currently hold the background scroll lock.
+ *
+ * ⚠ A COUNTER RATHER THAN A BOOLEAN, so that the FIRST dialog to close cannot release a lock the
+ * SECOND one still needs. Two confirmations can legitimately overlap for a moment - a screen
+ * whose delete confirmation is destroyed in the same turn that another is created re-uses the
+ * component, and Angular constructs the new instance before destroying the old - and a boolean
+ * would leave the page scrollable underneath the surviving dialog.
+ *
+ * Module-scoped because the lock is a property of the DOCUMENT, not of any one dialog, and no
+ * instance can see another. It is only ever adjusted by the two functions below.
+ */
+let scrollLockDepth = 0;
+
+/**
+ * Hides background scrolling while a modal confirmation is open.
+ *
+ * ⚠ A NATIVE MODAL DIALOG DOES NOT DO THIS BY ITSELF. `showModal()` makes the rest of the page
+ * inert to pointer interaction and lifts the dialog into the top layer, but the page keeps
+ * scrolling for the keyboard and the wheel: runtime testing measured a real Page Down moving the
+ * page from 364 to 891 pixels with a confirmation open, carrying the row being deleted out of
+ * view and leaving the dialog over unrelated content.
+ *
+ * @param root The document's root element, or undefined when the dialog is not in a document.
+ */
+function lockBackgroundScroll(root: HTMLElement | undefined): void {
+  if (root === undefined) {
+    return;
+  }
+
+  scrollLockDepth += 1;
+
+  if (scrollLockDepth === 1) {
+    root.classList.add(SCROLL_LOCK_CLASS);
+  }
+}
+
+/**
+ * Releases this dialog's claim on the background scroll lock.
+ *
+ * The class is removed only when the LAST holder releases it. The depth is floored at zero so
+ * that a release without a matching lock - a dialog destroyed before it ever opened, which is
+ * what happens when its host is removed in the same turn it was created - cannot drive the
+ * counter negative and strand the page unscrollable.
+ *
+ * @param root The document's root element, or undefined when the dialog was never in a document.
+ */
+function releaseBackgroundScroll(root: HTMLElement | undefined): void {
+  if (root === undefined || scrollLockDepth === 0) {
+    return;
+  }
+
+  scrollLockDepth -= 1;
+
+  if (scrollLockDepth === 0) {
+    root.classList.remove(SCROLL_LOCK_CLASS);
+  }
+}
+
+/**
  * Decides whether a matched candidate is actually in the tab order.
  *
  * Every rejection below matches the candidate selector yet cannot be tabbed to.
@@ -271,7 +359,13 @@ function resolveTabOrigin(event: KeyboardEvent, focusable: readonly HTMLElement[
  * 3. Focus is then moved explicitly to the CANCELLING affordance, never to the
  *    destructive one, so that a stray `Enter` cannot delete anything.
  * 4. On destruction the dialog is closed if it is still open and focus returns to
- *    the captured invoker when that element is still in the document.
+ *    the captured invoker when that element is still in the document. When it is
+ *    NOT - the two real cases being a confirmed deletion that removed the row the
+ *    invoker belonged to, and a navigation that tore the whole screen down - focus
+ *    falls back to the main region rather than being left on the document. A third
+ *    case is WATCHED FOR rather than checked: an invoker that was connected at
+ *    teardown and is removed once the confirmed request resolves, which is what a
+ *    confirmed deletion produces and what no single check at teardown can catch.
  *
  * ## Template contract
  *
@@ -476,6 +570,19 @@ export class ConfirmDialogComponent implements AfterViewInit, OnDestroy {
   private readonly hostElement: ElementRef<HTMLElement> = inject(ElementRef);
 
   /**
+   * The zone, used to keep the post-teardown focus watch out of change detection.
+   *
+   * The watch in {@link ConfirmDialogComponent.rescueFocusIfInvokerDisappears} observes
+   * document-wide mutations for a bounded window. Zone.js patches `MutationObserver`, so
+   * left inside the Angular zone every batch of DOM changes anywhere in the application
+   * would re-enter it and schedule a change-detection pass - for a watch that reads two
+   * properties and never touches a binding. It is registered outside the zone instead. The
+   * focus call it may make needs no change detection: focus is browser state, not view
+   * state, and nothing in this component's view depends on it.
+   */
+  private readonly zone: NgZone = inject(NgZone);
+
+  /**
    * The element that held focus when this dialog was created.
    *
    * Captured in a field initialiser because construction is the last moment the
@@ -508,6 +615,15 @@ export class ConfirmDialogComponent implements AfterViewInit, OnDestroy {
   protected settled = false;
 
   /**
+   * Whether THIS instance currently holds the background scroll lock.
+   *
+   * Tracked per instance so that the release in `ngOnDestroy` is paired with an acquire that
+   * actually happened. A dialog that never opened - because it was not connected to a document,
+   * which is the case its own open path already guards - must not release a lock it never took.
+   */
+  private holdsScrollLock = false;
+
+  /**
    * Opens the dialog and places focus on the cancelling affordance.
    *
    * The view children exist by the time this hook runs, which is exactly when
@@ -532,6 +648,11 @@ export class ConfirmDialogComponent implements AfterViewInit, OnDestroy {
     if (!dialog.open) {
       dialog.showModal();
     }
+    // Taken AFTER the open succeeds, so a dialog that could not open leaves the page as it found
+    // it. `documentElement` is read through the dialog's own document rather than the global, so
+    // the lock lands on the document this component is actually rendered in.
+    lockBackgroundScroll(dialog.ownerDocument.documentElement);
+    this.holdsScrollLock = true;
     const initialFocus = this.resolveInitialFocusTarget(dialog);
     if (initialFocus !== undefined) {
       // Focus goes to the cancelling affordance, never the destructive one, so
@@ -541,21 +662,139 @@ export class ConfirmDialogComponent implements AfterViewInit, OnDestroy {
   }
 
   /**
-   * Closes the dialog if it is still open and returns focus to the invoker.
+   * Closes the dialog if it is still open and returns focus somewhere deliberate.
    *
    * Restoration is guarded on the invoker still being in the document, because a
    * grid row's Delete button disappears with its row; focusing a detached
    * element would silently move focus to the body instead.
+   *
+   * ⚠ THE DEFECT THE FALLBACK CLOSES: the guard above was correct and INCOMPLETE.
+   * It stopped a detached invoker being focused, but it then did nothing at all,
+   * which leaves focus exactly where a detached invoker would have left it - on
+   * `<body>`. For a keyboard reader that means the next Tab restarts at the top of
+   * the document, and a screen reader announces nothing, so the outcome of the
+   * confirmation is silent. Both situations that reach it are ordinary rather than
+   * exotic: confirming a deletion destroys the row the Delete button lived in, and
+   * navigating away destroys the whole screen the invoker belonged to.
+   *
+   * THE FALLBACK IS THE MAIN REGION, which is the same target the skip link uses
+   * and the reason the shell gives `<main>` a negative tab index. It is resolved by
+   * ANCESTRY FIRST and by document lookup second, and the second step is not
+   * redundant: on a navigation teardown this component's host may already be
+   * detached by the time the hook runs, and `closest` on a detached node cannot
+   * reach the shell. The shell mounts exactly one main region and one outlet, so
+   * the document lookup is unambiguous; where no region exists at all - a component
+   * mounted in isolation - both steps yield nothing and the hook does no more than
+   * it did before, which is what keeps this safe outside the application shell.
+   *
+   * `preventScroll` matters here. A reader who has scrolled a long grid and
+   * confirmed a deletion has the main region far above the viewport, and focusing it
+   * without this option would yank the page back to the top - trading a focus defect
+   * for a scroll-position defect. Focus moves; the viewport does not.
    */
   public ngOnDestroy(): void {
     const dialog = this.resolveDialogElement();
     if (dialog !== undefined && dialog.open) {
       dialog.close();
     }
+    if (this.holdsScrollLock) {
+      releaseBackgroundScroll(dialog?.ownerDocument.documentElement);
+      this.holdsScrollLock = false;
+    }
     const invoker = this.invoker;
     if (invoker !== undefined && invoker.isConnected) {
       invoker.focus();
+      this.rescueFocusIfInvokerDisappears(invoker);
+
+      return;
     }
+    this.resolveMainRegion()?.focus({ preventScroll: true });
+  }
+
+  /**
+   * Re-homes focus if the element it was just returned to is removed immediately afterwards.
+   *
+   * ⚠ THE THIRD TEARDOWN BRANCH, AND IT WAS MEASURED FAILING WHILE THE OTHER TWO PASSED.
+   * Cancelling the dialog returns focus to the opener, which survives; navigating away finds
+   * the opener detached and falls back to the main region. CONFIRMING A DELETION does neither:
+   * the opener is still connected when this hook runs, so focus is correctly returned to it,
+   * and the successful deletion then destroys the row or panel that owned it - at which point
+   * the browser gives focus to the document. Measured `document.activeElement` after a
+   * confirmed delete: `BODY`. For a keyboard reader that means the next Tab restarts at the top
+   * of the page, and a screen reader announces nothing, so the outcome of the deletion they just
+   * confirmed is silent.
+   *
+   * ⚠ WHY THIS WATCHES FOR THE REMOVAL RATHER THAN CHECKING ONCE, AND THE MEASUREMENT THAT
+   * FORCED THE CHANGE. The first version of this method scheduled a single macrotask at
+   * teardown. That is anchored to the WRONG EVENT: the invoker is not destroyed by the dialog
+   * closing, it is destroyed by the response to the request the confirmation triggered, which
+   * arrives an unbounded network latency later. An instrumented confirmed deletion measured
+   * the whole sequence - dialog torn down and focus correctly returned to the still-connected
+   * opener at t+18ms, the single check resolving immediately afterwards and correctly
+   * declining because focus was on a live element, and the `204` landing at t+50ms and
+   * destroying the row the opener lived in. Focus then sat on `<body>` at t+100ms, t+600ms,
+   * t+1000ms and t+3500ms. The check was ~30ms too early and there was no second look.
+   *
+   * So the trigger is the removal itself. A `MutationObserver` is the only reliable observer
+   * of it: `blur` and `focusout` are NOT dispatched by Chrome when the focused element is
+   * removed from the document, so no event on the invoker can be listened for. The observer
+   * watches `document.body` with `subtree`, because the node actually removed is typically an
+   * ancestor several levels above the invoker - a confirmed row deletion removes the whole row
+   * and the inline panel inside it, not the button - and only a document-wide subtree
+   * observation sees every shape of that.
+   *
+   * ⚠ IT ONLY ACTS WHEN FOCUS IS NOWHERE. The condition is that the document body itself holds
+   * focus, which is the browser's way of saying no element does. If the consumer moved focus
+   * somewhere deliberate, or the reader has already moved on, then `activeElement` is not the
+   * body and this does nothing at all - so it can never take focus away from anything.
+   *
+   * ⚠ IT IS BOUNDED TWICE, and both bounds are load-bearing. The watch stops the first time it
+   * finds the invoker gone, whether or not it moves focus, so the ordinary case costs one
+   * observation of a handful of mutation batches. It also stops unconditionally after
+   * {@link FOCUS_RESCUE_WINDOW_MS}, so a confirmation whose request never resolves cannot
+   * leave a document-wide observer alive behind it. Neither bound is cancelled on destruction,
+   * because the component is ALREADY destroyed when they are established - which is exactly
+   * why they have to be self-limiting.
+   *
+   * @param invoker The still-connected element focus was just returned to.
+   */
+  private rescueFocusIfInvokerDisappears(invoker: HTMLElement): void {
+    this.zone.runOutsideAngular((): void => {
+      let deadline = 0;
+      let observer: MutationObserver | undefined;
+
+      const stopWatching = (): void => {
+        observer?.disconnect();
+        window.clearTimeout(deadline);
+      };
+
+      observer = new MutationObserver((): void => {
+        // Still there: the mutation was unrelated - the dialog's own teardown, a
+        // notification arriving, the consumer re-rendering - so keep watching.
+        if (invoker.isConnected) {
+          return;
+        }
+        stopWatching();
+        if (document.activeElement !== document.body) {
+          return;
+        }
+        this.resolveMainRegion()?.focus({ preventScroll: true });
+      });
+
+      observer.observe(document.body, { childList: true, subtree: true });
+      deadline = window.setTimeout(stopWatching, FOCUS_RESCUE_WINDOW_MS);
+    });
+  }
+
+  /**
+   * Resolves the main region focus can fall back to, or `undefined` when there is none.
+   *
+   * @returns The main landmark element, or `undefined` outside the application shell.
+   */
+  private resolveMainRegion(): HTMLElement | undefined {
+    const host = this.hostElement.nativeElement;
+
+    return host.closest('main') ?? document.querySelector('main') ?? undefined;
   }
 
   /**

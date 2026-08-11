@@ -291,3 +291,37 @@ table[data-sticky-head] thead th {
 // no rule beats emitting an unguarded one, and the pointer and focus ring above already tell the
 // reader which rows and headers are interactive. If hover styling is wanted, add a guard mixin to
 // _mixins.scss and include it here rather than writing a query in this file.
+
+// =============================================================================
+//  COMMANDS INSIDE A CELL — the pointer-target floor for a row's own actions
+// =============================================================================
+//
+// ⚠ WHY A GLOBAL RULE FOR THIS AND NOT A PER-SCREEN ONE. A row command is a LINK in every
+// grid in the console — it navigates to an editing screen, so a button would be the wrong
+// element — and a link takes no chrome from _forms.scss, which is where the pointer-target
+// floor for buttons is declared. The consequence was measured on every listing: 10 alias
+// links at 39.5-66.7 by 11, row commands at 32 by 13 and 80 by 13 against a 10px type
+// size, and the "Settings" command at 52.1 by 20.5 — all short of the 24 by 24 that WCAG
+// 2.2 SC 2.5.8 binds. Declaring it once here fixes every grid at once and cannot be lost
+// by one screen omitting it, which is exactly how the breach came about.
+//
+// SCOPED TO A CELL, deliberately. A link in prose is not a pointer target in this sense and
+// must keep its inline flow, so the selector reaches only links that a grid renders inside
+// its own cells. A link that already exceeds the floor is untouched, because both
+// declarations are minima.
+//
+// `inline-flex` rather than `block` for two reasons worth stating: the cell's own text
+// alignment still positions the command, which is what lets a centred column centre it and
+// a start-aligned column start it; and centring within the floor is what turns the extra
+// height into space around the label instead of leaving the label at the top edge.
+// `flex-wrap` is inherited from nothing here — a command that must stack its parts says so
+// in its own stylesheet.
+td a,
+th a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
+}

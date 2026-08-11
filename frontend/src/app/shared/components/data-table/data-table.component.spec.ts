@@ -191,9 +191,17 @@ describe('DataTableComponent', () => {
       set('loading', false);
       fixture.detectChanges();
 
-      // `expectNone` names the assertion explicitly; the `verify()` in `afterEach` is the
-      // belt-and-braces half and would fail this test independently.
-      httpMock.expectNone(() => true);
+      // ⚠ STATED AS A COUNTED EXPECTATION, NOT AS `expectNone`, AND THE DIFFERENCE IS
+      // REPORTED RATHER THAN COSMETIC. `expectNone` asserts by throwing, so Jasmine records
+      // no expectation for it and the runner reports this spec as having none - which reads
+      // in a log exactly like a spec that forgot to assert anything. `match` returns what it
+      // matched, so the emptiness of that list is the assertion, and it fails just as loudly
+      // on an unexpected request. Nothing is weakened: `match` removes only what it matched,
+      // and it matched nothing, so the `verify()` in `afterEach` still guards this spec
+      // independently.
+      expect(httpMock.match(() => true))
+        .withContext('no request of any kind, through any interaction')
+        .toEqual([]);
     });
 
     it('injects no service, so it can be created with no provider but the HTTP pair', () => {
@@ -443,13 +451,59 @@ describe('DataTableComponent', () => {
       expect(bodyRows()[1].getAttribute('aria-rowindex')).toBe('3');
     });
 
-    it('counts the waiting row, so the announced size matches what is rendered', () => {
+    it('counts the waiting row when it is shown, so the announced size matches what is rendered', () => {
+      // THE PLACEHOLDER ONLY REPLACES THE ROWS WHEN THERE ARE NO ROWS. A read that arrives
+      // while rows are on screen keeps them and reports itself through `aria-busy`, so the
+      // waiting row has to be provoked with an empty set. Showing it on every read tore the
+      // body down and rebuilt it, which measured as a zero-data row, a pager jumping several
+      // hundred pixels and the application's largest layout shift.
+      set('rows', []);
       set('loading', true);
       const table = fixture.debugElement.query(By.css('table')).nativeElement as HTMLElement;
 
       expect(bodyRows().length).toBe(1);
       expect(table.getAttribute('aria-rowcount')).toBe('2');
       expect(bodyRows()[0].getAttribute('aria-rowindex')).toBe('2');
+    });
+
+    it('keeps the rows and marks the table busy when a read arrives over existing rows', () => {
+      const before = bodyRows().length;
+
+      set('loading', true);
+      const table = fixture.debugElement.query(By.css('table')).nativeElement as HTMLElement;
+
+      expect(bodyRows().length)
+        .withContext('the rows an operator is reading are never blanked out from under them')
+        .toBe(before);
+      expect(table.getAttribute('aria-busy'))
+        .withContext('assistive technology is told the region is updating instead')
+        .toBe('true');
+
+      set('loading', false);
+
+      expect(table.getAttribute('aria-busy'))
+        .withContext('absent rather than present-and-negative when idle')
+        .toBeNull();
+    });
+
+    it('still counts the RETAINED rows while a read is in flight over them', () => {
+      // ⚠ THE REGRESSION THIS PINS DOWN, MEASURED IN A BROWSER. Once a subsequent read began keeping
+      // the previous rows, this count still assumed the placeholder had replaced them - so for the
+      // whole two seconds of a page turn the table announced `aria-rowcount="2"` while eleven rows
+      // were rendered, and announced it at exactly the moment `aria-busy="true"` invites assistive
+      // technology to re-read the grid. The count and the placeholder are now derived from the SAME
+      // predicate, which is what makes the two incapable of disagreeing.
+      const table = fixture.debugElement.query(By.css('table')).nativeElement as HTMLElement;
+
+      expect(table.getAttribute('aria-rowcount')).toBe('3');
+
+      set('loading', true);
+
+      expect(bodyRows().length).withContext('two records plus no placeholder').toBe(2);
+      expect(table.getAttribute('aria-rowcount'))
+        .withContext('what is announced is what is rendered')
+        .toBe('3');
+      expect(table.getAttribute('aria-busy')).toBe('true');
     });
 
     it('counts the empty row too, rather than announcing a table with no rows', () => {
@@ -716,13 +770,53 @@ describe('DataTableComponent', () => {
       expect(sorts).toEqual([{ key: 'name', direction: 'Descending' }]);
     });
 
-    it('flips back to ascending on the column already sorted descending', () => {
+    /**
+     * THE THIRD STEP CLEARS THE ORDERING, AND THIS SPEC USED TO PIN A TWO-STEP CYCLE THAT MADE THE
+     * ARRIVAL STATE UNREACHABLE.
+     *
+     * Every listing in this application starts with no ordering at all - each store initialises its
+     * sort coordinate to null and the request omits both parameters - so "no ordering" is a state the
+     * reader is already in when they arrive. With ascending and descending as the only two steps, the
+     * moment a reader touched any heading the server's own order became unreachable: the only route
+     * back was to reload the page. The direction is reported as `null` so a consumer clears its own
+     * coordinate, which every store here already supports, rather than substituting a default.
+     *
+     * The key is still reported, because it names the heading that was pressed rather than the ordering
+     * that results - so no consumer has to reason about a null key.
+     */
+    it('clears the ordering on the column already sorted descending', () => {
       set('sortBy', 'name');
       set('sortDir', 'Descending');
 
       headers()[0].querySelector('button')?.click();
 
-      expect(sorts).toEqual([{ key: 'name', direction: 'Ascending' }]);
+      expect(sorts).toEqual([{ key: 'name', direction: null }]);
+    });
+
+    it('re-enters the cycle at ascending once the ordering has been cleared', () => {
+      // A cleared column is no longer the active one, so the full round trip is
+      // ascending -> descending -> cleared -> ascending, and the reader can reach all three states
+      // from the keyboard with repeated presses of one heading.
+      set('sortBy', 'name');
+      set('sortDir', 'Ascending');
+      headers()[0].querySelector('button')?.click();
+
+      set('sortDir', 'Descending');
+      headers()[0].querySelector('button')?.click();
+
+      // The consumer has cleared the coordinate, which is what the null direction asked for.
+      set('sortBy', null);
+      set('sortDir', null);
+      headers()[0].querySelector('button')?.click();
+
+      expect(sorts).toEqual([
+        { key: 'name', direction: 'Descending' },
+        { key: 'name', direction: null },
+        { key: 'name', direction: 'Ascending' },
+      ]);
+      expect(headers()[0].getAttribute('aria-sort'))
+        .withContext('a cleared column announces "sortable but not sorted", never a direction')
+        .toBe('none');
     });
 
     it('starts ascending when moving to a different column', () => {
@@ -756,10 +850,92 @@ describe('DataTableComponent', () => {
       expect(cellTexts(0)[0]).toBe('Alpha');
     });
 
-    it('disables the control while a request is in flight', () => {
+    /**
+     * THE CONTROL IS MARKED UNAVAILABLE AND STAYS FOCUSABLE, and this spec used to pin the native
+     * property that caused a measured focus defect: the platform blurs an element the instant it becomes
+     * disabled, so pressing a heading reordered the table and then dropped focus to the document body,
+     * leaving a keyboard reader with no position in the table they had just reordered - and nothing to
+     * restore, because the focus was already gone by the time anything could observe it.
+     *
+     * `aria-disabled` announces the same state to assistive technology while leaving the control in the
+     * tab order, which is the documented remedy for a control that must survive its own unavailability.
+     * The refusal itself is asserted separately, below and above, through the ABSENCE OF AN EMISSION -
+     * which is now the only mechanism enforcing it.
+     */
+    it('marks the control unavailable while a request is in flight, without disabling it', () => {
       set('loading', true);
 
-      expect(headers()[0].querySelector('button')?.disabled).toBeTrue();
+      const control = headers()[0].querySelector('button');
+
+      expect(control?.getAttribute('aria-disabled'))
+        .withContext('the state is announced')
+        .toBe('true');
+      expect(control?.disabled)
+        .withContext('but the native property is NOT used — it would destroy focus')
+        .toBeFalse();
+      expect(control?.hasAttribute('tabindex'))
+        .withContext('and nothing removes it from the natural tab order')
+        .toBeFalse();
+      });
+
+    it('emits no attribute at all when no request is in flight', () => {
+      // `aria-disabled="false"` on every heading of every table would be noise; the attribute is bound
+      // to null and Angular omits it.
+      expect(headers()[0].querySelector('button')?.hasAttribute('aria-disabled')).toBeFalse();
+    });
+
+    it('withdraws the busy state once the request settles', () => {
+      set('loading', true);
+      set('loading', false);
+
+      expect(headers()[0].querySelector('button')?.hasAttribute('aria-disabled')).toBeFalse();
+    });
+
+    /**
+     * The geometry half of the same family of defect.
+     *
+     * Measured before the fix: activating a heading grew its button under the pointer — Title
+     * 44.000 -> 46.469 px and Start Date 70.859 -> 86.750 px — because the direction indicator was
+     * rendered only once the column became sorted. A control that changes size at the instant it is
+     * pressed can move out from under the finger that pressed it. The element is therefore always
+     * present and only its CONTENT is conditional, so this spec pins presence in both states.
+     */
+    it('keeps the indicator element present when unsorted, so the control cannot change size', () => {
+      const indicatorOf = (index: number): Element | null =>
+        headers()[index].querySelector('.data-table__sort-indicator');
+
+      expect(indicatorOf(0)).withContext('present while unsorted').not.toBeNull();
+      expect((indicatorOf(0)?.textContent ?? '').trim())
+        .withContext('but carrying no glyph')
+        .toBe('');
+
+      set('sortBy', 'name');
+      set('sortDir', 'Ascending');
+
+      expect(indicatorOf(0)).withContext('still one element once sorted').not.toBeNull();
+      expect((indicatorOf(0)?.textContent ?? '').trim())
+        .withContext('now carrying the ascending glyph')
+        .toBe('\u25B2');
+      expect(indicatorOf(0)?.getAttribute('aria-hidden'))
+        .withContext('and never announced — the heading already states the direction')
+        .toBe('true');
+    });
+
+    /**
+     * The whole point of the change above: focus SURVIVES the request that a sort press starts.
+     */
+    it('keeps focus on the heading the reader pressed while the reorder is in flight', () => {
+      const control = headers()[0].querySelector('button');
+
+      control?.focus();
+      control?.click();
+
+      // The consumer answers by reporting a request in flight, exactly as a feature does.
+      set('loading', true);
+
+      expect(document.activeElement)
+        .withContext('focus must not fall to the document body')
+        .toBe(control);
     });
 
     it('emits nothing while a request is in flight, so a second order cannot be queued', () => {
@@ -897,18 +1073,98 @@ describe('DataTableComponent', () => {
         expect(headers()[0].getAttribute('aria-sort')).toBe('ascending');
       });
 
-      it('refuses keyboard activation while a request is in flight', () => {
+      /**
+       * ⚠ REWRITTEN alongside its sibling above. The control no longer takes the native `disabled`
+       * property, because setting it on the focused heading destroyed keyboard focus. That makes the
+       * refusal MORE important to assert here, not less: with the native property gone, the code
+       * guard in `activateSort` is the only thing preventing a second ordering being queued behind
+       * the first, so this spec is now the guard's only proof.
+       *
+       * It also pins the property the whole change exists for — that the heading STILL HOLDS FOCUS
+       * after an activation that was refused. Before the fix `document.activeElement` became `BODY`.
+       */
+      it('refuses keyboard activation while a request is in flight, and keeps focus', () => {
         set('loading', true);
 
-        // A disabled button does not dispatch a click from a key press in a real browser
-        // either, so the guard is asserted through the emission rather than through the flag
-        // alone.
+        // ⚠ THE GUARD IS NOW ENTIRELY IN THE COMPONENT, and the assertion had to move with it. The
+        // control is no longer natively disabled - the platform blurs a disabled element, which dropped
+        // focus to the document body on every press - so the browser no longer suppresses the key
+        // activation for us and `activateSort` is the only thing refusing. That makes the emission the
+        // ONLY proof of the refusal, and it is asserted below.
         const control = sortControl(0);
-        expect(control.disabled).toBeTrue();
 
+        expect(control.getAttribute('aria-disabled'))
+          .withContext('the state is announced without the native property')
+          .toBe('true');
+        expect(control.disabled)
+          .withContext('while the native property stays off, so focus survives')
+          .toBeFalse();
+
+        control.focus();
+        expect(document.activeElement).withContext('focus starts on the heading').toBe(control);
+
+        control.focus();
         pressKey(control, 'Enter');
 
-        expect(sorts).toEqual([]);
+        expect(sorts).withContext('and the ordering is still refused').toEqual([]);
+        expect(document.activeElement)
+          .withContext('focus is NOT ejected to the document body')
+          .toBe(control);
+      });
+
+      /**
+       * The successful path's focus behaviour, which is where the reported defect actually bit: a
+       * reader pressed Enter, the sort succeeded, and focus was gone. Asserted through the component
+       * rather than through a live request, by driving the busy state the way the feature does.
+       */
+      it('keeps focus on the heading across a completed ordering', () => {
+        const control = sortControl(0);
+
+        control.focus();
+        pressKey(control, 'Enter');
+
+        // The feature answers by marking the table busy and then settling it, which is exactly the
+        // window in which the native property used to be applied and withdrawn.
+        set('loading', true);
+        set('loading', false);
+
+        expect(sorts.length).withContext('the ordering was requested').toBe(1);
+        expect(document.activeElement)
+          .withContext('and the heading still has focus afterwards')
+          .toBe(control);
+      });
+
+      /**
+       * The accessible name states the ACTION and CONTAINS the visible label verbatim.
+       *
+       * WCAG 2.5.3 Label in Name: a voice-control user says the words they can see, so a name that
+       * replaced the visible heading text rather than extending it would break them. The direction is
+       * deliberately absent from the name - `aria-sort` on the enclosing heading announces it, and
+       * repeating it here would both state one fact twice and re-announce the control on every reorder.
+       */
+      it('names the control by its action while still containing the visible column label', () => {
+        set('sortBy', 'name');
+        set('sortDir', 'Descending');
+
+        const control = sortControl(0);
+        const accessibleName = control.getAttribute('aria-label') ?? '';
+        const visibleLabel = (control.textContent ?? '').trim();
+
+        expect(accessibleName).toBe('Sort by Name');
+        expect(visibleLabel.startsWith('Name')).withContext('the visible text is the label').toBeTrue();
+        expect(accessibleName)
+          .withContext('WCAG 2.5.3: the accessible name contains the visible label verbatim')
+          .toContain('Name');
+        expect(accessibleName)
+          .withContext('the direction is announced by aria-sort, not restated in the name')
+          .not.toContain('escending');
+      });
+
+      it('gives an unsortable column no sort control and therefore no such name', () => {
+        // The name exists only where the control does; the plain heading branch renders a span.
+        const plain = headers()[2].querySelector('button');
+
+        expect(plain).toBeNull();
       });
     });
 
@@ -918,7 +1174,12 @@ describe('DataTableComponent', () => {
   });
 
   describe('waiting and empty states', () => {
-    it('shows the shared indicator instead of the previous page while loading', () => {
+    it('shows the shared indicator on the FIRST read, when there is no previous page', () => {
+      // Renamed with the behaviour. It used to show the indicator INSTEAD of the previous
+      // page on every read; it now replaces nothing, because tearing the body down and
+      // rebuilding it was measured as the mechanical cause of the zero-data row, the pager
+      // jumping 258-588 px and the largest layout shift in the application.
+      set('rows', []);
       set('loading', true);
 
       expect(fixture.debugElement.query(By.css('app-loading-spinner'))).not.toBeNull();
@@ -926,6 +1187,8 @@ describe('DataTableComponent', () => {
     });
 
     it('spans the waiting cell across every column, so no blank cells are announced', () => {
+      // Provoked with an empty set: a read over existing rows keeps them - see the busy test.
+      set('rows', []);
       set('loading', true);
 
       const cell = bodyRows()[0].querySelector('td');
@@ -948,6 +1211,7 @@ describe('DataTableComponent', () => {
     // those defaults back is therefore end-to-end evidence that the genuine component ran.
 
     it('renders the REAL shared indicator, with its own default wording and status role', () => {
+      set('rows', []);
       set('loading', true);
 
       const spinner = requireElement(host(), 'app-loading-spinner');
@@ -1166,6 +1430,123 @@ describe('DataTableComponent', () => {
       set('rows', [{ ...ROWS[0], count: Number.NaN }]);
 
       expect(cellTexts(0)[0]).toBe('');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // KEYED REUSE THAT REACHES THE DOM
+  // ---------------------------------------------------------------------------
+
+  describe('keyed reuse across a re-read', () => {
+    // ⚠ THE PROPERTY UNDER TEST IS DOM-NODE IDENTITY, NOT RENDERED TEXT, and that is the whole point:
+    // the rendered text was always right. `@for` keys the body on whatever `track` names, and the only
+    // key a generic table can invent for an arbitrary row contract is the row OBJECT. Object identity is
+    // correct while the same objects stay in play - it is what makes a windowed table reuse the rows it
+    // keeps while scrolling - but every listing re-reads from the server and decodes FRESH objects, so a
+    // re-read of the page already shown presented ten brand-new keys and the whole body was rebuilt.
+    // Runtime measurement recorded exactly that: 0 of 10 rows and 0 of 410 elements beneath `<tbody>`
+    // survived a redraw, with only the `<tbody>` element itself retained.
+    //
+    // Three of the five interactions a listing offers cannot reuse anything by construction - a page
+    // change, a re-order and a new filter each replace the page with a disjoint set of records - so these
+    // cases deliberately model the two that can: a resubmitted search, and the refetch after a removal
+    // where all but one record is the same record.
+
+    /** A fresh object per row, decoded as an HTTP response would be, carrying the same identities. */
+    function reDecoded(rows: readonly Row[]): readonly Row[] {
+      return rows.map((row) => ({ ...row }));
+    }
+
+    /** The identity a listing would supply — the record's own key. */
+    const identify = (row: Row): number => row.id;
+
+    it('keeps every row element when the same records are re-read', () => {
+      set('rowKey', identify);
+
+      const before = bodyRows();
+
+      expect(before.length).toBe(2);
+
+      set('rows', reDecoded(ROWS));
+
+      const after = bodyRows();
+
+      // Compared BY OBJECT IDENTITY. Equal text would pass even against a full rebuild, which is the
+      // false green this case exists to exclude.
+      expect(after.length).toBe(2);
+      expect(after[0]).toBe(before[0]);
+      expect(after[1]).toBe(before[1]);
+    });
+
+    it('keeps the surviving rows when one record is removed, and only loses the removed one', () => {
+      set('rowKey', identify);
+
+      const before = bodyRows();
+      const survivor = before[1];
+
+      // The refetch after a removal: the same records come back minus one, as new objects.
+      set('rows', reDecoded([ROWS[1]]));
+
+      const after = bodyRows();
+
+      expect(after.length).toBe(1);
+      expect(after[0]).withContext('the record that remained kept its row element').toBe(survivor);
+    });
+
+    it('updates a reused row content rather than leaving it stale', () => {
+      set('rowKey', identify);
+
+      const before = bodyRows()[0];
+
+      set('rows', [{ ...ROWS[0], name: 'Renamed' }, { ...ROWS[1] }]);
+
+      // Reuse is only correct if the reused element shows the NEW values. A reused row that kept the old
+      // text would be a worse defect than rebuilding.
+      expect(bodyRows()[0]).toBe(before);
+      expect(cellTexts(0)[0]).toBe('Renamed');
+    });
+
+    it('tolerates the sentinel identities as keys', () => {
+      // Zero seeds the role, page and module identities and minus one seeds the portal identity, so both
+      // are legitimate keys. A key implementation that treated either as absent would collapse the two
+      // rows onto one key, which `@for` reports as a duplicate.
+      set('rowKey', identify);
+
+      const before = bodyRows();
+
+      set('rows', reDecoded(ROWS));
+
+      expect(bodyRows().length).toBe(2);
+      expect(bodyRows()[0]).toBe(before[0]);
+      expect(bodyRows()[1]).toBe(before[1]);
+    });
+
+    it('THE NEGATIVE CONTROL: rebuilds when no identity is supplied', () => {
+      // Without this case the four above would pass against a table that reused rows for some unrelated
+      // reason. The fallback is deliberately the previous behaviour, so a consumer that supplies nothing
+      // is unaffected by the new input - and that is a property worth pinning, not an accident.
+      const before = bodyRows();
+
+      set('rows', reDecoded(ROWS));
+
+      const after = bodyRows();
+
+      expect(after.length).toBe(2);
+      expect(after[0]).not.toBe(before[0]);
+      expect(after[1]).not.toBe(before[1]);
+      expect(cellTexts(0)[0]).withContext('and still renders correctly').toBe('Alpha');
+    });
+
+    it('publishes the identity it was given, and reports none as null', () => {
+      expect(fixture.componentInstance.rowKey).toBeNull();
+
+      set('rowKey', identify);
+      expect(fixture.componentInstance.rowKey).toBe(identify);
+
+      set('rowKey', undefined);
+      expect(fixture.componentInstance.rowKey)
+        .withContext('an absent value means key on the object, not a function that throws')
+        .toBeNull();
     });
   });
 

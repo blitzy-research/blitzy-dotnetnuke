@@ -88,11 +88,13 @@ namespace DnnMigration.Application.Validation;
 // change what a caller reads, and relaxing the operator would accept a billing cycle of zero units,
 // which could never advance an expiry date.
 //
-// MIGRATION: valTrialFee2 disagrees with itself in the opposite direction, and is treated
-// identically. Its operator is GreaterThanEqual against 0 (L128) while its text reads "Trial Fee
-// Must Be Greater Than Zero" (L127). The OPERATOR is reproduced - zero is accepted, because a free
-// trial is a real configuration - and the text is carried across unchanged. Tightening the operator
-// to match the text would refuse every free trial the legacy screen allowed.
+// MIGRATION: NEITHER OF THESE RULES DISAGREES WITH ITSELF IN THE LEGACY, and an earlier revision of
+// this file said both did. Measured in EditRoles.ascx.resx: valBillingPeriod2.Text is "Billing Period
+// Must Be Greater Than Zero" against Operator="GreaterThan", and valTrialFee2.Text is "Trial Fee Must
+// Be Greater Than or Equal to Zero" against Operator="GreaterThanEqual". Both agree. The two
+// contradictions were introduced here, by two message strings that had in effect been swapped between
+// the period rule and the fee rule, and are corrected in RoleTermsRules. Every operator below is
+// unchanged - only the wording moved, back to what the legacy screen actually said.
 //
 // MIGRATION: a CompareValidator SUCCEEDS against an empty control. It compares nothing when there is
 // nothing to compare, so all eight comparisons were silent for a role with no paid terms; only
@@ -305,20 +307,32 @@ public class CreateRoleRequestValidator : AbstractValidator<CreateRoleRequest>
 
         // valRoleName (editroles.ascx L29-L31): the screen's ONE presence check, and the only rule
         // in this validator that is unconditional. The width is the NOT NULL column's own.
+        // MIGRATION: TEXT INTEGRITY, WHICH THE LEGACY SCREENS DID NOT CHECK AND THIS MIGRATION DOES. Runtime
+        // testing stored a NUL byte and zero-width spaces in this very field and served both back, producing a
+        // role name that no operator can read, retype or tell apart from a visibly identical one - and making
+        // the duplicate-name rule below unenforceable by inspection. The rule refuses invisible characters
+        // only; every printable character the legacy screens accepted, emoji and right-to-left text included,
+        // still passes. Recorded as a deliberate divergence in MIGRATION_NOTES.md per Rule T5.
         RuleFor(request => request.RoleName)
             .NotEmpty()
             .WithMessage(RoleTermsRules.RoleNameRequiredMessage)
-            .MaximumLength(RoleTermsRules.RoleNameMaximumLength);
+            .MaximumLength(RoleTermsRules.RoleNameMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         // No validator was declared on the description, so only the column width is asserted. The
         // rule is inert for an absent value: a length check passes a null.
         RuleFor(request => request.Description)
-            .MaximumLength(RoleTermsRules.DescriptionMaximumLength);
+            .MaximumLength(RoleTermsRules.DescriptionMaximumLength)
+            .Must(TextIntegrityRules.IsMultiLineSafe)
+            .WithMessage(TextIntegrityRules.MultiLineMessage);
 
         // No validator was declared on the invitation code either, and nothing in the schema makes
         // it unique, so a clash is not a conflict and only the width applies.
         RuleFor(request => request.RsvpCode)
-            .MaximumLength(RoleTermsRules.RsvpCodeMaximumLength);
+            .MaximumLength(RoleTermsRules.RsvpCodeMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         // Column width, plus the net-new containment rule annotated above. The containment check
         // itself moved to IconReferenceRules so that the role UPDATE and the page update apply the

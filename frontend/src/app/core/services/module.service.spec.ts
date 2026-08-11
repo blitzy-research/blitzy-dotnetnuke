@@ -237,6 +237,9 @@ const CREATE_REQUEST: CreateModuleRequest = {
  */
 const UPDATE_REQUEST: UpdateModuleRequest = {
   tabId: 0,
+  // No relocation. The placement key and the destination are separate members, and this fixture edits a
+  // module in place, so the destination is explicitly absent rather than a copy of the key.
+  moveToTabId: null,
   moduleTitle: '',
   allTabs: true,
   header: '',
@@ -1607,6 +1610,7 @@ describe('ModuleService', () => {
     it('omits an optional member that the caller genuinely did not supply', () => {
       const partial: UpdateModuleRequest = {
         tabId: 3,
+        moveToTabId: null,
         moduleTitle: 'Announcements',
         allTabs: false,
         header: null,

@@ -44,11 +44,14 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
+  ElementRef,
   EventEmitter,
   Input,
   Output,
   TemplateRef,
   computed,
+  inject,
   signal,
 } from '@angular/core';
 
@@ -231,6 +234,33 @@ export interface DataTableColumnCommon {
    * tree either way, so a cell is still announced with its column name.
    */
   readonly label: string;
+
+  /**
+   * Whether this column's cell IDENTIFIES its row, and so is rendered as `<th scope="row">`
+   * rather than `<td>`. Defaults to `false`.
+   *
+   * ⚠ WHY THIS EXISTS. Every cell in this table was a `<td>`, so a screen reader announced a
+   * cell with its COLUMN name and nothing else: moving across a row gave "Fee, 0" then "Public,
+   * No" with no indication of WHICH record was being read. A row header is the mechanism HTML
+   * provides for that - `scope="row"` makes the cell the row's name, so the same traversal
+   * announces "Subscribers, Fee, 0". Without one, a table of any width is navigable only by
+   * counting rows.
+   *
+   * AT MOST ONE COLUMN PER SET may declare it, enforced when the set is bound. Two row headers
+   * would make every other cell claim two row names, which is worse than none: the reader cannot
+   * tell which is the record's identity. Uniqueness cannot be expressed by a type across members
+   * of an array, which is why it is a run-time refusal rather than a compile error.
+   *
+   * ⚠ NOT FOR AN ACTIONS COLUMN, and the actions branch ignores it. A commands cell holds
+   * controls rather than the record's identity, and naming rows "Edit" would be worse than
+   * leaving them unnamed. Choose the column a person would read aloud to say which row they mean
+   * - the title, the name, the sign-in name.
+   *
+   * There is NO VISUAL CONSEQUENCE: the shared stylesheet gives `th[scope='row']` inside the body
+   * the same treatment as an ordinary cell, so this changes what is announced and nothing that is
+   * seen.
+   */
+  readonly rowHeader?: boolean;
 
   /**
    * Inline alignment of the HEADING. Defaults to `start`.
@@ -505,14 +535,25 @@ export interface DataTableActionsColumn<TRow> {
  */
 export interface DataTableSortChange {
   /**
-   * The {@link DataTableColumnCommon.key} to order by, which is the endpoint's sort name.
+   * The {@link DataTableColumnCommon.key} the reader activated, which is the endpoint's sort name.
+   *
+   * ⚠ ALWAYS PRESENT, EVEN WHEN THE ORDERING IS BEING CLEARED. It names the heading that was pressed, not
+   * the ordering that results, so a consumer never has to reason about a null key; what to do about it is
+   * settled by {@link direction} alone.
    */
   readonly key: string;
 
   /**
-   * The direction to order in, in the server's own spelling.
+   * The direction to order in, in the server's own spelling, or `null` to REMOVE the ordering entirely.
+   *
+   * ⚠ THE NULL IS A THIRD STATE, NOT AN ABSENT VALUE. A listing arrives with no ordering at all - every
+   * one of these stores initialises its sort coordinate to null and the request omits both parameters - so
+   * "no ordering" is a state the reader is already in when they arrive, and a two-step toggle made it
+   * unreachable the moment they left it: the only way back was to reload the page. The third step restores
+   * it. A consumer therefore clears its own sort coordinate on null, which every store here already
+   * supports, rather than substituting a default of its own.
    */
-  readonly direction: SortDirection;
+  readonly direction: SortDirection | null;
 }
 
 /**
@@ -550,6 +591,21 @@ interface DataTableHeaderCell<TRow> {
    * Whether this heading carries the ACTIVE sort, per `sortBy` alone.
    */
   readonly sorted: boolean;
+
+  /**
+   * The sort control's accessible name, or `null` for a column that offers no sorting.
+   *
+   * The visible heading text alone names the COLUMN and not the ACTION, so a reader who lands on the
+   * control hears "Module Title, button" and is told nothing about what pressing it does. This states the
+   * action and CONTAINS the visible label verbatim, which is what keeps it compliant with WCAG 2.5.3 Label
+   * in Name - a name that replaced the visible text rather than extending it would break the voice-control
+   * user who says the words they can see.
+   *
+   * The current direction is deliberately NOT part of it: `aria-sort` on the enclosing heading already
+   * announces that, and repeating it here would state one fact twice and would additionally re-announce the
+   * whole control every time the order changed.
+   */
+  readonly sortLabel: string | null;
 
   /**
    * The `aria-sort` value, or `null` to omit the attribute.
@@ -605,6 +661,15 @@ export interface DataTableBodyCell<TRow> {
    * Resolved {@link DataTableColumnCommon.bodyAlign}.
    */
   readonly align: DataTableAlign;
+
+  /**
+   * Resolved {@link DataTableColumnCommon.rowHeader}, deciding whether the template emits
+   * `<th scope="row">` or `<td>` for this cell.
+   *
+   * Always a boolean, never `undefined`: the template branches on it directly and an absent value
+   * would make the branch depend on truthiness rather than on the caller's declaration.
+   */
+  readonly rowHeader: boolean;
 }
 
 /**
@@ -682,6 +747,20 @@ const DEFAULT_ALIGN: DataTableAlign = 'start';
  * body row is row two.
  */
 const HEADER_ROW_COUNT = 1;
+
+/**
+ * What a sort control's accessible name says before the column's own label.
+ *
+ * ⚠ THE TRAILING SPACE IS LOAD-BEARING and the label is appended VERBATIM, because WCAG 2.5.3 Label in Name
+ * requires the accessible name to contain the visible text as it appears - a voice-control user says the
+ * words they can see. Concatenated rather than interpolated with a separator so that nothing can be inserted
+ * between the two.
+ *
+ * MIGRATION: net-new, with no legacy wording to borrow. Measured across both legacy trees, `aria-` appears
+ * in zero files and the legacy heading was a bare label with no control in it at all, so there was no
+ * accessible name to preserve.
+ */
+const SORT_LABEL_PREFIX = 'Sort by ';
 
 /**
  * Minimum `colspan` for the waiting and empty rows, so neither can span zero cells.
@@ -769,6 +848,9 @@ export class DataTableComponent<TRow extends object> implements OnInit {
   private readonly columnsSignal = signal<readonly DataTableColumn<TRow>[]>([]);
 
   private readonly rowsSignal = signal<readonly TRow[]>([]);
+
+  /** How a row identifies itself across redraws, or `null` to key on the row object. See {@link rowKey}. */
+  private readonly rowKeySignal = signal<((row: TRow) => string | number) | null>(null);
 
   private readonly sortBySignal = signal<string | undefined>(undefined);
 
@@ -884,10 +966,53 @@ export class DataTableComponent<TRow extends object> implements OnInit {
     if (selected !== null && nextRows.includes(selected) === false) {
       this.selectedRowSignal.set(null);
     }
+
+    // A new row set invalidates the window and the measured row height together: the same
+    // scroll position can correspond to a different row, and the new rows can be a different
+    // shape from the old ones.
+    this.scheduleWindowUpdate();
   }
 
   public get rows(): readonly TRow[] {
     return this.rowsSignal();
+  }
+
+  /**
+   * Sets how a row identifies itself across redraws, so its rendered row can be REUSED rather than rebuilt.
+   *
+   * ⚠ WITHOUT THIS, KEYED REUSE CANNOT REACH THE DOM ON A RE-READ, AND THAT WAS MEASURED RATHER THAN
+   * SUSPECTED. `@for` keys the body on whatever `track` names, and the only key a generic table can invent
+   * for an arbitrary row contract is the row OBJECT itself. Object identity is a correct key while the same
+   * objects stay in play - it is what already makes scrolling a windowed table reuse every row it keeps -
+   * but every listing in this application re-reads from the server and decodes a FRESH object per row, so a
+   * re-read that returns logically identical rows presents ten brand-new keys and Angular rebuilds the whole
+   * body. Runtime measurement put numbers on it: a redraw destroyed and recreated all ten rows and all 410
+   * elements beneath `<tbody>`, retaining only the `<tbody>` element itself.
+   *
+   * Three of the five interactions a listing offers cannot reuse anything by construction, and it is worth
+   * being exact about which: a page change, a re-order and a new filter each replace the page with a
+   * DISJOINT set of records, so nothing survives and nothing should. The two that can are a re-read of the
+   * page already shown - a resubmitted search, or the refetch after a removal, where nine of ten records are
+   * the same record - and those are the cases this input serves.
+   *
+   * OPTIONAL BY DESIGN, defaulting to object identity so the previous behaviour is what a consumer that
+   * supplies nothing still gets. That matters for more than compatibility: `@for` treats a repeated key as
+   * an error, so a feature that supplied a non-unique key would break its own grid, and an input a feature
+   * has to opt into is one it has to think about. Each listing supplies its own record identifier, which is
+   * unique by definition because it is the database key.
+   *
+   * The projected cells are keyed separately, by column, and those keys are stable already - so a reused row
+   * keeps its cell elements too and only their content is rewritten.
+   *
+   * @param value A function returning the row's stable identity, or an absent value to key on the object.
+   */
+  @Input()
+  public set rowKey(value: ((row: TRow) => string | number) | null | undefined) {
+    this.rowKeySignal.set(value ?? null);
+  }
+
+  public get rowKey(): ((row: TRow) => string | number) | null {
+    return this.rowKeySignal();
   }
 
   /**
@@ -990,9 +1115,304 @@ export class DataTableComponent<TRow extends object> implements OnInit {
    * An empty page is a legitimate answer, not an error, and it is distinguished from "still loading" so the
    * empty state is never claimed prematurely.
    */
+  /**
+   * The result-set size, as a sentence, for a POLITE live region.
+   *
+   * ⚠ WHY THIS EXISTS. Narrowing a listing to nothing announced NOTHING. The rows were replaced
+   * and the empty state appeared, but neither is in a live region, so a screen-reader user who
+   * typed a filter received no confirmation that anything had happened at all - and the one place
+   * that did announce, the pager's own position readout, WITHDRAWS itself when a filter leaves a
+   * single page, so the case most in need of a report was the case with no reporter.
+   *
+   * ⚠ IT REPORTS THE COUNT AND NOT THE STATE, and reporting the count is what makes every
+   * transition audible. A region that only said "no records found" would announce 12 -> 0 and stay
+   * silent on 0 -> 12 and on 12 -> 4, which are the same event to the person filtering. Because
+   * the number is in the text, `aria-atomic="true"` re-reads the whole sentence on any change.
+   *
+   * SILENT WHILE LOADING, deliberately. The spinner already carries its own status role and
+   * announces its own progress, so emitting a count during a request would either duplicate that
+   * or, worse, announce the OUTGOING result set as though it were the answer. The empty string
+   * clears the region instead, which is also what stops the previous count being re-read.
+   *
+   * The singular is stated separately because "1 records" is the kind of wording that makes a
+   * reader distrust everything else the screen says.
+   */
+  protected readonly resultSummary = computed<string>(() => {
+    if (this.isLoading()) {
+      return '';
+    }
+
+    const count: number = this.rowsSignal().length;
+
+    if (count === 0) {
+      return 'No records found.';
+    }
+
+    return count === 1 ? '1 record.' : `${count} records.`;
+  });
+
   protected readonly isEmpty = computed(
     () => this.loadingSignal() === false && this.rowsSignal().length === 0,
   );
+
+  /**
+   * Whether the waiting placeholder should REPLACE the rows.
+   *
+   * @remarks
+   * Only when there is nothing to replace. A read that arrives while rows are already on
+   * screen - a page turn, a sort, a filter change, the re-read after a delete - keeps those
+   * rows and reports its progress through `aria-busy` instead.
+   *
+   * ⚠ THIS IS THE MECHANICAL CAUSE OF THE APPLICATION'S WHOLE LAYOUT-SHIFT FAMILY, so the
+   * measurement is recorded. The placeholder used to be shown whenever `loading` was true,
+   * which meant every subsequent read tore the body down to a single spanning cell and
+   * rebuilt it: a trace of one list showed the response finishing at t=242715.1 ms and the
+   * EMPTY state being painted at t=242737.4 ms - 22 ms AFTER the data had arrived - because
+   * the teardown was committed to the screen in its own frame. The visible consequences were
+   * a zero-data row on every transition, a pager yanked 258-588 px up and back, and the
+   * application's largest cumulative layout shift. Keeping the rows removes the teardown
+   * frame entirely, and 100% of the row content is no longer destroyed and rebuilt.
+   */
+  protected readonly showWaitingPlaceholder = computed(
+    () => this.loadingSignal() && this.rowsSignal().length === 0,
+  );
+
+  /**
+   * The value bound to the table's `aria-busy` attribute, or `null` when it is idle.
+   *
+   * @remarks
+   * This is the signal that replaces the teardown for a screen-reader user. While rows stay
+   * on screen during a read, assistive technology is told the region is busy rather than
+   * being handed a fabricated 'loading' row; runtime testing found `aria-busy` set on no
+   * element anywhere in the application, so a reader received no signal at all that a region
+   * was being updated. Bound as `null` rather than `'false'` when idle so the attribute is
+   * absent rather than present-and-negative, which is the convention the rest of this
+   * component's ARIA follows.
+   */
+  protected readonly ariaBusy = computed<'true' | null>(() =>
+    this.loadingSignal() ? 'true' : null,
+  );
+
+  // ---------------------------------------------------------------------------------
+  //  ROW WINDOWING (the AAP's "virtualised rendering in shared/components/data-table")
+  // ---------------------------------------------------------------------------------
+  //
+  //  ⚠ WHAT WAS HERE BEFORE COULD NOT WORK, AND THE PROOF IS WORTH KEEPING. The
+  //  requirement was previously met by declaring `content-visibility: auto` and
+  //  `contain-intrinsic-size` on each `<tr>`. A control experiment during runtime testing
+  //  settled it: injecting the identical declarations off-screen collapsed a `<div>` to its
+  //  intrinsic size while a `<tr>` kept its real height, because a `display: table-row`
+  //  element is an INTERNAL TABLE ELEMENT and CSS containment does not apply to those. The
+  //  declaration was inert - a row 3,951 px below the fold was fully laid out with all 26
+  //  of its descendants - so 114 records produced 114 fully-realised rows and the
+  //  requirement was declared but not delivered.
+  //
+  //  WHY NOT `cdk-virtual-scroll-viewport`: the CDK is not in this workspace's dependency
+  //  inventory, and that inventory is a fixed part of the plan rather than a default -
+  //  adding a package to satisfy a non-functional requirement is a bigger decision than the
+  //  requirement itself, and the CDK's viewport also demands a non-table layout, which would
+  //  cost the `<caption>`, `<th scope>` and row/column semantics the same plan requires.
+  //
+  //  WHAT THIS DOES INSTEAD: renders only the rows near the viewport and holds the
+  //  scrollable height with two spacer rows, so the document keeps its true length, the
+  //  scrollbar keeps its true proportions and the table keeps its semantics. It engages only
+  //  above a threshold, because below it the whole set is cheaper to render than to manage -
+  //  and because every paged screen in this application asks for far fewer rows than the
+  //  threshold, which keeps the windowing dormant on the ordinary path.
+  //
+  //  THE ROW HEIGHT IS ESTIMATED, AND THE ESTIMATE IS MEASURED FROM THE RENDERED ROWS rather
+  //  than assumed, because row heights in this application genuinely vary - a 1,000-character
+  //  description measured 821 px against a 33 px median. An estimate makes the spacers
+  //  approximate, so the scroll position of a row can drift slightly from where a fully
+  //  rendered table would have put it; that is the accepted cost, and it is bounded by
+  //  re-measuring on every window update and by the overscan below.
+
+  /** The scrolling container, needed to locate the table relative to the viewport. */
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+
+  private readonly destroyRef = inject(DestroyRef);
+
+  /** Rows kept on either side of the visible range so a fast scroll does not show a gap. */
+  private static readonly Overscan = 12;
+
+  /** The height assumed for a row before any row has been measured. */
+  private static readonly EstimatedRowHeight = 40;
+
+  /** Rows below which windowing is not worth its own bookkeeping. */
+  private static readonly DefaultVirtualizeThreshold = 100;
+
+  private readonly virtualizeThresholdSignal = signal(
+    DataTableComponent.DefaultVirtualizeThreshold,
+  );
+
+  private readonly rowHeightSignal = signal(DataTableComponent.EstimatedRowHeight);
+
+  private readonly rowWindowSignal = signal<{ readonly start: number; readonly end: number } | null>(
+    null,
+  );
+
+  /** Guards against queueing more than one measurement per frame. */
+  private windowUpdateQueued = false;
+
+  /**
+   * The row count above which only the rows near the viewport are rendered.
+   *
+   * @remarks
+   * Zero or a negative value disables windowing outright, which is what a screen should pass
+   * when it needs every row in the DOM - a print view, or a test asserting over the whole
+   * set. The default is deliberately higher than any page size this application requests, so
+   * the ordinary paged path renders exactly as it always did.
+   */
+  @Input()
+  public set virtualizeThreshold(value: number | null | undefined) {
+    this.virtualizeThresholdSignal.set(
+      typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : 0,
+    );
+    this.scheduleWindowUpdate();
+  }
+
+  public get virtualizeThreshold(): number {
+    return this.virtualizeThresholdSignal();
+  }
+
+  /** Whether windowing is engaged for the row set in hand. */
+  protected readonly isWindowed = computed(() => {
+    const threshold = this.virtualizeThresholdSignal();
+
+    return threshold > 0 && this.rowsSignal().length > threshold;
+  });
+
+  /** The rows actually rendered: every row, or the window around the viewport. */
+  protected readonly renderedRows = computed<readonly DataTableBodyRow<TRow>[]>(() => {
+    const rows = this.bodyRows();
+
+    if (!this.isWindowed()) {
+      return rows;
+    }
+
+    const bounds = this.rowWindowSignal();
+
+    if (bounds === null) {
+      // Before the first measurement, render the overscan from the top. Rendering NOTHING
+      // here would leave an empty table for one frame, which is the very teardown flash this
+      // component was changed to stop producing.
+      return rows.slice(0, DataTableComponent.Overscan * 2);
+    }
+
+    return rows.slice(bounds.start, bounds.end);
+  });
+
+  /** The height held by the spacer above the window, in pixels. */
+  protected readonly leadingSpacerHeight = computed(() => {
+    if (!this.isWindowed()) {
+      return 0;
+    }
+
+    return (this.rowWindowSignal()?.start ?? 0) * this.rowHeightSignal();
+  });
+
+  /** The height held by the spacer below the window, in pixels. */
+  protected readonly trailingSpacerHeight = computed(() => {
+    if (!this.isWindowed()) {
+      return 0;
+    }
+
+    const total = this.bodyRows().length;
+    const end = this.rowWindowSignal()?.end ?? Math.min(total, DataTableComponent.Overscan * 2);
+
+    return Math.max(total - end, 0) * this.rowHeightSignal();
+  });
+
+  /**
+   * Recomputes the visible window from the table's position in the viewport.
+   *
+   * @remarks
+   * Throttled to one measurement per animation frame, because scroll fires far more often
+   * than a frame is painted and every call reads layout. The listeners are registered once,
+   * lazily, the first time windowing engages, and are removed when the component is
+   * destroyed.
+   */
+  protected scheduleWindowUpdate(): void {
+    if (this.windowUpdateQueued || typeof window === 'undefined') {
+      return;
+    }
+
+    this.windowUpdateQueued = true;
+
+    window.requestAnimationFrame(() => {
+      this.windowUpdateQueued = false;
+      this.updateWindow();
+    });
+  }
+
+  /** Measures the rendered rows and settles which slice belongs on screen. */
+  private updateWindow(): void {
+    if (!this.isWindowed()) {
+      this.rowWindowSignal.set(null);
+
+      return;
+    }
+
+    const body = this.host.nativeElement.querySelector('tbody.data-table__body');
+    const table = this.host.nativeElement.querySelector('table.data-table');
+
+    if (body === null || table === null) {
+      return;
+    }
+
+    // MEASURED, NOT ASSUMED. The average of the rows currently rendered is the best
+    // available estimate of the rows that are not, and it self-corrects as the reader
+    // scrolls into taller or shorter content.
+    const rendered = body.querySelectorAll('tr.data-table__row');
+    const renderedHeight = Array.from(rendered).reduce(
+      (total, row) => total + row.getBoundingClientRect().height,
+      0,
+    );
+
+    if (rendered.length > 0 && renderedHeight > 0) {
+      this.rowHeightSignal.set(Math.max(renderedHeight / rendered.length, 1));
+    }
+
+    const rowHeight = this.rowHeightSignal();
+    const total = this.bodyRows().length;
+
+    // Where the body starts relative to the viewport, in the scrolling document's
+    // coordinates. The leading spacer is part of the body, so its own height is already
+    // included in that offset and must not be subtracted again.
+    const bodyTop = body.getBoundingClientRect().top;
+    const viewportHeight = window.innerHeight;
+
+    const firstVisible = Math.floor(Math.max(-bodyTop, 0) / rowHeight);
+    const visibleCount = Math.ceil(viewportHeight / rowHeight);
+
+    const start = Math.max(firstVisible - DataTableComponent.Overscan, 0);
+    const end = Math.min(firstVisible + visibleCount + DataTableComponent.Overscan, total);
+
+    const current = this.rowWindowSignal();
+
+    if (current !== null && current.start === start && current.end === end) {
+      return;
+    }
+
+    this.rowWindowSignal.set({ start, end });
+  }
+
+  /** Registers the scroll and resize listeners the window depends on. */
+  private observeViewport(): void {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const onViewportChange = (): void => this.scheduleWindowUpdate();
+
+    window.addEventListener('scroll', onViewportChange, { passive: true });
+    window.addEventListener('resize', onViewportChange, { passive: true });
+
+    this.destroyRef.onDestroy(() => {
+      window.removeEventListener('scroll', onViewportChange);
+      window.removeEventListener('resize', onViewportChange);
+    });
+  }
 
   /**
    * Cells spanned by the waiting and empty rows.
@@ -1013,10 +1433,18 @@ export class DataTableComponent<TRow extends object> implements OnInit {
    * The waiting and empty branches replace the records with ONE spanning row, and that row is counted rather
    * than ignored. Counting only the records would announce a one-row table while a screen reader went on to
    * meet a second row, which is precisely the kind of quiet disagreement `aria-rowcount` exists to prevent.
+   *
+   * ⚠ THE CONDITION IS READ FROM {@link showWaitingPlaceholder}, NOT RECOMPUTED, and the difference is not
+   * cosmetic. This count once tested `loading OR no records`, which was correct while a read blanked the
+   * grid - and became WRONG the moment a subsequent read began keeping the previous rows on screen: runtime
+   * testing measured the table announcing `aria-rowcount="2"` for the whole two seconds of a page turn while
+   * eleven rows were rendered, and announcing it precisely when `aria-busy="true"` invites assistive
+   * technology to re-read the grid. Deriving both the placeholder and this count from ONE predicate is what
+   * makes that disagreement impossible to reintroduce.
    */
   protected readonly ariaRowCount = computed(() => {
     const records = this.rowsSignal();
-    const rendersMessage = this.loadingSignal() === true || records.length === 0;
+    const rendersMessage = this.showWaitingPlaceholder() || records.length === 0;
 
     return (rendersMessage ? MESSAGE_ROW_COUNT : records.length) + HEADER_ROW_COUNT;
   });
@@ -1068,10 +1496,30 @@ export class DataTableComponent<TRow extends object> implements OnInit {
         sortable,
         sorted,
         ariaSort: resolveAriaSort(sortable, sorted, activeDirection),
+        sortLabel: sortable ? `${SORT_LABEL_PREFIX}${column.label}` : null,
         align: column.headerAlign ?? DEFAULT_ALIGN,
       };
     });
   });
+
+  /**
+   * The key `@for` uses to decide whether a rendered row can be reused.
+   *
+   * A method rather than a field because the answer depends on the row, and a method rather than a computed
+   * because it is called per row per redraw and derives nothing that needs caching - it either returns the
+   * row object it was handed or calls one supplied function.
+   *
+   * Falls back to the row OBJECT when no {@link rowKey} is supplied, which is exactly what the template
+   * tracked before this existed, so a consumer that supplies nothing is unaffected.
+   *
+   * @param bodyRow The projected row about to be rendered.
+   * @returns The row's stable identity, or the row object itself when the feature named none.
+   */
+  protected trackBodyRow(bodyRow: DataTableBodyRow<TRow>): unknown {
+    const identify = this.rowKeySignal();
+
+    return identify === null ? bodyRow.row : identify(bodyRow.row);
+  }
 
   /**
    * The body rows with every cell projected.
@@ -1092,12 +1540,34 @@ export class DataTableComponent<TRow extends object> implements OnInit {
   });
 
   /**
-   * Asks the feature to reorder by a column.
+   * Asks the feature to reorder by a column, or to stop ordering by it.
    *
-   * Toggles only on the column that already carries the active sort; moving to a different column starts
-   * ascending, which is the conventional and least surprising first result. Refused while a request is in
-   * flight, so a reader cannot queue a second ordering behind the first and end up looking at the one they
-   * abandoned.
+   * THREE STEPS, NOT TWO, and the third is a state the reader arrives in rather than one invented here.
+   * Every listing in this application starts with no ordering at all - each store initialises its sort
+   * coordinate to null and the request omits both parameters - so a two-step ascending/descending toggle
+   * made the arrival state unreachable: once a reader had sorted anything, the only route back to the
+   * server's own order was to reload the page. The cycle on the active column is therefore ascending, then
+   * descending, then cleared, and a cleared column starts again at ascending because it is no longer the
+   * active one.
+   *
+   * Moving to a DIFFERENT column starts ascending, which is the conventional and least surprising first
+   * result, and it does not inherit the direction the previous column was read in.
+   *
+   * Refused while a request is in flight, so a reader cannot queue a second ordering behind the first and
+   * end up looking at the one they abandoned. That refusal is now the ONLY mechanism enforcing it: the
+   * control is marked unavailable rather than natively disabled, because a disabled element is blurred by
+   * the platform the instant the property is set - which dropped focus to the document body on every sort
+   * press and left a keyboard reader with no position at all. See the template.
+   *
+   * ⚠ THE `loadingSignal` REFUSAL BELOW IS NOW THE SOLE GUARD, AND IT ALWAYS DID THE WHOLE JOB. The
+   * template used to ALSO carry `[disabled]="isLoading()"`, which was redundant against this line and
+   * cost keyboard focus: disabling the element that has focus ejects focus to `BODY`, and nothing
+   * restored it when the attribute was withdrawn 34 ms later, so every sort activation dumped a
+   * keyboard-only reader to the top of the document. The template now states the transient state with
+   * `aria-disabled`, which announces it without removing the control from the tab order, and this
+   * refusal is what actually prevents the second query. Nothing was weakened — a guard that was
+   * expressed twice, once in a way that broke focus, is now expressed once in the place it can be
+   * tested from.
    *
    * @param cell The heading that was activated.
    */
@@ -1106,8 +1576,7 @@ export class DataTableComponent<TRow extends object> implements OnInit {
       return;
     }
 
-    const direction = cell.sorted ? flipDirection(this.sortDirSignal()) : ASCENDING;
-    this.sortChange.emit({ key: cell.key, direction });
+    this.sortChange.emit({ key: cell.key, direction: nextDirection(cell.sorted, this.sortDirSignal()) });
   }
 
   /**
@@ -1142,6 +1611,8 @@ export class DataTableComponent<TRow extends object> implements OnInit {
    */
   public ngOnInit(): void {
     this.rowsSelectableSignal.set(this.rowSelect.observed);
+    this.observeViewport();
+    this.scheduleWindowUpdate();
   }
 
   /**
@@ -1337,6 +1808,10 @@ function assertColumnsAreValid<TRow extends object>(
 ): void {
   const seen = new Set<string>();
 
+  // The key of the column that names each row, once one has been seen. Tracked rather than
+  // counted so the refusal below can name BOTH offending columns.
+  let rowHeaderKey: string | null = null;
+
   for (const column of columns) {
     const key = column.key;
 
@@ -1352,6 +1827,19 @@ function assertColumnsAreValid<TRow extends object>(
     }
 
     seen.add(key);
+
+    // At most one row header per set. Enforced here for the same reason the duplicate-key check
+    // is: no type can compare two members of an array, so a second declaration would otherwise
+    // reach the DOM and leave every ordinary cell claiming two row names.
+    if (column.rowHeader === true) {
+      if (rowHeaderKey !== null) {
+        throw new Error(
+          `A data-table column set may declare at most one rowHeader column; "${rowHeaderKey}" and "${key}" both do.`,
+        );
+      }
+
+      rowHeaderKey = key;
+    }
 
     if (column.width !== undefined && WIDTH_PATTERN.test(column.width) === false) {
       throw new Error(
@@ -1423,13 +1911,26 @@ function resolveAriaSort(
 }
 
 /**
- * Returns the opposite ordering direction.
+ * Returns the next step of the three-state ordering cycle for the heading that was activated.
  *
- * @param direction The current direction.
- * @returns The direction to ask for next.
+ * The three states are the ones a reader can actually be in: not ordered by this column, ordered ascending,
+ * ordered descending. Pressing an inactive column enters the cycle at ascending; pressing the active column
+ * advances it; pressing it a third time leaves it, which is what makes the arrival state - no ordering at
+ * all - reachable again.
+ *
+ * The direction is only consulted for the ACTIVE column, so the value the component holds for an inactive
+ * one cannot leak into the answer.
+ *
+ * @param sorted Whether the activated column currently carries the active ordering.
+ * @param direction The direction the active ordering is applied in.
+ * @returns The direction to ask for next, or `null` to ask for no ordering at all.
  */
-function flipDirection(direction: SortDirection): SortDirection {
-  return direction === ASCENDING ? DESCENDING : ASCENDING;
+function nextDirection(sorted: boolean, direction: SortDirection): SortDirection | null {
+  if (sorted === false) {
+    return ASCENDING;
+  }
+
+  return direction === ASCENDING ? DESCENDING : null;
 }
 
 /**
@@ -1559,6 +2060,10 @@ function projectCell<TRow extends object>(
     template: rendersTemplate ? declaredTemplate : null,
     context: rendersTemplate ? { $implicit: row, row, column, rowIndex } : null,
     align: column.bodyAlign ?? DEFAULT_ALIGN,
+    // An actions column can never be the row's name - see the note on the column member. The
+    // kind is tested here rather than trusted from the declaration so a caller that marks a
+    // commands column cannot produce rows named "Edit".
+    rowHeader: column.rowHeader === true && kind !== 'actions',
   };
 }
 

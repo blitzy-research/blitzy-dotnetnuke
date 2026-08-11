@@ -2038,20 +2038,32 @@ public class UserServiceApplicationTests
     }
 
     /// <summary>
-    /// Proves an absent settings source reads as absence and refuses a write, which is the asymmetry the
-    /// legacy read left the caller to discover.
+    /// Proves an absent settings source reads as the legacy DEFAULTS - flagged as unstored - and still
+    /// refuses a write, which is the asymmetry the legacy read left the caller to discover.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// MIGRATION: the legacy read could legitimately return <c>Nothing</c>. The guard at
     /// <c>UserController.vb:L663</c> only populated and cached the collection when the tenant actually had
     /// an account module instance, and the member returned the uninitialised local otherwise - so a caller
     /// received a null reference with no indication that this was a defined outcome rather than a fault,
-    /// and indexing it threw. Absence is now a successful result carrying no value, which says the same
-    /// thing without the exception; and because there is nowhere to write settings that have no source, the
-    /// write reports its own reason instead of failing silently.
+    /// and indexing it threw. Every legacy CONSUMER of that null then applied the same defaults
+    /// <c>UserModuleBase.GetSettings</c> applied for an absent key (<c>UserModuleBase.vb:L94-L194</c>), so
+    /// the values an operator saw were never undefined.
+    /// </para>
+    /// <para>
+    /// This member therefore returns those defaults directly and records the absence of a store on the
+    /// document instead of in the status line. The earlier arrangement - a successful result carrying no
+    /// value - was translated by the API surface into <c>404 Not Found</c>, and runtime testing measured the
+    /// cost: four screens that read this document only to decide which columns to render raised a
+    /// screen-level "not found" alert above healthy content, and the settings screen disabled its own save
+    /// control while the server was healthy. Because there is still nowhere to write settings that have no
+    /// source, the WRITE continues to report its own reason - now as a conflict rather than as a missing
+    /// resource, since the read for the same address answers 200.
+    /// </para>
     /// </remarks>
     [Fact]
-    public async Task MembershipSettings_ReadAsAbsenceAndRefuseAWriteWhenTheTenantHasNoSource()
+    public async Task MembershipSettings_ReadAsDefaultsAndRefuseAWriteWhenTheTenantHasNoSource()
     {
         Subject subject = Subject.Ready();
         subject.ModuleDefinitions = [];
@@ -2061,9 +2073,23 @@ public class UserServiceApplicationTests
             SeedPortalId,
             CancellationToken.None);
 
-        read.IsSuccess.Should().BeTrue("absence is a defined answer, not a fault");
+        read.IsSuccess.Should().BeTrue("absence of a store is a defined answer, not a fault");
         read.Error.Should().BeNull();
-        read.Value.Should().BeNull("there is no settings source, so there are no settings");
+
+        // A TENANT WITH NO SETTINGS SOURCE IS ANSWERED WITH THE LEGACY DEFAULTS, NOT WITH AN ABSENCE, and
+        // this assertion is the one that changed. Returning no value made the API surface answer 404, which
+        // runtime testing showed was both untrue - the tenant exists, so its settings resource does - and
+        // damaging: four screens that merely read this document to decide which columns to render raised a
+        // screen-level "not found" alert over healthy content, and the settings screen disabled its own save
+        // control against a healthy server. The legacy reader applied a measured default for every absent
+        // key (UserModuleBase.vb:L94-L194), so defaults ARE the legacy answer; what the caller needs to know
+        // additionally is that nothing is stored, and that now travels in the document.
+        read.Value.Should().NotBeNull("the legacy defaults are the answer when nothing is stored");
+        read.Value!.IsStored.Should().BeFalse("no settings source exists for this tenant");
+        read.Value.RecordsPerPage.Should().Be(10, "the measured legacy default applies");
+        read.Value.SecurityEmailValidation.Should().Be(
+            MembershipSettingsDto.DefaultEmailValidationExpression,
+            "an absent store yields the legacy default for every key");
 
         Result write = await subject.Service.UpdateMembershipSettingsAsync(
             SeedPortalId,
@@ -2071,7 +2097,7 @@ public class UserServiceApplicationTests
             CancellationToken.None);
 
         write.IsFailure.Should().BeTrue("there is nowhere to store them");
-        write.Error!.Code.Should().Be("user.membership-settings.source-missing");
+        write.Error!.Code.Should().Be("user.membership-settings.storage-conflict");
         write.Error.Message.Should().Contain(
             AccountsModuleDefinitionName,
             "the reason names the module instance the tenant is missing");

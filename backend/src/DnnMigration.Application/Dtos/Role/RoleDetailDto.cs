@@ -361,4 +361,22 @@ public sealed class RoleDetailDto
     // so no such constraint is expressed on this member; the validator owns any rule about the value's
     // shape.
     public string? IconFile { get; set; }
+
+    /// <summary>
+    /// The optimistic-concurrency token for this record: send it back on an update to be refused rather
+    /// than to silently overwrite an edit someone else committed in the meantime.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Derived from the record's own current values rather than stored in a column, because the legacy
+    /// schema is immutable under the migration's Rule T4 and carries no version column on this table. The
+    /// derivation lives in <c>RoleMappings.ConcurrencyTokenFor</c> and is used by both the read that
+    /// publishes the token and the write that verifies it.
+    /// </para>
+    /// <para>
+    /// Treat it as opaque. Its length, alphabet and derivation are implementation detail and may change on
+    /// a deployment boundary; the only supported use is to round-trip the exact value received.
+    /// </para>
+    /// </remarks>
+    public string ConcurrencyToken { get; set; } = string.Empty;
 }

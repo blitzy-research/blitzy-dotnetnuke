@@ -190,7 +190,8 @@
       navigates away without marking a single control touched or raising a message.
     -->
     <div class="role-group-form__actions">
-      <button type="submit" [disabled]="submitting()">{{ updateActionLabel }}</button>
+      <button type="submit" [disabled]="submitting()"
+          [attr.aria-busy]="submitting() ? 'true' : null">{{ updateActionLabel }}</button>
       <button type="button" (click)="cancel()">{{ cancelActionLabel }}</button>
 
       <!--

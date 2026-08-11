@@ -24,6 +24,8 @@ import type { AbstractControl, ValidationErrors } from '@angular/forms';
 import type { ModuleExportRequest } from '../../../core/models/module.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { ModuleStoreFailure } from '../../../core/state/module.store';
+import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
+import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
 
 /**
  * The shape of this screen's one form control.
@@ -514,11 +516,14 @@ function nonBlankFileName(control: AbstractControl<string>): ValidationErrors | 
   // The typed form, and the four shared components this screen presents through. Nothing else: no folder
   // picker exists to import, and the shared library is consumed rather than extended.
   imports: [
+    FocusFirstInvalidDirective,
+    SubmitGuardDirective,
     ReactiveFormsModule,
     PageHeaderComponent,
     FormFieldComponent,
     LoadingSpinnerComponent,
     ErrorBannerComponent,
+    FocusFirstInvalidDirective,
   ],
   templateUrl: './module-export.component.html',
   styleUrl: './module-export.component.scss',
@@ -875,6 +880,44 @@ export class ModuleExportComponent {
    */
   protected get addressesModule(): boolean {
     return Number.isInteger(this.moduleId());
+  }
+
+  /**
+   * Whether there is actually a module in hand to export.
+   *
+   * This is the confirming action's gate, and it is a stricter test than {@link addressesModule} on
+   * purpose: a well-formed address is not the same thing as a module that was successfully read. The
+   * server refuses `GET /api/v1/modules/{id}` with 403 when the caller may not see the module, and with
+   * 404 when there is none; either way this screen ends up holding nothing, and pressing Export in that
+   * state could never succeed. Worse, it USED to make the screen lie: {@link submit} clears the store
+   * failure as it begins, so the click erased the banner that was accurately reporting the refusal and
+   * replaced it with "This address does not name a module to export" - a sentence about the address,
+   * for a condition that has nothing to do with the address.
+   *
+   * The conditions are exactly {@link submit}'s own preconditions, so a press is offered when and only
+   * when it can be carried out. A refusal is therefore presented by the shared banner alone, which is
+   * the same presentation the sibling module form and settings screens give the same status.
+   *
+   * The identifier comparison is part of the gate rather than an extra: the store is shared and
+   * root-provided, so it may hold a detail read by another module screen, and a press in that state
+   * would send THIS address while composing the filename from THAT module's name.
+   *
+   * A getter rather than a derived signal, for the reason {@link addressesModule} documents: reading
+   * the input's signal and the store's signals from a template registers the dependencies either way.
+   *
+   * ⚠ THIS IS NOT A PORTABILITY TEST, and it must never become one. Whether a module supports exporting
+   * is the server's answer, given in words, and the request is deliberately always sent for a module
+   * that was read - see {@link submit}, which records why the legacy portability bit is not
+   * interpreted here.
+   */
+  protected get hasModuleToExport(): boolean {
+    if (!this.addressesModule) {
+      return false;
+    }
+
+    const detail = this.store.module();
+
+    return detail !== null && detail.moduleId === this.moduleId();
   }
 
   /**

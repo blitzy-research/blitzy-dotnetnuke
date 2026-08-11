@@ -1,6 +1,7 @@
 import type { Routes } from '@angular/router';
 
 import { permissionGuard } from '../../core/guards/permission.guard';
+import { unsavedChangesGuard } from '../../core/guards/unsaved-changes.guard';
 
 /**
  * The portal (multi-tenant site) administration feature's route barrel.
@@ -231,6 +232,12 @@ export const PORTAL_ROUTES: Routes = [
      * "Add New Portal".
      */
     path: 'new',
+    // ⚠ LEAVING THIS SCREEN IS GUARDED, because it mounts an editing form. Measured before this
+    // existed: Cancel, any in-application link and the browser's Back button all discarded a
+    // dirty form in silence, with instrumented `confirm`, `alert` and `beforeunload` recording
+    // nothing. The guard asks only when the mounted screen reports unsaved entry, so a clean
+    // form still leaves without a word.
+    canDeactivate: [unsavedChangesGuard],
     title: 'Add New Portal',
     canActivate: [permissionGuard],
     data: { permission: 'HostAdministrator' },
@@ -264,6 +271,12 @@ export const PORTAL_ROUTES: Routes = [
      * "Edit Portals".
      */
     path: ':portalId',
+    // ⚠ LEAVING THIS SCREEN IS GUARDED, because it mounts an editing form. Measured before this
+    // existed: Cancel, any in-application link and the browser's Back button all discarded a
+    // dirty form in silence, with instrumented `confirm`, `alert` and `beforeunload` recording
+    // nothing. The guard asks only when the mounted screen reports unsaved entry, so a clean
+    // form still leaves without a word.
+    canDeactivate: [unsavedChangesGuard],
     title: 'Edit Portals',
     canActivate: [permissionGuard],
     data: { permission: 'PortalAdministrator' },
@@ -291,6 +304,12 @@ export const PORTAL_ROUTES: Routes = [
      * "Site Settings".
      */
     path: ':portalId/settings',
+    // ⚠ LEAVING THIS SCREEN IS GUARDED, because it mounts an editing form. Measured before this
+    // existed: Cancel, any in-application link and the browser's Back button all discarded a
+    // dirty form in silence, with instrumented `confirm`, `alert` and `beforeunload` recording
+    // nothing. The guard asks only when the mounted screen reports unsaved entry, so a clean
+    // form still leaves without a word.
+    canDeactivate: [unsavedChangesGuard],
     title: 'Site Settings',
     canActivate: [permissionGuard],
     data: { permission: 'PortalAdministrator' },
@@ -316,6 +335,7 @@ export const PORTAL_ROUTES: Routes = [
      * "Portal Aliases".
      */
     path: ':portalId/aliases',
+    canDeactivate: [unsavedChangesGuard],
     title: 'Portal Aliases',
     canActivate: [permissionGuard],
     data: { permission: 'PortalAdministrator' },

@@ -481,6 +481,16 @@ header a {
 //  an unbroken string — a portal alias or a host name has none. Type, ink and
 //  decoration all arrive from the rules above, so nothing is restated here.
 .app-header__brand {
+
+  // ⚠ `min-block-size` HAS NO EFFECT ON A NON-REPLACED INLINE ELEMENT, which is why the
+  // shared floor did not reach this control and it measured 182.28 x 21.00 — short of the
+  // 24px minimum. `display` is therefore changed alongside the floor rather than the floor
+  // being declared on its own and silently doing nothing. This is a standalone action
+  // affordance in an action bar, not a link inside a sentence, so WCAG 2.2 SC 2.5.8's
+  // inline-link exception does not apply to it and the floor is owed.
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--target-size-min);
   min-inline-size: 0;
   font-size: var(--font-size-xl);
   overflow-wrap: break-word;
@@ -561,6 +571,16 @@ header a {
 //  still stated rather than inherited from the band, because the band's own weight is not
 //  declared for this purpose and a later change there would silently change this affordance.
 .app-header__account-link {
+
+  // ⚠ `min-block-size` HAS NO EFFECT ON A NON-REPLACED INLINE ELEMENT, which is why the
+  // shared floor did not reach this control and it measured 89.28 x 16.50 — short of the
+  // 24px minimum. `display` is therefore changed alongside the floor rather than the floor
+  // being declared on its own and silently doing nothing. This is a standalone action
+  // affordance in an action bar, not a link inside a sentence, so WCAG 2.2 SC 2.5.8's
+  // inline-link exception does not apply to it and the floor is owed.
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--target-size-min);
   font-weight: var(--font-weight-bold);
 }
 

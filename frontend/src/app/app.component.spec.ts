@@ -314,9 +314,21 @@ describe('AppComponent', () => {
 
       expect(link).not.toBeNull();
 
-      const fragment = link?.getAttribute('href') ?? '';
+      const address = link?.getAttribute('href') ?? '';
 
-      expect(fragment.startsWith('#')).toBeTrue();
+      // ⚠ THIS USED TO EXPECT THE ADDRESS TO BEGIN WITH `#`, AND THAT EXPECTATION WAS THE
+      // DEFECT. A fragment-only address resolves against the ROOT base href this document
+      // declares, so from a deep route it named a different document and following it would
+      // have reloaded the application and discarded the in-memory session. The address is now
+      // the current path plus the fragment, so what is asserted here is that it is
+      // root-relative and that its TAIL is the fragment - and then, as before, that the
+      // fragment names an element that actually exists.
+      expect(address.startsWith('/')).toBeTrue();
+
+      const [, fragmentName] = address.split('#');
+      const fragment = `#${fragmentName ?? ''}`;
+
+      expect(fragmentName).toBeTruthy();
 
       // Resolved against the FULL document tree rather than against the shell's
       // subtree. The fragment a browser follows is resolved document-wide, so this is
@@ -397,10 +409,28 @@ describe('AppComponent', () => {
       expect(host().querySelector('a.app-header__account-link')).toBeNull();
     });
 
+    /**
+     * The account-scoped link carrying a given caption.
+     *
+     * ⚠ SELECTED BY CAPTION, NEVER BY POSITION. There are now THREE of these links and an earlier
+     * revision of these cases took the first match, which silently became a different affordance
+     * the moment one was added ahead of it — the failure was an assertion about "Manage Services"
+     * reading "Manage Profile", with nothing wrong in the application at all. Selecting by the
+     * wording each case is actually about makes the order of the band a free choice again.
+     *
+     * @param caption The exact rendered caption.
+     * @returns The anchor, or null.
+     */
+    function accountLink(caption: string): HTMLAnchorElement | null {
+      const links = Array.from(
+        host().querySelectorAll<HTMLAnchorElement>('a.app-header__account-link'),
+      );
+
+      return links.find((link) => link.textContent?.trim() === caption) ?? null;
+    }
+
     it("composes the signed-in account's own subscriptions address once a session is held", () => {
-      // MIGRATION: this is the one account-scoped affordance in the console's chrome, and the
-      // only route an ordinary account holder has to a screen it operates on its own behalf.
-      // `Website/admin/Users/MemberServices.ascx` was a tab an administrator never saw
+      // MIGRATION: `Website/admin/Users/MemberServices.ascx` was a tab an administrator never saw
       // (`ManageUsers.ascx.vb` L61-L66), reached by the signed-in account from the portal's own
       // user affordance — a skin object, and skinning is out of scope — so this band is the
       // target's equivalent surface.
@@ -411,9 +441,37 @@ describe('AppComponent', () => {
       // below is what proves none exists.
       holdSession();
 
-      expect(host().querySelector('a.app-header__account-link')?.getAttribute('href')).toBe(
-        '/users/0/services',
-      );
+      expect(accountLink('Manage Services')?.getAttribute('href')).toBe('/users/0/services');
+    });
+
+    it("composes the signed-in account's own profile and password addresses", () => {
+      // MIGRATION: both affordances were MISSING, and their absence stranded every
+      // non-administrative account: the two screens are permitted to the account owner, but every
+      // entry in the navigation rail requires an administrator, so a member could reach neither
+      // without typing a URL containing their own numeric account key.
+      // `ManageUsers.ascx.vb:L439-L456` shows the legacy offered both to an account viewing
+      // itself — `cmdPassword` is hidden only when the viewer is neither an administrator nor the
+      // holder, and `cmdProfile` is never hidden at all.
+      //
+      // The zero account key matters here for the same reason as above: these addresses are
+      // composed from it, so a truthiness guard anywhere on the path would drop both links.
+      holdSession();
+
+      expect(accountLink('Manage Profile')?.getAttribute('href')).toBe('/users/0/profile');
+      expect(accountLink('Manage Password')?.getAttribute('href')).toBe('/users/0/password');
+    });
+
+    it('offers all three account affordances in the legacy command order', () => {
+      holdSession();
+
+      // Order follows the legacy command bar in `ManageUsers.ascx.resx`: profile, password, then
+      // services. Asserted as a sequence rather than three independent lookups, because the point
+      // is the arrangement an operator reads left to right.
+      const captions = Array.from(
+        host().querySelectorAll<HTMLAnchorElement>('a.app-header__account-link'),
+      ).map((link) => link.textContent?.trim());
+
+      expect(captions).toEqual(['Manage Profile', 'Manage Password', 'Manage Services']);
     });
 
     it('captions the account affordance with the measured legacy tab wording', () => {
@@ -421,9 +479,14 @@ describe('AppComponent', () => {
 
       // `cmdServices.Text` in `ManageUsers.ascx.resx`. The root composes the address and the
       // banner owns the wording, so this asserts the seam rather than restating the label.
-      expect(
-        host().querySelector('a.app-header__account-link')?.textContent?.trim(),
-      ).toBe('Manage Services');
+      expect(accountLink('Manage Services')?.textContent?.trim()).toBe('Manage Services');
+    });
+
+    it('offers no account affordance at all while no session is held', () => {
+      // The complement of the three cases above. Each link is gated on a session as well as on an
+      // address, so an address left over from a previous identity cannot render a link naming an
+      // account nobody is signed in as.
+      expect(host().querySelectorAll('a.app-header__account-link').length).toBe(0);
     });
 
     it('renders the navigation rail exactly once, as the shell\'s own region', () => {
@@ -760,9 +823,24 @@ describe('AppComponent', () => {
 
       httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
 
-      // Lets the rejected navigation settle, so the discard actually happens inside the
-      // specification rather than after it.
-      await fixture.whenStable();
+      /*
+       * Lets the rejected navigation settle, so the discard actually happens inside the
+       * specification rather than after it.
+       *
+       * ⚠ DELIBERATELY NOT `whenStable()`, which this case used to await and which now cannot
+       * complete in time. Signing out announces itself, and a self-dismissing statement arms an
+       * eight-second `setTimeout` inside the Angular zone - so the zone is legitimately UNSTABLE for
+       * eight seconds afterwards, well past Jasmine's five-second limit. That property is not new and
+       * is not a fault; every confirmation in the application has always had it. What is new is that
+       * this path now raises one.
+       *
+       * One macrotask turn is both sufficient and precise for what this case is about: the router's
+       * rejection is settled by then, so the `.catch` has run, and nothing here depends on the
+       * dismissal timer that remains pending.
+       */
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
 
       expect(navigate).toHaveBeenCalledOnceWith(['/login']);
       expect(authStore.isAuthenticated()).toBeFalse();

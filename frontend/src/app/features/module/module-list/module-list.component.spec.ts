@@ -74,19 +74,69 @@
 import { TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { provideRouter } from '@angular/router';
+import { Router, provideRouter } from '@angular/router';
 
 import { ModuleVisibility } from '../../../core/models/module.model';
 import { NotificationService } from '../../../core/services/notification.service';
+import { TokenStorageService } from '../../../core/services/token-storage.service';
 import { ModuleStore } from '../../../core/state/module.store';
 import { ModuleListComponent } from './module-list.component';
 
 import type { Signal } from '@angular/core';
 import type { ComponentFixture } from '@angular/core/testing';
 import type { TestRequest } from '@angular/common/http/testing';
+import type { AuthSession, CurrentUser } from '../../../core/models/auth.model';
 import type { ModuleListItem } from '../../../core/models/module.model';
 import type { ApiMeta, PagedResponse } from '../../../core/models/paged-result.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
+
+// =====================================================================================================
+// THE SESSION THE ROW COMMANDS ARE GATED ON
+//
+// The row commands are behind an `administration OR EDIT` gate, so a case that asserts anything about
+// them has to state which of those two things the caller is. There is no writable member for either
+// fact: `AuthStore.holdsPortalAdministration` and `AuthStore.permissions` are both PROJECTIONS over the
+// stored session, deliberately, so storing a real session is the only supported way to say it — the
+// shared directive's own specification records the same constraint and reaches for the same instrument.
+//
+// A stub store was the alternative and it is worse here: the gate's two arms are read by two different
+// consumers — the `@if` reads the screen's own signal and the second arm is read by the shared directive
+// — so a partial double would have to reproduce both members correctly to prove anything, and would then
+// be asserting against the double rather than against the store the screen actually uses.
+// =====================================================================================================
+
+/** Builds a caller snapshot carrying exactly the standing each case needs. */
+function userWith(permissions: readonly string[], administersPortal: boolean): CurrentUser {
+  return {
+    userId: 3,
+    portalId: -1,
+    portalName: 'Runtime Portal',
+    username: 'runtime_operator',
+    displayName: 'Runtime Operator',
+    email: 'operator@runtime.test',
+    // A host account is a separate fact from tenant administration and is deliberately NOT set here:
+    // the gate reads the tenant determination, so leaving this false keeps each case honest about
+    // which arm admitted it.
+    isSuperUser: false,
+    isPortalAdministrator: administersPortal,
+    roles: administersPortal ? ['Administrators'] : [],
+    permissions,
+  };
+}
+
+/** Wraps a caller snapshot in a session the storage service accepts. */
+function sessionWith(permissions: readonly string[], administersPortal: boolean): AuthSession {
+  return {
+    // Opaque to every consumer in this file: no case decodes, parses or asserts on either token.
+    accessToken: 'access-token-placeholder',
+    expiresAtUtc: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    refreshToken: 'refresh-token-placeholder',
+    mustChangePassword: false,
+    mustUpdateProfile: false,
+    passwordExpiring: false,
+    user: userWith(permissions, administersPortal),
+  };
+}
 
 // =====================================================================================================
 // NARROWING WITHOUT AN ESCAPE HATCH
@@ -165,6 +215,8 @@ const REMOVE_CONFIRM_MESSAGE = 'Are You Sure You Wish To Delete This Module ?';
 const REMOVE_SUCCESS_MESSAGE = 'The module placement was removed.';
 
 const DISMISS_LABEL = 'Dismiss';
+
+const RETRY_LABEL = 'Try again';
 
 // =====================================================================================================
 // THE FAILURE VOCABULARY, TAKEN FROM THE SERVER
@@ -250,16 +302,35 @@ describe('ModuleListComponent', () => {
   let fixture: ComponentFixture<ModuleListComponent>;
   let httpMock: HttpTestingController;
   let notifySpy: jasmine.Spy;
+  let tokenStorage: TokenStorageService;
 
   beforeEach(async () => {
     // ⚠ ORDER IS LOAD-BEARING: the real client FIRST, then the testing backend that displaces it. The
     // store is pinned to this injector so no case shares its instance with another.
     await TestBed.configureTestingModule({
       imports: [ModuleListComponent],
-      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([]), ModuleStore],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        // ⚠ A ROUTE THAT ALWAYS MATCHES, because this screen now keeps its search, ordering and page in the
+        // ADDRESS and writes them with a real navigation. An empty route table refuses every navigation, so
+        // the write would silently fail and the read that follows the address change would never be issued.
+        provideRouter([{ path: '**', component: ModuleListComponent }]),
+        ModuleStore,
+      ],
     }).compileComponents();
 
     httpMock = TestBed.inject(HttpTestingController);
+    tokenStorage = TestBed.inject(TokenStorageService);
+
+    // THE DEFAULT CALLER ADMINISTERS THE TENANT, AND THAT IS THE HONEST DEFAULT RATHER THAN A
+    // CONVENIENCE. This screen's route is declared under the portal-administrator gate, so an
+    // administrator is who actually reaches it; every case below that asserts a row command therefore
+    // describes a real caller instead of an anonymous one. Note the EMPTY key list: it is the seeded
+    // reality — an administrator named in no grant row holds no keys — so these cases are admitted by
+    // the gate's FIRST arm alone and would all fail against a key-only gate. The cases that exercise
+    // the second arm, and the one that must be refused, each store their own session instead.
+    tokenStorage.store(sessionWith([], true));
 
     // `notify` is the single sink every convenience method delegates to, so this records every message
     // whatever raised it, and it calls through so the service's own queue fills as it would in life.
@@ -275,6 +346,29 @@ describe('ModuleListComponent', () => {
   // ---------------------------------------------------------------------------------------------------
 
   /** Creates the screen. The first read is issued from `ngOnInit`, during this first pass. */
+  /**
+   * Lets a navigation this screen started actually happen.
+   *
+   * The search box, the sortable headings and the pager write the ADDRESS rather than calling the store, and
+   * a router navigation is asynchronous, so the read that follows one is not issued in the same task.
+   */
+  /** Navigates to an address BEFORE the screen mounts, which is how an entry on a later page is simulated. */
+  async function enterAt(url: string): Promise<void> {
+    await TestBed.inject(Router).navigateByUrl(url);
+  }
+
+  /** The query parameters the screen has actually navigated to. */
+  function addressParams(): Readonly<Record<string, string>> {
+    const router: Router = TestBed.inject(Router);
+
+    return router.parseUrl(router.url).queryParams as Readonly<Record<string, string>>;
+  }
+
+  async function settleAddress(): Promise<void> {
+    await fixture.whenStable();
+    fixture.detectChanges();
+  }
+
   function create(): void {
     fixture = TestBed.createComponent(ModuleListComponent);
     fixture.detectChanges();
@@ -344,7 +438,7 @@ describe('ModuleListComponent', () => {
 
     expect(row).withContext(`row ${rowIndex} is painted`).not.toBeUndefined();
 
-    return Array.from((row as HTMLTableRowElement).querySelectorAll('td')).map((cell) =>
+    return Array.from((row as HTMLTableRowElement).querySelectorAll('td,th')).map((cell) =>
       (cell.textContent ?? '').trim(),
     );
   }
@@ -527,7 +621,7 @@ describe('ModuleListComponent', () => {
       expect(textOf('tr.data-table__row a').length).withContext('links offered').toBeGreaterThan(0);
     });
 
-    it('renders the all-pages flag as words, including the negative one', () => {
+    it('renders the all-pages flag as words, including the negative one', async () => {
       arrive([moduleRow({ allTabs: false })]);
 
       // `false` is DATA here, not an absence: the legacy grids drew this flag as a pair of images with
@@ -535,7 +629,7 @@ describe('ModuleListComponent', () => {
       // negative word must appear rather than an empty cell.
       expect(cellsOf(0)).toContain('No');
 
-      answerAfterReplacement([moduleRow({ allTabs: true })]);
+      await answerAfterReplacement([moduleRow({ allTabs: true })]);
 
       expect(cellsOf(0)).toContain('Yes');
     });
@@ -668,19 +762,92 @@ describe('ModuleListComponent', () => {
       expect(remove.getAttribute('type')).toBe('button');
     });
 
-    it('names a command of an untitled placement without the word null', () => {
-      arrive([moduleRow({ moduleTitle: null })]);
+    /**
+     * ⚠ REWRITTEN. This spec used to assert `labels).toContain('Edit ')` — it pinned the defect. Runtime
+     * measurement on the module that stores the EMPTY STRING as its title showed what that produced:
+     * Chrome computed `link "Edit "`, `link "Settings "`, `link "Export "` and `button "Delete "`, each
+     * with a trailing U+0020 that Chrome does not trim, so in a screen reader's control list none of the
+     * four said which module it acted on and the one that destroys a placement said least of all. The
+     * row carried no `<th scope="row">` to supply the context either.
+     *
+     * The half of the old spec that WAS a requirement — that no absence marker leaks into a name — is
+     * kept and widened to `undefined` as well.
+     *
+     * The substitution is the legacy platform's own: `ControlPanelBase.vb:192-196` tests `If title = ""`
+     * and puts `objModuleDefinition.FriendlyName` in the field. The identifier is appended because one
+     * definition serves many placements, so the friendly name alone still would not distinguish a row.
+     */
+    it('names a command of an untitled placement from the definition and the identifier', () => {
+      arrive([moduleRow({ moduleTitle: null, moduleId: 10 })]);
 
-      const labels: readonly (string | null)[] = Array.from(
-        (bodyRows()[0] as HTMLTableRowElement).querySelectorAll('a'),
-      ).map((link) => link.getAttribute('aria-label'));
+      const row = bodyRows()[0] as HTMLTableRowElement;
+      const names: readonly string[] = Array.from(
+        row.querySelectorAll<HTMLElement>('a, button'),
+      ).map((control) => control.getAttribute('aria-label') ?? '');
 
-      // An absent title is a legitimate state on this contract, so the accessible name degrades to the
-      // command alone rather than to the text 'null'.
-      expect(labels).toContain('Edit ');
-      labels.forEach((label) => {
-        expect(label ?? '').withContext('no absence marker leaks into a name').not.toContain('null');
+      expect(names.length).withContext('all four commands').toBe(4);
+      expect(names).toEqual([
+        'Edit Announcements (module 10)',
+        'Settings Announcements (module 10)',
+        'Export Announcements (module 10)',
+        'Delete Announcements (module 10)',
+      ]);
+
+      names.forEach((name) => {
+        expect(name).withContext('never a bare verb').not.toMatch(/^(Edit|Settings|Export|Delete)\s*$/);
+        expect(name).withContext('no absence marker leaks into a name').not.toContain('null');
+        expect(name).withContext('nor the other one').not.toContain('undefined');
       });
+
+      // The pointer user gets the same phrase, which is what the legacy `Edit.Text` tooltip did.
+      Array.from(row.querySelectorAll<HTMLElement>('a, button')).forEach((control) => {
+        expect(control.getAttribute('title')).toBe(control.getAttribute('aria-label'));
+      });
+    });
+
+    /**
+     * A titled row is deliberately left exactly as it was: its title already identifies it, and
+     * appending an identifier to every name would add noise a reader hears on every row.
+     */
+    it('leaves a titled placement to its own title, with no identifier appended', () => {
+      arrive([moduleRow({ moduleTitle: 'Announcements', moduleId: 10 })]);
+
+      const remove = requiredControl<HTMLButtonElement>('button', REMOVE_COMMAND_LABEL);
+
+      expect(remove.getAttribute('aria-label')).toBe('Delete Announcements');
+      expect(remove.getAttribute('aria-label')).not.toContain('module 10');
+    });
+
+    /**
+     * The last resort. A placement with neither a title nor any definition name still has an identity,
+     * and `Modules.ModuleID` is `IDENTITY(0, 1)` — so nought is a real module and must never be treated
+     * as absent. This row is the one that would have announced the bare verb.
+     */
+    it('falls back to the identifier alone when no name of any kind is recorded', () => {
+      arrive([moduleRow({ moduleTitle: '   ', friendlyName: null, moduleName: null, moduleId: 0 })]);
+
+      const remove = requiredControl<HTMLButtonElement>('button', REMOVE_COMMAND_LABEL);
+
+      expect(remove.getAttribute('aria-label')).toBe('Delete module 0');
+    });
+
+    /**
+     * The title CELL states the absence rather than rendering blank. Measured before the fix: the
+     * cell's whole content was two literal spaces in a single text node with no element children, and
+     * Chrome reported the cell as unnamed — indistinguishable from a cell that failed to render.
+     */
+    it('states an absent title in the cell instead of leaving it blank', () => {
+      arrive([moduleRow({ moduleTitle: '' })]);
+
+      const cell = (bodyRows()[0] as HTMLTableRowElement).querySelectorAll('td')[2] as HTMLElement;
+
+      expect((cell.textContent ?? '').trim()).withContext('not blank').not.toBe('');
+      expect(cell.querySelector('[aria-hidden="true"]')?.textContent?.trim())
+        .withContext('the painted mark')
+        .toBe('\u2014');
+      expect(cell.querySelector('.module-list__absent-value')?.textContent?.trim())
+        .withContext('and the meaning, for a reader who cannot see it')
+        .toBe('no title recorded');
     });
 
     it('escapes a hostile title rather than parsing it into elements', () => {
@@ -698,10 +865,212 @@ describe('ModuleListComponent', () => {
   });
 
   // ---------------------------------------------------------------------------------------------------
+  // THE PERMISSION GATE ON THE ROW COMMANDS
+  // ---------------------------------------------------------------------------------------------------
+  //
+  // Three cases, because the gate has three outcomes and the first two would collapse into one under a
+  // single-arm gate: admitted BY ADMINISTRATION with no key held, admitted BY THE KEY without
+  // administering, and refused. The middle case is the shared directive doing the work; the first is the
+  // reason the directive cannot be the only arm.
+  //
+  // Each case replaces the session the suite's `beforeEach` stored, before the screen is created, so the
+  // gate is evaluated once against the standing under test rather than transitioning mid-case.
+  describe('the permission gate on the row commands', () => {
+    /** Every command the row offers, by its accessible name, in document order. */
+    function rowCommandNames(): readonly string[] {
+      const row: HTMLTableRowElement = bodyRows()[0] as HTMLTableRowElement;
+
+      return Array.from(row.querySelectorAll<HTMLElement>('a, button')).map((control) =>
+        control.getAttribute('aria-label') ?? (control.textContent ?? '').trim(),
+      );
+    }
+
+    it('offers the commands to a tenant administrator who holds no permission key at all', () => {
+      // ⚠ THE CASE THAT A KEY-ONLY GATE FAILS, and it is the seeded reality rather than a contrivance:
+      // the key list is derived from grant rows alone, so an administrator named in none holds nothing,
+      // while every one of these operations has an administrator arm on the API that admits them.
+      tokenStorage.store(sessionWith([], true));
+      arrive([moduleRow({ moduleId: 3 })]);
+
+      expect(rowCommandNames()).toEqual([
+        'Edit Announcements',
+        'Settings Announcements',
+        'Export Announcements',
+        'Delete Announcements',
+      ]);
+    });
+
+    it('offers the commands to a caller who holds EDIT without administering the tenant', () => {
+      // The second arm, which is the shared directive. The key list the session carries is the union of
+      // everything the caller holds anywhere in the portal, so a grant on a single module is enough to
+      // offer the column — the server still decides each request.
+      tokenStorage.store(sessionWith(['EDIT'], false));
+      arrive([moduleRow({ moduleId: 3 })]);
+
+      expect(rowCommandNames()).toEqual([
+        'Edit Announcements',
+        'Settings Announcements',
+        'Export Announcements',
+        'Delete Announcements',
+      ]);
+    });
+
+    it('offers no command to a caller who neither administers the tenant nor holds EDIT', () => {
+      // `VIEW` is held deliberately rather than nothing at all: it proves the gate tests the REQUIRED
+      // key rather than merely testing whether any key is held.
+      tokenStorage.store(sessionWith(['VIEW'], false));
+      arrive([moduleRow({ moduleId: 3 })]);
+
+      expect(rowCommandNames()).withContext('the whole column is withheld').toEqual([]);
+
+      // Removal, not concealment: the controls are absent from the document rather than hidden, so
+      // nothing remains for a cleared style or a stale accessibility tree to expose.
+      const row: HTMLTableRowElement = bodyRows()[0] as HTMLTableRowElement;
+
+      expect(row.querySelectorAll('.module-list__row-command')).toHaveSize(0);
+
+      // THE ROW ITSELF SURVIVES. The gate withholds the commands, not the listing: the caller is still
+      // shown what exists, which is what the legacy screen did for a reader without edit rights.
+      expect(bodyRows()).withContext('the placement is still listed').toHaveSize(1);
+      expect((row.textContent ?? '')).toContain('Announcements');
+    });
+
+    it('withdraws the commands when the session is replaced by one that no longer qualifies', () => {
+      tokenStorage.store(sessionWith(['EDIT'], false));
+      arrive([moduleRow({ moduleId: 3 })]);
+
+      expect(rowCommandNames()).withContext('admitted by the key').toHaveSize(4);
+
+      // Signing out mid-screen must withdraw the affordance immediately rather than leaving it painted
+      // until the next navigation — both arms of the gate are signal reads, so this is a re-evaluation
+      // and not a reload.
+      tokenStorage.clear();
+      fixture.detectChanges();
+
+      expect(rowCommandNames()).withContext('withdrawn with the session').toEqual([]);
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
   // PROOF 3 — FILTERING
   // ---------------------------------------------------------------------------------------------------
 
+  /**
+   * A failed read must offer a way back.
+   *
+   * Measured before this existed: with the network unreachable the whole page offered ZERO affordances
+   * matching retry, try-again, reload or refresh — sixty-four interactive elements healthy and
+   * sixty-five failed, the single addition being `Dismiss`, which clears the banner and re-attempts
+   * nothing. The stale rows were correctly retained, so an operator was left looking at data that was
+   * no longer current with no offered way to make it current.
+   */
+  describe('recovering from a failed read', () => {
+    /** Puts the listing into its failed state through the transport, as the defect occurs. */
+    function failTheRead(): void {
+      create();
+      expectList('the first read').error(new ProgressEvent('error'), {
+        status: 0,
+        statusText: 'Unknown Error',
+      });
+      fixture.detectChanges();
+    }
+
+    it('offers a retry command beside the dismiss command', () => {
+      failTheRead();
+
+      const names: readonly string[] = Array.from(
+        queryAll<HTMLButtonElement>('.module-list__status button'),
+      ).map((control) => (control.textContent ?? '').trim());
+
+      expect(names).toEqual([RETRY_LABEL, DISMISS_LABEL]);
+    });
+
+    it('re-issues the read, and does not reset the operator to the first page of everything', fakeAsync(() => {
+      create();
+      answerList([moduleRow()], 250, 0);
+
+      // Put the operator somewhere specific first, so a retry that discarded their place would show.
+      const field = query<HTMLInputElement>('input[type="search"]') as HTMLInputElement;
+
+      field.value = 'news';
+      field.dispatchEvent(new Event('input'));
+      tick(300);
+      fixture.detectChanges();
+
+      const filtered = expectList('the filtered read');
+
+      filtered.error(new ProgressEvent('error'), { status: 0, statusText: 'Unknown Error' });
+      fixture.detectChanges();
+
+      requiredControl<HTMLButtonElement>('button', RETRY_LABEL).click();
+      fixture.detectChanges();
+
+      const retried = expectList('the retried read');
+
+      expect(retried.request.params.get('query'))
+        .withContext('the retry resumes the filter the failure interrupted')
+        .toBe('news');
+    }));
+
+    it('clears the recorded failure so a second attempt is judged on its own outcome', () => {
+      failTheRead();
+
+      expect(query('.module-list__status')).withContext('failed').not.toBeNull();
+
+      requiredControl<HTMLButtonElement>('button', RETRY_LABEL).click();
+      fixture.detectChanges();
+
+      expect(query('.module-list__status'))
+        .withContext('the old banner does not stand while the retry is in flight')
+        .toBeNull();
+
+      answerList();
+
+      expect(query('.module-list__status')).withContext('and is gone on success').toBeNull();
+    });
+  });
+
   describe('the free-text filter', () => {
+    /**
+     * The box must show the filter that is actually in force.
+     *
+     * Measured before the reconciling effect existed: search for a term, leave the screen, come back,
+     * and the box read the empty string while the grid was still filtered — 248 rows of a collection of
+     * 250, the two withheld rows unmentioned, and the return request still carrying the term. The stores
+     * are `providedIn: 'root'` singletons, so the FILTER survives the screen while the CONTROL is
+     * rebuilt empty. Nothing on the page disclosed that a filter was in force.
+     *
+     * Driven the way the defect occurs — the store already holding a filter when the component is
+     * created, which is exactly the state a return navigation produces.
+     */
+    it('shows a filter that was already in force when the screen was reached', fakeAsync(() => {
+      create();
+      answerList();
+
+      const field = query<HTMLInputElement>('input[type="search"]') as HTMLInputElement;
+
+      field.value = 'news';
+      field.dispatchEvent(new Event('input'));
+      tick(300);
+      fixture.detectChanges();
+      expectList('the filtered read').flush(pageOf([moduleRow()], 1, 0));
+      fixture.detectChanges();
+
+      // The operator's own text is left alone while they are still on the screen — the echo of this
+      // screen's own request must never be adopted back over what the box holds.
+      expect((query<HTMLInputElement>('input[type="search"]') as HTMLInputElement).value).toBe('news');
+
+      // Now rebuild the component against the SAME root-provided store, which is what leaving and
+      // returning does.
+      fixture.destroy();
+      create();
+      answerList();
+
+      expect((query<HTMLInputElement>('input[type="search"]') as HTMLInputElement).value)
+        .withContext('the box reports the filter the grid is actually showing')
+        .toBe('news');
+    }));
+
     it('re-reads with the typed text once the shared control emits', fakeAsync(() => {
       create();
       answerList();
@@ -811,11 +1180,12 @@ describe('ModuleListComponent', () => {
       expect(headings).withContext('four sortable columns').toHaveSize(4);
     });
 
-    it('re-reads ordered by the pressed column, from the first page', () => {
+    it('re-reads ordered by the pressed column, from the first page', async () => {
       arrive([moduleRow()], 40);
 
       (sortButtons()[0] as HTMLButtonElement).click();
       fixture.detectChanges();
+      await settleAddress();
 
       const call = expectList('the ordered read');
 
@@ -828,16 +1198,18 @@ describe('ModuleListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('reverses the direction on a second press of the same column', () => {
+    it('reverses the direction on a second press of the same column', async () => {
       arrive();
 
       (sortButtons()[0] as HTMLButtonElement).click();
       fixture.detectChanges();
+      await settleAddress();
       expectList().flush(pageOf([moduleRow()]));
       fixture.detectChanges();
 
       (sortButtons()[0] as HTMLButtonElement).click();
       fixture.detectChanges();
+      await settleAddress();
 
       const reversed = expectList('the reversed read');
 
@@ -847,11 +1219,78 @@ describe('ModuleListComponent', () => {
       fixture.detectChanges();
     });
 
-    it('reflects the held ordering back into the grid own sort state', () => {
+    /**
+     * THE THIRD PRESS RETURNS THE LISTING TO THE SERVER'S OWN ORDER, WHICH USED TO BE UNREACHABLE.
+     *
+     * This screen arrives with no ordering: the store initialises both coordinates to null and the first
+     * request carries neither parameter. With ascending and descending as the only two steps, that
+     * arrival order was lost the moment a reader pressed any heading, and the only way back was to
+     * reload the page. The shared table’s cycle now has a third step which asks for no ordering at all,
+     * and this screen clears its own key alongside the direction rather than substituting a default -
+     * which is what makes the request below carry neither parameter again.
+     *
+     * Asserted on the WIRE rather than on the store, because the omission is the whole point: a request
+     * carrying `sortBy` with no `sortDir`, or a direction with no key, would be a different question
+     * asked of the server. The ordering travels through the ADDRESS, so each press is settled before the
+     * read it causes is consumed.
+     */
+    it('clears the ordering on a third press, and sends neither parameter', async () => {
       arrive();
 
       (sortButtons()[0] as HTMLButtonElement).click();
       fixture.detectChanges();
+      await settleAddress();
+      expectList().flush(pageOf([moduleRow()]));
+      fixture.detectChanges();
+
+      (sortButtons()[0] as HTMLButtonElement).click();
+      fixture.detectChanges();
+      await settleAddress();
+      expectList().flush(pageOf([moduleRow()]));
+      fixture.detectChanges();
+
+      (sortButtons()[0] as HTMLButtonElement).click();
+      fixture.detectChanges();
+      await settleAddress();
+
+      const cleared = expectList('the unordered read');
+
+      expect(cleared.request.params.has('sortBy')).withContext('no key is sent').toBeFalse();
+      expect(cleared.request.params.has('sortDir')).withContext('no direction is sent').toBeFalse();
+      expect(cleared.request.params.get('pageIndex')).toBe('0');
+
+      cleared.flush(pageOf([moduleRow()]));
+      fixture.detectChanges();
+
+      // And the headings say so. ⚠ CLEARING RETURNS THIS SCREEN TO ITS ARRIVAL STATE, WHICH IS NOT
+      // THE SAME AS AN UNORDERED ONE, and that distinction is this screen's alone among the four
+      // listings. A request carrying no sort parameter does not come back unordered here: it comes back
+      // by title, ascending, measured row-for-row against an explicit ascending read. So the heading
+      // that must fall silent is the one that WAS pressed, while the title heading states the order the
+      // rows are actually in - exactly as it does on arrival, which the case above proves. Asserting an
+      // empty set here would be asserting that the grid lies about what it is rendering.
+      const orderedHeadings: readonly string[] = queryAll<HTMLElement>('th.data-table__header')
+        .filter((cell) => {
+          const state: string | null = cell.getAttribute('aria-sort');
+
+          return state === 'ascending' || state === 'descending';
+        })
+        .map((cell) => (cell.textContent ?? '').replace(/\s+/g, ' ').trim());
+
+      expect(orderedHeadings.length)
+        .withContext('one heading states the order, and it is the server\'s own')
+        .toBe(1);
+      expect(orderedHeadings[0] ?? '')
+        .withContext('the pressed column has fallen silent and the default order stands again')
+        .toContain('Title');
+    });
+
+    it('reflects the held ordering back into the grid own sort state', async () => {
+      arrive();
+
+      (sortButtons()[0] as HTMLButtonElement).click();
+      fixture.detectChanges();
+      await settleAddress();
       expectList().flush(pageOf([moduleRow()]));
       fixture.detectChanges();
 
@@ -865,31 +1304,57 @@ describe('ModuleListComponent', () => {
       expect(sorted).withContext('exactly one column reports itself sorted').toEqual(['ascending']);
     });
 
-    it('announces the ordering on the ACTIVE column alone, and on no other', () => {
+    it('announces the ordering on the ACTIVE column alone, and on no other', async () => {
       arrive();
 
       const headers: readonly HTMLElement[] = queryAll<HTMLElement>('th.data-table__header');
       const announced = (): readonly (string | null)[] =>
         queryAll<HTMLElement>('th.data-table__header').map((cell) => cell.getAttribute('aria-sort'));
 
-      // ⚠ BEFORE ANY COLUMN IS PRESSED, NOTHING CLAIMS TO BE SORTED. A grid in which every sortable
-      // heading reported a direction would convey nothing at all, so the shared table distinguishes
-      // three states and this case pins all three at once:
+      // ⚠ ON ARRIVAL THE GRID ANNOUNCES THE ORDER IT IS ACTUALLY IN, WHICH IS NOT THE SAME AS
+      //   ANNOUNCING NOTHING. This expectation previously asserted all four sortable headings reported
+      //   `none` before a press, and that was the DEFECT rather than the contract: the endpoint applies
+      //   its own default ordering when the request carries no `sortBy`, so the rows arriving on this
+      //   screen are already Title-ascending. Runtime measurement proved it three ways — the arrival
+      //   rows were byte-identical to an explicit ascending read, every heading reported `none` with an
+      //   EMPTY indicator, and the first press on Title was therefore a visual no-op because it asked
+      //   for the order the grid was already in.
+      //
+      //   The screen now declares that effective order, so the announcement matches what a reader sees
+      //   and the first press on Title REVERSES rather than doing nothing. It is presentation-only: the
+      //   store's query and the address are both untouched on arrival, which the ordering cases above
+      //   and the address cases elsewhere in this file continue to prove — nothing here sends `sortBy`
+      //   until a column is pressed, and the screen does not navigate to correct its own address.
+      //
+      //   Three states are still distinguished, and this case pins all three at once:
       //   * a NON-SORTABLE heading carries NO `aria-sort` attribute — six of the ten columns;
-      //   * a sortable heading that is not the active one carries `none` — four columns here;
-      //   * only the active one carries a direction.
+      //   * a sortable heading that is not the effective one carries `none` — three columns here;
+      //   * exactly one carries a direction, and it is the column the server ordered by.
       expect(announced().filter((value) => value === 'none'))
-        .withContext('the four sortable columns each report themselves unsorted')
-        .toHaveSize(4);
+        .withContext('the three inactive sortable columns each report themselves unsorted')
+        .toHaveSize(3);
       expect(announced().filter((value) => value === null))
         .withContext('the six non-sortable columns carry no ordering state at all')
         .toHaveSize(6);
-      expect(announced().filter((value) => value === 'ascending' || value === 'descending'))
-        .withContext('and nothing claims a direction before one is chosen')
+      expect(announced().filter((value) => value === 'ascending'))
+        .withContext('exactly one column states the order the rows are already in')
+        .toHaveSize(1);
+      expect(announced().filter((value) => value === 'descending'))
+        .withContext('and the default order is ascending, not descending')
         .toHaveSize(0);
+
+      // ⚠ NAMED, NOT COUNTED. A count alone would pass if the WRONG column claimed the order, which
+      // would be a worse lie than claiming none at all.
+      const effective: readonly string[] = headers
+        .filter((cell) => cell.getAttribute('aria-sort') === 'ascending')
+        .map((cell) => (cell.textContent ?? '').replace(/\s+/g, ' ').trim());
+
+      expect(effective.length).toBe(1);
+      expect(effective[0] ?? '').withContext('the endpoint orders by title').toContain('Title');
 
       (sortButtons()[0] as HTMLButtonElement).click();
       fixture.detectChanges();
+      await settleAddress();
       expectList().flush(pageOf([moduleRow()]));
       fixture.detectChanges();
 
@@ -917,7 +1382,7 @@ describe('ModuleListComponent', () => {
       //   `Website/admin/Users/users.ascx:L35-L39` is worse: an entirely header-less template column
       //   whose only content is an icon with no alternative text. None of what is asserted below has a
       //   legacy ancestor, and none of it changes a painted pixel.
-      const headers: readonly HTMLElement[] = queryAll<HTMLElement>('th');
+      const headers: readonly HTMLElement[] = queryAll<HTMLElement>('th[scope="col"]');
 
       expect(headers).withContext('ten columns, ten headings').toHaveSize(10);
 
@@ -964,11 +1429,23 @@ describe('ModuleListComponent', () => {
   // ---------------------------------------------------------------------------------------------------
 
   describe('paging', () => {
-    it('draws no pager when the whole match set fits on one page', () => {
+    it('draws no steps when the whole match set fits on one page, but still states the count', () => {
       arrive([moduleRow()], 1);
 
-      // The shared pager decides for itself whether it has anything to offer, and this screen wraps it
-      // in no condition of its own — a wrapper would be a second opinion about the same question.
+      // The shared pager decides for itself what it has to offer: the range summary when everything fits
+      // on one page, the summary plus the steps when it does not. This screen wraps it in no condition
+      // about THAT — a wrapper would be a second opinion on the same question.
+      expect(query('.pagination')).withContext('the group and its count').not.toBeNull();
+      expect((query('.pagination__status')?.textContent ?? '').trim()).toContain('of 1');
+      expect(queryAll('button.pagination__button')).withContext('nowhere to step to').toHaveSize(0);
+    });
+
+    it('mounts nothing at all when nothing matched, so no empty container is left behind', () => {
+      arrive([], 0);
+
+      // The table's own empty state says what happened in words; a pager counting to nought would say it
+      // worse, and an empty custom element would say nothing while still being in the document.
+      expect(query('app-pagination')).toBeNull();
       expect(query('.pagination')).toBeNull();
     });
 
@@ -980,7 +1457,7 @@ describe('ModuleListComponent', () => {
       expect((query('.pagination__position')?.textContent ?? '').trim()).toBe('1 / 4');
     });
 
-    it('re-reads the requested page with no arithmetic in either direction', () => {
+    it('re-reads the requested page with no arithmetic in either direction', async () => {
       arrive([moduleRow()], 40);
 
       const next = queryAll<HTMLButtonElement>('button.pagination__button').find(
@@ -991,6 +1468,7 @@ describe('ModuleListComponent', () => {
 
       (next as HTMLButtonElement).click();
       fixture.detectChanges();
+      await settleAddress();
 
       const call = expectList('the second page');
 
@@ -1005,7 +1483,12 @@ describe('ModuleListComponent', () => {
       expect((query('.pagination__position')?.textContent ?? '').trim()).toBe('2 / 4');
     });
 
-    it('returns to the first page from the last, again without adjustment', () => {
+    it('returns to the first page from the last, again without adjustment', async () => {
+      // ⚠ THE LATER PAGE IS REACHED THROUGH THE ADDRESS, not by handing the store a page in a response. The
+      // page is now stated in the address, so a store-side page the address never carried is a state the
+      // application cannot be in - and pressing "First page" from it would clear a parameter that was never
+      // set, changing no address and therefore reading nothing.
+      await enterAt('/modules?currentpage=4');
       arrive([moduleRow()], 40, 3);
 
       const first = queryAll<HTMLButtonElement>('button.pagination__button').find(
@@ -1016,6 +1499,7 @@ describe('ModuleListComponent', () => {
 
       (first as HTMLButtonElement).click();
       fixture.detectChanges();
+      await settleAddress();
 
       const call = expectList('the first page');
 
@@ -1211,11 +1695,17 @@ describe('ModuleListComponent', () => {
       // and, on a slow listing, could leave a person with no feedback at all.
       expect(notifications()).toEqual([{ severity: 'success', message: REMOVE_SUCCESS_MESSAGE }]);
 
-      // Meanwhile the re-read is outstanding, and the wait for it is shown inside the grid by the shared
-      // table - not by a second indicator of this screen's own.
+      // Meanwhile the re-read is outstanding, and the wait for it is reported by the shared table's own
+      // busy state - not by a second indicator of this screen's own, and NOT by replacing the rows the
+      // operator is looking at. The placeholder assertion this replaces required the grid to tear its body
+      // down to one spanning cell on every read, which measured as a zero-data row on every transition and
+      // as the largest layout shift in the application.
+      expect(query('table.data-table')?.getAttribute('aria-busy'))
+        .withContext('the re-read is reported as a busy region')
+        .toBe('true');
       expect(query('td.data-table__message[data-placeholder]'))
-        .withContext('the re-read is visibly in progress')
-        .not.toBeNull();
+        .withContext('and the rows are not torn down to say so')
+        .toBeNull();
       expect(
         queryAll<HTMLElement>('app-loading-spinner').filter(
           (indicator) => indicator.closest('td.data-table__message') === null,
@@ -1459,6 +1949,33 @@ describe('ModuleListComponent', () => {
       httpMock.expectNone(() => true);
     });
 
+    it('re-issues the failed read when the recovery affordance is pressed', () => {
+      // ⚠ THE DEFECT: this was the one listing whose failure banner offered a dismissal and NOTHING
+      // else, so a person whose read failed could remove the report of the failure but never act on
+      // it - leaving an empty grid whose only recovery was to leave the screen. The three sibling
+      // listings all pair the banner with a re-read.
+      create();
+
+      expectList().flush(problem('request.invalid', 400, 'The paging arguments are invalid.'), {
+        status: 400,
+        statusText: 'Bad Request',
+      });
+      fixture.detectChanges();
+
+      expect(query('.error-banner__title')).withContext('the failure is reported').not.toBeNull();
+
+      requiredControl<HTMLButtonElement>('button', RETRY_LABEL).click();
+      fixture.detectChanges();
+
+      // The report is cleared and the SAME request is issued again, so a second failure reads as a
+      // fresh report rather than as the one still on screen.
+      expect(query('.error-banner__title')).withContext('cleared before the retry').toBeNull();
+      answerList([]);
+      fixture.detectChanges();
+
+      expect(query('.error-banner__title')).withContext('and the retry succeeded').toBeNull();
+    });
+
     it('leaves no outcome waiting when a refusal is dismissed rather than re-tried', () => {
       arrive([moduleRow({ moduleId: 4, tabModuleId: 11 })]);
 
@@ -1660,15 +2177,172 @@ describe('ModuleListComponent', () => {
    * ordering path is the cheapest genuine trigger for a re-read, and using a genuine one keeps the
    * case honest about how a page is replaced.
    */
-  function answerAfterReplacement(items: readonly ModuleListItem[]): void {
+  async function answerAfterReplacement(items: readonly ModuleListItem[]): Promise<void> {
     const sort = queryAll<HTMLButtonElement>('button.data-table__sort')[0];
 
     expect(sort).withContext('a sortable column exists to trigger a re-read').not.toBeUndefined();
 
     (sort as HTMLButtonElement).click();
     fixture.detectChanges();
+    await settleAddress();
 
     expectList('the replacement read').flush(pageOf(items));
     fixture.detectChanges();
   }
+  // ---------------------------------------------------------------------------------------------------
+  // PROOF — THE ADDRESS CARRIES THE SEARCH, THE ORDERING AND THE PAGE
+  //
+  // Runtime testing on the sibling portal listing measured five desyncs from keeping this state privately:
+  // pager clicks advanced the grid while the address stayed on the bare route, pressing back from page three
+  // was not possible because paging created no history entry at all, a typed address carrying a filter issued
+  // no request, and a fresh arrival from another screen landed on a page and a filter the operator could not
+  // see, because this store is provided at the application root and OUTLIVES this route.
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('the address', () => {
+    /** Presses a pager step by its accessible name and settles the navigation it starts. */
+    async function pressStep(name: string): Promise<void> {
+      const step = queryAll<HTMLButtonElement>('button.pagination__button').find(
+        (candidate) => candidate.getAttribute('aria-label') === name,
+      );
+
+      expect(step).withContext(`the "${name}" step is offered`).not.toBeUndefined();
+
+      (step as HTMLButtonElement).click();
+      fixture.detectChanges();
+      await settleAddress();
+    }
+
+    it('writes the ordering into the address, in the direction the grid reports', async () => {
+      arrive([moduleRow()], 40);
+
+      const heading = queryAll<HTMLButtonElement>('button.data-table__sort')[0];
+
+      expect(heading).withContext('a sortable heading is offered').not.toBeUndefined();
+
+      (heading as HTMLButtonElement).click();
+      fixture.detectChanges();
+      await settleAddress();
+      expectList('the ordered read').flush(pageOf([moduleRow()], 40));
+      fixture.detectChanges();
+
+      expect(addressParams()['sortby']).withContext('a key the endpoint admits').toBeTruthy();
+      expect(addressParams()['sortdir']).toBe('Ascending');
+      expect(addressParams()['currentpage'])
+        .withContext('re-ordering returns to the first page, which is written as absence')
+        .toBeUndefined();
+    });
+
+    it('writes a page turn into the address, one-based', async () => {
+      arrive([moduleRow()], 40);
+
+      await pressStep('Next page');
+      expectList('the second page').flush(pageOf([moduleRow()], 40, 1));
+      fixture.detectChanges();
+
+      expect(addressParams()['currentpage'])
+        .withContext('the address is one-based even though the store and the wire are not')
+        .toBe('2');
+    });
+
+    it('restores a whole view from the address on entry: search, ordering and page together', async () => {
+      // ⚠ ONE READ, AT THE RIGHT COORDINATE. The store's search and ordering setters each return the listing
+      // to the first page, so applying the three in the wrong order would discard the page the address asked
+      // for. This is the case that catches that.
+      await enterAt('/modules?filter=news&sortby=moduleTitle&sortdir=Descending&currentpage=3');
+      create();
+
+      const read: TestRequest = expectList('the restored read');
+
+      expect(read.request.params.get('query')).toBe('news');
+      expect(read.request.params.get('sortBy')).toBe('moduleTitle');
+      expect(read.request.params.get('sortDir')).toBe('Descending');
+      expect(read.request.params.get('pageIndex'))
+        .withContext('the page survived both resets')
+        .toBe('2');
+
+      read.flush(pageOf([moduleRow()], 40, 2));
+      fixture.detectChanges();
+
+      expect(httpMock.match(() => true))
+        .withContext('and nothing further, so the restore cost exactly one read')
+        .toHaveSize(0);
+      // The restored term is shown, so a filter in force is visible and clearable rather than invisible.
+      expect((query<HTMLInputElement>('input[type="search"]') as HTMLInputElement).value).toBe('news');
+    });
+
+    it('starts clean on a fresh entry, even though the store outlives the route', async () => {
+      // THE MEASURED DEFECT: a fresh sidebar arrival landed on the page and filter of a previous visit.
+      await enterAt('/modules?filter=news&currentpage=3');
+      arrive([moduleRow()], 40, 2);
+      fixture.destroy();
+
+      await enterAt('/modules');
+      create();
+
+      const read: TestRequest = expectList('the fresh read');
+
+      expect(read.request.params.get('pageIndex'))
+        .withContext('the bare address means the first page, whatever the store still held')
+        .toBe('0');
+      expect(read.request.params.has('query'))
+        .withContext('and no filter, whatever the store still held')
+        .toBeFalse();
+
+      read.flush(pageOf([moduleRow()]));
+      fixture.detectChanges();
+    });
+
+    it('corrects an address that names no page, and reads only once it has', async () => {
+      await enterAt('/modules?currentpage=abc');
+      create();
+
+      expect(httpMock.match(() => true))
+        .withContext('the uncorrected address reads nothing')
+        .toHaveSize(0);
+
+      await settleAddress();
+
+      expect(addressParams()['currentpage']).toBeUndefined();
+
+      const read: TestRequest = expectList('the corrected read');
+
+      expect(read.request.params.get('pageIndex')).toBe('0');
+      read.flush(pageOf([moduleRow()]));
+      fixture.detectChanges();
+    });
+
+    it('drops a direction that has no column to apply it to', async () => {
+      // Half an ordering is not an ordering. The endpoint has its own default, so a lone direction is
+      // corrected away rather than forwarded and refused.
+      await enterAt('/modules?sortdir=Descending');
+      create();
+      await settleAddress();
+
+      expect(addressParams()['sortdir']).toBeUndefined();
+
+      const read: TestRequest = expectList('the read with no ordering');
+
+      expect(read.request.params.has('sortDir')).toBeFalse();
+      read.flush(pageOf([moduleRow()]));
+      fixture.detectChanges();
+    });
+
+    it('refuses a column the endpoint does not order by', async () => {
+      // Forwarding it would produce a field-level refusal naming the admitted set, so it is treated as
+      // naming nothing at all.
+      await enterAt('/modules?sortby=description&sortdir=Ascending');
+      create();
+      await settleAddress();
+
+      expect(addressParams()['sortby']).toBeUndefined();
+      expect(addressParams()['sortdir']).toBeUndefined();
+
+      const read: TestRequest = expectList('the read with no ordering');
+
+      expect(read.request.params.has('sortBy')).toBeFalse();
+      read.flush(pageOf([moduleRow()]));
+      fixture.detectChanges();
+    });
+  });
 });

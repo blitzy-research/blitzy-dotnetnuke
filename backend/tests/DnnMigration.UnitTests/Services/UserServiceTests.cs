@@ -178,7 +178,7 @@ public class UserServiceTests
 
     private const string PasswordChangeAlreadyRequiredCode = "user.password.change-already-required";
 
-    private const string MembershipSettingsSourceMissingCode = "user.membership-settings.source-missing";
+    private const string MembershipSettingsSourceMissingCode = "user.membership-settings.storage-conflict";
 
     private const string MembershipSettingsRedirectNotInPortalCode =
         "user.membership-settings.redirect_not_in_portal";
@@ -3562,12 +3562,21 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A tenant with no account-management module instance reports no membership settings rather than
-    /// failing, because a tenant is allowed not to have one.
+    /// A tenant with no account-management module instance reads the legacy defaults, marked as unstored,
+    /// rather than reporting an absence - because a tenant is allowed not to have one and its settings still
+    /// apply.
     /// </summary>
+    /// <remarks>
+    /// The assertion changed with the behaviour, and the reason is worth keeping: an absent value here was
+    /// translated by the API surface into <c>404 Not Found</c>, which is untrue for a tenant that exists and
+    /// which runtime testing showed put a screen-level "not found" alert above four healthy screens. The
+    /// legacy consumers of the legacy null applied exactly these defaults, so returning them is the
+    /// behaviour-preserving answer; <see cref="MembershipSettingsDto.IsStored"/> carries the fact a caller
+    /// previously had to infer from the status line.
+    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task GetMembershipSettings_ReportsNothingWhenTheTenantHasNoAccountModule()
+    public async Task GetMembershipSettings_ReadsTheDefaultsWhenTheTenantHasNoAccountModule()
     {
         Harness harness = Harness.Ready();
 
@@ -3575,7 +3584,10 @@ public class UserServiceTests
             .GetMembershipSettingsAsync(PortalId, CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
-        outcome.Value.Should().BeNull();
+        outcome.Value.Should().NotBeNull();
+        outcome.Value!.IsStored.Should().BeFalse("nothing is stored for a tenant with no settings source");
+        outcome.Value.ColumnDisplayName.Should().BeTrue("the measured legacy default applies");
+        outcome.Value.RecordsPerPage.Should().Be(10, "the measured legacy default applies");
     }
 
     /// <summary>
@@ -3865,7 +3877,10 @@ public class UserServiceTests
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(MembershipSettingsSourceMissingCode);
         outcome.Reason!.Message.Should().Be(
-            $"Portal {PortalId} has no \"User Accounts\" module instance to store membership settings against.");
+            $"Portal {PortalId} has no \"User Accounts\" module instance, so there is nowhere to store "
+            + "membership settings. Add the \"User Accounts\" module to one of this portal's pages and try "
+            + "again.",
+            "the refusal has to name the repair, because the operator cannot infer it from the status");
     }
 
     /// <summary>

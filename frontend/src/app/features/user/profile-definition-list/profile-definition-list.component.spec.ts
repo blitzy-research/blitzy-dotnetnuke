@@ -515,9 +515,47 @@ describe('ProfileDefinitionListComponent', () => {
   /**
    * The property names in the order the grid renders them.
    */
+  /**
+   * The catalogue as a server that ACCEPTED the given edits would report it back.
+   *
+   * ⚠ THIS MATTERS FOR ANY CASE THAT ASSERTS ON THE STAGED COUNT AFTER A BATCH. The count is derived
+   * from the DIFFERENCE between what is staged and what the server holds, so answering the re-read
+   * with the untouched catalogue leaves every applied row still counting as outstanding - the fake
+   * server has to have honoured the write for the screen to be able to tell that it landed.
+   */
+  function catalogueWith(
+    applied: Readonly<Record<number, Partial<ProfilePropertyDefinition>>>,
+  ): readonly ProfilePropertyDefinition[] {
+    return catalogue().map((row) => ({ ...row, ...(applied[row.propertyDefinitionId] ?? {}) }));
+  }
+
+  /** Where the screen's own polite status region lives, beside the Apply command it reports on. */
+  const STATUS_REGION = 'p.profile-definitions__grid-actions [role="status"][aria-live="polite"]';
+
+  /**
+   * The screen's permanently mounted polite status region.
+   *
+   * Resolved by its ROLE rather than by a class, because what matters about it is the contract it
+   * offers assistive technology; a class would let the element be renamed and keep the test passing
+   * while the announcement stopped working.
+   *
+   * ⚠ SCOPED TO THE ACTION ROW, AND THAT IS NOT TIDINESS. A document-wide role query is AMBIGUOUS on
+   * this screen: the shared `app-data-table` publishes its own visually-hidden polite status region
+   * for the row count, so an unscoped lookup finds two and silently reads "3 records." instead of
+   * anything this screen said. Measured - the unscoped selector matched 2 elements and returned the
+   * table's. The scope additionally asserts the region sits with the command whose outcome it states.
+   */
+  function statusRegion(): HTMLElement {
+    const found = query<HTMLElement>(STATUS_REGION);
+
+    expect(found.length).withContext('exactly one polite status region in the action row').toBe(1);
+
+    return found[0];
+  }
+
   function renderedNames(): readonly string[] {
     return query<HTMLTableRowElement>('tbody tr').map((row) => {
-      const cells = Array.from(row.querySelectorAll('td'));
+      const cells = Array.from(row.querySelectorAll('td,th'));
 
       // Column four is the name; the four commands come first.
       return (cells.at(4)?.textContent ?? '').trim();
@@ -531,7 +569,7 @@ describe('ProfileDefinitionListComponent', () => {
     const offset = column === 'required' ? 10 : 11;
 
     return query<HTMLTableRowElement>('tbody tr').flatMap((row) => {
-      const cell = Array.from(row.querySelectorAll('td')).at(offset);
+      const cell = Array.from(row.querySelectorAll('td,th')).at(offset);
       const box = cell?.querySelector<HTMLInputElement>('input[type="checkbox"]');
 
       return box === null || box === undefined ? [] : [box];
@@ -674,12 +712,43 @@ describe('ProfileDefinitionListComponent', () => {
       expect(renderedNames()).toEqual(['Zeroth', 'Next']);
     });
 
-    it('renders an unresolved data type as empty rather than as the sentinel', () => {
+    it('never paints the null-integer sentinel in the data-type cell, and says instead that no type was chosen', () => {
       arrive([definition({ propertyDefinitionId: 41, propertyName: 'Unknown', dataType: -1 })]);
 
-      const cells = query<HTMLTableCellElement>('tbody tr td');
+      // ⚠ THE COMBINED CELL SELECTOR, BECAUSE THE NAME COLUMN IS A ROW HEADER. That column renders
+      // `<th scope="row">`, so a `td`-only query would skip it and every index after it would name the
+      // wrong column. The data-type column is the seventh cell in document order.
+      const cell = query<HTMLTableCellElement>('tbody tr td,tbody tr th').at(6);
+      const painted = cell?.querySelector('[aria-hidden="true"]');
+      const announced = cell?.querySelector('[data-visually-hidden]');
 
-      expect((cells.at(6)?.textContent ?? '').trim()).toBe('');
+      // The original point of this test, kept: the sentinel must never reach the user.
+      expect((cell?.textContent ?? '')).not.toContain('-1');
+      // `DisplayDataType` L339-L351 returns `Null.NullString` here, so no type name is asserted. The
+      // mark stands in for it, matching how this application renders every other absent value.
+      expect(painted?.textContent?.trim()).toBe('\u2014');
+      expect(announced?.textContent?.trim()).toBe('no data type chosen');
+    });
+
+    it('never paints the stored data-type foreign key, and carries the reference in the title and the accessibility tree instead', () => {
+      // The QA finding this covers: a bare `349` reached the user in a column headed `DataType`, where
+      // it reads as a type name. `DisplayDataType` never returned a number — it returned the resolved
+      // list-entry value or the empty string — and the `Lists` vocabulary that names 349 is excluded from
+      // the migration, absent from the API and absent from the schema, so no name can be produced.
+      arrive([definition({ propertyDefinitionId: 42, propertyName: 'Typed', dataType: 349 })]);
+
+      const cell = query<HTMLTableCellElement>('tbody tr td,tbody tr th').at(6);
+      const painted = cell?.querySelector('[aria-hidden="true"]');
+      const announced = cell?.querySelector('[data-visually-hidden]');
+
+      expect(painted?.textContent?.trim()).toBe('\u2014');
+      // The raw key is not painted anywhere in the cell's visible text.
+      expect(painted?.textContent ?? '').not.toContain('349');
+      // But it is not destroyed either: it is named as a reference, in words.
+      expect(announced?.textContent?.trim()).toBe('data type reference 349, name unavailable');
+      // The hover affordance and the announced sentence are generated from one accessor, so they agree
+      // by construction rather than by coincidence.
+      expect(painted?.getAttribute('title')).toBe(announced?.textContent?.trim());
     });
 
     it('never paints the word null for an absent default value or expression', () => {
@@ -1005,6 +1074,33 @@ describe('ProfileDefinitionListComponent', () => {
     });
   });
 
+  // =============================================================================================
+  // ROW IDENTITY ACROSS A STAGED EDIT
+  // =============================================================================================
+  //
+  // ⚠⚠ THE DEFECT THESE CASES EXIST FOR WAS A LOST FOCUS ON EVERY SINGLE EDIT. The shared table
+  // tracks its rows by OBJECT REFERENCE — it reads no identifier member, its column descriptor
+  // names no key field, and adding one would widen a closed component surface — so a row handed
+  // over as a new object has its `<tr>` destroyed and rebuilt, taking every control inside it with
+  // it. This screen re-projected a row on every staged change, so:
+  //
+  //   * PRESSING A ROW CHECKBOX removed that very checkbox from the document. Focus fell back to
+  //     the document body, and an operator working down the grid by keyboard was returned to the
+  //     top of the page on every toggle.
+  //   * PRESSING MOVE UP OR MOVE DOWN was worse, because a move restages TWO rows and the button
+  //     pressed is on one of them. The reader lost their place at the exact moment they were
+  //     working through the order — and the two rows are adjacent, so the correct outcome is that
+  //     focus FOLLOWS the record to its new position.
+  //
+  // The screen now keeps one stable instance per `propertyDefinitionId` and refreshes its members
+  // in place, publishing a NEW ARRAY of those stable instances: the array identity is what makes
+  // the grid re-project the cells and show the staged value, and the instance identity is what
+  // makes the row element and the focused control survive that re-projection.
+  //
+  // ⚠ THESE CASES ASSERT ON THE LIVE ELEMENT AND ON `document.activeElement`, never on the
+  // component's internals. A cache asserted through its own field would pass for a cache that
+  // worked and for one whose stability never reached the DOM.
+
   describe('the staged batch', () => {
     it('disables Apply until something is staged', () => {
       arrive();
@@ -1058,7 +1154,7 @@ describe('ProfileDefinitionListComponent', () => {
       expect(rowCheckboxes('required').at(0)?.checked).toBeFalse();
     });
 
-    it('announces nothing on a successful batch, as the legacy did not either', () => {
+    it('raises no notification on a successful batch, as the legacy set no message label', () => {
       arrive();
 
       toggle(rowCheckboxes('required').at(0));
@@ -1067,10 +1163,92 @@ describe('ProfileDefinitionListComponent', () => {
       settleReplaces();
       // The batch reads the catalogue once when its last row has settled, so that read has to be
       // answered or verification fails on an outstanding request rather than on anything this case
-      // is about.
-      drainReReads();
+      // is about. It answers with the edit HONOURED, because a server that silently kept the old
+      // value would leave the row outstanding and this case would be asserting the wrong thing.
+      settleReReads(catalogueWith({ 11: { required: true } }));
 
       expect(notify).not.toHaveBeenCalled();
+      // ⚠ AND YET IT IS NOT SILENT. This case used to be titled as though nothing were announced at
+      // all, which stopped being the whole truth once the polite status region was given the settled
+      // sentence. The two claims are separate: no TOAST is raised, because the legacy raised none,
+      // and the outcome is nevertheless stated where a non-visual reader will hear it. Asserting only
+      // the first would let the second be deleted without a failing test.
+      expect(statusRegion().textContent?.trim()).toBe('1 change(s) applied.');
+    });
+
+    it('states the staged count in the status region, and drops it once the batch lands', () => {
+      arrive();
+
+      // Empty at rest: there is nothing to say, and a region that starts out holding text is a
+      // region whose first change assistive technology never hears.
+      expect(statusRegion().textContent?.trim()).toBe('');
+
+      toggle(rowCheckboxes('required').at(0));
+      toggle(rowCheckboxes('required').at(1));
+
+      expect(statusRegion().textContent?.trim()).toBe('2 unapplied change(s).');
+
+      press(APPLY_LABEL);
+      settleReplaces();
+      settleReReads(catalogueWith({ 11: { required: true }, 12: { required: true } }));
+
+      expect(statusRegion().textContent?.trim()).toBe('2 change(s) applied.');
+    });
+
+    it('mounts the status region permanently, and keeps aria-live off the visible hint', () => {
+      arrive();
+
+      // Mounted before anything is staged, which is the property that makes it announce at all.
+      expect(query(STATUS_REGION).length).toBe(1);
+      expect(query('.profile-definitions__form-hint').length).toBe(0);
+
+      toggle(rowCheckboxes('required').at(0));
+
+      const hints = query<HTMLElement>('.profile-definitions__form-hint');
+
+      expect(hints.length).toBe(1);
+      // The hint is visible and silent; the region is invisible and speaks. Declaring `aria-live` on
+      // both would announce the same count twice.
+      expect(hints.at(0)?.getAttribute('aria-live')).toBeNull();
+      expect(statusRegion().hasAttribute('data-visually-hidden')).toBeTrue();
+    });
+
+    it('does not leave the previous confirmation readable while the next batch is in flight', () => {
+      arrive();
+
+      toggle(rowCheckboxes('required').at(0));
+      press(APPLY_LABEL);
+      settleReplaces();
+      settleReReads(catalogueWith({ 11: { required: true } }));
+
+      expect(statusRegion().textContent?.trim()).toBe('1 change(s) applied.');
+
+      toggle(rowCheckboxes('visible').at(1));
+      press(APPLY_LABEL);
+
+      // Staged again, so the count is what is outstanding - never the stale success of the batch
+      // before it.
+      expect(statusRegion().textContent?.trim()).toBe('1 unapplied change(s).');
+
+      settleReplaces();
+      settleReReads(catalogueWith({ 11: { required: true }, 12: { visible: false } }));
+    });
+
+    it('says nothing about a batch in which a row was refused, leaving that to the refusal', () => {
+      arrive();
+
+      toggle(rowCheckboxes('required').at(0));
+      press(APPLY_LABEL);
+
+      settleBatch(1, (write) =>
+        write.flush(problem(409), { status: 409, statusText: 'Conflict' }),
+      );
+      drainReReads();
+
+      // The refusal is announced through the notification service, naming the property, and the
+      // status region is not made to repeat it.
+      expect(notify).toHaveBeenCalled();
+      expect(statusRegion().textContent?.trim()).toBe('1 unapplied change(s).');
     });
 
     it('keeps a refused row staged while the row that landed drops out', () => {
@@ -1885,7 +2063,7 @@ describe('ProfileDefinitionListComponent', () => {
       // DOM for the other with no error raised anywhere, so the observable proof of distinct keys is that
       // twelve headings still yield twelve cells in every row.
       for (const row of query<HTMLTableRowElement>('tbody tr')) {
-        expect(row.querySelectorAll('td').length).withContext('cells in a row').toBe(12);
+        expect(row.querySelectorAll('td,th').length).withContext('cells in a row').toBe(12);
       }
 
       // And distinct from the LABELS: the eight data headings sit in the last eight positions, in the
@@ -2021,7 +2199,7 @@ describe('ProfileDefinitionListComponent', () => {
           .toBeNull();
       }
 
-      const nameCell = rows.at(0)?.querySelectorAll('td').item(4);
+      const nameCell = rows.at(0)?.querySelectorAll('td,th').item(4);
 
       nameCell?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       fixture.detectChanges();
@@ -2061,17 +2239,31 @@ describe('ProfileDefinitionListComponent', () => {
       expect(rowCheckboxes('visible').length).toBe(3);
     });
 
-    it('name each box by its row as well as its column', () => {
+    it('name each box by its row as well as its column, so the two are never the same name', () => {
+      // ⚠ THIS CASE USED TO ASSERT THE ROW NAME ALONE, WHICH WAS THE DEFECT ITS OWN TITLE DESCRIBED.
+      // With only the property name, the two boxes in a row both announced "Nickname" and a reader
+      // using assistive technology could not tell which one made the property required and which made
+      // it visible - measured across two rows, four boxes reduced to two names. The decisive assertion
+      // is therefore not that either name is right in isolation but that they DIFFER.
       arrive();
 
-      const cell = query<HTMLTableRowElement>('tbody tr')
-        .at(0)
-        ?.querySelectorAll('td')
-        .item(10);
+      const cells = query<HTMLTableRowElement>('tbody tr').at(0)?.querySelectorAll('td,th');
+      const requiredName = (
+        cells?.item(10)?.querySelector('[data-visually-hidden]')?.textContent ?? ''
+      ).trim();
+      const visibleName = (
+        cells?.item(11)?.querySelector('[data-visually-hidden]')?.textContent ?? ''
+      ).trim();
 
-      expect((cell?.querySelector('[data-visually-hidden]')?.textContent ?? '').trim()).toBe(
-        'Nickname',
-      );
+      expect(requiredName).toBe('Required \u2014 Nickname');
+      expect(visibleName).toBe('Visible \u2014 Nickname');
+
+      // The row is named in both, so neither reads as a column heading detached from its subject.
+      expect(requiredName).withContext('names its row').toContain('Nickname');
+      expect(visibleName).withContext('names its row').toContain('Nickname');
+
+      // And the whole point: the two are distinguishable.
+      expect(requiredName).withContext('the two boxes are told apart').not.toBe(visibleName);
     });
 
     it('publish the state as a word beside the box, and treat false as data', () => {
@@ -2079,7 +2271,7 @@ describe('ProfileDefinitionListComponent', () => {
         definition({ propertyDefinitionId: 61, propertyName: 'Quiet', required: false, visible: false }),
       ]);
 
-      const cells = query<HTMLTableCellElement>('tbody tr td');
+      const cells = query<HTMLTableCellElement>('tbody tr td,tbody tr th');
 
       // `Null.NullBoolean` is literally `False`, so `false` is a VALUE: it reads as the negative word and as
       // an unchecked box, never as blank.
@@ -2719,7 +2911,7 @@ describe('ProfileDefinitionListComponent', () => {
 
       // Rendered as the digit, never as blank: `Null.NullInteger` is -1, so 0 is not the sentinel and a
       // truthiness test on it would have painted an empty cell.
-      expect((query<HTMLTableCellElement>('tbody tr td').at(7)?.textContent ?? '').trim()).toBe('0');
+      expect((query<HTMLTableCellElement>('tbody tr td,tbody tr th').at(7)?.textContent ?? '').trim()).toBe('0');
 
       buttonsNamed('Edit').at(0)?.click();
       fixture.detectChanges();
@@ -2794,7 +2986,7 @@ describe('ProfileDefinitionListComponent', () => {
         }),
       ]);
 
-      const cells = query<HTMLTableCellElement>('tbody tr td');
+      const cells = query<HTMLTableCellElement>('tbody tr td,tbody tr th');
 
       // The angle brackets survive as CHARACTERS, which is only possible if the value was interpolated.
       // Nothing on this screen binds `innerHTML` or reaches for a sanitiser.
@@ -2818,7 +3010,7 @@ describe('ProfileDefinitionListComponent', () => {
       ]);
 
       const cells = query<HTMLTableCellElement>('tbody tr').map((row) =>
-        (row.querySelectorAll('td').item(9)?.textContent ?? '').trim(),
+        (row.querySelectorAll('td,th').item(9)?.textContent ?? '').trim(),
       );
 
       // `Null.NullString` IS the empty string, so "" means "no rule" and is NOT the same as a rule that

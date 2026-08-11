@@ -387,6 +387,29 @@ export interface Role {
    * Relative path of the role's icon image, or `null`.
    */
   readonly iconFile: string | null;
+
+  /**
+   * Opaque marker of the revision this role was read at, or `null` when the API served none.
+   *
+   * ⚠ SEND IT BACK UNREAD AND UNMODIFIED. It is a server-minted token whose internal form is not part
+   * of this contract; nothing on this side may parse it, compare it for ordering, display it, or
+   * synthesise one. Its only correct use is to be carried from a read into the matching
+   * {@link UpdateRoleRequest} so the server can tell whether the role changed in between.
+   *
+   * `null` is a real state and is not an error: an API that serves no token cannot detect a conflict,
+   * so an update sent without one is a last-writer-wins update. A screen must not invent a token to
+   * fill the gap, because a wrong token is refused and a fabricated one that happens to match would
+   * defeat the very check it appears to satisfy.
+   *
+   * MIGRATION: NO LEGACY COUNTERPART. `UpdateRole`
+   * (`Library/Providers/MembershipProviders/DataProvider/SqlDataProvider.vb:L242-L243`) took thirteen
+   * positional arguments and no revision marker, so the legacy screen overwrote whatever it found:
+   * two administrators editing one role each saved the whole entity from their own stale snapshot and
+   * the later save won silently, losing every field the earlier one had changed rather than only the
+   * field they disagreed about. The token is the target's answer to that, and it is recorded as an
+   * addition in `MIGRATION_NOTES.md`.
+   */
+  readonly concurrencyToken: string | null;
 }
 
 /**
@@ -679,6 +702,18 @@ export interface UpdateRoleRequest {
    * Relative path of the role's icon image, or `null`.
    */
   readonly iconFile: string | null;
+
+  /**
+   * The {@link Role.concurrencyToken} of the revision this update was composed against, or `null`.
+   *
+   * Optional on the wire: omitting it asks the server to write unconditionally. Supplying it asks the
+   * server to write ONLY IF the stored role is still at that revision, and to answer `409` with the
+   * problem type `urn:dnnmigration:error:role.concurrency_conflict` when it is not.
+   *
+   * A screen that read the role must send the token it read. Sending `null` after a read is not a
+   * neutral choice — it discards the one fact that would have revealed someone else's change.
+   */
+  readonly concurrencyToken: string | null;
 }
 
 /**
@@ -772,6 +807,37 @@ export interface UpdateRoleGroupRequest {
 }
 
 /**
+ * The words behind each stored billing-frequency character.
+ *
+ * ⚠ THE CODE IS THE DATA AND THE WORD IS PRESENTATION. `dbo.Roles.BillingFrequency` and
+ * `dbo.Roles.TrialFrequency` are `char(1)` columns constrained by `FK_Roles_CodeFrequency`, and
+ * `Library/Components/Security/Roles/RoleController.vb:L540-L546` switches on the raw characters. The
+ * code is never renamed, case-folded, aliased or turned into an integer anywhere in this application;
+ * this map only says what each one MEANS, and only for the benefit of a reader.
+ *
+ * ⚠ IT LIVES HERE, BESIDE THE CONTRACT, SO THAT ONE VOCABULARY SERVES EVERY SCREEN. The role editor
+ * declared it first, as the captions of its two frequency selects. The role LISTING then needed the
+ * same words — it renders the stored character verbatim, as the legacy grid did, and a bare `M` means
+ * nothing to anyone reading it — and importing the editor's copy from the listing would have pulled a
+ * lazily-loaded feature component into another feature's bundle. Two copies of user-facing wording is
+ * how two screens start disagreeing about what `M` is called, so there is one copy and it is here.
+ *
+ * MIGRATION: the legacy filled both frequency selects FROM THE DATABASE —
+ * `EditRoles.ascx.vb:L116-L125` calls `ListController.GetListEntryInfoCollection("Frequency", "")` and
+ * data-binds the result. The `Library/Components/Lists` subsystem is out of scope, so no frequency
+ * lookup endpoint exists and none is invented. The vocabulary is closed and fixed by a foreign key, so
+ * declaring it here loses nothing; the captions are the ones the API's own refusal message names.
+ */
+export const BILLING_FREQUENCY_NAMES: Readonly<Record<string, string>> = Object.freeze({
+  N: 'None',
+  O: 'One Time',
+  D: 'Day',
+  W: 'Week',
+  M: 'Month',
+  Y: 'Year',
+});
+
+/**
  * Decodes one listed role row.
  *
  * The two frequency members are checked for shape, not for membership of the write vocabulary. A non-string
@@ -807,6 +873,12 @@ export const decodeRoleListItem: Decoder<RoleListItem> = objectOf<RoleListItem>(
  * `IDENTITY(0, 1)`, so ZERO is the first role ever created and an ordinary identifier. `roleGroupId` is
  * nullable because a role need not belong to a group, and that null is the only expression of "ungrouped" —
  * it is never coalesced to zero, which would silently move the role into the first group.
+ *
+ * `concurrencyToken` is decoded as a NULLABLE STRING and nothing more. It is deliberately not validated for
+ * shape, length or encoding: it is the server's own opaque marker, and a decoder that asserted a format
+ * would start rejecting valid tokens the moment the server changed how it mints them. Absent is tolerated
+ * for the same reason — an API build that serves no token must not make a role undecodable — and the absence
+ * is then visible to the screen as `null` rather than hidden behind a substituted value.
  */
 export const decodeRole: Decoder<Role> = objectOf<Role>({
   roleId: decodeInteger,
@@ -823,6 +895,7 @@ export const decodeRole: Decoder<Role> = objectOf<Role>({
   autoAssignment: decodeBoolean,
   rsvpCode: nullable(decodeString),
   iconFile: nullable(decodeString),
+  concurrencyToken: nullable(decodeString),
 });
 
 /**

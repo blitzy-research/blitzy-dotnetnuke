@@ -1,5 +1,6 @@
 using System.Globalization;
 using DnnMigration.Application.Abstractions;
+using DnnMigration.Application.Common;
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Role;
 using DnnMigration.Application.Mapping;
@@ -109,6 +110,18 @@ public sealed class RoleService : IRoleService
 
     /// <summary>Reason code reported when a role name is already used in the portal.</summary>
     private const string RoleNameDuplicateCode = "role.name_duplicate";
+
+    /// <summary>
+    /// Reason code reported when a caller's optimistic-concurrency token no longer matches the record, so
+    /// the write would have replaced values committed by someone else.
+    /// </summary>
+    /// <remarks>
+    /// The reason token <c>concurrency_conflict</c> is what the API surface maps to <c>409 Conflict</c>, and
+    /// 409 rather than 412 is deliberate: the request carried no HTTP precondition header, so there is no
+    /// precondition for the framework to have failed - the conflict is with the resource's current state,
+    /// which is exactly what 409 states.
+    /// </remarks>
+    private const string RoleConcurrencyConflictCode = "role.concurrency_conflict";
 
     /// <summary>Reason code reported when a role could not be created.</summary>
     private const string RoleCreateFailedCode = "role.create_failed";
@@ -533,7 +546,7 @@ public sealed class RoleService : IRoleService
         {
             return Result<RoleDetailDto>.Failure(
                 RoleNameDuplicateCode,
-                $"Portal {portalId} already has a role named '{request.RoleName}'.");
+                DescribeNameClash(portalId, request.RoleName, clashing));
         }
 
         Role role = RoleMappings.ToNewRole(portalId, request);
@@ -677,6 +690,25 @@ public sealed class RoleService : IRoleService
                 DescribeProtectedRole(portal, roleId, "amended"));
         }
 
+        // OPTIMISTIC CONCURRENCY, CHECKED BEFORE ANY FIELD RULE RUNS. The order is deliberate: a caller
+        // holding a stale snapshot must be told that the record moved under it, not that some field of the
+        // snapshot it is trying to restore is invalid - and it is checked before the duplicate-name probe
+        // too, because a rename that now clashes is a symptom of the staleness rather than a separate fault.
+        //
+        // MIGRATION: the legacy screen posted the whole record back with no version check of any kind, so
+        // one operator could silently destroy another's committed edit; and because this request replaces
+        // EVERY column, the destruction reached fields the operator never opened. Rule T5 requires the
+        // departure from legacy behaviour to be recorded rather than absorbed, and it is, in
+        // MIGRATION_NOTES.md. A request that omits the token is still applied, so no caller that predates
+        // the token is refused.
+        if (!ConcurrencyToken.Matches(request.ConcurrencyToken, RoleMappings.ConcurrencyTokenFor(role)))
+        {
+            return Result<RoleDetailDto>.Failure(
+                RoleConcurrencyConflictCode,
+                FormattableString.Invariant(
+                    $"Role {roleId} was changed by someone else after you read it, so nothing was written. Reload the role to see the current values, then apply your change again."));
+        }
+
         // The shape rules are re-asserted here as well as at the boundary. UpdateRoleRequestValidator is
         // registered and runs first for an HTTP caller, but this member is also reachable from a
         // background job, a console tool or a test, and a rule that only an HTTP caller meets is not a
@@ -727,7 +759,7 @@ public sealed class RoleService : IRoleService
         {
             return Result<RoleDetailDto>.Failure(
                 RoleNameDuplicateCode,
-                $"Portal {portalId} already has a role named '{request.RoleName}'.");
+                DescribeNameClash(portalId, request.RoleName, clashing));
         }
 
         RoleMappings.ApplyUpdate(role, request);
@@ -1931,5 +1963,35 @@ public sealed class RoleService : IRoleService
         {
             throw new DomainException($"A role group name may not exceed {RoleGroupNameMaximumLength} characters.");
         }
+    }
+
+    /// <summary>
+    /// Describes a role-name clash in terms of the role that ALREADY holds the name, rather than in terms of
+    /// the name the caller typed.
+    /// </summary>
+    /// <param name="portalId">The tenant the clash was found in.</param>
+    /// <param name="requestedName">The name the caller submitted.</param>
+    /// <param name="clashing">The role that already holds a name the store treats as equal.</param>
+    /// <returns>A sentence naming the existing role.</returns>
+    /// <remarks>
+    /// ⚠ THE TWO NAMES ARE NOT ALWAYS THE SAME STRING, and that is the whole reason this member exists.
+    /// The uniqueness index on (PortalID, RoleName) is evaluated under the database's collation, which gives
+    /// no sort weight to supplementary-plane characters, zero-width characters or trailing spaces - so a
+    /// submitted name of "Editors" plus an emoji collides with a stored "Editors". Reporting the SUBMITTED
+    /// name in that case, as this refusal previously did, names a role that exists nowhere: runtime testing
+    /// measured an operator being told a portal already had a role whose name could not be found in any of
+    /// its 115 rows. Naming the stored role and its identifier lets the operator go and look at it, and
+    /// saying explicitly that the store treats the two as equal explains why a name they can see to be
+    /// different was refused.
+    /// </remarks>
+    private static string DescribeNameClash(int portalId, string requestedName, Role clashing)
+    {
+        ArgumentNullException.ThrowIfNull(clashing);
+
+        return string.Equals(clashing.RoleName, requestedName, StringComparison.Ordinal)
+            ? FormattableString.Invariant(
+                $"Portal {portalId} already has a role named '{clashing.RoleName}' (identifier {clashing.RoleId}).")
+            : FormattableString.Invariant(
+                $"Portal {portalId} already has role {clashing.RoleId}, named '{clashing.RoleName}', and the database treats that name as identical to '{requestedName}'. Choose a name that differs in visible, sortable characters.");
     }
 }

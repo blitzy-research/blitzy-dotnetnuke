@@ -47,6 +47,16 @@
 // cannot space without a rule to unwind for the first and last members.
 :host {
   display: grid;
+
+  // THE EXPLICIT FLUID TRACK. See the note on the same declaration in
+  // `portal-list.component.scss` for the measured failure: an implicit single-column track takes
+  // an automatic `min-content` minimum, the shared grid's `min-inline-size: 40rem` therefore
+  // sizes the track, and every region on the screen is stretched past the column its parent
+  // offered - so the page header, the failure banner and the action row all overflowed the
+  // document rather than the table, and the table container's own `overflow-x: auto` had nothing
+  // left to clip. The token's zero floor lets the track yield completely.
+  grid-template-columns: var(--grid-track-fluid);
+
   gap: var(--space-4);
   font-family: var(--font-family-base);
   font-size: var(--font-size-md);
@@ -103,18 +113,22 @@
   max-inline-size: mx.breakpoint('sm');
 }
 
-// The command is the row's primary action, so it takes the primary ink. Its chrome, its padding
-// and its disabled treatment all come from `_forms.scss`; only the ink is stated here, and only
-// because a submit inside this row is a primary action whereas the dismiss control below is not.
+// The command is the row's primary action, and the emphasis is WEIGHT rather than FILL.
+//
+// ⚠ AN EARLIER REVISION FILLED IT WITH THE BRAND COLOUR, and that made it the only solid
+// primary-coloured button in the entire application - measured across every screen. Two things were
+// wrong with it. It had no legacy ancestor: the legacy portal styled its form buttons
+// `.StandardButton` (`Website/Portals/_default/default.css` L475-L481), which declares inset,
+// weight and size and NO fill, and no legacy rule anywhere fills a control with the brand colour.
+// And it disagreed with the application's own emphasis convention, which is a bold label on an
+// otherwise ordinary control - the form action row on the module screen states its primary action
+// exactly that way. One filled control among twenty-one bordered ones reads as a different KIND of
+// control rather than as the same control emphasised.
+//
+// Everything else about the button - chrome, inset, hover, pressed and disabled treatment - comes
+// from `_forms.scss`, so this rule states the emphasis and nothing more.
 .member-services__code-submit {
-  background-color: var(--color-primary);
-  color: var(--color-background);
-  border-color: var(--color-primary);
-
-  &:hover:not(:disabled) {
-    background-color: var(--color-primary-hover);
-    border-color: var(--color-primary-hover);
-  }
+  font-weight: var(--font-weight-bold);
 }
 
 // -----------------------------------------------------------------------------

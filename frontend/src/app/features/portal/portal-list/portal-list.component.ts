@@ -41,6 +41,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   ViewChild,
   computed,
   effect,
@@ -48,7 +49,8 @@ import {
   signal,
   untracked,
 } from '@angular/core';
-import { RouterLink } from '@angular/router';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
 import { problemDetailsMessage } from '../../../core/models/problem-details.model';
 import { NotificationService } from '../../../core/services/notification.service';
@@ -62,15 +64,33 @@ import { LoadingSpinnerComponent } from '../../../shared/components/loading-spin
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 import { PaginationComponent } from '../../../shared/components/pagination/pagination.component';
 import { SearchInputComponent } from '../../../shared/components/search-input/search-input.component';
-import { DateDisplayPipe } from '../../../shared/pipes/date-display.pipe';
+import { DateDisplayPipe, parseDisplayInstant } from '../../../shared/pipes/date-display.pipe';
+
+import {
+  addressStatesQuery,
+  FILTER_PARAM,
+  FIRST_PAGE_INDEX,
+  firstPageParameter,
+  PAGE_PARAM,
+  PAGE_SIZE_PARAM,
+  parsePageIndex,
+  parsePageSize,
+  parseSortDirection,
+  parseSortKey,
+  SORT_BY_PARAM,
+  SORT_DIR_PARAM,
+} from '../../../core/utils/list-query.util';
 
 import type { OnInit, Signal, TemplateRef } from '@angular/core';
+import type { ParamMap, Params } from '@angular/router';
+import type { SortDirection } from '../../../core/models/paged-result.model';
 import type { PortalListItem } from '../../../core/models/portal.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
-import type { PortalFailure } from '../../../core/state/portal.store';
+import type { PortalFailure, PortalListQuery } from '../../../core/state/portal.store';
 import type {
   DataTableCellContext,
   DataTableColumn,
+  DataTableSortChange,
 } from '../../../shared/components/data-table/data-table.component';
 
 // Wording - local resource file
@@ -112,6 +132,20 @@ const USERS_HEADING = 'Users';
 const PAGES_HEADING = 'Pages';
 
 /**
+ * Column key of the account tally.
+ *
+ * Named rather than written inline because the shared cell template that serves BOTH tally columns switches
+ * on it: the template is handed the column it is rendering, so one template can answer two columns, and the
+ * key is the only thing that tells them apart.
+ */
+const USERS_COLUMN_KEY = 'users';
+
+/**
+ * Column key of the page tally. See {@link USERS_COLUMN_KEY}.
+ */
+const PAGES_COLUMN_KEY = 'pages';
+
+/**
  * `DiskSpace.Header`. Two words in the value, one in the markup attribute.
  */
 const DISK_SPACE_HEADING = 'Disk Space';
@@ -127,9 +161,66 @@ const HOSTING_FEE_HEADING = 'Hosting Fee';
 const EXPIRES_HEADING = 'Expires';
 
 /**
+ * `Expired.Text`, from THIS screen's own local resource file
+ * (`Website/admin/Portal/App_LocalResources/Portals.ascx.resx:L162-L164`).
+ *
+ * MIGRATION: the WORDING is this screen's own and the SEMANTICS are the account-services screen's. The entry
+ * exists in the portal list's resource file because the legacy strip carried an `Expired` bucket, which is
+ * dropped for the reason recorded at {@link buildFilterOptions} - so the word is available to this screen
+ * without being borrowed. What it QUALIFIES is taken from `Website/admin/Users/MemberServices.ascx.vb:L176`,
+ * the one legacy screen that tested an expiry against the clock.
+ *
+ * MIGRATION: the qualifier is painted BESIDE the date, where the account-services screen painted it INSTEAD
+ * OF the date. That screen served a member their own subscriptions; this one is the host's administration
+ * grid, and an administrator needs to know WHEN a term lapsed as well as that it has. Keeping both preserves
+ * strictly more than either legacy screen showed, and it keeps this screen's own formatter
+ * (`Portals.ascx.vb:L250-L260`, which always printed the date) intact.
+ */
+const EXPIRED_QUALIFIER = 'Expired';
+
+/**
  * `Edit.Text` from the LOCAL file, which overrides the shorter global `Edit.Text`.
+ *
+ * ⚠ MINOR (WCAG 2.5.3 Label in Name) — THIS IS NO LONGER THE ACCESSIBLE NAME.
+ *
+ * It was, and that was the defect: ten row affordances painted the word `Settings` while their
+ * accessible names read `Edit this Portal: <title>`, so the accessible name did not CONTAIN the
+ * visible text and a speech-input user saying "click Settings" matched nothing. Ten instances
+ * on one page.
+ *
+ * The legacy wording is not discarded, because it is a real measured resource value and it says
+ * something the visible word does not - which portal the command acts on, and that it opens for
+ * editing. It moves to the affordance's DESCRIPTION, which is exactly what it was: the legacy
+ * column rendered an unlabelled image (`portals.ascx:L21`) and this string was its tooltip.
+ * A tooltip is a description, not a name, so relocating it corrects a category error as well as
+ * a conformance failure.
+ *
+ * @see EDIT_COMMAND_VISIBLE_LABEL for what the accessible name is built from now.
  */
 const EDIT_COMMAND_LABEL = 'Edit this Portal';
+
+/**
+ * The word the settings affordance PAINTS, and therefore the word its accessible name must open
+ * with.
+ *
+ * Declared here rather than written into the template so the two cannot drift: the template
+ * interpolates this constant and {@link PortalListComponent.editCommandName} composes from it, so
+ * a change to the visible word changes both at once and Label in Name cannot silently break.
+ */
+const EDIT_COMMAND_VISIBLE_LABEL = 'Settings';
+
+/**
+ * Announced beside a negative hosting fee, and never painted.
+ *
+ * ⚠ MINOR (money differentiation) — the colour and weight this screen gives a negative fee are a
+ * VISUAL cue, and a visual cue alone would carry the meaning by colour only, which WCAG 1.4.1
+ * forbids. This is the same cue in words, hidden from the page and present in the accessibility
+ * tree, exactly as the absent-integer mark's description is.
+ *
+ * The word is purely factual. It states the sign and nothing else - it does not call the value a
+ * credit, a refund or an error, because the schema permits it and no legacy screen interpreted it.
+ */
+const NEGATIVE_FEE_QUALIFIER = 'negative';
 
 /**
  * `AddContent.Action`. The one surviving page-level action.
@@ -165,6 +256,10 @@ const ALL_FILTER_LABEL = 'All';
 
 /**
  * `DeleteItem.Text`. The row-deletion confirmation, singular.
+ *
+ * ⚠ NOT RENDERED ALONE ANY MORE. See {@link PortalListComponent.deleteConfirmMessage}: the
+ * measured wording is kept verbatim as the question, and the identity of the row being destroyed
+ * is appended to it, because this dialog covers the very row the operator was reading.
  */
 const DELETE_CONFIRM_MESSAGE = 'Are You Sure You Wish To Delete This Item?';
 
@@ -202,8 +297,17 @@ const FILTER_STRIP_LABEL = 'Filter portals by first letter';
 
 /**
  * Placeholder for the free-text name filter.
+ *
+ * MIGRATION: the wording STATES THE PREDICATE, because the predicate is not the one a reader would assume.
+ * The legacy screen appended a single trailing wildcard at the call site - `Portals.ascx.vb:L142` reads
+ * `GetPortalsByName(Filter + "%", ...)` and the surviving procedure applies it unchanged - so the test is
+ * "begins with", and a fragment from the middle of a title matches nothing. Runtime testing found the earlier
+ * wording ("Filter by name") over a server that had been widened to match anywhere; the server has since been
+ * returned to the legacy prefix test, which is also what makes the twenty-six-letter strip beside this box
+ * mean what its name says. Saying so here is the difference between a filter that appears broken and one an
+ * operator can use.
  */
-const SEARCH_PLACEHOLDER = 'Filter by name';
+const SEARCH_PLACEHOLDER = 'Name begins with';
 
 /**
  * Shown when nothing matched at all - a total of nought.
@@ -294,6 +398,188 @@ const LEADING_BREAK_TAGS = /^(?:\s*<br\s*\/?>)+\s*/i;
  * The status the server answers when an installation must retain its last portal.
  */
 const HTTP_CONFLICT = 409;
+
+/**
+ * The legacy absent-integer marker, whose value is minus one.
+ *
+ * `Library/Components/Shared/Null.vb:L41` declares `NullInteger` as `-1`, and
+ * `Library/Components/Portal/PortalInfo.vb:L61-L62` seeds BOTH tally properties with it. It reaches this
+ * screen for real: the terminal `GetTabCount` arithmetic is `COUNT(*) - 1` over a portal's pages after its
+ * administration page is excluded, and it answers minus one for a portal that records no administration page
+ * at all - which is every portal in an installation whose pages have not been built.
+ */
+const ABSENT_INTEGER = -1;
+
+/**
+ * What a tally cell paints when it holds the absent-integer marker.
+ *
+ * An EM DASH, U+2014, which is the conventional "no value" mark and is announced as such. Paired with
+ * {@link ABSENT_TALLY_DESCRIPTION} so the mark is not the only thing a screen reader receives.
+ */
+const ABSENT_TALLY_MARK = '\u2014';
+
+/**
+ * The words behind {@link ABSENT_TALLY_MARK}, for the accessibility tree.
+ */
+const ABSENT_TALLY_DESCRIPTION = 'not recorded';
+
+// THE ADDRESS CONTRACT
+//
+//  The listing's four coordinates live in the ADDRESS, so a reload and a back or forward reproduce the view
+//  and a fresh navigation starts clean. The parameter SPELLINGS are the legacy ones wherever the legacy
+//  screen had one: `Portals.ascx.vb:L215-L222` composed its own address as
+//  `NavigateURL(TabId, "", "filter=" & Filter, "currentpage=" & CurrentPage)`, so `filter` and `currentpage`
+//  are carried over verbatim, and `currentpage` keeps the legacy ONE-BASED counting seeded at
+//  `Portals.ascx.vb:L47` (`Private _CurrentPage As Integer = 1`). The two ordering parameters have no legacy
+//  counterpart at all - the legacy grid was declared without `AllowSorting` - so they take the endpoint's own
+//  member names in lower case, matching the case of the two that are inherited.
+
+//  ⚠ THE FIVE PARAMETER NAMES AND THE FIVE READERS NOW LIVE IN `core/utils/list-query.util.ts` AND ARE
+//  SHARED WITH THE OTHER THREE LISTINGS. They were private to this file while it was the only screen that
+//  kept its query in the address; they were hoisted verbatim, with no change of behaviour, when the account,
+//  role and module listings adopted the same contract. The vocabulary is the operator's rather than this
+//  screen's - once `?currentpage=` means the page here it must mean the page everywhere, or an address
+//  hand-edited on one listing fails silently on the next - and four private copies of one reader is a
+//  divergence waiting to happen.
+//
+//  What did NOT move is the pair below, `parseListQuery` and `serialiseListQuery`, because only this screen
+//  knows that its filter is a portal-name prefix and that its endpoint orders by exactly five columns. Each
+//  listing composes its own pair out of the shared primitives.
+//
+//  The two size-related notes that were attached to the hoisted declarations are kept here because they are
+//  about THIS screen: the page-size parameter has no legacy counterpart, the legacy screen having hard-coded
+//  twenty at `Portals.ascx.vb:L92-L98` with the per-portal setting commented out, and it is accepted so that
+//  a size an operator arrives with survives a reload while never being written by this screen, which
+//  expresses no size preference of its own.
+
+/**
+ * The five column keys the collection endpoint will order by, in its own spelling.
+ *
+ * ⚠ THIS SET IS THE ENDPOINT'S, NOT THIS SCREEN'S, AND OFFERING A SIXTH WOULD PRODUCE A REFUSED REQUEST.
+ * `SortableFields.Portals` admits exactly these five, matched without regard to case - so the camel-cased
+ * column keys below are accepted as they stand - and answers anything else with a field-level `400` naming
+ * the five. The three members the projection publishes but this set omits are omitted for stated reasons:
+ * the two tallies are computed counts rather than columns on `Portals`, and the host names are a collection,
+ * which has no single value to order by.
+ */
+const SORTABLE_COLUMN_KEYS: readonly string[] = Object.freeze([
+  'portalId',
+  'portalName',
+  'hostSpace',
+  'hostFee',
+  'expiryDate',
+]);
+
+
+/**
+ * Reads the whole listing query out of an address.
+ *
+ * @param address The route's query parameters.
+ * @returns The query to apply, with every unusable value resolved to its default.
+ */
+function parseListQuery(address: ParamMap): PortalListQuery {
+  const sortBy: string | null = parseSortKey(address.get(SORT_BY_PARAM), SORTABLE_COLUMN_KEYS);
+
+  return {
+    pageIndex: parsePageIndex(address.get(PAGE_PARAM)),
+    pageSize: parsePageSize(address.get(PAGE_SIZE_PARAM)),
+    // Byte for byte, and NOT trimmed: the server is the one that trims, and a filter of one space is a
+    // filter the legacy screen would have applied. Only an entirely absent parameter means "no filter".
+    name: address.get(FILTER_PARAM),
+    sortBy,
+    // A direction with no field to apply it to is dropped rather than kept, so the address cannot carry an
+    // ordering half. A field with no direction is kept: the endpoint has a default.
+    sortDir: sortBy === null ? null : parseSortDirection(address.get(SORT_DIR_PARAM)),
+  };
+}
+
+/**
+ * Writes a listing query back out as address parameters.
+ *
+ * A default coordinate is emitted as `null`, which the router REMOVES from the address rather than writing
+ * as an empty value - so an unfiltered first page is the bare path and not a trail of empty parameters.
+ *
+ * @param query The query in force.
+ * @returns The parameters to merge into the address.
+ */
+function serialiseListQuery(query: PortalListQuery): Params {
+  return {
+    [PAGE_PARAM]: firstPageParameter(query.pageIndex),
+    [PAGE_SIZE_PARAM]: query.pageSize === null ? null : String(query.pageSize),
+    [FILTER_PARAM]: query.name,
+    [SORT_BY_PARAM]: query.sortBy,
+    [SORT_DIR_PARAM]: query.sortBy === null || query.sortDir === null ? null : query.sortDir,
+  };
+}
+
+/**
+ * How a portal's hosting term stands.
+ *
+ * Exactly THREE states, and the absence of a fourth is deliberate. The legacy test is BINARY -
+ * `Website/admin/Users/MemberServices.ascx.vb:L176` is `If expiryDate > Date.Today`, with the absent case
+ * handled by the enclosing `If Not Null.IsNull(expiryDate)` at `:L175` - so "expiring soon" has no legacy
+ * counterpart and no authority anywhere in the in-scope tree. Inventing one would mean inventing its
+ * threshold, which is a design decision this refactor is not entitled to make; the binary state is what the
+ * legacy conveyed and it is what is conveyed here.
+ */
+export type PortalExpiryState = 'none' | 'current' | 'expired';
+
+/**
+ * Resolves the state of a hosting term against a clock.
+ *
+ * MIGRATION: the test is the legacy test, taken from the one legacy screen that made it.
+ * `Website/admin/Users/MemberServices.ascx.vb:L172-L186` reads: an absent expiry yields the empty string, an
+ * expiry LATER than today yields the date, and anything else yields the word `Expired` - so an expiry falling
+ * exactly on today's midnight counts as expired, because `>` is strict. Both halves are reproduced: the
+ * comparison operator and the boundary it puts today's midnight on.
+ *
+ * MIGRATION: the comparison is made in UTC because the CELL is rendered in UTC. The shared date pipe formats
+ * in UTC deliberately - the wire carries an absolute instant and localising it would shift dates across
+ * midnight - so a qualifier computed against local midnight could contradict the date printed beside it for
+ * every reader whose offset is not zero. The legacy `Date.Today` was the server's local midnight, which is
+ * the closest available analogue of "the display zone's midnight".
+ *
+ * @param expiryDate The expiry as it arrived on the wire.
+ * @param now The moment to judge against.
+ * @returns `none` when there is no usable expiry, `expired` when it has passed, `current` otherwise.
+ */
+function resolveExpiryState(expiryDate: string | null, now: Date): PortalExpiryState {
+  // The pipe's own verdict, so a qualifier can never be painted beside an empty cell and a date can never be
+  // painted without one. See `parseDisplayInstant`.
+  const instant: Date | null = parseDisplayInstant(expiryDate);
+  if (instant === null) {
+    return 'none';
+  }
+
+  const startOfToday = new Date(0);
+  startOfToday.setUTCFullYear(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  startOfToday.setUTCHours(0, 0, 0, 0);
+
+  return instant.getTime() > startOfToday.getTime() ? 'current' : 'expired';
+}
+
+/**
+ * Paints one tally, answering the legacy absent-integer marker with a mark rather than with the number.
+ *
+ * MIGRATION: the marker is ERASED AT THE DISPLAY LAYER ONLY, which is the same discipline the expiry column
+ * already applies and is the discipline Rule T7 asks for - "sentinels survive at the boundary, not in the
+ * domain". The contract keeps minus one, so anything that needs to tell the marker from a real count still
+ * can; only the CELL stops painting it as a number.
+ *
+ * ⚠ THE REASON IS A COLLISION, NOT TIDINESS, and it is specific to this grid. `Portals.PortalID` is declared
+ * `IDENTITY(-1,1)`, so minus one is a LEGITIMATE portal identifier and the first column paints it verbatim -
+ * correctly. Runtime testing measured minus one in the tally columns of all 251 rows of a real installation
+ * while the identifier column showed minus one on one of them, and the two are indistinguishable to a reader:
+ * the same characters in the same row meaning "portal number minus one" in one cell and "no count available"
+ * in another. The identifier column is deliberately left alone; only the two tallies, which cannot hold a
+ * negative count, are answered this way.
+ *
+ * @param tally The value as it arrived.
+ * @returns The mark when the value is the absent-integer marker, otherwise the number as text.
+ */
+function formatTally(tally: number): string {
+  return tally === ABSENT_INTEGER ? ABSENT_TALLY_MARK : String(tally);
+}
 
 // VIEW-MODEL TYPES
 
@@ -544,6 +830,62 @@ function formatHostingFee(hostFee: number): string {
 }
 
 /**
+ * Matches any run of whitespace, including tabs and line breaks.
+ */
+const WHITESPACE_RUN = /\s+/g;
+
+/**
+ * Normalises a stored title for use INSIDE AN ACCESSIBLE NAME, and nowhere else.
+ *
+ * ⚠ MINOR (whitespace-trimming parity) — leading and trailing spaces and tabs were surviving
+ * verbatim into `aria-label`, where they are inaudible, unremovable by the reader and capable of
+ * making one announced name differ from an apparently identical one. Runtime testing confirmed
+ * untrimmed values reaching the attribute.
+ *
+ * THE DISPLAYED VALUE IS DELIBERATELY LEFT ALONE. An operator correcting a title with a stray
+ * tab in it must be able to see that the tab is there, and the cell is the only place they can;
+ * silently tidying the painted text would hide the very defect they are looking for. That is the
+ * same rule the host-name cell on the alias screen follows and the same rule Rule T7 asks for:
+ * normalise at the boundary the value is consumed at, never in the value itself.
+ *
+ * Internal runs are collapsed as well as the ends trimmed, because a name announced with a tab in
+ * the middle of it is read as two names by some screen readers.
+ *
+ * @param title The stored portal title, exactly as received.
+ * @returns The title with whitespace runs collapsed to single spaces and the ends trimmed.
+ */
+function nameForAnnouncement(title: string): string {
+  return title.replace(WHITESPACE_RUN, ' ').trim();
+}
+
+/**
+ * Whether a hosting fee is below zero.
+ *
+ * ⚠ MINOR (money differentiation) — a negative fee, a zero fee and a positive fee were painted
+ * IDENTICALLY: runtime testing measured `-125.50`, `0.00` and `4321.99` with the same colour, the
+ * same weight and the same size, so the only thing distinguishing a loss was a single minus glyph.
+ *
+ * The negative case alone is marked, and only the negative case. Zero is not an anomaly - most of
+ * this dataset's portals are hosted free - and a positive fee is the ordinary state, so marking
+ * either would be noise. A NEGATIVE fee is data an administrator should question, which is why it
+ * earns the same treatment this screen already gives a lapsed term.
+ *
+ * NOT a validation rule and NOT a refusal. `Website/admin/Portal/sitesettings.ascx` declares
+ * `valHostFee` as a currency comparison with no lower bound, and the modern validator's own
+ * comment records that a negative fee passes deliberately - so a negative fee is LEGAL and this is
+ * a disclosure, not an objection.
+ *
+ * Guards finiteness first, so a non-finite fee - which {@link formatHostingFee} paints as nothing
+ * at all - is never marked as negative.
+ *
+ * @param hostFee The fee as received.
+ * @returns True when the fee is a real number below zero.
+ */
+function isNegativeFee(hostFee: number): boolean {
+  return Number.isFinite(hostFee) && hostFee < 0;
+}
+
+/**
  * Removes leading break tags from a message before it is rendered as text.
  *
  * Defensive rather than decorative. Twenty-eight of the thirty-four legacy validator messages in the
@@ -562,16 +904,18 @@ function stripLeadingBreakTags(message: string): string {
 /**
  * The portal listing screen.
  *
- * The paired template MUST declare these four `ng-template` elements at its TOP LEVEL, outside every
+ * The paired template MUST declare these six `ng-template` elements at its TOP LEVEL, outside every
  * control-flow block, because the column set is assembled in `ngOnInit` from statically-resolved view
  * queries:
  *
- * | Reference          | Renders                                                     |
- * | ------------------ | ----------------------------------------------------------- |
- * | `#editCommand`     | the row's settings link, indexed from `editSettingsLinks()`  |
- * | `#deleteCommand`   | the row's delete button, guarded by `canDelete(row)`         |
- * | `#aliasesCell`     | the row's host names, from `aliasLinks(row)`                 |
- * | `#expiresCell`     | the row's expiry, through the shared date pipe               |
+ * | Reference          | Renders                                                             |
+ * | ------------------ | ------------------------------------------------------------------- |
+ * | `#editCommand`     | the row's settings link, indexed from `editSettingsLinks()`          |
+ * | `#deleteCommand`   | the row's delete button, guarded by `canDelete(row)`                 |
+ * | `#aliasesCell`     | the row's host names, from `aliasLinks(row)`                          |
+ * | `#expiresCell`     | the row's expiry, through the shared date pipe, plus its qualifier    |
+ * | `#hostFeeCell`     | the row's hosting fee, marked when the fee is below zero              |
+ * | `#tallyCell`       | BOTH tally columns, switching on the column key it is handed          |
  *
  * A missing reference is reported by {@link PortalListComponent} with a message naming the reference, rather
  * than rendering a silently blank column.
@@ -585,11 +929,24 @@ function stripLeadingBreakTags(message: string): string {
  * table, input or select in the paired template, and no value in the paired stylesheet resolves to anything
  * but a design token or a shared mixin.
  *
- * MIGRATION: no column is sortable and no row is selectable, both by measurement rather than omission. The
- * legacy grid was declared without `AllowSorting` and declared no selected-item style, so it offered neither
- * affordance. Offering a sort would also mean naming a sort field the collection endpoint may not accept,
- * which it answers with a field-level rejection - an affordance that produces a refused request is worse than
- * none.
+ * MIGRATION: no row is selectable, by measurement rather than omission - the legacy grid declared no
+ * selected-item style, so it offered no such affordance.
+ *
+ * MIGRATION: FIVE COLUMNS ARE SORTABLE, AND THIS IS A NET-NEW AFFORDANCE RATHER THAN A PORTED ONE. It was
+ * previously declined here on two grounds, and both have been re-measured. The first was that the legacy grid
+ * declared no `AllowSorting`; that is true, and a case-insensitive census across BOTH legacy trees finds the
+ * attribute exactly ONCE in either of them - in `Website/admin/Files/filemanager.ascx`, a screen the AAP
+ * places out of scope - so not one in-scope legacy grid offered sorting at all. The census therefore says the
+ * same thing about every grid in this application, including the module listing which has offered sorting
+ * since it was written, so it cannot distinguish one screen from another and cannot support having the
+ * affordance on one and not the rest. The second ground was that a sort control might name a field the
+ * endpoint refuses; that risk is now measured away rather than avoided. The endpoint's permitted set is
+ * declared in `backend/src/DnnMigration.Application/Validation/SortableFields.cs` as `Portals` and holds
+ * exactly `PortalId`, `PortalName`, `ExpiryDate`, `HostFee` and `HostSpace`; the comparison is
+ * case-insensitive, every one of the five is a column this grid already paints, and no other column declares
+ * itself sortable - so no control here can produce a refused request. `Users`, `Pages` and `Aliases` remain
+ * unsortable because the server cannot order by them: the first two are computed counts backed by no column
+ * and the third is a collection, which that file records against the same set.
  *
  * MIGRATION: two of the legacy three page-level actions are dropped - exporting a portal template and
  * deleting expired portals - because no portal-template endpoint and no bulk-operation endpoint exist in the
@@ -664,6 +1021,30 @@ export class PortalListComponent implements OnInit {
    */
   private readonly notifications = inject(NotificationService);
 
+  /**
+   * The route, read for the listing coordinates it carries.
+   */
+  private readonly route = inject(ActivatedRoute);
+
+  /**
+   * This screen's lifetime, so the address subscription ends with it.
+   *
+   * Needed explicitly because the subscription is opened in `ngOnInit`, which is NOT an injection context -
+   * so the no-argument form of the unsubscribe operator is unavailable there and the reference has to be
+   * captured here, where it is.
+   */
+  private readonly destroyRef = inject(DestroyRef);
+
+  /**
+   * The router, written to when a coordinate changes.
+   *
+   * ⚠ THE ADDRESS IS THE ONLY WRITE PATH FOR LISTING STATE, AND THAT IS DELIBERATE. Every affordance on this
+   * screen - a letter, a search, a page turn, a heading - navigates, and the address change is what reaches
+   * the store. Writing the store directly AND navigating would issue two reads for one action; writing the
+   * store WITHOUT navigating is what left the address stating a view the screen was not showing.
+   */
+  private readonly router = inject(Router);
+
   // CELL TEMPLATES
   //
   //  Static queries, so they resolve before `ngOnInit` and the column set can be assembled there. A template
@@ -681,6 +1062,40 @@ export class PortalListComponent implements OnInit {
 
   @ViewChild('expiresCell', { static: true })
   private expiresCellTemplate?: TemplateRef<DataTableCellContext<PortalListItem>>;
+
+  @ViewChild('tallyCell', { static: true })
+  private tallyCellTemplate?: TemplateRef<DataTableCellContext<PortalListItem>>;
+
+  // THE HOSTING-FEE CELL
+  //
+  //  ⚠ MINOR (money differentiation) — the column was a FORMATTED column, which paints a string and can
+  //  carry no per-value treatment at all, so a negative fee could not be told from a positive one. Rendering
+  //  it through a template is what lets the negative case carry a mark; the characters painted are
+  //  unchanged, because the template calls the same formatter the formatted column called.
+  @ViewChild('hostFeeCell', { static: true })
+  private hostFeeCellTemplate?: TemplateRef<DataTableCellContext<PortalListItem>>;
+
+  // THE NAME FILTER CONTROL
+  //
+  //  Queried so that the box can be kept SHOWING the filter that is actually in force. Statically, because
+  //  the control is declared unconditionally in the filter row and is therefore in the view before
+  //  `ngOnInit` - which is when the first address arrives and the first adoption happens.
+
+  /**
+   * The free-text name filter control, so its displayed text can be reconciled with the filter in force.
+   *
+   * ⚠ THIS QUERY IS WHAT MAKES A CLEAR-SEARCH WORK, AND ITS ABSENCE WAS THE DEFECT. The shared control is
+   * deliberately uncontrolled - it owns its own value and its own debounce, and it suppresses a REPEAT of the
+   * term it last emitted so that the immediate submit path and the debounced tail cannot both query. Nothing
+   * was ever telling it that the filter had changed underneath it, so three states could arise, all of them
+   * measured at runtime: pressing a letter left the box empty while the listing was filtered; pressing `All`
+   * cleared the listing but left the box showing the old text; and re-entering the screen replayed a previous
+   * visit's filter behind an empty box, with no visible cause for the missing rows and nothing to clear.
+   * Reconciling the box with the filter in force closes all three at once, and it also gives the control's
+   * own duplicate suppression the right memory to compare against.
+   */
+  @ViewChild(SearchInputComponent, { static: true })
+  private nameFilterControl?: SearchInputComponent;
 
   // State owned by this screen
 
@@ -724,6 +1139,20 @@ export class PortalListComponent implements OnInit {
    * The active name filter, or `null` when unfiltered. Drives the strip's pressed state.
    */
   protected readonly activeFilter: Signal<string | null> = this.store.nameFilter;
+
+  /**
+   * The column key the listing is ordered by, or `null` for the server's own ordering.
+   *
+   * Bound INTO the shared grid, which never decides its own sort: the grid marks whichever heading matches
+   * this key and reports activations back out, so the ordering in force is held in exactly one place - the
+   * address, projected through the store - and the grid cannot drift from it.
+   */
+  protected readonly sortBy: Signal<string | null> = this.store.sortBy;
+
+  /**
+   * The direction the ordering is applied in, or `null` for the server's default.
+   */
+  protected readonly sortDir: Signal<SortDirection | null> = this.store.sortDir;
 
   /**
    * The page coordinate the pager paints.
@@ -788,6 +1217,60 @@ export class PortalListComponent implements OnInit {
   protected readonly hasRows: Signal<boolean> = computed<boolean>(
     () => this.portals().length > 0,
   );
+
+  /**
+   * The range and total, restated in the page header.
+   *
+   * ⚠ P-M9 — THE PAGER STAYS WHERE THE LEGACY SCREEN PUT IT AND THE COUNT COMES UP TO MEET
+   * THE OPERATOR.
+   *
+   * The finding is that the pager sits below the fold at 1280x900, measured at y = 908 on page
+   * one - eight pixels past the edge, so nothing about paging is visible until the operator
+   * scrolls. Every obvious remedy was rejected against a measured legacy authority:
+   *
+   *   - MOVING the pager above the grid contradicts `portals.ascx:L56-L58`, where the grid
+   *     closes, a pair of line breaks follows and the paging control is declared after both.
+   *     Position below the grid is the legacy arrangement and is kept.
+   *   - SHORTENING the grid contradicts `Portals.ascx.vb:L273-L288`, whose `FormatPortalAliases`
+   *     appended `<BR>` after every alias, so a portal with sixteen host names was sixteen lines
+   *     tall in the legacy screen too. The tall row is legacy behaviour, not a defect, and the
+   *     tenant this request arrives through is exactly that row on page one.
+   *   - REDUCING the page size contradicts the page size the legacy screen served.
+   *
+   * What is left is DISCLOSURE, and that is what this adds: the same three facts the pager
+   * already states, restated in the header, where they are above the fold at every viewport
+   * because the header is the first thing on the screen. It is a NET ADDITION with no legacy
+   * counterpart - the legacy screen stated the total only in the paging control - and is
+   * recorded as one.
+   *
+   * The numbers come from THE SAME store signals the pager is handed, so the two cannot
+   * disagree; nothing is recomputed here that the pager computes for itself except the range
+   * ends, and those are derived from the served page size rather than from the row count, for
+   * the same reason the pager derives them that way.
+   *
+   * UNDEFINED until a read has produced rows, so the header does not assert a count before one
+   * exists - the same rule that keeps the pager from announcing ahead of its data. The header
+   * treats an absent subtitle as nothing to render, so no empty element is left behind.
+   */
+  protected readonly resultSummary: Signal<string | undefined> = computed<
+    string | undefined
+  >(() => {
+    if (this.hasRows() === false) {
+      return undefined;
+    }
+
+    const total = this.totalCount();
+    const size = this.pageSize();
+    const shownCount = this.portals().length;
+
+    // The first shown ordinal is one-based for the reader, and is derived from the page index
+    // and the SERVED size rather than counted, because a page turn commits its index before its
+    // rows and counting would report the previous page's range for one frame.
+    const first = this.pageIndex() * size + 1;
+    const last = first + shownCount - 1;
+
+    return `${first}\u2013${last} of ${total}`;
+  });
 
   /**
    * Whether to show the full-screen indicator instead of the grid.
@@ -884,9 +1367,35 @@ export class PortalListComponent implements OnInit {
   protected readonly searchPlaceholder = SEARCH_PLACEHOLDER;
 
   /**
-   * Global `DeleteItem.Text`, passed explicitly so the resource provenance is visible.
+   * The confirmation body: the global `DeleteItem.Text` question, then WHICH record it means.
+   *
+   * ⚠ THE MEASURED DEFECT. The body was the bare legacy sentence "Are You Sure You Wish To
+   * Delete This Item?" and named nothing, while the dialog is a real modal that PHYSICALLY
+   * COVERS the table - the row being destroyed included. An operator who reached a row command
+   * by keyboard, sixteen stops in, had no way on screen to tell which of several near-identical
+   * records was about to be destroyed, and the only irreversible action in the console was the
+   * one asking them to confirm blind.
+   *
+   * MIGRATION: the legacy wording is KEPT VERBATIM as the question rather than replaced, because
+   * it is the measured value of the global resource key the legacy grid attached to this column.
+   * What changed around it is the mechanism: the legacy confirmation was a browser `confirm()`
+   * raised from the row the operator had just clicked with a pointer, so the row and the prompt
+   * were one gesture apart. This dialog is modal, backdropped and centred over the listing, so
+   * the context the legacy prompt could take for granted has to be carried IN the prompt.
+   *
+   * Falls back to the bare question when no row is pending. That state is not reachable while
+   * the dialog is on screen - it renders only when a row is pending - so the fallback exists to
+   * keep the type honest rather than to be read.
    */
-  protected readonly deleteConfirmMessage = DELETE_CONFIRM_MESSAGE;
+  protected readonly deleteConfirmMessage: Signal<string> = computed<string>(() => {
+    const target: PortalListItem | null = this.pendingDeletion();
+
+    if (target === null) {
+      return DELETE_CONFIRM_MESSAGE;
+    }
+
+    return `${DELETE_CONFIRM_MESSAGE} ${target.portalName}`;
+  });
 
   /**
    * Local `Edit.Text`, used as the row link's accessible name.
@@ -913,9 +1422,71 @@ export class PortalListComponent implements OnInit {
    */
   protected readonly addPortalLink: (string | number)[] = [PORTALS_SEGMENT, NEW_SEGMENT];
 
+  /**
+   * The legacy word an expired term is qualified with.
+   */
+  protected readonly expiredQualifier = EXPIRED_QUALIFIER;
+
+  /**
+   * The moment the expiry qualifiers are judged against, captured when the screen opens.
+   *
+   * A signal rather than a call to the clock inside the cell accessor, and the difference is not academic:
+   * an accessor that reads the clock returns a different answer on every change-detection pass, so the
+   * qualifier of a term expiring in the next second could flicker, and no test could pin the boundary. Held
+   * as a signal so the whole page agrees with itself and so the boundary is reachable from a specification.
+   *
+   * NOT refreshed on a timer. The legacy screen resolved this once per server render, and a grid that
+   * silently re-qualified a row while an operator was reading it would be a change nobody asked for.
+   */
+  private readonly today = signal<Date>(new Date());
+
+  /**
+   * The mark a tally cell paints in place of the absent-integer marker.
+   */
+  protected readonly absentTallyMark = ABSENT_TALLY_MARK;
+
+  /**
+   * The words behind that mark, announced but not painted.
+   */
+  protected readonly absentTallyDescription = ABSENT_TALLY_DESCRIPTION;
+
+  /**
+   * The name filter as this screen last asked for, or `undefined` when it has asked for none yet.
+   *
+   * ⚠ THIS IS AN ECHO GUARD AND REMOVING IT WOULD ERASE THE OPERATOR'S KEYSTROKES. The reconciliation effect
+   * below writes the filter in force into the search box, and adopting a term also CANCELS whatever emission
+   * the box has pending. That is exactly right when the filter changed somewhere else - a letter, a reset, a
+   * back navigation - and exactly wrong for the echo of the box's own emission, because by the time the store
+   * has settled the operator may already be typing the next word: adopting "ab" back into a box that now
+   * reads "abc" would delete the "c" and cancel the query it had started. Recording what this screen asked
+   * for lets the echo be recognised and ignored.
+   */
+  private ownFilterRequest: string | null | undefined = undefined;
+
   // CONSTRUCTION
 
   constructor() {
+    // Keeps the search box showing the filter that is actually in force.
+    //
+    //  Reads the store rather than the address, because the store is what the grid is drawn from - so the box
+    //  agrees with the ROWS even if a navigation is still settling. The write is `untracked` and goes through
+    //  the control's adopt-without-emitting path, so it neither re-enters this effect nor issues a query for
+    //  a filter that has already been applied.
+    effect(() => {
+      const inForce: string | null = this.store.nameFilter();
+
+      untracked(() => {
+        if (this.ownFilterRequest !== undefined && this.ownFilterRequest === inForce) {
+          // The echo of this screen's own request. The box already holds the operator's text - possibly with
+          // more typed since - so it is left entirely alone.
+          return;
+        }
+
+        // Whatever arrives next is not an echo of a request this screen made.
+        this.ownFilterRequest = undefined;
+        this.nameFilterControl?.cancelPendingSearch(inForce ?? '');
+      });
+    });
     // Announces the outcome of a confirmed deletion exactly once.
     //
     //  The store's delete command invokes its continuation on success only, so a failure would otherwise pass
@@ -940,6 +1511,24 @@ export class PortalListComponent implements OnInit {
     });
   }
 
+  /**
+   * How a row identifies itself to the shared grid, so a re-read of the page already shown reuses its row
+   * elements instead of rebuilding them.
+   *
+   * ⚠ THE DATABASE KEY, NOT THE ARRAY POSITION AND NOT THE OBJECT. The grid's own fallback is the row
+   * OBJECT, which is a correct key only while the same objects stay in play; every read from the server
+   * decodes fresh objects, so without this a refetch of the same page presents entirely new keys and the
+   * whole body is rebuilt to display records that never changed. `portalId` is unique by definition, being
+   * the record's own identifier, which is what `@for` requires - a repeated key is an error there.
+   *
+   * Declared as a bound field rather than an inline arrow so the reference is stable across change
+   * detection; a new function each redraw would set the grid's input every time and defeat its purpose.
+   *
+   * @param row The row about to be rendered.
+   * @returns The record's identifier.
+   */
+  protected readonly portalRowKey = (row: PortalListItem): number => row.portalId;
+
   // LIFECYCLE
 
   /**
@@ -957,7 +1546,44 @@ export class PortalListComponent implements OnInit {
    */
   ngOnInit(): void {
     this.columnSet.set(this.buildColumns());
-    this.store.loadPortals();
+
+    // ⚠ THE ADDRESS ISSUES THE READ, AND THIS IS THE ONLY PLACE IT IS ISSUED ON ENTRY. Subscribing emits
+    // immediately with the address in hand, so the first page is read from that emission rather than from a
+    // separate call here - two calls would issue two requests for the same page on every entry.
+    //
+    // It also settles the stale-state defect at its root. The store is provided at the application root and
+    // therefore OUTLIVES this route, so a previous visit's page, filter and ordering are all still held when
+    // an operator returns; runtime testing measured a fresh sidebar click landing on page three of a filter
+    // the operator could not see. Applying the whole query from the address means a bare `/portals` restores
+    // the defaults and a `/portals?filter=X&currentpage=4` restores exactly that view, in both directions,
+    // for a reload and for back and forward alike.
+    this.route.queryParamMap
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((address: ParamMap): void => {
+        const query: PortalListQuery = parseListQuery(address);
+
+        // An address that says something unusable is CORRECTED rather than obeyed silently, so that what is
+        // on screen and what is in the address never disagree. The correction replaces the entry rather than
+        // adding one - an operator pressing back should reach where they came from, not the uncorrected form
+        // of where they already are - and it returns without reading, because the replacement navigation
+        // emits again and that emission does the read.
+        if (!addressStatesQuery(address, serialiseListQuery(query))) {
+          void this.router.navigate([], {
+            relativeTo: this.route,
+            queryParams: serialiseListQuery(query),
+            queryParamsHandling: 'merge',
+            replaceUrl: true,
+          });
+
+          return;
+        }
+
+        // ⚠ THE ECHO GUARD IS NOT ARMED HERE, AND ARMING IT HERE WOULD DISABLE THE RECONCILIATION ENTIRELY.
+        // Only the search box's own handler knows that a filter came from the box; every OTHER route to this
+        // line - a letter, a reset, a back navigation, a typed address - is a filter the box has not seen and
+        // must be shown.
+        this.store.applyListQuery(query);
+      });
   }
 
   // The first-letter filter strip
@@ -988,13 +1614,14 @@ export class PortalListComponent implements OnInit {
    * @param option The entry chosen. A letter applies that letter; `All` clears the filter.
    */
   protected onFilterSelected(option: PortalFilterOption): void {
-    if (option.value === null) {
-      this.store.clearNameFilter();
-
-      return;
-    }
-
-    this.store.setNameFilter(option.value);
+    // ⚠ THE PENDING EMISSION IS CALLED OFF FIRST, AND THE ORDER MATTERS. The search box holds its own
+    // debounce, so an operator who types "bl" and then presses "C" a moment later would otherwise have the
+    // elapsed delay emit "bl" AFTER this letter has been applied - the older intent silently replacing the
+    // newer one, with "C" painted as selected over a listing of B. Cancelling here, before the navigation,
+    // is what makes the newer intent win. The letter itself is adopted into the box by the reconciliation
+    // effect once the store settles, so it is deliberately not passed here.
+    this.nameFilterControl?.cancelPendingSearch();
+    this.applyFilter(option.value);
   }
 
   /**
@@ -1021,20 +1648,79 @@ export class PortalListComponent implements OnInit {
    * abstraction, so contributing a character here would double whatever pattern it already builds and change
    * which rows match.
    *
-   * MIGRATION: the PREDICATE has changed and this screen must not mis-describe it. The legacy pattern was
-   * anchored at the start of the name - a starts-with test - whereas the implemented repository trims the
-   * text, folds its case and matches it ANYWHERE within the name. That is the server's behaviour to state
-   * and to change; the placeholder wording on the control therefore says "filter by name" rather than
-   * promising either test.
+   * MIGRATION: the PREDICATE is the legacy one, and getting there took a change on the SERVER rather than
+   * here. The legacy pattern was anchored at the start of the name - `Portals.ascx.vb:L142` appends one
+   * trailing wildcard and `04.04.00.SqlDataProvider:L245-L269` applies it with `LIKE @NameToMatch` - and an
+   * intermediate revision of the repository had widened it to match anywhere in the title. That widening
+   * loses no rows, but it costs the twenty-six-letter strip beside this box its entire meaning: against a
+   * containment test, pressing `A` returns every title carrying an `a`. The repository now applies the prefix
+   * test, the case folding and the wildcard hardening together, and the placeholder on this control states
+   * the predicate rather than leaving a reader to infer it.
    *
    * Empty text means NO filter, which is the legacy test `If Filter <> ""` expressed against a type that can
    * say so. Whitespace-only text is NOT treated as empty, because the legacy test would have filtered on it
    * and the server is the one that trims.
    *
+   * ⚠ SUBMITTING A QUERY THE ADDRESS ALREADY STATES ISSUES NO REQUEST, AND THAT IS DELIBERATE. Runtime
+   * measurement of this exact case: on the bare, unfiltered first page with an empty box, pressing Search
+   * produced ZERO requests to `/api/v1/portals`. The click itself was proven to land - `elementFromPoint`
+   * resolved to the submit button, the event arrived with `isTrusted` true, the button took focus and the
+   * shared control's `submit()` did emit - and `router.navigate` was then called with a target identical to
+   * the current address, which Angular's default `onSameUrlNavigation: 'ignore'` correctly drops. Because
+   * this screen's filter, page and ordering ALL live in the address, and the address is the only thing that
+   * asks the store to read, a submit that changes no part of the address asks for nothing.
+   *
+   * It is left that way for three reasons, and the first is the strongest. The state the operator asked for
+   * is ALREADY THE STATE ON SCREEN: the unfiltered first page is rendered, so a re-read would replace ten
+   * rows with the same ten rows. Second, a redundant listing read is itself a defect this work was asked to
+   * remove - the roles listing was refetching itself after every mutation and was corrected precisely so a
+   * screen reads once per thing actually asked for. Third, closing it means detecting "this navigation will
+   * be a no-op" BEFORE navigating and calling the store directly on that branch; a detector that answered
+   * wrongly in the other direction would read twice for every search, which is the defect that was fixed.
+   *
+   * What is NOT left alone is the case that matters: CLEARING a filter that IS in force changes the address
+   * from `?filter=...` to the bare path, so it navigates and re-reads. That is the behaviour the report
+   * raised, and it is verified working.
+   *
    * @param term The operator's text, exactly as typed.
    */
   protected onSearch(term: string): void {
-    this.store.setNameFilter(term.length === 0 ? null : term);
+    const wanted: string | null = term.length === 0 ? null : term;
+
+    // Armed BEFORE the navigation, because the store settles synchronously once the address emits and the
+    // reconciliation effect reads it immediately afterwards. See {@link ownFilterRequest} for why an echo of
+    // this request must not be written back into the box the operator is still typing in.
+    this.ownFilterRequest = wanted;
+    this.applyFilter(wanted);
+  }
+
+  /**
+   * Puts a filter into the address, returning to the first page.
+   *
+   * MIGRATION: returning to the first page reproduces the legacy behaviour exactly rather than adding a
+   * convenience. `Portals.ascx.vb:L215-L222` composed the strip's address with `filter` and NO `currentpage`
+   * pair, so the screen's counter fell back to the default seeded at `:L47` - `_CurrentPage As Integer = 1`,
+   * the first page. Holding the index would leave an operator on the fourth page of a match set that now has
+   * one.
+   *
+   * MIGRATION: the filter now travels in the ADDRESS, which is what the legacy screen did and what the
+   * target had stopped doing. `FilterURL` at `:L215-L222` built a real navigation carrying `filter` and
+   * `currentpage`, so every letter press was a history entry an operator could go back through. That is
+   * restored here - `pushState` rather than `replaceState`, so back returns to the previous filter - while the
+   * two behaviours the legacy could not offer are dropped: the page number is a number throughout rather than
+   * a string read back under a different capitalisation, and no localised text is ever compared.
+   *
+   * @param name The filter to apply, or `null` to clear it.
+   */
+  private applyFilter(name: string | null): void {
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        [FILTER_PARAM]: name,
+        [PAGE_PARAM]: null,
+      },
+      queryParamsHandling: 'merge',
+    });
   }
 
   // PAGING
@@ -1051,14 +1737,144 @@ export class PortalListComponent implements OnInit {
    * @param pageIndex The page to read, counted from nought.
    */
   protected onPageChange(pageIndex: number): void {
-    this.store.goToPage(pageIndex);
+    this.goToPage(pageIndex);
   }
 
   /**
    * Returns to the first page, offered from the past-the-end surface.
    */
   protected onReturnToFirstPage(): void {
-    this.store.goToPage(0);
+    this.goToPage(FIRST_PAGE_INDEX);
+  }
+
+  /**
+   * Puts a page into the address.
+   *
+   * A PUSHED entry rather than a replaced one, which is the legacy behaviour and the one an operator expects:
+   * `Portals.ascx.vb:L215-L222` composed `currentpage` into a real navigation, so every page turn was a
+   * history entry and back returned to the previous page. Runtime testing measured the target turning two
+   * pages while the address stayed exactly `/portals`, which left back leaving the screen altogether.
+   *
+   * The address carries the page counted from ONE, as the legacy parameter did; the index is zero-based on
+   * both sides of the store boundary. The conversion happens once, in {@link serialiseListQuery} and
+   * {@link parsePageIndex}, so no other line has a base to convert between.
+   *
+   * @param pageIndex The page to read, counted from nought.
+   */
+  private goToPage(pageIndex: number): void {
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        [PAGE_PARAM]: firstPageParameter(pageIndex),
+      },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  // ORDERING
+
+  /**
+   * Reorders the listing, returning to the first page.
+   *
+   * MIGRATION: sorting is a NET ADDITION and the endpoint is what makes it offerable. The legacy grid was
+   * declared without `AllowSorting` (`portals.ascx:L13-L20`), so it offered none - on 251 rows at ten to a
+   * page, with the legacy screen's own page-size setting commented out, its only finding aid was the
+   * twenty-six-letter strip. The collection endpoint accepts exactly five ordering fields and answers a sixth
+   * with a field-level `400`, so precisely those five headings are offered and no more: an affordance that
+   * produces a refused request is worse than no affordance. The direction token is the server's own member
+   * name, spelled out in full because the binder rejects `asc`.
+   *
+   * The first page for the same reason a filter change returns to it: which page a row falls on depends on
+   * the ordering, so holding the index would land an operator on a page of rows they have already seen.
+   *
+   * @param change The heading that was activated and the direction to apply. The shared grid decides the
+   * direction - it toggles on the active column and starts ascending on any other - so this screen neither
+   * remembers nor recomputes it.
+   */
+  protected onSortChange(change: DataTableSortChange): void {
+    // A NULL DIRECTION CLEARS THE ORDERING RATHER THAN DEFAULTING IT: the grid's cycle has a third step
+    // that asks for no ordering at all, which is the state this screen arrives in, so the KEY leaves the
+    // address alongside the direction. A key with no direction would be a different question entirely.
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        [SORT_BY_PARAM]: change.direction === null ? null : change.key,
+        [SORT_DIR_PARAM]: change.direction,
+        [PAGE_PARAM]: null,
+      },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  // TALLY CELLS
+
+  /**
+   * Reads the tally a tally column paints.
+   *
+   * One template serves both tally columns - the shared grid hands a cell template the column it is
+   * rendering, precisely so that it can - and this is where the column becomes a value. An unexpected key
+   * fails loudly rather than painting a plausible wrong number, which is the same discipline
+   * {@link requireTemplate} applies to a missing template.
+   *
+   * @param portal The row.
+   * @param columnKey The column being rendered.
+   * @returns The tally as it arrived, marker and all.
+   * @throws Error when the key is not one of the two tally columns.
+   */
+  private tallyOf(portal: PortalListItem, columnKey: string): number {
+    switch (columnKey) {
+      case USERS_COLUMN_KEY:
+        return portal.users;
+      case PAGES_COLUMN_KEY:
+        return portal.pages;
+      default:
+        throw new Error(
+          `The shared tally cell template was rendered for column "${columnKey}", which is not a tally ` +
+            `column. It serves "${USERS_COLUMN_KEY}" and "${PAGES_COLUMN_KEY}" only.`,
+        );
+    }
+  }
+
+  /**
+   * Whether a tally cell holds the legacy absent-integer marker rather than a count.
+   *
+   * @param portal The row.
+   * @param columnKey The column being rendered.
+   * @returns True when the cell should paint the mark instead of the number.
+   */
+  protected isTallyAbsent(portal: PortalListItem, columnKey: string): boolean {
+    return this.tallyOf(portal, columnKey) === ABSENT_INTEGER;
+  }
+
+  /**
+   * The text a tally cell paints.
+   *
+   * @param portal The row.
+   * @param columnKey The column being rendered.
+   * @returns The count as text, or the absent mark.
+   */
+  protected tallyText(portal: PortalListItem, columnKey: string): string {
+    return formatTally(this.tallyOf(portal, columnKey));
+  }
+
+  // EXPIRY
+
+  /**
+   * How a portal's hosting term stands, for the expiry cell to convey.
+   *
+   * MIGRATION: THE STATE IS A NET ADDITION AND THE DATE ITSELF IS UNCHANGED. `Portals.ascx.vb:L250-L260`
+   * formatted the expiry and nothing else, so an expiry that had passed and one a lifetime away painted
+   * identically - runtime testing measured `1/15/2020` and `12/31/2099` rendered in the same colour, the same
+   * weight and with no other mark, on a screen whose whole purpose is to administer hosting terms. The DATE
+   * remains exactly what the legacy painted, including the empty cell for an absent one; what is added is a
+   * qualifier BESIDE it, in words as well as in colour, so the state is conveyed to a reader who cannot
+   * distinguish the two and to one using a screen reader.
+   *
+   * @param portal The row.
+   * @returns The state of the term.
+   */
+  protected expiryState(portal: PortalListItem): PortalExpiryState {
+    return resolveExpiryState(portal.expiryDate, this.today());
   }
 
   // ROW AFFORDANCES
@@ -1152,7 +1968,7 @@ export class PortalListComponent implements OnInit {
    * @returns The command's accessible name.
    */
   protected deleteCommandLabel(portal: PortalListItem): string {
-    return `Delete ${portal.portalName}`;
+    return `Delete ${nameForAnnouncement(portal.portalName)}`;
   }
 
   /**
@@ -1165,8 +1981,55 @@ export class PortalListComponent implements OnInit {
    * @returns The link's accessible name.
    */
   protected editCommandName(portal: PortalListItem): string {
-    return `${EDIT_COMMAND_LABEL}: ${portal.portalName}`;
+    return `${EDIT_COMMAND_VISIBLE_LABEL}: ${nameForAnnouncement(portal.portalName)}`;
   }
+
+  /**
+   * The DESCRIPTION of one row's settings affordance - the legacy tooltip wording, which is no
+   * longer its name.
+   *
+   * ⚠ MINOR (WCAG 2.5.3) — see {@link EDIT_COMMAND_LABEL}. Composed rather than constant so the
+   * description names the row too, which is what the legacy tooltip could not do.
+   *
+   * @param portal The row.
+   * @returns The link's description.
+   */
+  protected editCommandDescription(portal: PortalListItem): string {
+    return `${EDIT_COMMAND_LABEL}: ${nameForAnnouncement(portal.portalName)}`;
+  }
+
+  /** @see EDIT_COMMAND_VISIBLE_LABEL */
+  protected readonly editCommandVisibleLabel = EDIT_COMMAND_VISIBLE_LABEL;
+
+  /**
+   * Whether one row's hosting fee is below zero.
+   *
+   * ⚠ MINOR (money differentiation) — see {@link isNegativeFee} for why only this case is marked.
+   *
+   * @param portal The row.
+   * @returns True when the fee is negative.
+   */
+  protected isFeeNegative(portal: PortalListItem): boolean {
+    return isNegativeFee(portal.hostFee);
+  }
+
+  /**
+   * The text of one row's hosting-fee cell.
+   *
+   * The SAME formatter the column used before this change, reached through the component so the
+   * cell can be rendered from a template and still paint exactly the characters it did - two
+   * fraction digits, no grouping, no currency symbol, reproducing
+   * `portals.ascx:L47 DataFormatString="{0:0.00}"`.
+   *
+   * @param portal The row.
+   * @returns The formatted fee, or an empty string when the fee is not a finite number.
+   */
+  protected hostingFeeText(portal: PortalListItem): string {
+    return formatHostingFee(portal.hostFee);
+  }
+
+  /** @see NEGATIVE_FEE_QUALIFIER */
+  protected readonly negativeFeeQualifier = NEGATIVE_FEE_QUALIFIER;
 
   // THE DELETE FLOW
 
@@ -1366,16 +2229,25 @@ export class PortalListComponent implements OnInit {
         headerAlign: 'start',
         bodyAlign: 'start',
         field: 'portalId',
+        // Ordering: the key IS the endpoint's own sort name. See the sortability note on this class.
+        sortable: true,
       },
 
       // 4. Template column over a label bound to the portal NAME, under the heading "Title" The key follows
       //   the contract member and the label follows the resource value; they differ, and both are correct.
       {
         key: 'portalName',
+        // The row's NAME. Emitted as `<th scope="row">` so a screen reader announces which record
+        // each cell belongs to - without it, traversing a row gives the column name and the value
+        // and never the record's identity. This column is the one a person would read aloud to say
+        // which row they mean. No visual change: the shared stylesheet restores a body row
+        // header's normal weight.
+        rowHeader: true,
         label: TITLE_HEADING,
         headerAlign: 'start',
         bodyAlign: 'start',
         field: 'portalName',
+        sortable: true,
       },
 
       // 5. Template column over `FormatPortalAliases(...)`.
@@ -1407,29 +2279,57 @@ export class PortalListComponent implements OnInit {
 
       // 6. `dnn:textcolumn DataField="Users"`.
       //
-      //    MIGRATION: the value may legitimately be `-1` AND IS RENDERED AS RECEIVED.
-      //       `Library/Components/Portal/PortalInfo.vb` initialises the backing field as `Private _Users As
-      //       Integer = Null.NullInteger`, whose value is `-1`, and the legacy column bound the property RAW
-      //       - so the legacy screen would itself paint `-1` for a portal whose count had not been resolved.
-      //       Bound as text here, so a finite number reaches the cell verbatim: no blanking, no zeroing, no
-      //       absolute value and no substituted placeholder. Suppressing it would be an opportunistic change
-      //       to ported behaviour, which the migration discipline forbids.
+      //    MIGRATION: this is a COMPUTED TALLY and is bound raw because it cannot be negative.
+      //       `Library/Components/Portal/PortalInfo.vb:L309-L318` seeds the backing field to
+      //       `Null.NullInteger` but the GETTER resolves it - `If _Users < 0 Then _Users =
+      //       UserController.GetUserCountByPortal(PortalID)` - and the legacy column bound the property, so
+      //       the sentinel was replaced by a real count before it could ever be painted. The target read
+      //       path computes the same tally from the membership rows, whose count has no negative case, so
+      //       there is nothing to guard here and a guard would be unreachable code.
       {
-        key: 'users',
+        key: USERS_COLUMN_KEY,
         label: USERS_HEADING,
         headerAlign: 'center',
         bodyAlign: 'center',
-        field: 'users',
+        kind: 'template',
+        cellTemplate: this.requireTemplate(this.tallyCellTemplate, 'tallyCell'),
       },
 
-      // 7. `dnn:textcolumn DataField="Pages"`. The same sentinel discipline as the account count, seeded at
-      //   `PortalInfo.vb`.
+      // 7. `dnn:textcolumn DataField="Pages"`. A computed tally like the account count above, but this one
+      //   HAS a negative case, so it is formatted rather than bound.
+      //
+      //   ⚠ AN EARLIER NOTE HERE WAS FACTUALLY WRONG AND IS CORRECTED RATHER THAN QUIETLY DROPPED. It
+      //     claimed the legacy column "bound the property RAW", so that a legacy screen would itself paint
+      //     `-1` for an unresolved count, and concluded that painting `-1` was ported behaviour. The
+      //     property is not raw: `PortalInfo.vb:L320-L329` resolves it through
+      //     `TabController.GetTabCount(PortalID)` on any negative value, exactly as the account count does.
+      //     So a normally provisioned portal never showed `-1` here - it showed a page count.
+      //
+      //   WHERE THE NEGATIVE ACTUALLY COMES FROM, measured rather than inferred. The terminal
+      //     `GetTabCount` at `04.04.00.SqlDataProvider:L511-L525` is `SELECT COUNT(*) - 1 ... WHERE PortalID
+      //     = @PortalID AND TabID <> @AdminTabId`, the subtraction excluding the administration page from
+      //     the tally. A portal with no pages therefore answers `0 - 1`, and a portal whose `AdminTabId` is
+      //     null answers the same because every row's inequality is then UNKNOWN. Confirmed against the
+      //     running database: the portal on this screen holds `AdminTabId NULL` and zero `Tabs` rows, and
+      //     the API answers `"pages": -1`. It is ARITHMETIC, not `Null.NullInteger` - the two are
+      //     indistinguishable by value, which is why the QA report read it as the sentinel.
+      //
+      //   THE ARITHMETIC IS PRESERVED AND THE PRESENTATION IS FIXED, which is the only split that satisfies
+      //     every rule at once. Migration discipline says a discovered legacy defect is annotated and NOT
+      //     repaired, so the repository still returns what the legacy statement returned and the DTO still
+      //     carries it - AAP Rule T7's "sentinels survive at the boundary". What Rule T7 does not licence is
+      //     painting the artifact at an operator: `-1` is not a quantity of pages under any reading, and no
+      //     remedy is suggested by it. A negative tally therefore renders as the empty string, which is what
+      //     the shared grid's formatter contract prescribes for an absent value and what the other absent
+      //     values in this application already use - no new glyph and no invented marker. A zero or positive
+      //     tally reaches the cell verbatim.
       {
-        key: 'pages',
+        key: PAGES_COLUMN_KEY,
         label: PAGES_HEADING,
         headerAlign: 'center',
         bodyAlign: 'center',
-        field: 'pages',
+        kind: 'template',
+        cellTemplate: this.requireTemplate(this.tallyCellTemplate, 'tallyCell'),
       },
 
       // 8. `dnn:textcolumn DataField="HostSpace" HeaderText="DiskSpace"`, painted as "Disk Space" from
@@ -1441,17 +2341,26 @@ export class PortalListComponent implements OnInit {
         headerAlign: 'center',
         bodyAlign: 'center',
         field: 'hostSpace',
+        sortable: true,
       },
 
       // 9. `asp:BoundColumn DataField="HostFee" HeaderText="HostingFee" DataFormatString="{0:0.00}"`,
-      //   painted as "Hosting Fee" from `HostingFee.Header`. A FORMATTED column, because the two decimals
-      //   are the legacy format string and the shared grid's bound member renders a number unformatted.
+      //   painted as "Hosting Fee" from `HostingFee.Header`.
+      //
+      //   ⚠ MINOR (money differentiation) — A TEMPLATE COLUMN, not a formatted one, and the change is
+      //   about treatment rather than text. The two fraction digits are still the legacy format string
+      //   and are still produced by the same formatter, now reached from the template through
+      //   `hostingFeeText`. What a formatted column could not do is give one VALUE a different
+      //   appearance from another, which is why `-125.50`, `0.00` and `4321.99` were measured as
+      //   pixel-identical apart from a single minus glyph.
       {
         key: 'hostFee',
         label: HOSTING_FEE_HEADING,
         headerAlign: 'center',
         bodyAlign: 'center',
-        value: (portal: PortalListItem): string => formatHostingFee(portal.hostFee),
+        kind: 'template',
+        cellTemplate: this.requireTemplate(this.hostFeeCellTemplate, 'hostFeeCell'),
+        sortable: true,
       },
 
       // 10. Template column over `FormatExpiryDate(...)`.
@@ -1473,6 +2382,9 @@ export class PortalListComponent implements OnInit {
         bodyAlign: 'center',
         kind: 'template',
         cellTemplate: this.requireTemplate(this.expiresCellTemplate, 'expiresCell'),
+        // Ordered on the STORED date, so the rows an absent expiry paints as an empty cell still take their
+        // place in the sequence the server produced rather than being reordered by the display rule.
+        sortable: true,
       },
     ];
   }

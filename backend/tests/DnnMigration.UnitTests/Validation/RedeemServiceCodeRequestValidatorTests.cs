@@ -59,7 +59,7 @@ public class RedeemServiceCodeRequestValidatorTests
     /// which is not a parity proof. The legacy screen had no message of its own to recover - its guard was
     /// silent - so this wording is authored, and stating it twice is what makes a change to it visible.
     /// </remarks>
-    private const string CodeRequired = "An invitation code is required.";
+    private const string CodeRequired = "An RSVP Code is required.";
 
     /// <summary>
     /// Width of <c>Roles.RSVPCode nvarchar(50) NULL</c> (<c>03.02.03.SqlDataProvider</c> L45), restated

@@ -63,12 +63,54 @@ label:has(input[type='radio']) {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+
+  // ⚠ THE FLOOR IS ON THE LABEL, NOT ON THE BOX, and that placement is the whole
+  // decision. WCAG 2.2 SC 2.5.8 binds the ACTIVATION TARGET at 24 by 24, and for a
+  // choice control the activation target is the label together with its box: pressing
+  // the words toggles the control. Measured before this rule: the box alone was 13 by 13
+  // and the label row 16.5 tall, so the target failed on the block axis on every
+  // settings screen — 3 checkboxes on the account form, 3 radios and 14 checkboxes
+  // across the two settings screens.
+  //
+  // Growing the label costs 7.5px of height per option and NOTHING else: the glyph keeps
+  // its native 13px size, so the control still renders as the platform's own checkbox
+  // with the platform's indeterminate state, forced-colours treatment and keyboard
+  // behaviour intact. Enlarging the box instead would have meant replacing the control,
+  // which is the change this vocabulary explicitly declines to make.
+  //
+  // The inline axis needs no floor: an option's text is always wider than 24px, and the
+  // flex row is what makes that text part of the target.
+  min-block-size: var(--target-size-min);
+
   font-weight: var(--font-weight-normal);
   // Body text colour, inherited rather than tokenised. The legacy rule that
   // carried this text declares no colour, so the value is the user agent's
   // default and `inherit` reproduces it exactly; see the document baseline in
   // _reset.scss for why that default is not restated as a palette entry.
   color: inherit;
+}
+
+// The OTHER association shape. The rule above only reaches a label that WRAPS its control;
+// the console also uses the sibling form — `<span><input type="radio" id><label for></label></span>`
+// — and `:has()` cannot see a control that is a preceding sibling rather than a descendant.
+// Measured on /portals/new before this rule: the two Portal Type radios reported 13.00 x 13.00
+// and the labels beside them 32.42 x 13.75, so NEITHER half of the pair carried the floor and
+// the `:has()` rule matched nothing on the route at all.
+//
+// The floor goes on the LABEL, not on the input. `min-block-size` on `input[type='radio']`
+// does not pad a native control — Chrome scales the glyph itself — and the 13px glyph is the
+// legacy appearance, which AAP 0.3.5 ranks above the accessibility tier. The label is the
+// larger half of the pair and clicking it activates the same control through `for`, so raising
+// the label raises the pair's activation region while the glyph keeps its platform size and
+// its platform behaviours.
+//
+// `display` is changed deliberately: `min-block-size` has NO effect on a non-replaced INLINE
+// element, so declaring the floor without this would have been inert.
+input[type='checkbox'] + label,
+input[type='radio'] + label {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--target-size-min);
 }
 
 // Decorative only: the control's own `required` attribute is what conveys the
@@ -133,6 +175,27 @@ textarea {
   padding-block: var(--space-1);
   padding-inline: var(--space-2);
 
+  // MIGRATION: A SINGLE-LINE CONTROL FILLS ITS FIELD, WHICH RESTORES A LEGACY PROPORTION
+  // RATHER THAN INVENTING A MODERN ONE. Without this declaration a text box takes the user
+  // agent's own default measure — the `size="20"` fallback, which paints at about 173px —
+  // while `textarea` below already fills its container. One field list therefore rendered
+  // with TWO right edges, measured on the portal creation screen as 173px single-line boxes
+  // beside 288px multi-line ones, and the ragged column is not what the legacy screens did:
+  // an admin field was a two-cell table row whose control cell carried `width="300"`
+  // uniformly, so every control on a legacy screen shared one right edge whatever kind it
+  // was. Filling the control track reproduces that, and the track is itself derived from the
+  // measured legacy proportion by the form surface that owns the cap — so the width still
+  // comes from the measurement and no length is authored here.
+  //
+  // It also recovers the width a narrow viewport was already paying for: the box no longer
+  // sits at a fixed 173px inside a wider column, so the value being typed has the whole
+  // field to use.
+  //
+  // A control that genuinely wants to be narrower — a period, a page size, a fee — is capped
+  // by its own screen through `max-inline-size`, which still wins over this because a maximum
+  // bounds a declared size. Nothing here overrides those.
+  inline-size: var(--size-full);
+
   // Defensive, not decorative. The control never exceeds its container however
   // narrow that container becomes, and it is allowed to shrink below its
   // intrinsic width when it is a flex item — without which a long-valued input
@@ -140,6 +203,56 @@ textarea {
   max-inline-size: var(--size-full);
   min-inline-size: 0;
 
+  // MIGRATION: the border and background state changes are INTERPOLATED, and this
+  // note previously recorded the opposite. The reason it gave was accurate at the
+  // time and is no longer true: the shared mixin surface exported no motion member
+  // and no reduced-motion guard, a partial may not author the guard itself, and an
+  // unguarded transition would impose movement on a reader who has asked their
+  // system for less. `motion-safe` now exists in _mixins.scss and the duration and
+  // easing now exist in _tokens.scss, each added in the file that owns that kind of
+  // value, so both blockers are closed at their source rather than worked around.
+  // The interpolation itself is declared once for every interactive element in
+  // section 12 of _reset.scss - not restated here - and it changes no value in this
+  // rule: the resting border and the hovered border are the same two tints they
+  // always were, and under a reduced-motion preference the step between them is
+  // still instantaneous.
+  // MIGRATION: A CONTROL DERIVES ITS BASE DIRECTION FROM ITS OWN VALUE. Measured
+  // on the delivered console, a role name stored in Hebrew or Arabic round-trips
+  // through the API intact but renders in a control whose base direction is
+  // fixed left-to-right, so the value's own words are laid out against the
+  // script they are written in — trailing punctuation jumps to the wrong end and
+  // a mixed Latin/RTL value reorders. `plaintext` is the CSS equivalent of the
+  // HTML `dir="auto"` attribute: it asks the Unicode bidirectional algorithm to
+  // take the base direction of each paragraph from the first strong directional
+  // character in the CONTENT instead of from this element's `direction`.
+  //
+  // Chosen over `dir="auto"` because the attribute would have to be repeated on
+  // every text control in every feature template — an edit that is silently
+  // incomplete the moment a new field is written — whereas one declaration in
+  // the layer that already styles all of them covers every control that exists
+  // and every control that ever will.
+  //
+  // NOT `isolate`, which the row cells that display these same values already
+  // get and which QA measured as correct THERE. The two keywords answer
+  // different questions and are each right for one of them: `isolate` protects
+  // the SURROUNDINGS from the content, which is what a cell sitting in a row of
+  // other text needs; `plaintext` derives the CONTENT'S OWN base direction,
+  // which is what a field whose entire contents are one user-authored value
+  // needs. Using `isolate` here would leave the value's internal order exactly
+  // as wrong as it is today.
+  //
+  // No-op for the existing corpus: for a value whose first strong character is
+  // Latin the algorithm resolves left-to-right, which is what it already does,
+  // and for an empty or wholly neutral value it falls back to this element's
+  // `direction`. Nothing that renders correctly today changes.
+  unicode-bidi: plaintext;
+  // MIGRATION: A TARGET-SIZE FLOOR THE LEGACY SHEET HAD NO CONCEPT OF. Measured on
+  // the delivered console, 14 of 15 form controls were under 44 px tall at every
+  // viewport and three were under 24 px, because the legacy design sized a control
+  // entirely from its font and its padding, for a mouse. Expressed as a MINIMUM
+  // rather than a fixed height so that a control which needs to be taller - a
+  // textarea, a multiple select - still is.
+  min-block-size: var(--target-size-min);
   // MIGRATION: the border and background state changes are deliberately
   // INSTANTANEOUS. Motion is outside the design system: the legacy portal
   // declares `transition`, `animation` and `@keyframes` zero times each, so it
@@ -204,9 +317,48 @@ select[multiple] {
 // already gets right. The margin reset is what lets the wrapping label in
 // section 2 own the spacing through its `gap`.
 //
-// A native box renders at roughly 13px, well under the 44px touch-target
-// guideline. The wrapping label is itself part of the hit area, so the effective
-// target is the whole option row rather than the box alone.
+// ⚠ THE 13-PIXEL BOX IS DELIBERATE AND IT WAS SETTLED BY MEASUREMENT, NOT BY
+// PREFERENCE — U-M8. The sibling text-entry rule below floors every input, select
+// and textarea at the target-size token; these two are deliberately left at the
+// native size, and the reason is that the target-size criterion they have to meet
+// is satisfied by SPACING rather than by size.
+//
+// The relevant criterion is Target Size (Minimum), whose stated exception is that
+// an undersized target passes if a circle of the minimum diameter centred on it
+// intersects neither another target nor another undersized target's circle. Two
+// such circles intersect only when their centres are closer together than that
+// diameter, so centre-to-centre distance is the figure that decides it. Measured
+// in a real browser on all three screens that carry choice controls:
+//
+//   * The account-policy screen is the worst case in the application — fourteen
+//     checkboxes, nine of them in one fieldset laid out as a 3x3 grid. Column
+//     centres are 334.7 apart and row centres 50 apart, so the nearest neighbour
+//     is always the vertical one at 50 units, which is 2.08x the diameter. Of all
+//     fourteen, ZERO have a nearest-choice centre distance under the diameter, and
+//     ZERO come within half a diameter of any other interactive element: the
+//     tightest such gap on the screen is 16 units, from a checkbox to its own row's
+//     help affordance.
+//   * The account creation screen has three. The tightest is 16 units from a help
+//     button, and the circle centred on it clears that button's edge by 10.5.
+//   * The profile-property grid is the densest LAYOUT of the three and was measured
+//     separately, because a grid packs controls in two dimensions at once: 26 boxes,
+//     two per row across twelve rows plus two in the bulk bar. Column centres are
+//     83.44 apart and row centres 52, so the nearest neighbour is again the vertical
+//     one, at 2.17x the diameter. Of all 26, ZERO have a nearest-choice centre
+//     distance under the diameter and ZERO come within half a diameter of any other
+//     interactive element - the tightest such pair is 125.35 centre-to-centre with a
+//     96.5 edge-to-edge gap, which is over ten times the half-diameter bar.
+//
+// So the exception applies with margin everywhere it is tested. Enlarging the boxes
+// instead would repaint every checkbox on every settings surface for no
+// conformance gain, and would replace a native control whose indeterminate state,
+// forced-colours rendering and keyboard behaviour are already correct. The
+// wrapping label in section 2 additionally makes the whole option row activate the
+// control, so the effective hit area is wider than the box in any case.
+//
+// ⚠ IF A NEW LAYOUT EVER PACKS THESE CLOSER TOGETHER, THE EXCEPTION STOPS
+// APPLYING AND THIS DECISION HAS TO BE RETAKEN. The number to re-measure is
+// centre-to-centre distance against the minimum diameter, not the box size.
 input[type='checkbox'],
 input[type='radio'] {
   accent-color: var(--color-primary);
@@ -238,15 +390,44 @@ button {
   padding-block: var(--space-1);
   padding-inline: var(--space-3);
 
+  // ⚠ THE POINTER-TARGET FLOOR, ON BOTH AXES, AND IT IS DECLARED ONCE HERE FOR EVERY
+  // BUTTON IN THE APPLICATION. Measured before this rule: every primary page action
+  // stood between 21.8 and 23.8 tall — short of the 24 that WCAG 2.2 SC 2.5.8 binds by
+  // one or two pixels, on every screen — and the alphabet filter buttons were the
+  // clearer failure, 19 tall throughout and as narrow as 7 wide on the account listing
+  // where a single letter carried no inline padding at all. Both axes are floored
+  // because both were breached.
+  //
+  // Stated as a MINIMUM, so a button with more content than the floor is unaffected and
+  // the dense grid commands keep their measured proportions. The two declarations below
+  // are what make the floor visible as space rather than as a clipped box: a minimum
+  // block size on a box whose content is shorter leaves the label at the top edge, so
+  // the content is centred within whatever height the floor produces.
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
+  // The comfortable target on BOTH axes. The width minimum matters as much as the
+  // height: a single-glyph button - a pager arrow, a row action, a sort control - has
+  // almost no intrinsic width, and those were the smallest targets measured anywhere
+  // in the application (12 x 15 px on one sort control, 13 px tall on row actions).
+  // The flex centring keeps a short label optically centred once the minimum applies,
+  // and the gap spaces a label from an icon where a button carries both.
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+
   user-select: none;
 
   cursor: pointer;
 
-  // MIGRATION: as with the text controls above, the hover, focus and press
-  // colour changes are instantaneous. No motion member exists on the shared mixin
-  // surface, a component may not author a reduced-motion guard, and the legacy
-  // portal animated nothing — so the immediate change is the compliant and the
-  // faithful behaviour at once.
+  // MIGRATION: as with the text controls above, the hover and press colour changes
+  // are now interpolated by section 12 of _reset.scss, which is the single home for
+  // every state transition in the application; the tints below are unchanged. The
+  // FOCUS ring is pointedly excluded from that interpolation, so the indicator
+  // still appears immediately. This note previously recorded these changes as
+  // instantaneous because the mixin surface exported no reduced-motion guard, which
+  // was true then and is not now.
   //
   // MIGRATION: as with the text controls above, the hover-capability guard
   // cannot be expressed here — raw media queries are barred outside
@@ -257,6 +438,152 @@ button {
     border-color: var(--color-primary-hover);
   }
 
+  &:active {
+    background-color: var(--color-selected);
+  }
+}
+
+// -----------------------------------------------------------------------------
+//  THE SHARED PAGE-ACTION AFFORDANCE
+// -----------------------------------------------------------------------------
+//  ONE appearance for every control a screen projects into the page header's
+//  action row, whether it is an anchor or a button.
+//
+//  ⚠ THE DEFECT IT CLOSES, measured across the ten screens that render a page
+//  action: the SAME row of actions rendered in three different appearances.
+//    * Six screens declared a link-like affordance in their own stylesheet, and
+//      not identically - one carried inset and a corner radius, three carried a
+//      pointer-target floor and nothing else, one carried only a wrapping rule and
+//      one carried no rule at all, so it fell through to the bare anchor styling.
+//    * Four screens projected a BUTTON and therefore inherited the bordered button
+//      appearance above, which put a boxed control in a row that reads as links
+//      everywhere else.
+//  The element choice was never the defect and is not changed by this rule: an
+//  action that navigates must stay an anchor and an action that acts on the current
+//  screen must stay a button. What was wrong is that two correct element choices
+//  produced two different affordances for one kind of action.
+//
+//  MIGRATION: the appearance is the legacy one, and the legacy is unambiguous here.
+//  Page-level admin actions were styled `.CommandButton`
+//  (`Website/Portals/_default/default.css` L442-L473): base typography plus an
+//  UNDERLINED, brand-coloured anchor in every state, with no border, no background
+//  and no inset. Both legacy element choices resolved to that same appearance - a
+//  navigating action was an `asp:HyperLink` with that class
+//  (`Website/admin/Portal/portals.ascx` L7, `Website/admin/Users/users.ascx` L16)
+//  and an acting one was a `dnn:commandbutton` with it
+//  (`Website/admin/Users/ProfileDefinitions.ascx` L39-L41), whose control renders an
+//  ASP.NET `LinkButton` (`Library/Controls/CommandButton/CommandButton.vb` L55) and
+//  therefore an anchor too. So a text-link affordance for both elements is exactly
+//  what the legacy shipped, and the bordered `.StandardButton` (L475) it also
+//  declared was for form buttons rather than page actions.
+//
+//  WHAT DIVERGES FROM THAT, AND WHY. The underline is carried on HOVER rather than
+//  at rest: an always-underlined row of actions competes with the page title beside
+//  it, and the resting state still reads as a link through the brand colour it
+//  shares with every other anchor. The legacy hover ink was pure red, which this
+//  vocabulary reserves for the danger signal and which fails the contrast minimum
+//  as normal text - the same substitution `_reset.scss` section 8 records for every
+//  anchor, made for the same measured reason. Inset, corner radius and the pointer
+//  target floor are net additions: the floor is required, since a page action is a
+//  standalone control rather than a link inside a sentence, and the inset is what
+//  makes that floor read as space rather than as a clipped box.
+//
+//  ⚠ PLACED AFTER THE BUTTON RULE ON PURPOSE. A class beats a bare element selector,
+//  so the resting appearance wins on specificity alone; but `button:hover` and
+//  `button:disabled` weigh the same as this class WITH a pseudo-class, so the
+//  hovered state below can only win by being declared later in the same file. Moving
+//  this block above the button rule would silently restore the bordered hover
+//  background. The DISABLED treatment is deliberately left to that rule, so a
+//  disabled page action still reads as disabled rather than as inert text.
+//
+//  A screen may still add layout-only declarations of its own - a wrapping rule, a
+//  grid placement - through its own class beside this one. What it may not do is
+//  restate the affordance.
+.page-action {
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
+
+  // The floor only produces height on a box, and an anchor is inline by default -
+  // a measured trap: six page actions declared a floor and rendered 16.5 to 21.75
+  // tall because `min-block-size` has no effect on a non-replaced inline element.
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+
+  font: inherit;
+
+  // ⚠ PINNED, AND IT MUST STAY AFTER `font: inherit` - the shorthand above sets
+  // line-height too, so declaring this first would simply be overwritten.
+  //
+  // The measurement that forced it: these actions rendered 24.00px tall on
+  // /portals, /modules and the alias screen and 24.50px tall on /users, /roles and
+  // /settings/profile-definitions. No property of this rule differed. `font:
+  // inherit` was picking up each feature wrapper's own line-height, and those
+  // wrappers disagree - `.portal-list`, `.module-list` and `.portal-alias-list`
+  // tighten to `--line-height-tight` (11px x 1.25 = 13.75px) while the others
+  // inherit the body's `--line-height-base` (11px x 1.5 = 16.5px). Adding 8px of
+  // block padding gives 21.75px, which the floor clamps to 24px, against 24.5px,
+  // which clears the floor and wins - so the height of a shared affordance was
+  // being decided by which screen it happened to be on.
+  //
+  // Pinning the tighter value makes the floor itself decide instead: every one of
+  // these controls is now exactly `--target-size-min`, which is the declared intent
+  // rather than an arithmetic coincidence. The text stays vertically centred by
+  // `align-items` regardless, so nothing moves except the 0.5px.
+  line-height: var(--line-height-tight);
+
+  color: var(--color-primary);
+  text-decoration: none;
+
+  background-color: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+
+  cursor: pointer;
+
+  // ⚠ DELIBERATELY UNGATED, and the pointer-capability guard was REMOVED after
+  // measurement showed it produced the very inconsistency this affordance exists
+  // to remove. Three facts settle it.
+  //
+  // First, the guard was ineffective here. Its purpose is to stop a hover state
+  // sticking after a tap - but the base rules these controls sit on top of are
+  // themselves ungated: `a:hover` in `_reset.scss` declares this same colour AND
+  // this same underline, and `button:hover` below declares the colour. On a
+  // coarse pointer nine of the eleven page actions therefore took the full hover
+  // treatment anyway, guard or no guard.
+  //
+  // Second, its only real effect was to split the set. With `.page-action:hover`
+  // withheld on a coarse pointer, the two page actions that are `<button>`
+  // elements fell through to `button:hover` - which changes the colour but
+  // declares no underline - so they alone lost the underline while the nine
+  // anchors kept it. Measured in a browser reporting `(hover: hover) and
+  // (pointer: fine)` as false: anchors `text-decoration-line: underline`, buttons
+  // `none`. That is a shared affordance rendering two ways.
+  //
+  // Third, it was the odd one out. This was the ONLY gated hover rule in the
+  // whole global layer - `_reset.scss` and the five other hover rules in this
+  // file are all ungated - so gating it made `.page-action` inconsistent with
+  // every rule it competes with. Gating those instead would change hover
+  // behaviour for every link and button in the application, which no finding
+  // asks for.
+  //
+  // At class-plus-pseudo weight (0,2,0) this now beats both `a:hover` and
+  // `button:hover` (0,1,1) on specificity rather than source order, so all eleven
+  // controls resolve identically - including the `background-color`, which stops a
+  // button picking up the white fill `button:hover` would otherwise give it.
+  &:hover {
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+    background-color: transparent;
+  }
+
+  // The pressed state, which is the one the bordered button already had and the
+  // link-like actions did not: a component background of `transparent` at class
+  // weight defeated the global `button:active` tint at element-plus-pseudo weight.
   &:active {
     background-color: var(--color-selected);
   }
@@ -306,19 +633,46 @@ textarea[aria-invalid='true'] {
 
 // The bold weight is the non-colour cue that keeps the message perceivable when
 // its colour is not.
+// ⚠ THIS TREATMENT NOW MATCHES THE SHARED FIELD COMPONENT'S, AND IT DID NOT. Two different
+// answers to the same contrast problem had grown up side by side. The shared component paints
+// its message in `--color-danger-text`, a darkened red that clears the contrast floor as text.
+// This class instead avoided the failing hue on text altogether - blue words with a red rule on
+// the leading edge as a non-text indicator - which also cleared the floor, by a different route.
+// Both were defensible in isolation; together they were not, because a reader moving between two
+// module screens met the SAME sentence rendered two ways. Runtime measurement put a number on it:
+// `Icon File must be a relative path within the portal's own folder.` computed rgb(184, 0, 0)
+// with no border on the module form and rgb(37, 86, 154) with a 4px red rule on the module
+// settings screen - seventeen differing computed properties for one rule.
+//
+// The shared component's answer wins because it is the one nearly every screen already uses:
+// this class has exactly one consumer, the module settings screen, whose bespoke field markup
+// predates the shared field. Converging here changes that one screen and leaves every other
+// alone. The leading rule goes with it: it existed only as a substitute for the compliant red
+// that now paints the text, so keeping it would preserve the disagreement it was invented to
+// avoid.
+//
+// Line height, wrapping and the leading margin deliberately stay as they are, and the residual is
+// measured rather than assumed. The shared component holds several messages in one element and joins
+// them with newlines, so it needs `pre-line` and the roomier line-height step; this class renders one
+// message per element, where neither applies. The margin differs for the same structural reason: the
+// shared component's message declares `margin: 0` because its own errors container supplies the gap,
+// whereas this element is placed directly and has to state its own separation.
+//
+// Post-convergence measurement, one screen against the other on the SAME sentence: at the element
+// `aria-errormessage` NAMES, 0 of 11 computed properties differ. At the inner element that paints the
+// text, 9 of 11 match and the two that differ are exactly these - line-height 18.75 against 22.5, and
+// margin-block-start 4px against 0px. They cancel: both alert regions measure 23px tall (4 + 19 here,
+// a single 23px line box there) and both messages sit flush with their control's left edge, so the
+// whole residual is roughly a 2px shift of the glyphs inside an identically-sized band. Colour,
+// weight, size and the absence of a border - everything the disagreement was actually about - are
+// identical. This is recorded so the last two properties are not re-opened as an oversight.
 .form-error {
   display: block;
   margin-block-start: var(--space-1);
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-bold);
   line-height: var(--line-height-tight);
-  color: var(--color-primary-hover);
-
-  // The redeployed danger colour: a non-text indicator, on the leading edge so
-  // it reads correctly under a right-to-left writing mode. The inset keeps the
-  // text clear of the rule rather than crowding it.
-  border-inline-start: var(--space-1) var(--border-style) var(--color-danger);
-  padding-inline-start: var(--space-2);
+  color: var(--color-danger-text);
 
   // A validation message is generated text of unpredictable length — a field
   // name, a pattern description, a server message — so it wraps rather than
@@ -474,3 +828,77 @@ textarea[readonly] {
 //  the controls above are 12px. The mitigation is to raise the control type step
 //  on touch viewports, but the ramp runs 14px then 20px with no 16px step, so the
 //  rule cannot be written without inventing a literal.
+
+// -----------------------------------------------------------------------------
+//  A SECTION HEADING INSIDE A LEGEND
+// -----------------------------------------------------------------------------
+//  ⚠ WHY A HEADING LIVES INSIDE A `<legend>` AT ALL. Every screen exposed exactly
+//  ONE heading inside `<main>` - the page title - so a screen reader's heading
+//  navigation could reach the page and then nothing. A form of five or six field
+//  sets was one undifferentiated block, and its sections were reachable only by
+//  walking every control in between. `<legend>` names its field set but is NOT a
+//  heading and contributes nothing to the document outline, so the sections were
+//  invisible to the one navigation mode built for moving between them.
+//
+//  The HTML specification permits a `<legend>` to contain a heading, and the
+//  legend's accessible name is still computed from its text content - which now
+//  includes the heading's text - so the field set keeps exactly the name it had.
+//  Nothing is renamed and no field set loses its label.
+//
+//  ⚠ THIS RULE IS WHAT MAKES THE CHANGE INVISIBLE. An `<h2>` carries a UA font
+//  size roughly one and a half times the base and a bold weight and a block margin,
+//  none of which the legends were painted with. `font: inherit` collapses the whole
+//  font shorthand back to the legend's own, and the margin is zeroed, so the section
+//  headings render byte-identically to before. The heading is added for the outline,
+//  not for the appearance.
+//
+//  It applies to a heading at ANY level so a screen that needs a deeper level for a
+//  nested field set is styled without a second rule.
+legend > h1,
+legend > h2,
+legend > h3,
+legend > h4,
+legend > h5,
+legend > h6 {
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+}
+
+// -----------------------------------------------------------------------------
+//  THE IN-FLIGHT SUBMIT
+// -----------------------------------------------------------------------------
+//  ⚠ THE DEFECT: a submit whose request was in flight was INDISTINGUISHABLE from one
+//  at rest. It kept its resting background, it kept its action verb, and it declared
+//  no `aria-busy` - so the only signal that anything was happening was the control
+//  becoming unclickable, which is silent to a screen reader and easy to miss with a
+//  pointer. On a slow answer the reasonable reading was that the press had not landed,
+//  which is precisely the reading that produces a second press.
+//
+//  `aria-busy` is now declared by every submit in the console from its own in-flight
+//  signal, and this rule is the VISIBLE half of that state.
+//
+//  ⚠ WHY IT IS SELECTED ON `aria-busy` RATHER THAN ON `:disabled`. An in-flight submit
+//  is also disabled, but so is a submit the form considers incomplete, and those two
+//  mean opposite things: one says "working", the other says "not yet". Painting them
+//  alike would tell the reader a form is busy when it is merely invalid. The busy
+//  attribute is the only state that means a request is outstanding.
+//
+//  ⚠ SPECIFICITY IS DELIBERATE. `button[aria-busy='true']` weighs (0,1,1), which
+//  out-ranks the shared `button:disabled` rule at (0,0,2) - one attribute beats one
+//  more type-or-pseudo-class - so the busy treatment wins over the disabled treatment
+//  on the same element without `!important`. That ordering is the point: while a
+//  request is outstanding, "busy" is the more informative of the two states.
+//
+//  BOTH CUES ARE NON-COLOUR-DEPENDENT. The surface tint changes AND the cursor becomes
+//  a progress cursor, so the state is not carried by hue alone, and the accessible
+//  name is unaffected - the label swap that accompanies this lives in each template
+//  because only the component knows its own verb.
+//
+//  Values resolve to tokens; the tint is the shared selection tint, already the
+//  vocabulary's "something is happening to this" surface.
+button[aria-busy='true'] {
+  background-color: var(--color-selected);
+  cursor: progress;
+}
