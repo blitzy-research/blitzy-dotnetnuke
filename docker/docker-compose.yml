@@ -1,141 +1,176 @@
 # =============================================================================
-# DnnMigration - two-container topology (AAP 0.9.3).
+# docker/docker-compose.yml
 #
-#   docker compose build
-#   docker compose up -d
-#   curl -f http://localhost:8080/health   # 200, the anonymous liveness view
-#   curl -f http://localhost:4200          # 200, the SPA document
-#   docker compose down
+# The two-container topology for the migration target: the ASP.NET Core 8
+# Backend-for-Frontend API and the nginx-served Angular 19 single-page
+# application. It reproduces the migration plan's preserved container example
+# (AAP 0.9.3) - two services and no more, the API published on 8080 with a
+# health check, the SPA published on 4200 and held back on that health check -
+# and it is the file the plan's container build and end-to-end gates drive.
 #
-# Those two probes are AAP 0.9.4 gate 7 verbatim, and they answer 200 rather than
-# a redirect: both address a loopback authority, which nginx.conf and the API's
-# transport stage both exempt from the HTTPS redirect for the reason stated in
-# each - such a request never leaves the machine that issued it. A revision that
-# published a TLS port here claimed 4200 answered 308 and directed the operator
-# at https://localhost:4443; neither was true of the delivered artefacts, and both
-# claims are withdrawn. For TLS, add the overlay:
+# BUILD CONTEXT IS THE REPOSITORY ROOT, NOT THIS DIRECTORY. Both services set
+# `context: ..`, because every COPY inside the two Dockerfiles is
+# repository-root-relative: docker/api.Dockerfile copies `backend/`, and
+# docker/frontend.Dockerfile copies `frontend/` AND `docker/nginx.conf`. A
+# context rooted at this directory could reach none of them and both builds
+# would fail at their first COPY. `dockerfile:` is itself resolved relative to
+# the context, which is why both entries keep the `docker/` prefix. The
+# repository-root .dockerignore governs both builds and already keeps the legacy
+# reference trees, build output and every environment file out of them.
 #
-#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.tls.yml \
-#     --env-file docker/.env up -d
-#   curl --fail --insecure https://localhost/         # 443, certificate from
-#                                                    # TLS_CERTIFICATE_DIRECTORY
+# HOW IT IS DRIVEN. Compose reads `.env` from the directory that holds this
+# file, so it is run either from here or with an explicit --env-file:
 #
-# Database and JWT values are interpolated from docker/.env (see .env.example);
-# the overlay adds TLS_CERTIFICATE_DIRECTORY and FRONTEND_ORIGIN. nginx is the
-# only browser-facing ingress and forwards to the API over the private network.
-# The frontend waits for the api service's own health check, which reads the
-# liveness view at /health. Every health view must remain anonymous.
+#   docker compose -f docker/docker-compose.yml --env-file docker/.env build
+#   docker compose -f docker/docker-compose.yml --env-file docker/.env up -d
+#   GET http://localhost:8080/health  -> 200, the anonymous liveness view
+#   GET http://localhost:4200         -> 200, the SPA document
+#   docker compose -f docker/docker-compose.yml --env-file docker/.env down
 #
-# TRANSPORT POSTURE OF THIS FILE, STATED PLAINLY. As delivered this topology
-# speaks plain HTTP on both published ports, because AAP 0.9.4 gate 7 probes
-# "curl -f http://localhost:8080/health" and "curl -f http://localhost:4200"
-# against those ports. That makes it a demonstration and development topology,
-# NOT a public-facing one, and two lines below say so in the file rather than
-# leaving it to be discovered:
-#   - the API port is published on the LOOPBACK interface only, so its cleartext
-#     listener is reachable from this host and from the compose network and not
-#     from anywhere else;
-#   - Https__RedirectEnabled is set to false EXPLICITLY, because the API enforces
-#     HTTPS by default outside development. The opt-out is visible here instead of
-#     being the shipped default in appsettings.Production.json.
-# To face the internet, use the TLS overlay documented in .env.example and in
-# docker/nginx.tls.conf.example: it terminates TLS at the front end, withdraws the
-# API's published port, names this bridge network in Proxy__KnownNetworks__0 so the
-# API honours the forwarded scheme, and drops the Https__RedirectEnabled line.
+# DEPLOYMENT VALUES ARE INTERPOLATED, NEVER COMMITTED. Every ${...} below is
+# read from docker/.env, which an operator creates by copying
+# docker/.env.example and filling it in; that template is the documented
+# contract for each variable, and docker/.env is deliberately untracked. No
+# credential, no signing key and no server name appears in this file or in
+# either image - ending the committed-key practice of the legacy application is
+# one of the reasons this migration exists.
+#
+# TRANSPORT POSTURE, STATED PLAINLY. As delivered this topology speaks plain
+# HTTP on both published ports, because the plan's end-to-end gate probes
+# http://localhost:8080/health and http://localhost:4200 directly. That makes it
+# a validation and demonstration topology, NOT a public-facing one, and the two
+# deliberate additions recorded for this file in MIGRATION_NOTES.md say so here
+# rather than leaving it to be discovered:
+#   * the API port is published on the LOOPBACK interface only, so its cleartext
+#     listener - the one that carries sign-in credentials and bearer tokens - is
+#     reachable from this host and from the compose network and nowhere else;
+#   * Https__RedirectEnabled is set to false EXPLICITLY, because
+#     appsettings.Production.json enables HTTPS redirection and every path
+#     except the three health views would otherwise be answered with a redirect
+#     that this cleartext topology cannot satisfy. The opt-out is visible in the
+#     one topology that needs it instead of being the shipped default for every
+#     deployment.
+# To face the internet, add the TLS overlay: it terminates TLS at the front end,
+# withdraws the API's published port and switches redirection back on.
+#
+#   docker compose -f docker/docker-compose.yml \
+#     -f docker/docker-compose.tls.yml --env-file docker/.env up -d
 # =============================================================================
+
+# Named because the preserved example names it. Compose v2 and later report
+# `version` as obsolete and ignore it, and that warning is EXPECTED - it is not
+# a failure and must not be "fixed" by deleting the key, which would deviate
+# from the example the plan freezes.
+version: '3.8'
+
 services:
+  # THE SERVICE NAME IS A CONTRACT, NOT A LABEL. docker/nginx.conf proxies /api/
+  # to http://api:8080/api/ and resolves `api` through the compose network's
+  # embedded DNS. Rename this service and every request the SPA makes to the API
+  # is answered 502 while both containers still report themselves healthy.
   api:
     build:
       context: ..
       dockerfile: docker/api.Dockerfile
     image: dnnmigration-api:latest
     container_name: dnnmigration-api
-    # SEC: bound to the loopback interface, not to every interface. The published
-    # port exists so that gate 7's "curl -f http://localhost:8080/health" and an
-    # operator's own diagnostics work from THIS host; the browser never addresses
-    # it, because the SPA reaches the API same-origin through the frontend
-    # container's /api/ proxy over the compose network. Publishing it as
-    # "8080:8080" bound the API's cleartext listener - the one that carries login
-    # credentials and bearer tokens - to every interface on the host, so a
-    # deployment on a machine with a routable address exposed the whole API,
-    # unproxied and unencrypted, to the network. The loopback prefix removes that
-    # exposure and costs nothing the topology uses.
+    # Host 8080 -> container 8080, the mapping the example specifies, bound to
+    # the loopback interface. The published port exists so that the gate's probe
+    # of http://localhost:8080/health and an operator's own diagnostics work
+    # from THIS host; a browser never addresses it, because the SPA reaches the
+    # API same-origin through the front end's /api/ proxy over the compose
+    # network. Publishing on every interface instead would put an unencrypted,
+    # unproxied API - sign-in credentials included - on the network of any
+    # machine with a routable address, which is the exposure this prefix removes
+    # at no cost to anything the topology actually does.
     ports:
       - "127.0.0.1:8080:8080"
+    # Deployment configuration only. The Kestrel listen address is not restated
+    # here: docker/api.Dockerfile bakes http://+:8080 into the image.
     environment:
-      ASPNETCORE_ENVIRONMENT: Production
-      ASPNETCORE_URLS: http://+:8080
-      # SEE THE TRANSPORT POSTURE NOTE AT THE HEAD OF THIS FILE. The API enforces
-      # HTTPS by default outside development; this topology is plain HTTP end to
-      # end by gate-7 mandate, so the opt-out is stated here, visibly, for exactly
-      # as long as no certificate is mounted. A TLS deployment deletes this line.
-      Https__RedirectEnabled: "false"
-      ConnectionStrings__Default: ${DB_CONNECTION_STRING}
-      Jwt__Secret: ${JWT_SECRET}
-      Jwt__Issuer: ${JWT_ISSUER:-DnnMigration}
-      Jwt__Audience: ${JWT_AUDIENCE:-DnnMigration}
-      Jwt__ExpirationMinutes: ${JWT_EXPIRATION_MINUTES:-60}
+      - ASPNETCORE_ENVIRONMENT=Production
+      # SEE THE TRANSPORT POSTURE NOTE AT THE HEAD OF THIS FILE before removing
+      # this line. Only the three anonymous health views are exempt from the
+      # redirect the production settings turn on, so without this opt-out every
+      # /api/v1 request the front end proxies over plain HTTP is answered with a
+      # redirect the browser cannot follow - and nothing in a build reports it.
+      - Https__RedirectEnabled=false
+      # ConnectionStrings:Default. The DOUBLE underscore is .NET's hierarchical
+      # configuration separator; a single underscore binds to nothing at all.
+      # The API refuses to start on a value that is blank, unparseable,
+      # structurally incomplete or still a template placeholder, so a mistake
+      # here stops the container instead of producing one that answers its probe
+      # and fails every request that touches the store.
+      - ConnectionStrings__Default=${DB_CONNECTION_STRING}
+      # Jwt:Secret, and it is REQUIRED. appsettings.json ships it blank, no
+      # environment overlay supplies one, and the host validates it before it
+      # serves traffic - at least 32 UTF-8 bytes, and no low-entropy or
+      # well-known placeholder - so an omitted key stops the API rather than
+      # signing tokens with an empty one. It comes from docker/.env or from a
+      # managed secret store, and there is no committed value anywhere to leak.
+      - Jwt__Secret=${JWT_SECRET}
+      - Jwt__Issuer=${JWT_ISSUER:-DnnMigration}
+      - Jwt__Audience=${JWT_AUDIENCE:-DnnMigration}
+      - Jwt__ExpirationMinutes=${JWT_EXPIRATION_MINUTES:-60}
+      # The one browser origin the API admits cross-origin. The containerised
+      # SPA is same-origin through the proxy and needs none of this; the entry
+      # serves a workstation running the SPA's own dev server against this
+      # container. A wildcard is never acceptable here, and the TLS overlay
+      # replaces the value with an https origin.
+      - Cors__AllowedOrigins__0=${FRONTEND_ORIGIN:-http://localhost:4200}
       # The bounded legacy-credential window, OFF unless all three are supplied.
-      # The section name is LegacyCredentials, not LegacyCredentialMigration: two
-      # revisions each introduced a settings section for this one window and only
-      # the section the verifier actually reads survives, so a compose file naming
-      # the other one would document a switch that does nothing.
-      LegacyCredentials__Enabled: ${LEGACY_CREDENTIALS_ENABLED:-false}
-      LegacyCredentials__EnabledUntilUtc: ${LEGACY_CREDENTIALS_ENABLED_UNTIL_UTC:-}
-      LegacyCredentials__DecryptionKey: ${LEGACY_CREDENTIALS_DECRYPTION_KEY:-}
-      Cors__AllowedOrigins__0: ${FRONTEND_ORIGIN:-http://localhost:4200}
-      # The ONE hop allowed to report the original client's address and scheme.
-      #
-      # nginx forwards X-Real-IP, X-Forwarded-For and X-Forwarded-Proto, and the
-      # API's credential rate limiter partitions on the caller's address. Without
-      # a trusted proxy the address it observes is this network's proxy for every
-      # browser, so all callers share one credential budget and any one of them
-      # can exhaust everybody else's.
-      #
-      # The FRONTEND CONTAINER'S FIXED ADDRESS, not the subnet. A forwarded
-      # address is supplied by whoever made the request, so trusting a hop the
-      # deployment does not control lets a caller choose its own rate-limit
-      # partition. The subnet is not safe to trust here: the api service
-      # publishes 8080 on the host, and a request arriving through that published
-      # port is source-translated to the network gateway - a same-subnet address -
-      # so a direct caller on the host would be trusted to name its own client
-      # address. Naming 172.28.0.10 trusts nginx and nothing else.
-      Proxy__KnownProxies__0: ${TRUSTED_PROXY_ADDRESS:-172.28.0.10}
-    # Linux Docker does not resolve host.docker.internal by default (unlike Docker
-    # Desktop), and .env.example points DB_CONNECTION_STRING at that name so the
-    # container can reach a SQL Server running on the host. Verified required.
+      # The section name is LegacyCredentials - the one the verifier actually
+      # reads - so an entry naming anything else would document a switch that
+      # does nothing.
+      - LegacyCredentials__Enabled=${LEGACY_CREDENTIALS_ENABLED:-false}
+      - LegacyCredentials__EnabledUntilUtc=${LEGACY_CREDENTIALS_ENABLED_UNTIL_UTC:-}
+      - LegacyCredentials__DecryptionKey=${LEGACY_CREDENTIALS_DECRYPTION_KEY:-}
+      # The ONE hop permitted to report the original caller's address and
+      # scheme. The API's credential rate limiter partitions on that address, so
+      # with nothing trusted every browser behind the front end shares a single
+      # budget and any one caller can exhaust everybody else's. It names the
+      # FRONT END'S FIXED ADDRESS rather than the subnet: a forwarded address is
+      # supplied by whoever made the request, and this subnet also contains the
+      # gateway that host traffic to the published port is translated to, so
+      # trusting the range would let a direct caller choose its own partition.
+      - Proxy__KnownProxies__0=${TRUSTED_PROXY_ADDRESS:-172.28.0.10}
+    # Linux Docker does not resolve host.docker.internal on its own, and the
+    # connection string documented in docker/.env.example names exactly that
+    # host so the container can reach a SQL Server instance running on this
+    # machine. Without this entry that documented default cannot resolve.
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # THE PROBE IS THE LIVENESS VIEW, /health, AND IT STAYS THERE. AAP 0.9.3
-    # supplies this file and AAP 0.9.4 gate 7 probes that exact path, and the API
-    # deliberately excludes the ready-tagged database check from it: this topology
-    # declares no database service, so the store is EXTERNAL and may legitimately
-    # be unreachable while the process starts. A probe that depended on it would
-    # report the container unhealthy for a reason unrelated to whether it can
-    # answer, and `condition: service_healthy` below would hold the front end back
-    # for ever.
+    # wget, AND IT MUST STAY wget: the aspnet:8.0-alpine runtime image ships
+    # BusyBox wget as its only HTTP client. A probe written with any other tool
+    # exits 127 on every attempt, the service is reported unhealthy for its
+    # whole life, and `condition: service_healthy` below then holds the front
+    # end back for ever - with both images built perfectly. The exec-array form
+    # needs no shell in the image. Host-side verification commands legitimately
+    # use a different client; they run outside the container, where it exists,
+    # and the two are deliberately not harmonised.
     #
-    # WHAT CLOSES THE GAP THAT ARRANGEMENT USED TO LEAVE. A misconfigured
-    # DB_CONNECTION_STRING used to produce a container that reported HEALTHY while
-    # every store-backed request and every sign-in failed, because the liveness view
-    # answers without touching the store. That is now impossible for the case that
-    # actually happened: the API REFUSES TO START on a connection string that is
-    # blank, unparseable, structurally incomplete or still carrying a deployment
-    # placeholder (Infrastructure/DependencyInjection.cs), so such a container never
-    # becomes healthy and the front end is never released behind it.
+    # The path is /health, the ANONYMOUS LIVENESS view, and it stays there. This
+    # topology declares no database service, so the store is external and may
+    # legitimately be unreachable while the process starts; a probe that
+    # depended on it would report the container unhealthy for a reason unrelated
+    # to whether it can answer, and would hold the front end behind the health
+    # condition indefinitely. Readiness stays available at /health/ready for an
+    # orchestrator that wants to gate traffic on the store. The command is
+    # identical to the HEALTHCHECK baked into docker/api.Dockerfile, so the
+    # image and the orchestrator agree.
     #
-    # A structurally valid connection string naming a database that is merely
-    # UNREACHABLE remains a liveness-visible-healthy, readiness-unhealthy state, by
-    # design. An orchestrator that owns the database as well should point its own
-    # READINESS probe at /health/ready - the database-aware view - and keep this
-    # liveness probe as it is; compose has no separate readiness concept, which is
-    # why the distinction is documented here rather than expressed in this file.
+    # The interval is deliberately shorter than the image's. Docker runs the
+    # FIRST probe only after one interval has elapsed, so a thirty-second
+    # interval would leave this service `starting` - and therefore the front end
+    # unstarted - well past the ten-second mark at which the end-to-end gate
+    # probes port 4200. start_period keeps early failures from spending the
+    # retry budget while the API opens its first database connection.
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/health || exit 1"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
       interval: 10s
       timeout: 5s
-      retries: 5
       start_period: 20s
+      retries: 3
     restart: unless-stopped
     networks:
       - dnnmigration
@@ -146,53 +181,52 @@ services:
       dockerfile: docker/frontend.Dockerfile
     image: dnnmigration-frontend:latest
     container_name: dnnmigration-frontend
+    # Host 4200 -> container 80. The container side matches
+    # docker/frontend.Dockerfile's EXPOSE 80 and docker/nginx.conf's `listen
+    # 80`; 4200 is kept on the host because it is the port an Angular developer
+    # expects. Nothing in this image listens for TLS - the overlay mounts a
+    # server block and a certificate directory and publishes its own ports.
+    #
+    # There is deliberately no environment block: the SPA is a static bundle
+    # served by nginx, and its API base address was baked in at BUILD time as
+    # the RELATIVE path /api/v1, which is what makes the browser call the same
+    # origin that served the application. No run-time variable can reach it -
+    # there is no Node process in this container - so declaring one would only
+    # mislead. There is no health check either; the front end's own liveness
+    # probe is baked into its image, and nothing in this topology waits on it.
     ports:
-      # 4200 -> 80 and NOTHING ELSE, because nothing in this image listens on 443.
-      # An earlier revision published 4443 here and delivered a certificate pair as
-      # compose secrets, on the assumption that nginx.conf terminated TLS itself. It
-      # does not: the shipped nginx.conf declares one `listen 80` server plus
-      # `include /etc/nginx/tls/*.conf`, a glob that matches no file in the image, and
-      # it reads no /run/secrets path anywhere. The two fragments that survived that
-      # revision made this an INVALID compose project - a service may not reference a
-      # secret no top-level `secrets:` key declares - so `docker compose build` and
-      # `up` both refused to parse the file. They are withdrawn rather than completed:
-      # declaring the secrets would have delivered files nothing reads AND, because the
-      # declaration named them with the required-variable form, would have made this
-      # base topology refuse to start unless a deployment supplied certificates it does
-      # not need.
-      #
-      # TLS IS ACTIVATED BY THE OVERLAY, NOT BY THIS FILE. docker-compose.tls.yml
-      # replaces this `ports` list with 80:80 and 443:443, mounts docker/nginx.tls.conf
-      # into /etc/nginx/tls/ so the include above finds a server block, and mounts the
-      # certificate directory beside it. That is the one supported way to terminate TLS
-      # in this container, and it is where a certificate belongs.
       - "4200:80"
+    # THIS CONDITION IS WHY /health MUST BE ANONYMOUS. The front end is held
+    # back until the api service reports healthy, and that verdict comes from
+    # the probe above. If /health ever required authentication the probe would
+    # be answered 401, the api service would never become healthy, this service
+    # would never start, and the end-to-end gate would fail with both images
+    # built perfectly. The health endpoints in backend/src/DnnMigration.Api
+    # carry [AllowAnonymous] for exactly this reason - keep them that way.
+    #
+    # The direction is frontend -> api and never the reverse.
     depends_on:
       api:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:80/nginx-health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
     restart: unless-stopped
     networks:
       dnnmigration:
         # Fixed, because the api service is configured to trust exactly this
         # address for forwarded headers. A dynamically assigned address would
-        # make that trust unstateable, and the alternative - trusting the whole
-        # subnet - would also trust the network gateway, through which host
-        # traffic to the published API port arrives.
+        # make that trust unstateable, and the only alternative - trusting the
+        # whole subnet - would also trust the gateway through which host traffic
+        # to the published API port arrives.
         ipv4_address: 172.28.0.10
 
+# One user-defined bridge shared by both services, which is what makes the
+# hostname `api` resolvable for docker/nginx.conf's proxy_pass.
 networks:
   dnnmigration:
     driver: bridge
-    # An explicit subnet so the front-end container can hold a fixed address.
-    # Chosen inside the RFC 1918 range Docker uses for bridge networks and away
-    # from the 172.17-172.20 band its default pools allocate from first, so it is
-    # unlikely to collide with a network created outside this file.
+    # An explicit subnet, so the front end can hold the fixed address above.
+    # Chosen inside the RFC 1918 range and away from the 172.17-172.20 band that
+    # the default address pools allocate from first, so it is unlikely to
+    # collide with a network created outside this file.
     ipam:
       config:
         - subnet: 172.28.0.0/24
