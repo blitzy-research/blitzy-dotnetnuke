@@ -458,7 +458,8 @@ internal sealed class RoleRepository : IRoleRepository
         //
         // MIGRATION: the state is ASSIGNED and DbSet.Update is deliberately not used. DbSet.Update
         // infers Added when a store-generated int key equals 0, and dbo.Roles.RoleID is declared
-        // IDENTITY(0, 1) (01.00.00.SqlDataProvider:L115, DnnSchema.sql:260), so 0 is the real first role
+        // IDENTITY(0, 1) (01.00.00.SqlDataProvider:L115, recorded in Schema/TerminalSchema.manifest),
+        // so 0 is the real first role
         // of a tenant - by convention its Administrators role. Every read on this repository is tracked,
         // which is what kept DbSet.Update correct here in practice; assigning the state removes the
         // dependence on that, so a detached role rebuilt by a caller, a seeder or a test is UPDATED
@@ -568,8 +569,8 @@ internal sealed class RoleRepository : IRoleRepository
 
         // MIGRATION: the state is ASSIGNED rather than inferred, for the reason recorded on
         // UpdateAsync above: dbo.RoleGroups.RoleGroupID is declared IDENTITY(0, 1)
-        // (03.02.03.SqlDataProvider:L18, re-declared at 04.00.04.SqlDataProvider:L51, mirrored by the
-        // fixture at DnnSchema.sql:135), so a tenant's first group is numbered zero and DbSet.Update
+        // (03.02.03.SqlDataProvider:L18, re-declared at 04.00.04.SqlDataProvider:L51, recorded in
+        // Schema/TerminalSchema.manifest), so a tenant's first group is numbered zero and DbSet.Update
         // would read that key as "unset" and stage an insert for a detached instance.
         SetModified(_context.Entry(roleGroup));
         return Task.CompletedTask;
@@ -817,10 +818,19 @@ internal sealed class RoleRepository : IRoleRepository
     /// <param name="descending">Whether the ordering runs downwards.</param>
     /// <returns>The ordered query.</returns>
     /// <remarks>
-    /// Every arm terminates on <c>UserRoleID</c>, so the order is total. The three arms that name a value of
-    /// the external membership store order by that tie-break alone; the remark on
-    /// <see cref="ListRoleMembershipsAsync"/> sets out why that is exactly what the in-memory ordering they
-    /// replace produced.
+    /// <para>
+    /// Every arm terminates on <c>UserRoleID</c>, so the order is total.
+    /// </para>
+    /// <para>
+    /// SEC-F11. THREE ARMS WERE REMOVED RATHER THAN LEFT COLLAPSING. <c>CreatedDate</c>,
+    /// <c>LastLoginDate</c> and <c>IsApproved</c> live in the external <c>aspnet_*</c> membership objects,
+    /// not in the mapped model, so no ordering clause over <c>dbo.UserRoles</c> can reach them. Their arms
+    /// fell through to the assignment key, which meant a caller naming one of the three received a
+    /// successful page ordered by something else - and the membership projection publishes none of the three,
+    /// so the wrong order was undetectable from the response. The names are now refused at the boundary by
+    /// <c>SortableFields.RoleUsers</c>, and the default arm below - the display name - is what an unnamed or
+    /// unrecognised value falls to.
+    /// </para>
     /// </remarks>
     private static IQueryable<UserRole> ApplyMembershipOrder(
         IQueryable<UserRole> query,
@@ -850,11 +860,6 @@ internal sealed class RoleRepository : IRoleRepository
                 ? query.OrderByDescending(a => a.User!.IsSuperUser).ThenByDescending(a => a.UserRoleId)
                 : query.OrderBy(a => a.User!.IsSuperUser).ThenBy(a => a.UserRoleId),
 
-            // The three membership-store values: every row carries the same CLR default for them, so the
-            // tie-break alone is the whole ordering, exactly as it was in memory.
-            "CREATEDDATE" or "LASTLOGINDATE" or "ISAPPROVED" => descending
-                ? query.OrderByDescending(a => a.UserRoleId)
-                : query.OrderBy(a => a.UserRoleId),
 
             _ => descending
                 ? query.OrderByDescending(a => a.User!.DisplayName).ThenByDescending(a => a.UserRoleId)

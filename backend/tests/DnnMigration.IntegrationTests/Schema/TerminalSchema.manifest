@@ -1,0 +1,422 @@
+# =====================================================================================
+# TerminalSchema.manifest - the TERMINAL shape of the twenty-one mapped DotNetNuke
+# tables, derived from the legacy upgrade scripts and from nothing this solution emits.
+#
+# WHY IT EXISTS
+#   The integration database is provisioned from Schema/DnnSchema.sql, and that script
+#   used to describe itself as having been emitted from the entity model with
+#   "dotnet ef dbcontext script". Any comparison of the model against a database built
+#   from a model-emitted script compares the model with itself: a model that is
+#   internally consistent and uniformly wrong satisfies every such assertion. This file
+#   breaks that circle by stating the schema INDEPENDENTLY, so that the model, the
+#   provisioning script and the provisioned catalogue are all measured against an
+#   authority none of them produced.
+#
+#   It is not theoretical. Measuring against this manifest for the first time found two
+#   drifted declarations in DnnSchema.sql that the circular comparison had passed for
+#   as long as it existed:
+#     * Roles.PortalID was declared NULL where the terminal schema declares it NOT NULL,
+#       so the fixture accepted a role with no owning portal - a row no installation can
+#       hold - and two persistence tests asserted behaviour over exactly such a row.
+#     * Seven primary keys were provisioned CLUSTERED where the terminal schema and the
+#       entity configurations both declare them NONCLUSTERED.
+#
+# HOW IT WAS DERIVED
+#   Primary authority: the 83 versioned upgrade scripts in
+#   Website/Providers/DataProviders/SqlDataProvider (00.00.00 .. 04.09.00 - the folder
+#   holds 88 *.SqlDataProvider files in all, the other five being the installer, the
+#   uninstaller and the fresh-install snapshot named below), replayed in version order.
+#   Those 83 scripts carry 68,005 lines, 685 ALTER TABLE statements and 30 DROP TABLE
+#   statements, and the chain is destructive rather than additive, so ONLY the cumulative
+#   terminal state is meaningful and no single CREATE TABLE may be read as authoritative.
+#   The measured extent of that, over these twenty-one tables alone: 15 of them take the
+#   terminal shape of at least one column from a script LATER than the one that created
+#   the table, and 4 of them - ModuleSettings, Portals, Roles and Users - were destroyed
+#   outright and rebuilt through a Tmp_ copy that was renamed back over them. Roles was
+#   rebuilt twice, and the two rebuilds disagree about the nullability of PortalID, which
+#   is exactly how the drifted declaration named above came to look defensible.
+#
+#   Every record below therefore cites the LAST statement that established the shape it
+#   records, as <script>:<line>, and every one of those 194 citations was re-read to
+#   confirm that the cited line does declare that column with that type and width.
+#
+#   Corroborating authority: DotNetNuke.Schema.SqlDataProvider, the Red Gate SQL Compare
+#   snapshot of the 4.x development database that ships in the same folder and that a
+#   fresh installation is provisioned from. It is a second legacy artefact produced by a
+#   different tool from a different database, and it agrees with the replay on every one
+#   of the 194 columns except the eleven listed below, each of which a script LATER than
+#   the snapshot explains:
+#     DesktopModules.Dependencies, DesktopModules.Permissions   added 04.05.00
+#     ModuleControls.SupportsPartialRendering                   added 04.05.00
+#     ModulePermission.UserID, TabPermission.UserID             added 04.05.00
+#     ModulePermission.RoleID, TabPermission.RoleID             relaxed to NULL 04.05.00
+#     ProfilePropertyDefinition.DefaultValue                    retyped ntext  04.05.00
+#     Permission.PermissionKey                                  widened to 50  04.06.00
+#     Tabs.IsSecure                                             added 04.05.04
+#
+#   ONE GENUINE DISAGREEMENT between the two authorities is recorded rather than hidden.
+#   The snapshot declares Portals.PortalID as IDENTITY(0, 1) while the upgrade chain
+#   declares IDENTITY(-1, 1) at 01.00.00:77 and again through the rebuild at
+#   01.00.05:1364. The chain is followed, because it is the path this migration binds to
+#   and the seed is load-bearing: -1 is simultaneously the first real tenant key and the
+#   legacy "absent integer" marker. The consequence for a fresh-install database is
+#   documented in MIGRATION_NOTES.md rather than resolved here.
+#
+# WHAT IS ASSERTED, AND WHAT DELIBERATELY IS NOT
+#   Asserted: the table set, every column with its type, declared width, nullability and
+#   identity seed, the primary key with its name, ordered columns and clustering, every
+#   non-primary index with its name, ordered columns and uniqueness, and every physical
+#   foreign key with its name, columns, principal and delete action.
+#
+#   Not asserted: ORDINAL COLUMN POSITION, because the terminal order depends on which
+#   path an installation took - a Tmp_ rebuild reorders the columns it copies, so an
+#   upgraded database and a freshly installed one legitimately differ, and the two
+#   authorities above differ from each other. Also not asserted: DEFAULT constraints and
+#   the WITH NOCHECK and NOT FOR REPLICATION qualifiers, which have no EF Core
+#   counterpart, and NUMERIC PRECISION, which for the only non-integer numeric type in
+#   this set - money - is fixed by the type name that IS asserted.
+#
+# RECORD GRAMMAR
+#   Fields are separated by "|" and trimmed; "-" means "none". A line whose first
+#   non-space character is "#" is a comment. Field one selects the record:
+#     TABLE      | table | primary key name | key columns | CLUSTERED-ness | provenance
+#     COLUMN     | table | column | type | max length | nullability | identity | provenance
+#     INDEX      | name | table | columns | UNIQUE or INDEX | provenance
+#     FOREIGNKEY | name | table | columns | principal | principal columns | delete | provenance
+#
+#   Names carry the legacy spelling exactly, upper and lower case included. The legacy
+#   scripts template every object name as {databaseOwner}{objectQualifier}Name; this
+#   installation declares databaseOwner="dbo" and objectQualifier="" (release.config
+#   L354-L355), so the names here are the un-prefixed forms that resolves to.
+#
+# THIS FILE IS AN ORACLE AND MUST NEVER BE EDITED TO MAKE A TEST PASS. If a comparison
+# against it fails, either the model or DnnSchema.sql has drifted, and the fix belongs
+# there. A change here is legitimate only when a cited script line is shown to say
+# something other than what the record claims.
+# =====================================================================================
+
+# ---- DesktopModules ----
+TABLE      | DesktopModules             | PK_DesktopModules            | DesktopModuleID            | CLUSTERED     | 02.00.00:5148
+COLUMN     | DesktopModules             | BusinessControllerClass    | nvarchar         | 200  | NULL     | -     | 02.02.02:116
+COLUMN     | DesktopModules             | CompatibleVersions         | nvarchar         | 500  | NULL     | -     | 04.03.06:54
+COLUMN     | DesktopModules             | Dependencies               | nvarchar         | 400  | NULL     | -     | 04.05.00:966
+COLUMN     | DesktopModules             | Description                | nvarchar         | 2000 | NULL     | -     | 02.00.00:5137
+COLUMN     | DesktopModules             | DesktopModuleID            | int              | -    | NOT NULL | 1,1   | 02.00.00:5137
+COLUMN     | DesktopModules             | FolderName                 | nvarchar         | 128  | NOT NULL | -     | 03.01.00:22
+COLUMN     | DesktopModules             | FriendlyName               | nvarchar         | 128  | NOT NULL | -     | 02.00.00:5137
+COLUMN     | DesktopModules             | IsAdmin                    | bit              | -    | NOT NULL | -     | 02.00.00:5137
+COLUMN     | DesktopModules             | IsPremium                  | bit              | -    | NOT NULL | -     | 02.00.00:5137
+COLUMN     | DesktopModules             | ModuleName                 | nvarchar         | 128  | NOT NULL | -     | 03.01.00:26
+COLUMN     | DesktopModules             | Permissions                | nvarchar         | 400  | NULL     | -     | 04.05.00:971
+COLUMN     | DesktopModules             | SupportedFeatures          | int              | -    | NOT NULL | -     | 03.01.01:912
+COLUMN     | DesktopModules             | Version                    | nvarchar         | 8    | NULL     | -     | 02.00.00:5137
+
+# ---- ModuleControls ----
+TABLE      | ModuleControls             | PK_ModuleControls            | ModuleControlID            | CLUSTERED     | 02.00.00:5006
+COLUMN     | ModuleControls             | ControlKey                 | nvarchar         | 50   | NULL     | -     | 02.02.00:459
+COLUMN     | ModuleControls             | ControlSrc                 | nvarchar         | 256  | NULL     | -     | 02.00.00:4993
+COLUMN     | ModuleControls             | ControlTitle               | nvarchar         | 50   | NULL     | -     | 02.00.00:4993
+COLUMN     | ModuleControls             | ControlType                | int              | -    | NOT NULL | -     | 02.00.00:4993
+COLUMN     | ModuleControls             | HelpUrl                    | nvarchar         | 200  | NULL     | -     | 02.02.00:454
+COLUMN     | ModuleControls             | IconFile                   | nvarchar         | 100  | NULL     | -     | 02.00.00:4993
+COLUMN     | ModuleControls             | ModuleControlID            | int              | -    | NOT NULL | 1,1   | 02.00.00:4993
+COLUMN     | ModuleControls             | ModuleDefID                | int              | -    | NULL     | -     | 02.00.00:4993
+COLUMN     | ModuleControls             | SupportsPartialRendering   | bit              | -    | NOT NULL | -     | 04.05.00:1259
+COLUMN     | ModuleControls             | ViewOrder                  | int              | -    | NULL     | -     | 02.00.00:4993
+
+# ---- ModuleDefinitions ----
+TABLE      | ModuleDefinitions          | PK_ModuleDefinitions         | ModuleDefID                | NONCLUSTERED  | 01.00.00:462
+COLUMN     | ModuleDefinitions          | DefaultCacheTime           | int              | -    | NOT NULL | -     | 03.01.01:1001
+COLUMN     | ModuleDefinitions          | DesktopModuleID            | int              | -    | NOT NULL | -     | 02.00.00:5170
+COLUMN     | ModuleDefinitions          | FriendlyName               | nvarchar         | 128  | NOT NULL | -     | 01.00.00:65
+COLUMN     | ModuleDefinitions          | ModuleDefID                | int              | -    | NOT NULL | 1,1   | 01.00.00:65
+
+# ---- ModulePermission ----
+TABLE      | ModulePermission           | PK_ModulePermission          | ModulePermissionID         | CLUSTERED     | 03.00.09:477
+COLUMN     | ModulePermission           | AllowAccess                | bit              | -    | NOT NULL | -     | 02.02.00:675
+COLUMN     | ModulePermission           | ModuleID                   | int              | -    | NOT NULL | -     | 02.02.00:675
+COLUMN     | ModulePermission           | ModulePermissionID         | int              | -    | NOT NULL | 1,1   | 02.02.00:675
+COLUMN     | ModulePermission           | PermissionID               | int              | -    | NOT NULL | -     | 02.02.00:675
+COLUMN     | ModulePermission           | RoleID                     | int              | -    | NULL     | -     | 04.05.00:627
+COLUMN     | ModulePermission           | UserID                     | int              | -    | NULL     | -     | 04.05.00:641
+
+# ---- Modules ----
+TABLE      | Modules                    | PK_Modules                   | ModuleID                   | NONCLUSTERED  | 01.00.00:514
+COLUMN     | Modules                    | AllTabs                    | bit              | -    | NOT NULL | -     | 03.01.01:1027
+COLUMN     | Modules                    | EndDate                    | datetime         | -    | NULL     | -     | 02.02.00:321
+COLUMN     | Modules                    | Footer                     | ntext            | -    | NULL     | -     | 02.02.00:321
+COLUMN     | Modules                    | Header                     | ntext            | -    | NULL     | -     | 02.02.00:321
+COLUMN     | Modules                    | InheritViewPermissions     | bit              | -    | NULL     | -     | 02.02.00:44
+COLUMN     | Modules                    | IsDeleted                  | bit              | -    | NOT NULL | -     | 03.01.01:1028
+COLUMN     | Modules                    | ModuleDefID                | int              | -    | NOT NULL | -     | 01.00.00:220
+COLUMN     | Modules                    | ModuleID                   | int              | -    | NOT NULL | 0,1   | 01.00.00:220
+COLUMN     | Modules                    | ModuleTitle                | nvarchar         | 256  | NULL     | -     | 01.00.00:220
+COLUMN     | Modules                    | PortalID                   | int              | -    | NULL     | -     | 03.00.01:11
+COLUMN     | Modules                    | StartDate                  | datetime         | -    | NULL     | -     | 02.02.00:321
+
+# ---- ModuleSettings ----
+TABLE      | ModuleSettings             | PK_ModuleSettings            | ModuleID, SettingName      | CLUSTERED     | 02.00.01:47
+COLUMN     | ModuleSettings             | ModuleID                   | int              | -    | NOT NULL | -     | 01.00.08:6252
+COLUMN     | ModuleSettings             | SettingName                | nvarchar         | 50   | NOT NULL | -     | 01.00.08:6252
+COLUMN     | ModuleSettings             | SettingValue               | nvarchar         | 2000 | NOT NULL | -     | 01.00.08:6252
+
+# ---- Permission ----
+TABLE      | Permission                 | PK_Permission                | PermissionID               | CLUSTERED     | 03.00.09:475
+COLUMN     | Permission                 | ModuleDefID                | int              | -    | NOT NULL | -     | 02.02.00:684
+COLUMN     | Permission                 | PermissionCode             | varchar          | 50   | NOT NULL | -     | 02.02.00:684
+COLUMN     | Permission                 | PermissionID               | int              | -    | NOT NULL | 1,1   | 02.02.00:684
+COLUMN     | Permission                 | PermissionKey              | varchar          | 50   | NOT NULL | -     | 04.06.00:397
+COLUMN     | Permission                 | PermissionName             | varchar          | 50   | NOT NULL | -     | 02.02.00:684
+
+# ---- PortalAlias ----
+TABLE      | PortalAlias                | PK_PortalAlias               | PortalAliasID              | CLUSTERED     | 02.02.02:3953
+COLUMN     | PortalAlias                | HTTPAlias                  | nvarchar         | 200  | NULL     | -     | 02.02.02:3800
+COLUMN     | PortalAlias                | PortalAliasID              | int              | -    | NOT NULL | 1,1   | 02.02.02:3800
+COLUMN     | PortalAlias                | PortalID                   | int              | -    | NOT NULL | -     | 02.02.02:3800
+
+# ---- PortalDesktopModules ----
+TABLE      | PortalDesktopModules       | PK_PortalDesktopModules      | PortalDesktopModuleID      | CLUSTERED     | 02.02.02:3036
+COLUMN     | PortalDesktopModules       | DesktopModuleID            | int              | -    | NOT NULL | -     | 02.02.02:3028
+COLUMN     | PortalDesktopModules       | PortalDesktopModuleID      | int              | -    | NOT NULL | 1,1   | 02.02.02:3028
+COLUMN     | PortalDesktopModules       | PortalID                   | int              | -    | NOT NULL | -     | 02.02.02:3028
+
+# ---- Portals ----
+TABLE      | Portals                    | PK_Portals                   | PortalID                   | NONCLUSTERED  | 01.00.05:1456
+COLUMN     | Portals                    | AdministratorId            | int              | -    | NULL     | -     | 01.00.05:1364
+COLUMN     | Portals                    | AdministratorRoleId        | int              | -    | NULL     | -     | 01.00.05:1364
+COLUMN     | Portals                    | AdminTabId                 | int              | -    | NULL     | -     | 02.02.00:231
+COLUMN     | Portals                    | BackgroundFile             | nvarchar         | 50   | NULL     | -     | 01.00.05:1364
+COLUMN     | Portals                    | BannerAdvertising          | int              | -    | NOT NULL | -     | 03.01.01:1117
+COLUMN     | Portals                    | Currency                   | char             | 3    | NULL     | -     | 01.00.05:1364
+COLUMN     | Portals                    | DefaultLanguage            | nvarchar         | 10   | NOT NULL | -     | 04.03.05:290
+COLUMN     | Portals                    | Description                | nvarchar         | 500  | NULL     | -     | 01.00.05:1364
+COLUMN     | Portals                    | ExpiryDate                 | datetime         | -    | NULL     | -     | 01.00.05:1364
+COLUMN     | Portals                    | FooterText                 | nvarchar         | 100  | NULL     | -     | 01.00.05:1364
+COLUMN     | Portals                    | GUID                       | uniqueidentifier | -    | NOT NULL | -     | 03.01.01:1120
+COLUMN     | Portals                    | HomeDirectory              | varchar          | 100  | NOT NULL | -     | 03.01.01:1123
+COLUMN     | Portals                    | HomeTabId                  | int              | -    | NULL     | -     | 02.00.00:6673
+COLUMN     | Portals                    | HostFee                    | money            | -    | NOT NULL | -     | 03.01.01:1118
+COLUMN     | Portals                    | HostSpace                  | int              | -    | NOT NULL | -     | 03.01.01:1119
+COLUMN     | Portals                    | KeyWords                   | nvarchar         | 500  | NULL     | -     | 01.00.05:1364
+COLUMN     | Portals                    | LoginTabId                 | int              | -    | NULL     | -     | 02.00.00:6673
+COLUMN     | Portals                    | LogoFile                   | nvarchar         | 50   | NULL     | -     | 01.00.05:1364
+COLUMN     | Portals                    | PageQuota                  | int              | -    | NOT NULL | -     | 04.04.00:14
+COLUMN     | Portals                    | PaymentProcessor           | nvarchar         | 50   | NULL     | -     | 01.00.06:598
+COLUMN     | Portals                    | PortalID                   | int              | -    | NOT NULL | -1,1  | 01.00.05:1364
+COLUMN     | Portals                    | PortalName                 | nvarchar         | 128  | NOT NULL | -     | 01.00.05:1364
+COLUMN     | Portals                    | ProcessorPassword          | nvarchar         | 50   | NULL     | -     | 01.00.06:598
+COLUMN     | Portals                    | ProcessorUserId            | nvarchar         | 50   | NULL     | -     | 01.00.06:598
+COLUMN     | Portals                    | RegisteredRoleId           | int              | -    | NULL     | -     | 01.00.05:1364
+COLUMN     | Portals                    | SiteLogHistory             | int              | -    | NULL     | -     | 01.00.06:598
+COLUMN     | Portals                    | SplashTabId                | int              | -    | NULL     | -     | 03.00.04:548
+COLUMN     | Portals                    | TimezoneOffset             | int              | -    | NOT NULL | -     | 03.01.01:1122
+COLUMN     | Portals                    | UserQuota                  | int              | -    | NOT NULL | -     | 04.04.00:14
+COLUMN     | Portals                    | UserRegistration           | int              | -    | NOT NULL | -     | 03.01.01:1116
+COLUMN     | Portals                    | UserTabId                  | int              | -    | NULL     | -     | 02.00.00:6673
+
+# ---- ProfilePropertyDefinition ----
+TABLE      | ProfilePropertyDefinition  | PK_ProfilePropertyDefinition | PropertyDefinitionID       | CLUSTERED     | 04.00.04:1124
+COLUMN     | ProfilePropertyDefinition  | DataType                   | int              | -    | NOT NULL | -     | 04.00.04:1107
+COLUMN     | ProfilePropertyDefinition  | DefaultValue               | ntext            | -    | NULL     | -     | 04.05.00:1593
+COLUMN     | ProfilePropertyDefinition  | Deleted                    | bit              | -    | NOT NULL | -     | 04.00.04:1107
+COLUMN     | ProfilePropertyDefinition  | Length                     | int              | -    | NOT NULL | -     | 04.00.04:1107
+COLUMN     | ProfilePropertyDefinition  | ModuleDefID                | int              | -    | NULL     | -     | 04.00.04:1107
+COLUMN     | ProfilePropertyDefinition  | PortalID                   | int              | -    | NULL     | -     | 04.03.03:77
+COLUMN     | ProfilePropertyDefinition  | PropertyCategory           | nvarchar         | 50   | NOT NULL | -     | 04.00.04:1107
+COLUMN     | ProfilePropertyDefinition  | PropertyDefinitionID       | int              | -    | NOT NULL | 1,1   | 04.00.04:1107
+COLUMN     | ProfilePropertyDefinition  | PropertyName               | nvarchar         | 50   | NOT NULL | -     | 04.00.04:1107
+COLUMN     | ProfilePropertyDefinition  | Required                   | bit              | -    | NOT NULL | -     | 04.00.04:1107
+COLUMN     | ProfilePropertyDefinition  | ValidationExpression       | nvarchar         | 2000 | NULL     | -     | 04.03.05:16
+COLUMN     | ProfilePropertyDefinition  | ViewOrder                  | int              | -    | NOT NULL | -     | 04.00.04:1107
+COLUMN     | ProfilePropertyDefinition  | Visible                    | bit              | -    | NOT NULL | -     | 04.00.04:1107
+
+# ---- RoleGroups ----
+TABLE      | RoleGroups                 | PK_RoleGroups                | RoleGroupID                | NONCLUSTERED  | 04.00.04:57
+COLUMN     | RoleGroups                 | Description                | nvarchar         | 1000 | NULL     | -     | 04.00.04:49
+COLUMN     | RoleGroups                 | PortalID                   | int              | -    | NOT NULL | -     | 04.00.04:49
+COLUMN     | RoleGroups                 | RoleGroupID                | int              | -    | NOT NULL | 0,1   | 04.00.04:49
+COLUMN     | RoleGroups                 | RoleGroupName              | nvarchar         | 50   | NOT NULL | -     | 04.00.04:49
+
+# ---- Roles ----
+TABLE      | Roles                      | PK_Roles                     | RoleID                     | NONCLUSTERED  | 01.00.05:2783
+COLUMN     | Roles                      | AutoAssignment             | bit              | -    | NOT NULL | -     | 03.01.01:1175
+COLUMN     | Roles                      | BillingFrequency           | char             | 1    | NULL     | -     | 01.00.05:2746
+COLUMN     | Roles                      | BillingPeriod              | int              | -    | NULL     | -     | 01.00.08:6828
+COLUMN     | Roles                      | Description                | nvarchar         | 1000 | NULL     | -     | 01.00.05:2746
+COLUMN     | Roles                      | IconFile                   | nvarchar         | 100  | NULL     | -     | 04.00.04:79
+COLUMN     | Roles                      | IsPublic                   | bit              | -    | NOT NULL | -     | 03.01.01:1174
+COLUMN     | Roles                      | PortalID                   | int              | -    | NOT NULL | -     | 01.00.05:2746
+COLUMN     | Roles                      | RoleGroupID                | int              | -    | NULL     | -     | 04.00.04:66
+COLUMN     | Roles                      | RoleID                     | int              | -    | NOT NULL | 0,1   | 01.00.05:2746
+COLUMN     | Roles                      | RoleName                   | nvarchar         | 50   | NOT NULL | -     | 01.00.05:2746
+COLUMN     | Roles                      | RSVPCode                   | nvarchar         | 50   | NULL     | -     | 04.00.04:79
+COLUMN     | Roles                      | ServiceFee                 | money            | -    | NULL     | -     | 03.01.01:1173
+COLUMN     | Roles                      | TrialFee                   | money            | -    | NULL     | -     | 01.00.08:6828
+COLUMN     | Roles                      | TrialFrequency             | char             | 1    | NULL     | -     | 01.00.05:2746
+COLUMN     | Roles                      | TrialPeriod                | int              | -    | NULL     | -     | 01.00.05:2746
+
+# ---- TabModules ----
+TABLE      | TabModules                 | PK_TabModules                | TabModuleID                | CLUSTERED     | 03.00.01:36
+COLUMN     | TabModules                 | Alignment                  | nvarchar         | 10   | NULL     | -     | 03.00.01:19
+COLUMN     | TabModules                 | Border                     | nvarchar         | 1    | NULL     | -     | 03.00.01:19
+COLUMN     | TabModules                 | CacheTime                  | int              | -    | NOT NULL | -     | 03.00.01:19
+COLUMN     | TabModules                 | Color                      | nvarchar         | 20   | NULL     | -     | 03.00.01:19
+COLUMN     | TabModules                 | ContainerSrc               | nvarchar         | 200  | NULL     | -     | 03.00.01:19
+COLUMN     | TabModules                 | DisplayPrint               | bit              | -    | NOT NULL | -     | 03.01.01:1216
+COLUMN     | TabModules                 | DisplaySyndicate           | bit              | -    | NOT NULL | -     | 03.01.01:1217
+COLUMN     | TabModules                 | DisplayTitle               | bit              | -    | NOT NULL | -     | 03.01.01:1215
+COLUMN     | TabModules                 | IconFile                   | nvarchar         | 100  | NULL     | -     | 03.00.01:19
+COLUMN     | TabModules                 | ModuleID                   | int              | -    | NOT NULL | -     | 03.00.01:19
+COLUMN     | TabModules                 | ModuleOrder                | int              | -    | NOT NULL | -     | 03.00.01:19
+COLUMN     | TabModules                 | PaneName                   | nvarchar         | 50   | NOT NULL | -     | 03.00.01:19
+COLUMN     | TabModules                 | TabID                      | int              | -    | NOT NULL | -     | 03.00.01:19
+COLUMN     | TabModules                 | TabModuleID                | int              | -    | NOT NULL | 1,1   | 03.00.01:19
+COLUMN     | TabModules                 | Visibility                 | int              | -    | NOT NULL | -     | 03.00.01:19
+
+# ---- TabModuleSettings ----
+TABLE      | TabModuleSettings          | PK_TabModuleSettings         | TabModuleID, SettingName   | CLUSTERED     | 03.00.09:333
+COLUMN     | TabModuleSettings          | SettingName                | nvarchar         | 50   | NOT NULL | -     | 03.00.01:718
+COLUMN     | TabModuleSettings          | SettingValue               | nvarchar         | 2000 | NOT NULL | -     | 03.00.01:718
+COLUMN     | TabModuleSettings          | TabModuleID                | int              | -    | NOT NULL | -     | 03.00.01:718
+
+# ---- TabPermission ----
+TABLE      | TabPermission              | PK_TabPermission             | TabPermissionID            | CLUSTERED     | 03.00.09:473
+COLUMN     | TabPermission              | AllowAccess                | bit              | -    | NOT NULL | -     | 02.02.00:693
+COLUMN     | TabPermission              | PermissionID               | int              | -    | NOT NULL | -     | 02.02.00:693
+COLUMN     | TabPermission              | RoleID                     | int              | -    | NULL     | -     | 04.05.00:468
+COLUMN     | TabPermission              | TabID                      | int              | -    | NOT NULL | -     | 02.02.00:693
+COLUMN     | TabPermission              | TabPermissionID            | int              | -    | NOT NULL | 1,1   | 02.02.00:693
+COLUMN     | TabPermission              | UserID                     | int              | -    | NULL     | -     | 04.05.00:482
+
+# ---- Tabs ----
+TABLE      | Tabs                       | PK_Tabs                      | TabID                      | NONCLUSTERED  | 01.00.00:496
+COLUMN     | Tabs                       | ContainerSrc               | nvarchar         | 200  | NULL     | -     | 02.02.02:2540
+COLUMN     | Tabs                       | Description                | nvarchar         | 500  | NULL     | -     | 02.00.00:4748
+COLUMN     | Tabs                       | DisableLink                | bit              | -    | NOT NULL | -     | 03.01.01:1281
+COLUMN     | Tabs                       | EndDate                    | datetime         | -    | NULL     | -     | 02.02.02:3184
+COLUMN     | Tabs                       | IconFile                   | nvarchar         | 100  | NULL     | -     | 01.00.05:977
+COLUMN     | Tabs                       | IsDeleted                  | bit              | -    | NOT NULL | -     | 03.01.01:1282
+COLUMN     | Tabs                       | IsSecure                   | bit              | -    | NOT NULL | -     | 04.05.04:45
+COLUMN     | Tabs                       | IsVisible                  | bit              | -    | NOT NULL | -     | 03.01.01:1279
+COLUMN     | Tabs                       | KeyWords                   | nvarchar         | 500  | NULL     | -     | 02.00.00:4748
+COLUMN     | Tabs                       | Level                      | int              | -    | NOT NULL | -     | 03.01.01:1280
+COLUMN     | Tabs                       | PageHeadText               | nvarchar         | 500  | NULL     | -     | 03.01.01:408
+COLUMN     | Tabs                       | ParentId                   | int              | -    | NULL     | -     | 01.00.04:46
+COLUMN     | Tabs                       | PortalID                   | int              | -    | NULL     | -     | 01.00.00:139
+COLUMN     | Tabs                       | RefreshInterval            | int              | -    | NULL     | -     | 03.01.01:408
+COLUMN     | Tabs                       | SkinSrc                    | nvarchar         | 200  | NULL     | -     | 02.02.02:2540
+COLUMN     | Tabs                       | StartDate                  | datetime         | -    | NULL     | -     | 02.02.02:3184
+COLUMN     | Tabs                       | TabID                      | int              | -    | NOT NULL | 0,1   | 01.00.00:139
+COLUMN     | Tabs                       | TabName                    | nvarchar         | 50   | NOT NULL | -     | 01.00.00:139
+COLUMN     | Tabs                       | TabOrder                   | int              | -    | NOT NULL | -     | 03.01.01:1278
+COLUMN     | Tabs                       | TabPath                    | nvarchar         | 255  | NULL     | -     | 02.02.02:3184
+COLUMN     | Tabs                       | Title                      | nvarchar         | 200  | NULL     | -     | 02.00.00:4748
+COLUMN     | Tabs                       | Url                        | nvarchar         | 255  | NULL     | -     | 02.02.00:39
+
+# ---- UserPortals ----
+TABLE      | UserPortals                | PK_UserPortals               | UserId, PortalId           | CLUSTERED     | 01.00.00:405
+COLUMN     | UserPortals                | Authorised                 | bit              | -    | NOT NULL | -     | 04.00.04:682
+COLUMN     | UserPortals                | CreatedDate                | datetime         | -    | NOT NULL | -     | 03.01.01:1335
+COLUMN     | UserPortals                | PortalId                   | int              | -    | NOT NULL | -     | 01.00.00:153
+COLUMN     | UserPortals                | UserId                     | int              | -    | NOT NULL | -     | 01.00.00:153
+COLUMN     | UserPortals                | UserPortalId               | int              | -    | NOT NULL | 1,1   | 02.00.00:7206
+
+# ---- UserProfile ----
+TABLE      | UserProfile                | PK_UserProfile               | ProfileID                  | NONCLUSTERED  | 04.00.04:1422
+COLUMN     | UserProfile                | LastUpdatedDate            | datetime         | -    | NOT NULL | -     | 04.00.04:1411
+COLUMN     | UserProfile                | ProfileID                  | int              | -    | NOT NULL | 1,1   | 04.00.04:1411
+COLUMN     | UserProfile                | PropertyDefinitionID       | int              | -    | NOT NULL | -     | 04.00.04:1411
+COLUMN     | UserProfile                | PropertyText               | ntext            | -    | NULL     | -     | 04.00.04:1411
+COLUMN     | UserProfile                | PropertyValue              | nvarchar         | 3750 | NULL     | -     | 04.00.04:1411
+COLUMN     | UserProfile                | UserID                     | int              | -    | NOT NULL | -     | 04.00.04:1411
+COLUMN     | UserProfile                | Visibility                 | int              | -    | NOT NULL | -     | 04.00.04:1411
+
+# ---- UserRoles ----
+TABLE      | UserRoles                  | PK_UserRoles                 | UserRoleID                 | CLUSTERED     | 01.00.00:441
+COLUMN     | UserRoles                  | EffectiveDate              | datetime         | -    | NULL     | -     | 04.00.04:417
+COLUMN     | UserRoles                  | ExpiryDate                 | datetime         | -    | NULL     | -     | 01.00.00:238
+COLUMN     | UserRoles                  | IsTrialUsed                | bit              | -    | NULL     | -     | 01.00.00:238
+COLUMN     | UserRoles                  | RoleID                     | int              | -    | NOT NULL | -     | 01.00.00:238
+COLUMN     | UserRoles                  | UserID                     | int              | -    | NOT NULL | -     | 01.00.00:238
+COLUMN     | UserRoles                  | UserRoleID                 | int              | -    | NOT NULL | 1,1   | 01.00.00:238
+
+# ---- Users ----
+TABLE      | Users                      | PK_Users                     | UserID                     | CLUSTERED     | 03.00.13:26
+COLUMN     | Users                      | AffiliateId                | int              | -    | NULL     | -     | 02.00.00:6954
+COLUMN     | Users                      | DisplayName                | nvarchar         | 128  | NOT NULL | -     | 04.00.04:668
+COLUMN     | Users                      | Email                      | nvarchar         | 256  | NULL     | -     | 03.00.13:109
+COLUMN     | Users                      | FirstName                  | nvarchar         | 50   | NOT NULL | -     | 01.00.06:182
+COLUMN     | Users                      | IsSuperUser                | bit              | -    | NOT NULL | -     | 03.01.01:1351
+COLUMN     | Users                      | LastName                   | nvarchar         | 50   | NOT NULL | -     | 01.00.06:182
+COLUMN     | Users                      | UpdatePassword             | bit              | -    | NOT NULL | -     | 04.00.04:668
+COLUMN     | Users                      | UserID                     | int              | -    | NOT NULL | 1,1   | 01.00.06:182
+COLUMN     | Users                      | Username                   | nvarchar         | 100  | NOT NULL | -     | 01.00.06:182
+
+# ---- non-primary indexes ----
+INDEX      | IX_DesktopModules_FriendlyName             | DesktopModules             | FriendlyName                               | INDEX  | 03.01.00:38
+INDEX      | IX_DesktopModules_ModuleName               | DesktopModules             | ModuleName                                 | UNIQUE | 03.01.00:30
+INDEX      | IX_ModuleControls                          | ModuleControls             | ModuleDefID, ControlKey, ControlSrc        | UNIQUE | 02.00.00:5013
+INDEX      | IX_ModuleDefinitions                       | ModuleDefinitions          | FriendlyName                               | UNIQUE | 01.00.08:5867
+INDEX      | IX_ModuleDefinitions_1                     | ModuleDefinitions          | DesktopModuleID                            | INDEX  | 02.00.00:5266
+INDEX      | IX_ModulePermission                        | ModulePermission           | ModuleID, PermissionID, RoleID, UserID     | UNIQUE | 04.05.02:134
+INDEX      | IX_ModulePermission_Modules                | ModulePermission           | ModuleID                                   | INDEX  | 04.06.00:1210
+INDEX      | IX_ModulePermission_Permission             | ModulePermission           | PermissionID                               | INDEX  | 04.06.00:1204
+INDEX      | IX_ModulePermission_Roles                  | ModulePermission           | RoleID                                     | INDEX  | 04.06.00:1222
+INDEX      | IX_ModulePermission_Users                  | ModulePermission           | UserID                                     | INDEX  | 04.06.00:1216
+INDEX      | IX_Modules                                 | Modules                    | ModuleDefID                                | INDEX  | 03.00.09:293
+INDEX      | IX_Permission                              | Permission                 | PermissionCode, ModuleDefID, PermissionKey | UNIQUE | 04.05.02:334
+INDEX      | IX_PortalAlias                             | PortalAlias                | HTTPAlias                                  | UNIQUE | 03.00.07:14
+INDEX      | IX_PortalDesktopModules                    | PortalDesktopModules       | PortalID, DesktopModuleID                  | UNIQUE | 02.02.02:3044
+INDEX      | IX_ProfilePropertyDefinition               | ProfilePropertyDefinition  | PortalID, ModuleDefID, PropertyName        | UNIQUE | 04.00.04:1127
+INDEX      | IX_ProfilePropertyDefinition_PropertyName  | ProfilePropertyDefinition  | PropertyName                               | INDEX  | 04.00.04:1128
+INDEX      | IX_RoleGroupName                           | RoleGroups                 | PortalID, RoleGroupName                    | UNIQUE | 04.00.04:60
+INDEX      | IX_RoleName                                | Roles                      | PortalID, RoleName                         | UNIQUE | 03.00.09:304
+INDEX      | IX_Roles                                   | Roles                      | BillingFrequency                           | INDEX  | 03.00.09:302
+INDEX      | IX_TabModules                              | TabModules                 | TabID, ModuleID                            | UNIQUE | 03.00.03:11
+INDEX      | IX_TabPermission                           | TabPermission              | TabID, PermissionID, RoleID, UserID        | UNIQUE | 04.05.02:214
+INDEX      | IX_TabPermission_Permission                | TabPermission              | PermissionID                               | INDEX  | 04.06.00:1178
+INDEX      | IX_TabPermission_Roles                     | TabPermission              | RoleID                                     | INDEX  | 04.06.00:1196
+INDEX      | IX_TabPermission_Tabs                      | TabPermission              | TabID                                      | INDEX  | 04.06.00:1184
+INDEX      | IX_TabPermission_Users                     | TabPermission              | UserID                                     | INDEX  | 04.06.00:1190
+INDEX      | IX_Tabs_1                                  | Tabs                       | PortalID                                   | INDEX  | 03.00.09:349
+INDEX      | IX_Tabs_2                                  | Tabs                       | ParentId                                   | INDEX  | 03.00.09:350
+INDEX      | IX_UserPortals                             | UserPortals                | PortalId                                   | INDEX  | 03.00.09:410
+INDEX      | IX_UserPortals_1                           | UserPortals                | UserId                                     | INDEX  | 03.00.09:411
+INDEX      | IX_UserProfile                             | UserProfile                | UserID                                     | INDEX  | 04.03.02:139
+INDEX      | IX_UserRoles                               | UserRoles                  | RoleID                                     | INDEX  | 03.00.09:417
+INDEX      | IX_UserRoles_1                             | UserRoles                  | UserID                                     | INDEX  | 03.00.09:418
+INDEX      | IX_Users                                   | Users                      | Username                                   | UNIQUE | 03.00.09:422
+
+# ---- physical foreign keys ----
+FOREIGNKEY | FK_ModuleControls_ModuleDefinitions        | ModuleControls             | ModuleDefID            | ModuleDefinitions          | ModuleDefID            | CASCADE   | 02.00.00:5022
+FOREIGNKEY | FK_ModuleDefinitions_DesktopModules        | ModuleDefinitions          | DesktopModuleID        | DesktopModules             | DesktopModuleID        | CASCADE   | 02.00.00:5255
+FOREIGNKEY | FK_ModulePermission_Modules                | ModulePermission           | ModuleID               | Modules                    | ModuleID               | CASCADE   | 03.00.09:491
+FOREIGNKEY | FK_ModulePermission_Permission             | ModulePermission           | PermissionID           | Permission                 | PermissionID           | CASCADE   | 03.00.09:491
+FOREIGNKEY | FK_ModulePermissionUsers                   | ModulePermission           | UserID                 | Users                      | UserID                 | NO ACTION | 04.05.00:644
+FOREIGNKEY | FK_Modules_ModuleDefinitions               | Modules                    | ModuleDefID            | ModuleDefinitions          | ModuleDefID            | CASCADE   | 01.00.00:673
+FOREIGNKEY | FK_Modules_Portals                         | Modules                    | PortalID               | Portals                    | PortalID               | NO ACTION | 03.00.09:295
+FOREIGNKEY | FK_ModuleSettings_Modules                  | ModuleSettings             | ModuleID               | Modules                    | ModuleID               | CASCADE   | 01.00.08:6277
+FOREIGNKEY | FK_PortalAlias_Portals                     | PortalAlias                | PortalID               | Portals                    | PortalID               | CASCADE   | 02.02.02:3807
+FOREIGNKEY | FK_PortalDesktopModules_DesktopModules     | PortalDesktopModules       | DesktopModuleID        | DesktopModules             | DesktopModuleID        | CASCADE   | 02.02.02:3053
+FOREIGNKEY | FK_PortalDesktopModules_Portals            | PortalDesktopModules       | PortalID               | Portals                    | PortalID               | CASCADE   | 02.02.02:3065
+FOREIGNKEY | FK_ProfilePropertyDefinition_Portals       | ProfilePropertyDefinition  | PortalID               | Portals                    | PortalID               | CASCADE   | 04.03.03:87
+FOREIGNKEY | FK_RoleGroups_Portals                      | RoleGroups                 | PortalID               | Portals                    | PortalID               | CASCADE   | 04.00.04:63
+FOREIGNKEY | FK_Roles_Portals                           | Roles                      | PortalID               | Portals                    | PortalID               | CASCADE   | 01.00.05:2790
+FOREIGNKEY | FK_Roles_RoleGroups                        | Roles                      | RoleGroupID            | RoleGroups                 | RoleGroupID            | NO ACTION | 04.00.04:69
+FOREIGNKEY | FK_TabModules_Modules                      | TabModules                 | ModuleID               | Modules                    | ModuleID               | CASCADE   | 03.00.01:56
+FOREIGNKEY | FK_TabModules_Tabs                         | TabModules                 | TabID                  | Tabs                       | TabID                  | CASCADE   | 03.00.01:44
+FOREIGNKEY | FK_TabModuleSettings_TabModules            | TabModuleSettings          | TabModuleID            | TabModules                 | TabModuleID            | CASCADE   | 03.00.09:335
+FOREIGNKEY | FK_TabPermission_Permission                | TabPermission              | PermissionID           | Permission                 | PermissionID           | CASCADE   | 03.00.09:487
+FOREIGNKEY | FK_TabPermission_Tabs                      | TabPermission              | TabID                  | Tabs                       | TabID                  | CASCADE   | 03.00.09:487
+FOREIGNKEY | FK_TabPermission_Users                     | TabPermission              | UserID                 | Users                      | UserID                 | NO ACTION | 04.05.00:485
+FOREIGNKEY | FK_Tabs_Portals                            | Tabs                       | PortalID               | Portals                    | PortalID               | CASCADE   | 01.00.05:1540
+FOREIGNKEY | FK_Tabs_Tabs                               | Tabs                       | ParentId               | Tabs                       | TabID                  | NO ACTION | 01.00.04:50
+FOREIGNKEY | FK_UserPortals_Portals                     | UserPortals                | PortalId               | Portals                    | PortalID               | CASCADE   | 01.00.05:1507
+FOREIGNKEY | FK_UserPortals_Users                       | UserPortals                | UserId                 | Users                      | UserID                 | CASCADE   | 03.00.13:44
+FOREIGNKEY | FK_UserProfile_ProfilePropertyDefinition   | UserProfile                | PropertyDefinitionID   | ProfilePropertyDefinition  | PropertyDefinitionID   | CASCADE   | 04.00.04:1428
+FOREIGNKEY | FK_UserProfile_Users                       | UserProfile                | UserID                 | Users                      | UserID                 | CASCADE   | 04.00.04:1425
+FOREIGNKEY | FK_UserRoles_Roles                         | UserRoles                  | RoleID                 | Roles                      | RoleID                 | CASCADE   | 01.00.05:2811
+FOREIGNKEY | FK_UserRoles_Users                         | UserRoles                  | UserID                 | Users                      | UserID                 | CASCADE   | 03.00.13:55
+
+# ---- totals, so a truncated resource cannot silently weaken a comparison ----
+TOTALS     | tables 21 | columns 194 | indexes 33 | foreignkeys 29

@@ -2831,8 +2831,8 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// The removal lands as one unit of work rather than as two independently durable statements, and it
-    /// takes no transaction of its own to achieve that.
+    /// The removal lands inside one transaction rather than as two independently durable statements, and the
+    /// scope is obtained through the JOINING helper so the same member can also be used inside a cascade.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -2843,17 +2843,25 @@ public sealed class PermissionEvaluatorTests
     /// and its page grants intact.
     /// </para>
     /// <para>
-    /// THE ORACLE IS ONE COMMIT AND NO SCOPE, and the "and no scope" half is the part that matters. Both
-    /// repository members STAGE against the change tracker - <c>IPermissionRepository</c> declares them as
-    /// staging members - so a single <c>SaveChangesAsync</c> already applies them indivisibly, which is the
-    /// guarantee <c>IUnitOfWork.SaveChangesAsync</c> makes. An earlier revision wrapped them in an explicit
-    /// scope on the mistaken premise that each reached the store when called; that scope is what made this
-    /// member unusable inside the account-deletion cascade, because the unit of work refuses a nested one.
-    /// Pinning its absence is therefore pinning the fix, not merely recording an implementation detail.
+    /// AN EARLIER REVISION OF THIS FACT PINNED THE OPPOSITE, and the premise it rested on was false. It
+    /// asserted that no scope was opened, on the grounds that both repository members staged against the
+    /// change tracker so one <c>SaveChangesAsync</c> would apply them indivisibly. They do not stage: each
+    /// issues one set-based <c>ExecuteDeleteAsync</c> that reaches the store when it is called, and
+    /// <c>IPermissionRepository</c>'s own remarks say so and say the caller must open the boundary. Pinning
+    /// the absence of the scope was therefore pinning the defect - outside an enclosing transaction the pair
+    /// really was two independently durable statements, exactly as in the legacy.
+    /// </para>
+    /// <para>
+    /// WHICH HELPER IS USED IS PART OF THE CONTRACT, so it is asserted rather than left to inspection.
+    /// <c>BeginTransactionAsync</c> refuses to nest, which is what made an even earlier revision of the
+    /// SERVICE unusable inside the account-deletion cascade; <c>JoinOrBeginTransactionAsync</c> returns a
+    /// no-op join when a scope is already held, so one call site serves the standalone caller and the cascade
+    /// without either losing its guarantee. A future edit that swapped one for the other would break the
+    /// cascade at runtime and nowhere else, so both directions are asserted here.
     /// </para>
     /// </remarks>
     [Fact]
-    public async Task RemoveGrants_CommitsBothTablesInOneUnitOfWorkWithoutOpeningATransaction()
+    public async Task RemoveGrants_CommitsBothTablesInsideOneJoinableTransaction()
     {
         Harness harness = Harness.Ready();
 
@@ -2868,30 +2876,92 @@ public sealed class PermissionEvaluatorTests
             unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
             Times.Once());
 
+        // ⚠ SEC-F13. THIS ASSERTED THAT NO TRANSACTION WAS OPENED, ON THE READING THAT BOTH REMOVALS WERE
+        // STAGED AGAINST THE CHANGE TRACKER AND APPLIED BY ONE FLUSH. They are not staged: both repository
+        // members issue a set-based ExecuteDeleteAsync, which runs when it is called. The first delete was
+        // therefore already durable when the second was issued, so a failure between them left the account's
+        // module grants gone and its page grants intact - the half-cleaned state this migration set out to
+        // eliminate. One scope now spans both statements and the flush.
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.JoinOrBeginTransactionAsync(
+                It.IsAny<TransactionIsolation>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once());
         harness.UnitOfWork.Verify(
             unitOfWork => unitOfWork.BeginTransactionAsync(
                 It.IsAny<TransactionIsolation>(),
                 It.IsAny<CancellationToken>()),
-            Times.Never());
+            Times.Once());
+
         harness.Transaction.Verify(
             transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),
-            Times.Never());
+            Times.Once());
     }
 
     /// <summary>
-    /// The stage-only form stages both tables and neither commits nor evicts, which is what lets it join a
-    /// larger unit of work.
+    /// A failure between the two grant tables leaves the transaction uncommitted, so neither table is
+    /// modified.
     /// </summary>
     /// <remarks>
-    /// THE REGRESSION THIS PINS is the partial-commit boundary the account-deletion cascade used to carry.
-    /// The cascade documents its permission step as staged, but it called the top-level member, which
-    /// committed the grant removals on its own; a credential removal failing afterwards then left an account
-    /// intact with its grants already destroyed - and the reply said the account had been left alone. The
-    /// staging member exists so the cascade can decide WHEN the removal becomes durable, so a commit or an
-    /// eviction here would reintroduce the defect exactly.
+    /// This is the fact the atomicity claim rests on, and it cannot be inferred from the fact above: a scope
+    /// that is opened and always committed proves nothing about the failure path. The page-grant removal is
+    /// made to fault AFTER the module-grant removal has already reached the store, which is precisely the
+    /// window the legacy left open, and the assertion is that the scope is abandoned rather than committed.
     /// </remarks>
     [Fact]
-    public async Task StageGrantRemoval_StagesBothTablesWithoutCommittingOrEvicting()
+    public async Task RemoveGrants_WhenTheSecondTableFails_AbandonsTheTransaction()
+    {
+        Harness harness = Harness.Ready();
+        harness.Permissions
+            .Setup(permissions => permissions.DeleteTabPermissionsByUserIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("the page-grant delete failed"));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => harness.Service.DeleteUserPermissionsAsync(PortalId, UserId, CancellationToken.None));
+
+        harness.Permissions.Verify(
+            permissions => permissions.DeleteModulePermissionsByUserIdAsync(
+                PortalId,
+                UserId,
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+        harness.Transaction.Verify(
+            transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.Transaction.Verify(transaction => transaction.DisposeAsync(), Times.Once());
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.Cache.Verify(cache => cache.InvalidateModulePermissions(It.IsAny<int>()), Times.Never());
+        harness.Cache.Verify(cache => cache.InvalidateTabPermissions(It.IsAny<int>()), Times.Never());
+    }
+
+    /// <summary>
+    /// The cascade-facing form removes from both tables and neither flushes nor evicts, which is what lets it
+    /// join a larger unit of work.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// THE REGRESSION THIS PINS is the partial-commit boundary the account-deletion cascade used to carry.
+    /// The cascade documents its permission step as joining its own unit of work, but it called the top-level
+    /// member, which committed the grant removals on its own; a credential removal failing afterwards then
+    /// left an account intact with its grants already destroyed - and the reply said the account had been left
+    /// alone. This member exists so the cascade can decide WHEN the removal becomes durable, so a flush or an
+    /// eviction here would reintroduce the defect exactly.
+    /// </para>
+    /// <para>
+    /// It asserts that <c>BeginTransactionAsync</c> is not used, and deliberately does NOT assert that no
+    /// scope is obtained at all. The two removals are immediate set-based deletes, so a boundary is required;
+    /// the JOINING helper supplies it without taking durability away from the cascade, because inside an
+    /// enclosing scope it is a no-op whose commit does nothing. The non-nesting member would fault the cascade
+    /// outright, which is the distinction worth pinning.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task StageGrantRemoval_RemovesFromBothTablesWithoutFlushingOrEvicting()
     {
         Harness harness = Harness.Ready();
         harness.PortalTabs = [new Tab { TabId = TabId, PortalId = PortalId, TabName = "First" }];
@@ -2919,13 +2989,14 @@ public sealed class PermissionEvaluatorTests
         harness.UnitOfWork.Verify(
             unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
             Times.Never());
-        harness.UnitOfWork.Verify(
-            unitOfWork => unitOfWork.BeginTransactionAsync(
-                It.IsAny<TransactionIsolation>(),
-                It.IsAny<CancellationToken>()),
+
+        // SEC-F13. The scope IS opened - the guards run inside it, so a refusal abandons a scope that has
+        // issued no statement - and what matters is that nothing COMMITS and nothing is evicted.
+        harness.Transaction.Verify(
+            transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),
             Times.Never());
-        harness.Cache.Verify(cache => cache.InvalidateTabPermissions(It.IsAny<int>()), Times.Never());
-        harness.Cache.Verify(cache => cache.InvalidateModulePermissions(It.IsAny<int>()), Times.Never());
+        harness.Cache.Verify(cache => cache.Remove(It.IsAny<string>()), Times.Never());
+        harness.Cache.Verify(cache => cache.RemoveByPrefix(It.IsAny<string>()), Times.Never());
     }
 
     /// <summary>
@@ -3159,38 +3230,44 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// The eviction member evicts both grant families, the module family page by page, for the caller that
-    /// owned the commit.
+    /// The eviction member evicts the catalogue entries this service actually writes, and reads nothing.
     /// </summary>
+    /// <remarks>
+    /// SEC-F8. It used to evict the two LEGACY grant key families - one tenant-keyed, one page-keyed - which
+    /// meant reading every page of the tenant after the commit purely to compose cache keys. Nothing in this
+    /// application writes either family, so the eviction invalidated nothing while giving a durable,
+    /// completed deletion one more chance to fail. The assertions below are the corrected set: the single
+    /// page-scoped catalogue key by name, and the module-definition family by prefix. No page read occurs,
+    /// which is asserted by leaving the tab repository unconfigured on a STRICT mock - a read would throw.
+    /// </remarks>
     [Fact]
-    public async Task InvalidateGrantCaches_EvictsBothGrantFamilies()
+    public void InvalidateGrantCaches_EvictsTheCatalogueEntriesItWrites()
     {
         Harness harness = Harness.Ready();
-        harness.PortalTabs =
-        [
-            new Tab { TabId = TabId, PortalId = PortalId, TabName = "First" },
-            new Tab { TabId = TabId + 1, PortalId = PortalId, TabName = "Second" },
-        ];
 
-        await harness.Service.InvalidateUserPermissionCachesAsync(PortalId, CancellationToken.None);
+        harness.Service.InvalidateUserPermissionCaches();
 
-        harness.Cache.Verify(cache => cache.InvalidateTabPermissions(PortalId), Times.Once());
-        harness.Cache.Verify(cache => cache.InvalidateModulePermissions(TabId), Times.Once());
-        harness.Cache.Verify(cache => cache.InvalidateModulePermissions(TabId + 1), Times.Once());
+        harness.Cache.Verify(
+            cache => cache.Remove("PermissionDefinitionsByTab|all"),
+            Times.Once());
+        harness.Cache.Verify(
+            cache => cache.RemoveByPrefix("PermissionDefinitionsByModuleDefinition|"),
+            Times.Once());
+        harness.Cache.Verify(
+            cache => cache.InvalidateTabPermissions(It.IsAny<int>()),
+            Times.Never());
+        harness.Cache.Verify(
+            cache => cache.InvalidateModulePermissions(It.IsAny<int>()),
+            Times.Never());
     }
 
     /// <summary>
     /// The removal evicts both grant families afterwards, the module family page by page.
     /// </summary>
     [Fact]
-    public async Task RemoveGrants_EvictsBothGrantFamilies()
+    public async Task RemoveGrants_EvictsTheCatalogueEntriesAndReadsNothing()
     {
         Harness harness = Harness.Ready();
-        harness.PortalTabs =
-        [
-            new Tab { TabId = TabId, PortalId = PortalId, TabName = "First" },
-            new Tab { TabId = TabId + 1, PortalId = PortalId, TabName = "Second" },
-        ];
 
         Result result = await harness.Service.DeleteUserPermissionsAsync(
             PortalId,
@@ -3199,22 +3276,27 @@ public sealed class PermissionEvaluatorTests
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
 
-        // MIGRATION: the legacy cleanups both evicted immediately after these same two deletes -
-        //            ModulePermissionController.vb:L220 cleared the module-permission entries of every
-        //            tab in the portal and TabPermissionController.vb:L211 cleared the portal's
-        //            page-permission entry. An earlier revision dropped both, which left a deleted
-        //            account's grants being served from a warm entry: stale authorisation rather than a
-        //            stale listing.
-        harness.Cache.Verify(cache => cache.InvalidateTabPermissions(PortalId), Times.Once());
-
-        // MIGRATION: the page family is portal-keyed and the module family is TAB-keyed, so the
-        //            portal-wide clear is expressed by naming each page in turn. That is the breadth
-        //            ICacheService documents its narrow members as replacing, and it is what the legacy
-        //            private ClearPermissionCache(moduleId) did internally at
-        //            ModulePermissionController.vb:L62-L66 - resolve the module, then clear by its
-        //            owning TabID. No new cache member is invented for it.
-        harness.Cache.Verify(cache => cache.InvalidateModulePermissions(TabId), Times.Once());
-        harness.Cache.Verify(cache => cache.InvalidateModulePermissions(TabId + 1), Times.Once());
+        // ⚠ SEC-F8. THIS ASSERTED THE EVICTION OF TWO LEGACY GRANT KEY FAMILIES THAT NOTHING HERE WRITES.
+        // The service caches only the CATALOGUE projections - one entry per module definition, plus one
+        // installation-wide page key - so evicting `TabPermissions{portalId}` and `ModulePermissions{tabId}`
+        // invalidated nothing, and reaching the second of them meant reading every page of the tenant AFTER
+        // the commit, which let a durable, completed deletion answer 500. The corrected set is below, and
+        // the absence of the page read is asserted rather than assumed.
+        harness.Cache.Verify(
+            cache => cache.Remove("PermissionDefinitionsByTab|all"),
+            Times.Once());
+        harness.Cache.Verify(
+            cache => cache.RemoveByPrefix("PermissionDefinitionsByModuleDefinition|"),
+            Times.Once());
+        harness.Cache.Verify(
+            cache => cache.InvalidateTabPermissions(It.IsAny<int>()),
+            Times.Never());
+        harness.Cache.Verify(
+            cache => cache.InvalidateModulePermissions(It.IsAny<int>()),
+            Times.Never());
+        harness.Tabs.Verify(
+            tabs => tabs.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never());
     }
 
     /// <summary>
@@ -3238,13 +3320,14 @@ public sealed class PermissionEvaluatorTests
         harness.UnitOfWork.Verify(
             unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
             Times.Never());
-        harness.UnitOfWork.Verify(
-            unitOfWork => unitOfWork.BeginTransactionAsync(
-                It.IsAny<TransactionIsolation>(),
-                It.IsAny<CancellationToken>()),
+
+        // SEC-F13. The scope IS opened - both guards run inside it, so a refusal abandons a scope that has
+        // issued no statement - and what matters is that nothing COMMITS and nothing is evicted.
+        harness.Transaction.Verify(
+            transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),
             Times.Never());
-        harness.Cache.Verify(cache => cache.InvalidateTabPermissions(It.IsAny<int>()), Times.Never());
-        harness.Cache.Verify(cache => cache.InvalidateModulePermissions(It.IsAny<int>()), Times.Never());
+        harness.Cache.Verify(cache => cache.Remove(It.IsAny<string>()), Times.Never());
+        harness.Cache.Verify(cache => cache.RemoveByPrefix(It.IsAny<string>()), Times.Never());
     }
 
     /// <summary>
@@ -4165,6 +4248,16 @@ public sealed class PermissionEvaluatorTests
         foreach ((Type contract, MethodInfo member) in ContractMembers())
         {
             string described = $"{contract.Name}.{member.Name}";
+
+            // SEC-F8. The one deliberate exception, and it is deliberate for a reason this rule cannot
+            // express: the cache eviction runs AFTER its caller's commit, so it must not be able to fail or
+            // to be cancelled half-done. It reads nothing and awaits nothing - it evicts two in-memory key
+            // families by name and by prefix - and it used to be a cancellable Task only because it read
+            // every page of the tenant to compose keys nothing ever wrote.
+            if (member.Name == nameof(IPermissionService.InvalidateUserPermissionCaches))
+            {
+                continue;
+            }
 
             bool producesTask = member.ReturnType == typeof(Task)
                 || (member.ReturnType.IsGenericType
@@ -6435,13 +6528,32 @@ public sealed class PermissionEvaluatorTests
             Cache = new Mock<ICacheService>(MockBehavior.Loose);
             Clock = new Mock<IClock>(MockBehavior.Loose);
             Transaction = new Mock<ITransactionScope>(MockBehavior.Loose);
+            JoinedTransaction = new Mock<ITransactionScope>(MockBehavior.Loose);
 
-            // The scope stub is retained even though this service no longer opens a transaction of its own,
-            // because it is what lets a test assert that none is opened without a null dereference if that
-            // expectation is ever broken - a stub that returns null would surface the regression as a
-            // NullReferenceException instead of as a failed Times.Never assertion.
+            // SEC-F13. BOTH SCOPE-OPENING MEMBERS ARE STUBBED, AND THEY RETURN DIFFERENT SCOPES BECAUSE THE
+            // PRODUCTION MEMBERS OBTAIN DIFFERENT SCOPES. The top-level grant removal opens a transaction of
+            // its own with the non-nesting member, because both of its removals are immediate set-based
+            // deletes rather than staged changes, so it needs the rollback boundary the change tracker cannot
+            // give it. The cascade-facing staging member asks the JOINING member instead, so that it adopts
+            // whatever scope already encloses it and leaves durability to that caller.
+            //
+            // ⚠ ALIASING THE TWO TO ONE MOCK MADE THE ASSERTIONS UNREADABLE, and that is why they are
+            // separated. The top-level member calls the staging member INSIDE its own scope, so with a single
+            // shared mock one removal recorded two commits and two disposals - the outer scope's real ones and
+            // the inner join's no-op ones - and a fact asserting "committed once" failed against code that
+            // commits once. Two mocks state the distinction the interface makes: Transaction is the scope the
+            // NON-NESTING member hands out, JoinedTransaction is the scope the JOINING member hands out, and a
+            // fact can then say which one it means. In the real unit of work the joined scope's commit and
+            // disposal are no-ops precisely because an enclosing scope owns the outcome, which is what lets
+            // one call site serve both the standalone caller and the cascade.
             UnitOfWork
                 .Setup(unitOfWork => unitOfWork.JoinOrBeginTransactionAsync(
+                    It.IsAny<TransactionIsolation>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(JoinedTransaction.Object);
+
+            UnitOfWork
+                .Setup(unitOfWork => unitOfWork.BeginTransactionAsync(
                     It.IsAny<TransactionIsolation>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Transaction.Object);
@@ -6540,6 +6652,14 @@ public sealed class PermissionEvaluatorTests
         public Mock<ICacheService> Cache { get; }
 
         public Mock<ITransactionScope> Transaction { get; }
+
+        /// <summary>
+        /// The scope the JOINING member hands out, kept separate from <see cref="Transaction"/> so a fact
+        /// can say which scope it means. Inside an enclosing scope the real implementation makes this
+        /// one's commit and disposal no-ops, which is what lets the staging member serve both a
+        /// standalone caller and a cascade from one call site.
+        /// </summary>
+        public Mock<ITransactionScope> JoinedTransaction { get; }
 
         public Mock<IClock> Clock { get; }
 

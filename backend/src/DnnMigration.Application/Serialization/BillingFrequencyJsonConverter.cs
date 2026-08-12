@@ -251,10 +251,22 @@ public sealed class BillingFrequencyJsonConverter : JsonConverter<BillingFrequen
     /// </para>
     /// <para>
     /// A client reading such a value therefore sees exactly what the database holds, which is more
-    /// informative than a substitute and strictly more truthful. It may not send one back:
-    /// <see cref="Parse"/> refuses an undeclared character and the request validators independently
-    /// constrain the same property, so the closed vocabulary is enforced on the only side where a
-    /// caller can widen it.
+    /// informative than a substitute and strictly more truthful. It may not usefully send one back, but
+    /// note WHERE that is decided, because an earlier revision of this remark named the wrong place:
+    /// <see cref="Parse"/> does NOT refuse an undeclared character - it enforces SHAPE only, a non-empty
+    /// single character, and casts whatever that character is. It has to, or the API could not
+    /// deserialise its own output. The closed vocabulary is enforced entirely by the
+    /// <c>IsInEnum</c> rules on the two write contracts that carry a frequency,
+    /// <c>CreateRoleRequest</c> and <c>UpdateRoleRequest</c>, so a caller's undeclared code is refused
+    /// before any service sees it - and refused as an RFC 7807 document naming the field, rather than as
+    /// a bare <see cref="JsonException"/> raised mid-parse.
+    /// </para>
+    /// <para>
+    /// That is the asymmetry, stated plainly so neither half is mistaken for the other: this direction is
+    /// LOSSLESS by design, the read direction is SHAPE-CHECKED ONLY by design, and the vocabulary lives
+    /// in the validators. Reintroducing a vocabulary check in either direction of this converter would
+    /// break the round trip on the two roles every installation ships with. <see cref="Parse"/>'s own
+    /// remarks set the same division out from the reading side.
     /// </para>
     /// </remarks>
     private static char CodeOf(BillingFrequency value) => (char)value;

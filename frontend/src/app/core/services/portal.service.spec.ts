@@ -1791,6 +1791,88 @@ describe('PortalService', () => {
       );
     });
 
+    // ⚠ MINOR (client/API contract) — THE REVISION MARKER, REFUSED IN BOTH DIRECTIONS AND ON BOTH READS.
+    //
+    // `PortalDetailDto.ConcurrencyToken` and `PortalSettingsDto.ConcurrencyToken` are both declared
+    // `public string ... = string.Empty` and are both populated by `PortalMappings.ConcurrencyTokenFor`,
+    // so neither read can legitimately omit the member or serve a null for it. The decoders widened it
+    // to `string | null` anyway, and the consequence was silent: the null decoded, flowed into the
+    // update contract - whose member IS nullable, because the server treats a token-less write as
+    // last-writer-wins - and the optimistic check the marker exists to perform was skipped with nothing
+    // anywhere reporting that it had been. A lost update presents as a successful save.
+    //
+    // Four cases, because the two failure shapes and the two reads are independent: absence and null,
+    // on the detail and on the settings projection.
+
+    it('refuses a detail whose revision marker is absent', () => {
+      const observed = observe<unknown>(service.getById(PORTAL_ID));
+      const malformed: Record<string, unknown> = { ...portalDetail(PORTAL_ID) };
+
+      delete malformed['concurrencyToken'];
+
+      expectViolationAt(
+        observed,
+        httpMock.expectOne(PORTAL_URL),
+        envelope(malformed),
+        'response.data.concurrencyToken',
+      );
+    });
+
+    it('refuses a detail whose revision marker arrived as null', () => {
+      // Tolerating this was the defect itself, so the null case is asserted separately from absence:
+      // `nullable(decodeString)` admitted exactly this and nothing downstream could tell the
+      // difference between "no revision to check against" and "a portal at an unknown revision".
+      const observed = observe<unknown>(service.getById(PORTAL_ID));
+
+      expectViolationAt(
+        observed,
+        httpMock.expectOne(PORTAL_URL),
+        envelope({ ...portalDetail(PORTAL_ID), concurrencyToken: null }),
+        'response.data.concurrencyToken',
+      );
+    });
+
+    it('refuses a settings projection whose revision marker is absent', () => {
+      const observed = observe<unknown>(service.getSettings(PORTAL_ID));
+      const malformed: Record<string, unknown> = { ...portalSettings(PORTAL_ID) };
+
+      delete malformed['concurrencyToken'];
+
+      expectViolationAt(
+        observed,
+        httpMock.expectOne(PORTAL_SETTINGS_URL),
+        envelope(malformed),
+        'response.data.concurrencyToken',
+      );
+    });
+
+    it('refuses a settings projection whose revision marker arrived as null', () => {
+      const observed = observe<unknown>(service.getSettings(PORTAL_ID));
+
+      expectViolationAt(
+        observed,
+        httpMock.expectOne(PORTAL_SETTINGS_URL),
+        envelope({ ...portalSettings(PORTAL_ID), concurrencyToken: null }),
+        'response.data.concurrencyToken',
+      );
+    });
+
+    it('accepts the empty string as a revision marker, because that is the server unset spelling', () => {
+      // The counterpart case, and it matters: the member is non-nullable on the server and its
+      // declared default IS the empty string, so an installation that has never derived a token serves
+      // one. Refusing it would make a legitimate response undecodable, and substituting anything for it
+      // would fabricate a marker - which, were it ever to match, would defeat the check it appears to
+      // satisfy.
+      const observed = observe(service.getById(PORTAL_ID));
+
+      httpMock
+        .expectOne(PORTAL_URL)
+        .flush(envelope({ ...portalDetail(PORTAL_ID), concurrencyToken: '' }));
+
+      expect(observed.failures).toEqual([]);
+      expect(observed.values).toEqual([{ ...portalDetail(PORTAL_ID), concurrencyToken: '' }]);
+    });
+
     it('refuses a detail whose envelope carries the payload at the top level', () => {
       // The quietest defect this decoding exists to catch: a body that is a valid portal
       // but is NOT wrapped. Every member would have read as `undefined` behind a 200.

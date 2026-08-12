@@ -26,28 +26,42 @@
 # for the name placeholders. Every instruction the example specifies is present
 # and unchanged: the two Alpine bases, the UID 1000 non-root account created with
 # `adduser -D -u 1000 appuser`, the account switch, ASPNETCORE_URLS=http://+:8080,
-# EXPOSE 8080, the wget --spider HEALTHCHECK against /health, and
+# EXPOSE 8080, the wget --spider HEALTHCHECK (retargeted to /health/ready per
+# SEC-F10, see the directive below), and
 # ENTRYPOINT ["dotnet", "DnnMigration.Api.dll"].
 #
-# SEC-B4: FOUR ADDITIONS WERE WITHDRAWN, BECAUSE THEY WERE NOT THE EXAMPLE'S AND
-# WERE NOT REQUIRED. An earlier revision of this file added a repository
-# NuGet.Config copy with `dotnet restore --configfile NuGet.Config --locked-mode`,
-# six per-project packages.lock.json COPY instructions, a manifest-first layer
-# split, and `RUN chown -R appuser:appuser /app`. None of them survives, and
-# nothing is lost by removing them:
-#   * Determinism is unaffected. backend/Directory.Build.props sets
-#     RestorePackagesWithLockFile and RestoreLockedMode for all six projects, and
-#     `COPY backend/ ./` brings every packages.lock.json into the build, so the
-#     restore below is still hash-verified and still rejects graph drift - the
-#     flags were restating a policy the props file already enforces.
-#   * The feed is unaffected. Every identity in the reviewed graph resolves from
-#     nuget.org, which is the image's own default source.
-#   * The chown was never load-bearing. A publish copied as root arrives
-#     world-readable, and the process only READS its assemblies; the data-protection
-#     key ring lives under the account's home directory rather than /app. The
-#     comment that accompanied it conceded the process "would still START without
-#     the chown".
-#   * The layer split only affected build-cache efficiency, never behaviour.
+# THREE FORMER ADDITIONS STAY WITHDRAWN, AND ONE HAS RETURNED FOR A REASON THE
+# WITHDRAWAL DID NOT ANSWER.
+#   * Still withdrawn - `--locked-mode` on the restore. It restated a policy that has
+#     one home: backend/Directory.Build.props sets RestorePackagesWithLockFile and
+#     RestoreLockedMode for all six projects and `COPY backend/ ./` brings every
+#     packages.lock.json into the build, so the restore below is hash-verified and
+#     rejects graph drift without the flag.
+#   * Still withdrawn - six per-project packages.lock.json COPY instructions and the
+#     manifest-first layer split. They affected build-cache efficiency only, never
+#     behaviour, and the single tree copy brings the same files.
+#   * Still withdrawn - `RUN chown -R appuser:appuser /app`. A publish copied as root
+#     arrives world-readable and the process only READS its assemblies; the
+#     data-protection key ring lives under the account's home directory rather than
+#     /app. Its own comment conceded the process "would still START without the
+#     chown".
+#   * Still withdrawn - a COPY of its own for the package-source policy. That file is
+#     no longer at the repository root: it lives at backend/NuGet.Config, which the
+#     plan's four-file root list requires, and the single tree copy below already
+#     brings it to /src/NuGet.Config.
+#   * RETURNED - `--configfile` on the restore, and only that flag. Its withdrawal
+#     rested on "the feed is unaffected: every identity resolves from nuget.org, the
+#     image's own default source", which is true and beside the point. The default
+#     source is a property of the BASE IMAGE, not of this repository, so the
+#     production build was the one restore in the project that the repository's
+#     cleared source list and package-source mapping did not govern - while that file
+#     and README.md both said it did. The instruction and its full reasoning are at
+#     the restore below.
+#
+# PIN POLICY. Both FROM lines name a DIGEST as well as a tag. That is the fourth
+# addition to this file, it is documented at each instruction, and it is what makes a
+# rebuild of one commit produce one image rather than whatever the moving tag points
+# at that week.
 #
 # ONE ADDITION REMAINS, AND IT IS A MEASURED PREREQUISITE FOR THE IMAGE TO
 # FUNCTION AT ALL: the ICU package pair. Its evidence is recorded above the
@@ -69,33 +83,73 @@
 # ---------------------------------------------------------------------------
 # Build stage
 # ---------------------------------------------------------------------------
-# The tag tracks the current .NET 8 Alpine SDK image: `8.0-alpine` is a MOVING
-# tag that Microsoft re-points at each 8.0.x patch release, so a rebuild months
-# apart can compile against a different SDK build. That is accepted rather than
-# overlooked - the plan caps this migration at the 8.x line and
+# PINNED BY DIGEST, WITH THE READABLE TAG RETAINED. `8.0-alpine` on its own is a
+# MOVING tag that Microsoft re-points at each 8.0.x patch release, so the same
+# source commit built months apart compiled against a different SDK and shipped
+# different bytes. When a FROM names both a tag and a digest, the digest is what
+# the builder resolves and the tag is documentation - which is exactly the
+# arrangement wanted here: the line still says which image family this is, and
+# the build is reproducible.
+#
+# THE PINNED DIGEST, AND WHAT WAS VERIFIED IN IT (measured, not assumed):
+#   sha256:8a80a27... = .NET SDK 8.0.424 on Alpine.
 # backend/global.json pins the SDK band to 8.0.423 with feature-level roll
-# forward, which every image on this tag satisfies. Pin a digest here if a
-# byte-reproducible build is ever required; nothing else in this file assumes
-# immutability.
-FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine AS build
+# forward, and 8.0.424 satisfies it - checked by running `dotnet --version` in
+# this exact digest before pinning it, because a digest carrying a LOWER feature
+# band would fail every restore in this image with an SDK-resolution error.
+#
+# THE REFRESH CADENCE IS A REVIEWED STEP, NOT A DRIFT. A pinned digest does not
+# receive patch updates, so it must be bumped deliberately: resolve the current
+# digest for the tag (`docker buildx imagetools inspect
+# mcr.microsoft.com/dotnet/sdk:8.0-alpine`), confirm the SDK inside it still
+# satisfies backend/global.json, replace the digest here, and re-run the container
+# and end-to-end gates. That is the same cadence the runtime stage and
+# docker/frontend.Dockerfile follow, and it is where a base-image advisory is
+# acted on.
+FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine@sha256:8a80a27ddac789b4cb6d09d244f9c8d840da599c5ad22f7233c04be470e55261 AS build
 WORKDIR /src
 
 # One fewer network call during the build, and nothing sent from a build agent.
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
 
+# THE REPOSITORY'S OWN PACKAGE-SOURCE POLICY ARRIVES WITH THE TREE, AND IT IS THE
+# RESTORE BELOW THAT IS MADE TO OBEY IT. backend/NuGet.Config clears every inherited
+# source, declares the single public source the dependency inventory was pinned
+# against, and maps each package identity to it with no bare `*` pattern - so an
+# identity nobody reviewed cannot be restored at all.
+#
+# NO COPY OF ITS OWN, BECAUSE THE FILE IS NOT AT THE REPOSITORY ROOT. It sits inside
+# `backend/`, which the single tree copy below brings to /src/NuGet.Config - the
+# repository root carries only the four files the plan enumerates. What WAS the defect
+# is that the policy did not govern this restore: NuGet composes its settings by
+# walking up from each project directory, and an earlier revision restored with no
+# configuration option at all, so the image used whatever the base image's own
+# settings declared while this file and README.md both stated otherwise. The strong
+# form below closes that, and needs no extra instruction to do it.
+
 # The whole backend tree, in one instruction. That brings global.json,
-# Directory.Build.props, the solution, all six project files, all six
-# packages.lock.json files and every source file, which is exactly what the
+# Directory.Build.props, NuGet.Config, the solution, all six project files, all
+# six packages.lock.json files and every source file, which is exactly what the
 # restore and the publish below need and nothing more - the repository-root
 # .dockerignore already excludes bin, obj and every environment file.
 COPY backend/ ./
 
-# Solution-wide restore. It needs no flags of its own: backend/Directory.Build.props
-# sets RestorePackagesWithLockFile and RestoreLockedMode for all six projects, and
-# the lock files arrived with the instruction above, so this restore is hash-verified
-# against the reviewed dependency graph and fails on any direct or transitive drift.
-# Every identity in that graph resolves from nuget.org, the image's default source.
-RUN dotnet restore
+# Solution-wide restore, governed by backend/NuGet.Config, which arrived at
+# /src/NuGet.Config with the tree copy above.
+#
+# `--configfile` is the strong form deliberately: it makes NuGet read THAT FILE AND
+# NOTHING ELSE, so neither the base image's user-level settings nor any file a build
+# agent mounts can add a source to the ones this repository declares. Without the
+# flag that file would merely participate in the hierarchy, which is weaker
+# than what the file itself claims.
+#
+# NO OTHER FLAG IS ADDED, AND THAT IS ALSO DELIBERATE. Locked mode is NOT restated
+# here: backend/Directory.Build.props sets RestorePackagesWithLockFile and
+# RestoreLockedMode for all six projects and the six packages.lock.json files
+# arrived with the instruction above, so this restore is already hash-verified
+# against the reviewed graph and already fails on any direct or transitive drift.
+# Passing `--locked-mode` as well would duplicate a policy that has one home.
+RUN dotnet restore --configfile ./NuGet.Config
 
 # Framework-dependent on purpose, and the two alternatives are rejected for two
 # DIFFERENT reasons. A self-contained publish would embed a second copy of the
@@ -118,7 +172,16 @@ RUN dotnet publish src/DnnMigration.Api/DnnMigration.Api.csproj --configuration 
 # The ASP.NET Core runtime image, not the SDK and not the plain .NET runtime:
 # this application needs the ASP.NET Core shared framework, which only this one
 # carries, and shipping the SDK would put a compiler in production.
-FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine AS runtime
+#
+# PINNED BY DIGEST, tag retained for readability, for the reason set out on the
+# build stage. What was verified inside this exact digest before pinning it:
+#   sha256:b288317... = Microsoft.AspNetCore.App 8.0.30 and Microsoft.NETCore.App
+#   8.0.30 on Alpine 3.24.1, with icu-libs and icu-data-full 78.1-r0 available.
+# The application is published framework-dependent against net8.0, so it runs on
+# any 8.0.x shared framework; the AAP's 8.0.29 pin governs the NuGet PACKAGE graph,
+# which this digest does not touch. Running on the newer patch runtime is ordinary
+# roll-forward and is the safer side of the choice.
+FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine@sha256:b288317d8ed45bb763fa95dbc807cf9d36e3bf9373ec2fac6b6548675f1f4b23 AS runtime
 WORKDIR /app
 
 # Unprivileged account for the process. BusyBox adduser is the only form Alpine
@@ -164,6 +227,20 @@ RUN adduser -D -u 1000 appuser
 # account switch below, because the package manager needs root. The two
 # instructions are a pair: with invariant mode off and no ICU present the
 # runtime fails at startup, so never keep one without the other.
+#
+# THE PACKAGE VERSIONS ARE CONTROLLED BY THE PINNED BASE DIGEST, NOT BY AN apk
+# CONSTRAINT, AND THAT IS A DELIBERATE CHOICE RATHER THAN AN OVERSIGHT. An Alpine
+# branch repository publishes only the CURRENT version of each package, so
+# `apk add icu-libs=78.1-r0` builds today and fails outright the moment the v3.24
+# mirror advances to -r1 - it would convert a security update in the distribution
+# into a broken build, which is the opposite of a controlled dependency. The
+# controlled unit is therefore the base image digest: sha256:b288317... is Alpine
+# 3.24.1, whose repository serves icu-libs and icu-data-full 78.1-r0 (verified by
+# `apk policy` inside that exact digest). Rebuilding this Dockerfile unchanged
+# resolves the same Alpine branch every time, and the packages move only when the
+# digest is deliberately bumped - which is the same reviewed step, with the same
+# gate re-run, that a runtime patch already requires. Record the apk inventory at
+# that point if a bill of materials is kept.
 RUN apk add --no-cache icu-libs icu-data-full
 ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
 
@@ -188,8 +265,9 @@ USER appuser
 # from the compose network and the operator's own machine and from nowhere else.
 #
 # Plain HTTP, because TLS is terminated IN FRONT OF this container - by the SPA
-# container's nginx once docker/nginx.tls.conf.example and a certificate are
-# mounted, or by an outer proxy - and no certificate is mounted into this image.
+# container's nginx once docker/nginx.tls.conf.template and a certificate are
+# mounted, which is what docker/docker-compose.tls.yml does, or by an outer proxy -
+# and no certificate is mounted into this image.
 # That arrangement is only safe because the application refuses cleartext by
 # default outside development and honours the proxy's X-Forwarded-Proto once the
 # deployment names that hop as trusted; see
@@ -234,8 +312,19 @@ EXPOSE 8080
 # unrelated to whether it can answer and would hold the frontend behind
 # `condition: service_healthy` for ever. Readiness stays available at
 # /health/ready for an orchestrator that wants to gate traffic on the store.
+# SEC-F10. THE PROBE ADDRESSES /health/ready, NOT /health.
+#
+# The API publishes three anonymous views of the same check set: /health/live runs
+# no dependency probe at all, /health/ready runs the ready-tagged ones - which is
+# where the database check lives - and /health selects the process-only view. An
+# orchestrator probing /health therefore reported this container healthy while it
+# could not reach SQL Server, and the compose file's `service_healthy` gate let the
+# front end start in front of an API that could not serve a single membership-backed
+# request. Readiness is what "may this container receive traffic" means, so that is
+# what is probed. Liveness remains available for a restart policy that must not
+# recycle a process merely because a dependency is down.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health/ready || exit 1
 
 # Exec form, so the runtime is process 1 and receives the stop signal directly.
 # The shell form would wrap it in /bin/sh, swallow that signal and turn an

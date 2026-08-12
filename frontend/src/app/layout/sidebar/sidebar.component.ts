@@ -39,7 +39,7 @@ import type { PermissionPolicy } from '../../core/guards/permission.guard';
  */
 export type SidebarPolicy = Extract<
   PermissionPolicy,
-  'PortalAdministrator' | 'HostAdministrator'
+  'PortalAdministrator' | 'HostAdministrator' | 'PortalContentEditor'
 >;
 
 /**
@@ -218,6 +218,20 @@ const NAVIGATION = [
       // Both entries are tenant administration on the API: `ModulesController.cs:L187`
       // for the listing and `:L627` for the import.
       { path: '/modules', label: 'Modules', policy: 'PortalAdministrator' },
+      // ⚠ THE ONE ENTRY THAT IS NOT TENANT ADMINISTRATION, and the only route in the rail
+      // reachable by a caller who administers nothing. `ModulesController.cs:267-273` gates
+      // the create action on NO policy at all, but the screen cannot be filled without the
+      // definition catalogue and the tenant's page listing, and both of those classes carry
+      // `PortalContentEditor` (`ModuleDefinitionsController.cs:168`, `TabsController.cs:187`)
+      // — the tenant's administrators OR a caller holding EDIT on at least one of its pages.
+      //
+      // Offered here because it was previously offered NOWHERE such a caller could find it:
+      // the only link to the create screen sat inside the module listing, which is gated on
+      // tenant administration, so a page editor the server admits had to guess the address.
+      // That is a discoverability defect rather than an authorisation one — the server's
+      // answer was always correct — and it is fixed by naming the authority and offering the
+      // entry to whoever holds it.
+      { path: '/modules/new', label: 'Add Module', policy: 'PortalContentEditor' },
       { path: '/modules/import', label: 'Import Module', policy: 'PortalAdministrator' },
     ],
   },
@@ -258,7 +272,7 @@ const NAVIGATION = [
 ] as const satisfies readonly SidebarNavGroup[];
 
 /**
- * Whether a caller described by the two facts holds the authority an entry requires.
+ * Whether a caller described by the three facts holds the authority an entry requires.
  *
  * ⚠ AN EXHAUSTIVE SWITCH, NOT A LOOKUP OBJECT OR A BOOLEAN EXPRESSION, so widening
  * {@link SidebarPolicy} fails to compile here until the new policy's answer is stated.
@@ -285,12 +299,38 @@ const NAVIGATION = [
  * the tenant it is signed in to. Never inferred from a role name.
  * @returns True when the entry may be offered.
  */
-function holds(policy: SidebarPolicy, host: boolean, administersTenant: boolean): boolean {
+function holds(
+  policy: SidebarPolicy,
+  host: boolean,
+  administersTenant: boolean,
+  editsContent: boolean,
+): boolean {
   switch (policy) {
     case 'HostAdministrator':
       return host;
     case 'PortalAdministrator':
       return host || administersTenant;
+
+    /*
+     * THREE ARMS, IN THE SAME ORDER THE SERVER EVALUATES THEM.
+     * `PermissionService.HasAnyTabPermissionInPortalAsync` asks its administration question
+     * FIRST and only then reads grants, and both of the first two arms here are required for
+     * that reason rather than for generosity: the advisory permission list this component's
+     * third fact derives from is built by
+     * `PermissionEvaluator.ListEffectivePortalPermissionKeysAsync` from GRANT ROWS ALONE and
+     * has NO administrator arm, so a tenant administrator whose pages carry no explicit
+     * grants holds the policy while carrying no `EDIT` key. Reading the key alone would hide
+     * this entry from the tenant's own administrator.
+     *
+     * ⚠ THE THIRD ARM IS A SUPERSET OF THE SERVER'S QUESTION, KNOWINGLY. The key list
+     * aggregates MODULE grants as well as page grants, where the policy asks only about
+     * pages, so a caller holding module EDIT and no page EDIT is offered an entry the server
+     * will refuse. That is the right direction to be wrong in for an advisory affordance:
+     * the alternative is hiding a capability from every caller who holds it, which is the
+     * defect this entry exists to fix, and the screen reports the refusal if one comes.
+     */
+    case 'PortalContentEditor':
+      return host || administersTenant || editsContent;
   }
 }
 
@@ -303,13 +343,13 @@ function holds(policy: SidebarPolicy, host: boolean, administersTenant: boolean)
  * collapse. It injects ONE thing: the ROUTER, whose current address decides which entry is
  * announced as current.
  *
- * ⚠ IT DOES NOT READ THE SESSION. The two facts that decide which entries are offered at all —
- * whether the caller holds a host account, and whether it administers the resolved tenant —
- * arrive as REQUIRED INPUTS from the shell, which is the one component that mounts this one and
- * the owner of the session boundary. Reading the store here as well would give the chrome two
- * authorities for one determination, and required inputs make the omission a compile error in any
- * future mount rather than a silently unfiltered rail. Both are reads of state another owner
- * holds; neither is a decision this component makes for itself. Everything else it renders comes
+ * ⚠ IT DOES NOT READ THE SESSION. The three facts that decide which entries are offered at all —
+ * whether the caller holds a host account, whether it administers the resolved tenant, and whether
+ * it holds the `EDIT` key anywhere in that tenant — arrive as REQUIRED INPUTS from the shell, which
+ * is the one component that mounts this one and the owner of the session boundary. Reading the store
+ * here as well would give the chrome two authorities for one determination, and required inputs make
+ * the omission a compile error in any future mount rather than a silently unfiltered rail. All three
+ * are reads of state another owner holds; none is a decision this component makes for itself. Everything else it renders comes
  * from the constant model above.
  *
  * ## Where it is mounted
@@ -501,6 +541,23 @@ export class SidebarComponent {
    * Required for the same reason {@link hostAccount} is.
    */
   readonly administersTenant = input.required<boolean>();
+
+  /**
+   * Whether the caller holds the `EDIT` permission key anywhere in the resolved tenant.
+   *
+   * ⚠ ADVISORY, AND THE ONLY FACT IN THIS COMPONENT THAT IS. The other two are the server's
+   * own verdicts. This one is derived from `CurrentUserDto.Permissions`, which the API
+   * publishes expressly so a console can hide affordances the caller cannot exercise and
+   * which unlocks nothing: authoritative enforcement is server-side policy evaluation on
+   * every request. A caller who tampers with it changes what this rail looks like and
+   * nothing about what the API will permit.
+   *
+   * Required for the same reason the two above are: a mount that forgot it would silently
+   * hide the one entry a non-administrator can reach, and nothing would report it.
+   * `layout/shell/shell.component.ts`, the rail's only caller, supplies it from
+   * `AuthStore.permissions`.
+   */
+  readonly editsContent = input.required<boolean>();
 
   /**
    * Whether the rail is collapsed, as writable state.
@@ -711,16 +768,19 @@ export class SidebarComponent {
    * put the same question in two places; what this member answers is which entries a
    * KNOWN identity may use.
    *
-   * Nothing is fetched, cached or interpreted: the two facts arrive as inputs, already
+   * Nothing is fetched, cached or interpreted: the three facts arrive as inputs, already
    * resolved from what the server published.
    */
   public readonly visibleNavigation: Signal<readonly SidebarNavGroup[]> = computed(() => {
     const host: boolean = this.hostAccount();
     const administersTenant: boolean = this.administersTenant();
+    const editsContent: boolean = this.editsContent();
 
     return NAVIGATION.map((group) => ({
       ...group,
-      items: group.items.filter((item) => holds(item.policy, host, administersTenant)),
+      items: group.items.filter((item) =>
+        holds(item.policy, host, administersTenant, editsContent),
+      ),
     })).filter((group) => group.items.length > 0);
   });
 

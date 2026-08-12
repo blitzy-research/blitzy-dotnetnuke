@@ -110,6 +110,7 @@ using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
+using DnnMigration.Domain.Enums;
 
 namespace DnnMigration.Application.Services;
 
@@ -167,6 +168,17 @@ public sealed class UserService : IUserService
     /// measurement.
     /// </summary>
     private const string ListSortUnsupportedCode = "user.list.sort-unsupported";
+
+    /// <summary>
+    /// Reported when a caller names an ordering the account picker cannot apply, which is any name other
+    /// than the two captions a choice carries.
+    /// </summary>
+    /// <remarks>
+    /// A code of its own rather than a reuse of <see cref="ListSortUnsupportedCode"/>, because the two
+    /// collections admit different sets and a client correcting a request needs to know which set it was
+    /// measured against. <c>SortableFields.UserChoices</c> is the set.
+    /// </remarks>
+    private const string ChoiceSortUnsupportedCode = "user.choices.sort-unsupported";
 
     /// <summary>
     /// Reported when no such account exists within the tenant.
@@ -641,8 +653,11 @@ public sealed class UserService : IUserService
     private readonly ICurrentUser _currentUser;
     private readonly IAuditSink _audit;
     private readonly ITokenService _tokens;
+    private readonly IStoreFailureClassifier _storeFailures;
+    private readonly ISecurityDiagnostics _diagnostics;
     private readonly PasswordPolicyOptions _passwordPolicy;
     private readonly CachingOptions _caching;
+    private readonly IPortalContextHolder _portalContext;
 
     /// <summary>
     /// Initialises the service with the collaborators it reaches the store, the credential policy and
@@ -683,8 +698,35 @@ public sealed class UserService : IUserService
     /// must revoke the account's refresh tokens within the same request. Without this collaborator that
     /// obligation was documented on every one of them and honoured by none.
     /// </param>
+    /// <param name="storeFailures">
+    /// Classifies a caught exception as a failure of the store rather than of this service. Present for one
+    /// obligation: the account-creation path writes the credential to an EXTERNAL membership store, and the
+    /// only honest way to distinguish that store failing from this service being handed something it cannot
+    /// use is to ask the layer that owns the provider types. This contract is declared in the Domain, so
+    /// asking it costs this project no dependency on the mapper or on the database client.
+    /// </param>
     /// <param name="passwordPolicy">Bound credential policy, preserved from the legacy configuration.</param>
+    /// <param name="diagnostics">
+    /// The route by which this service reports a security-relevant anomaly it has decided not to publish to
+    /// the caller. It is a Domain contract carrying a closed set of occurrences, a tenant, an account and a
+    /// short stable code - and no message, no exception and no object - so it is neither a logger nor a way
+    /// of becoming one. This layer cannot hold an <c>ILogger&lt;T&gt;</c>: its package surface is
+    /// FluentValidation and nothing else, and the logging assemblies ship in the ASP.NET Core shared
+    /// framework, which a class library here must never reference. <see cref="ISecurityDiagnostics"/> is the
+    /// boundary abstraction that lets a fact be recorded anyway, and <c>AuthService</c> takes it for the same
+    /// reason.
+    /// </param>
     /// <param name="caching">Bound caching configuration supplying the performance multiplier.</param>
+    /// <param name="portalContext">
+    /// The tenant facts already settled for the call being served, read for exactly one purpose: the
+    /// designated administrator, which the detail projection needs in order to publish the removal
+    /// capability. THE HOLDER RATHER THAN <c>IPortalContext</c> ITSELF, and that is not a stylistic
+    /// choice - the container registers the contract as a call-scoped projection over this holder, and
+    /// resolving it before the tenant has been settled THROWS. Injecting the contract directly would
+    /// therefore turn every call that runs outside a resolved request scope, including every unit test,
+    /// into an exception at construction time. The holder answers <c>IsResolved</c> without faulting,
+    /// which is the only safe way to ask.
+    /// </param>
     /// <remarks>
     /// MIGRATION: the audit sink preserves the two account events the legacy site recorded,
     /// <c>USER_CREATED</c> and <c>USER_DELETED</c> (<c>EventLogController.vb:L39-L40</c>). The deletion
@@ -709,8 +751,11 @@ public sealed class UserService : IUserService
         ICurrentUser currentUser,
         IAuditSink audit,
         ITokenService tokens,
+        IStoreFailureClassifier storeFailures,
+        ISecurityDiagnostics diagnostics,
         PasswordPolicyOptions passwordPolicy,
-        CachingOptions caching)
+        CachingOptions caching,
+        IPortalContextHolder portalContext)
     {
         _users = users ?? throw new ArgumentNullException(nameof(users));
         _profiles = profiles ?? throw new ArgumentNullException(nameof(profiles));
@@ -728,8 +773,71 @@ public sealed class UserService : IUserService
         _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
         _audit = audit ?? throw new ArgumentNullException(nameof(audit));
         _tokens = tokens ?? throw new ArgumentNullException(nameof(tokens));
+        _storeFailures = storeFailures ?? throw new ArgumentNullException(nameof(storeFailures));
+        _diagnostics = diagnostics ?? throw new ArgumentNullException(nameof(diagnostics));
         _passwordPolicy = passwordPolicy ?? throw new ArgumentNullException(nameof(passwordPolicy));
         _caching = caching ?? throw new ArgumentNullException(nameof(caching));
+        _portalContext = portalContext ?? throw new ArgumentNullException(nameof(portalContext));
+    }
+
+    /// <summary>
+    /// Returns the account the tenant designates as its administrator, or <see langword="null"/>.
+    /// </summary>
+    /// <param name="portalId">The tenant whose designated administrator is wanted.</param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns>
+    /// The designated administrator's account identifier, or <see langword="null"/> when the tenant
+    /// designates nobody or does not exist.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THE TENANT FACTS OF THE CALL ARE ALREADY IN HAND, AND READING THE PORTAL AGAIN TO GET ONE COLUMN
+    /// OF THEM WAS THE DEFECT. Every request that reaches this service has had its tenant resolved by
+    /// <c>Api/Middleware/PortalAliasResolutionMiddleware</c> or by the portal-administrator authorisation
+    /// handler, whichever ran first, and the snapshot they settled ALREADY CARRIES
+    /// <c>AdministratorId</c> - it is a declared member of <c>IPortalContext</c>. The detail read
+    /// nevertheless issued its own <c>Portals</c> round trip for that single column, once per account
+    /// opened, when the value was sitting in a call-scoped object the container would hand over for free.
+    /// </para>
+    /// <para>
+    /// ⚠ THE TENANT IS COMPARED BEFORE THE SNAPSHOT IS TRUSTED, AND SKIPPING THAT WOULD BE A CORRECTNESS
+    /// BUG RATHER THAN AN OPTIMISATION. The snapshot describes the tenant the REQUEST was addressed to,
+    /// and it is not always the tenant this call is acting on: a host-level caller may name any portal it
+    /// administers, and the identifier arrives as an argument precisely so that it can differ. Reading
+    /// <c>AdministratorId</c> off a snapshot for a DIFFERENT portal would publish one tenant's protected
+    /// account against another tenant's listing, so the fast path is taken only when
+    /// <c>PortalId</c> matches exactly and the persistence read is made in every other case. Minus one and
+    /// zero are both genuine portal keys here, so the comparison is an equality test and never a
+    /// truthiness or positivity test.
+    /// </para>
+    /// <para>
+    /// ⚠ NOTHING IS CACHED ACROSS CALLS, AND THAT IS DELIBERATE. The capability this value feeds is
+    /// evaluated per caller, so holding a resolved administrator in a field - or in the shared cache -
+    /// would let one caller's answer be served to another whose tenant, or whose rights, differ. The
+    /// holder's snapshot is already scoped to exactly one inbound call, which is the correct lifetime for
+    /// it and the reason no additional caching is introduced here.
+    /// </para>
+    /// <para>
+    /// <c>IsResolved</c> is tested rather than <c>Current</c> being read speculatively: the holder's
+    /// contract states that reading <c>Current</c> before the tenant is settled throws, and a background
+    /// caller or a unit test resolving this service outside a request scope must fall through to the
+    /// persistence read rather than fault.
+    /// </para>
+    /// </remarks>
+    private async Task<int?> ReadDesignatedAdministratorAsync(
+        int portalId,
+        CancellationToken cancellationToken)
+    {
+        if (_portalContext.IsResolved && _portalContext.Current.PortalId == portalId)
+        {
+            return _portalContext.Current.AdministratorId;
+        }
+
+        Portal? owner = await _portals
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
+            .ConfigureAwait(false);
+
+        return owner?.AdministratorId;
     }
 
     /// <summary>
@@ -1043,6 +1151,70 @@ public sealed class UserService : IUserService
 
     /// <inheritdoc />
     /// <remarks>
+    /// <para>
+    /// ⚠ THE READS THIS MEMBER DOES NOT PERFORM ARE THE POINT OF IT. <see cref="ListUsersAsync"/> reads the
+    /// tenant's account-policy settings to learn which columns it may publish, reads the tenant's profile
+    /// property definitions, issues a batched profile-value read to fill the address and telephone columns,
+    /// and reads the portal to learn which account it must not offer for deletion. An account PICKER renders
+    /// none of those values, so none of those four reads happens here: one projecting query answers the whole
+    /// request.
+    /// </para>
+    /// <para>
+    /// No column-visibility rule is applied either, and its absence is deliberate rather than overlooked.
+    /// The tenant's account-policy settings decide whether the LISTING may publish an address, a telephone
+    /// number, an electronic-mail address, a creation instant and a last-login instant - a rule that exists
+    /// because those columns are optional on the grid. None of them is in this projection at all, so there is
+    /// nothing for such a rule to withhold, and reading the policy in order to withhold nothing would
+    /// reintroduce the round trip this member exists to avoid.
+    /// </para>
+    /// <para>
+    /// The ordering is checked HERE against this collection's own set rather than trusted from the boundary,
+    /// so a caller reaching the application layer directly gets the same refusal an HTTP caller gets. The
+    /// paging bounds are re-checked for the same reason.
+    /// </para>
+    /// </remarks>
+    public async Task<Result<PagedResult<UserChoiceDto>>> ListAccountChoicesAsync(
+        int portalId,
+        PagedRequest page,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        EnsurePagingIsUsable(page);
+
+        if (!SortableFields.IsPermittedFor(page.SortBy, SortableFields.UserChoices))
+        {
+            return Result<PagedResult<UserChoiceDto>>.Failure(
+                ChoiceSortUnsupportedCode,
+                $"Account choices cannot be ordered by '{page.SortBy}'.");
+        }
+
+        EnsureFilterIsNotBlank(page.HasQuery ? page.Query : null, nameof(page.Query));
+
+        PagedResult<AccountChoice> matches = await _users.ListAccountChoicesAsync(
+            portalId,
+            page.PageIndex,
+            page.PageSize,
+            // Normalised to one canonical representation of absence, exactly as the account listing
+            // normalises its own, so the store is never handed blank text to decide about.
+            page.HasQuery ? page.Query : null,
+            string.IsNullOrWhiteSpace(page.SortBy) ? null : page.SortBy,
+            page.SortDir == SortDirection.Descending,
+            cancellationToken).ConfigureAwait(false);
+
+        var rows = new List<UserChoiceDto>(matches.Items.Count);
+        foreach (AccountChoice choice in matches.Items)
+        {
+            rows.Add(UserMappings.ToChoice(choice));
+        }
+
+        return Result<PagedResult<UserChoiceDto>>.Success(
+            page.PageSize == UnpagedPageSize
+                ? PagedResult<UserChoiceDto>.Unpaged(rows)
+                : PagedResult<UserChoiceDto>.Create(rows, matches.TotalCount, matches.PageIndex, matches.PageSize));
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
     /// Absence is not a failure, so an account the tenant does not hold reads as a successful result with
     /// no value. The legacy caching wrapper is not reproduced on this read: its key was composed from the
     /// account name (<c>DataCache.UserCacheKey</c>, "UserInfo|{0}|{1}"), which this member does not have
@@ -1066,19 +1238,16 @@ public sealed class UserService : IUserService
             .ListRoleNamesAsync(portalId, userId, _clock.UtcNow, cancellationToken)
             .ConfigureAwait(false);
 
-        // ⚠ READ FOR THE REMOVAL CAPABILITY THE PROJECTION PUBLISHES, exactly as the listing reads it for
-        // the same purpose. The operation refuses the account named by Portals.AdministratorId, and no other
-        // member of the detail contract reveals which account that is - so without this the client could
-        // not withhold the affordance and had to approximate the rule, which it did incorrectly.
-        //
-        // One extra read per detail request, and only aliases are excluded from it. A null administrator is
-        // not an error and is not coerced: a portal that designates nobody protects nobody.
-        Portal? owner = await _portals
-            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
+        // ⚠ NEEDED FOR THE REMOVAL CAPABILITY THE PROJECTION PUBLISHES. The operation refuses the account
+        // named by Portals.AdministratorId, and no other member of the detail contract reveals which account
+        // that is - so without it the client could not withhold the affordance and had to approximate the
+        // rule, which it did incorrectly. A null administrator is not an error and is not coerced: a portal
+        // that designates nobody protects nobody.
+        int? designatedAdministrator = await ReadDesignatedAdministratorAsync(portalId, cancellationToken)
             .ConfigureAwait(false);
 
         return Result<UserDetailDto?>.Success(
-            UserMappings.ToDetail(account, portalId, roles, owner?.AdministratorId));
+            UserMappings.ToDetail(account, portalId, roles, designatedAdministrator));
     }
 
     /// <inheritdoc />
@@ -1122,6 +1291,23 @@ public sealed class UserService : IUserService
         {
             return Result<UserDetailDto>.Failure(CreateInvalidUsernameCode, "An account name is required.");
         }
+
+        // MIGRATION: THE CANONICAL ACCOUNT NAME IS COMPUTED ONCE AND USED EVERYWHERE BELOW - for the two
+        // uniqueness reads, for the display-name format, for the credential store's own lookup and for every
+        // message. It agrees by construction with what UserMappings.ToNewUser writes to the row and with what
+        // UserRepository's reads normalise their argument to.
+        //
+        // Computing it once is the whole fix. The guards used to ask about the string as SUBMITTED while the
+        // row was written from the same string, and both reads normalise their argument - so a submitted
+        // " alice" was checked as "alice", found free, and then stored as " alice", which no later lookup for
+        // "alice" could match. The account occupied the name, could not sign in, and did not appear in the
+        // administration screens; the credential store had meanwhile recorded it under the canonical name,
+        // so the two stores disagreed about the identity of one account. A guard that asks about a different
+        // string from the one the write stores is not a guard.
+        //
+        // The whitespace test above deliberately precedes this, so a name of nothing but spaces is refused as
+        // absent rather than silently becoming the empty string.
+        string username = request.Username.Trim();
 
         if (string.IsNullOrWhiteSpace(request.Email))
         {
@@ -1172,7 +1358,7 @@ public sealed class UserService : IUserService
         string credential = request.Password;
 
         User? existing = await _users
-            .GetByUsernameAsync(portalId: null, request.Username, cancellationToken)
+            .GetByUsernameAsync(portalId: null, username, cancellationToken)
             .ConfigureAwait(false);
 
         if (existing is not null)
@@ -1185,18 +1371,18 @@ public sealed class UserService : IUserService
                 ? Result<UserDetailDto>.Failure(
                     CreateUserAlreadyRegisteredCode,
                     FormattableString.Invariant(
-                        $"Account \"{request.Username}\" is already registered in portal {portalId}."))
+                        $"Account \"{username}\" is already registered in portal {portalId}."))
                 : Result<UserDetailDto>.Failure(
                     CreateUsernameAlreadyExistsCode,
-                    FormattableString.Invariant($"Account name \"{request.Username}\" is already in use."));
+                    FormattableString.Invariant($"Account name \"{username}\" is already in use."));
         }
 
-        if (await _users.UsernameExistsAsync(request.Username, excludingUserId: null, cancellationToken)
+        if (await _users.UsernameExistsAsync(username, excludingUserId: null, cancellationToken)
             .ConfigureAwait(false))
         {
             return Result<UserDetailDto>.Failure(
                 CreateUsernameAlreadyExistsCode,
-                FormattableString.Invariant($"Account name \"{request.Username}\" is already in use."));
+                FormattableString.Invariant($"Account name \"{username}\" is already in use."));
         }
 
         if (_passwordPolicy.RequiresUniqueEmail
@@ -1271,7 +1457,7 @@ public sealed class UserService : IUserService
                 return Result<UserDetailDto>.Failure(
                     CreateUserAlreadyRegisteredCode,
                     FormattableString.Invariant(
-                        $"Account \"{request.Username}\" is already registered in portal {portalId}."));
+                        $"Account \"{username}\" is already registered in portal {portalId}."));
             }
 
             // THE FORMAT IS APPLIED HERE, AFTER THE INSERT, AND THE POSITION IS THE ONE DIVERGENCE.
@@ -1295,7 +1481,7 @@ public sealed class UserService : IUserService
                     account.UserId,
                     request.FirstName,
                     request.LastName,
-                    request.Username);
+                    username);
 
                 if (formatted.Length > DisplayNameMaximumLength)
                 {
@@ -1316,11 +1502,18 @@ public sealed class UserService : IUserService
                 }
             }
 
+            // MIGRATION: THE HASH IS COMPUTED OUTSIDE THE GUARDED REGION, and its position used to be inside
+            // it. Hashing is pure computation in this process - it reaches no store and cannot fail for any
+            // reason the store is responsible for - so a fault raised by the hasher was nonetheless reported
+            // as "the credential store could not be written", which named the wrong subsystem to whoever had
+            // to diagnose it. A guarded region must contain the operation it is guarding and nothing else.
+            string credentialHash = _passwordHasher.Hash(credential);
+
             try
             {
                 bool created = await _users.CreateCredentialAsync(
                     account.UserId,
-                    _passwordHasher.Hash(credential),
+                    credentialHash,
                     request.Authorize,
                     now,
                     cancellationToken).ConfigureAwait(false);
@@ -1330,15 +1523,56 @@ public sealed class UserService : IUserService
                     return Result<UserDetailDto>.Failure(
                         CreateDuplicateUsernameCode,
                         FormattableString.Invariant(
-                            $"The credential store already holds a credential for account name \"{request.Username}\"."));
+                            $"The credential store already holds a credential for account name \"{username}\"."));
                 }
             }
-            catch (Exception exception) when (exception is not OperationCanceledException)
+            catch (Exception exception) when (exception is not OperationCanceledException
+                && _storeFailures.IsStoreUnavailable(exception))
             {
+                // MIGRATION: THE CATCH IS NARROWED AND THE MESSAGE IS FIXED, and both halves repair a real
+                // defect rather than tidying one.
+                //
+                // It used to admit every exception that was not a cancellation, which made it a catch-all
+                // wearing the label of a store guard. A null argument, a mis-registered collaborator, an
+                // invalid operation raised by our own code - each was converted into "the credential store
+                // could not be written", so a programming fault inside this request was reported as an
+                // external store fault, and the fault that actually needed fixing was the one the report
+                // pointed away from. Now only a failure the Domain classifier POSITIVELY attributes to the
+                // store is absorbed here; anything else propagates to the global handler, which is the
+                // component whose job is to report an unexpected fault as one.
+                //
+                // The published text no longer carries exception.GetType().Name. A caller can do nothing
+                // with a type name, and it is the exception's own shape rather than authored text - so it
+                // told an unauthenticated caller which client library and which failure mode a write had hit,
+                // for no benefit to the caller at all. The diagnostic value is not lost: the global handler
+                // records the type chain for the log, which is where a type name belongs.
+                //
+                // MIGRATION: THE CAUGHT TYPE IS REPORTED PRIVATELY AND NEVER TO THE CALLER, AND THAT SPLIT IS
+                // A SECURITY FIX. The message on this outcome used to end with `exception.GetType().Name`, on
+                // the reasonable-sounding premise that the underlying cause should survive for whoever reports
+                // the failure. It survived further than intended: a failed Result's message is published
+                // verbatim as the RFC 7807 `detail`, so the internal type of the credential store - the
+                // database client, in the measured instance - was disclosed to an HTTP caller who has no
+                // relationship with it and can do nothing about it. The shape gave nothing away that helps a
+                // caller and named a component an attacker would otherwise have to guess at.
+                //
+                // What replaces it keeps both readers whole. The CALLER receives fixed, caller-safe wording
+                // that says what happened and what to quote - the correlation identifier joins their report to
+                // this request - while the TYPE NAME goes to ISecurityDiagnostics, whose contract exists for
+                // exactly this: a closed occurrence, a tenant, an account and a short stable code, with no
+                // parameter through which a message, an exception or a value could travel. The transport
+                // additionally refuses any detail naming an exception type, so the class is closed at the edge
+                // as well as at this source.
+                _diagnostics.Record(
+                    SecurityDiagnosticEvent.CredentialStoreWriteFailed,
+                    portalId,
+                    account.UserId,
+                    exception.GetType().Name);
+
                 return Result<UserDetailDto>.Failure(
                     CreateProviderErrorCode,
-                    FormattableString.Invariant(
-                        $"The credential store could not be written: {exception.GetType().Name}."));
+                    "The credential store could not be written, so the account was not created. Try again, "
+                    + "and quote the correlation identifier from the response if the problem persists.");
             }
 
             // The one point at which the account becomes visible to anything else. Both the account row
@@ -1685,16 +1919,6 @@ public sealed class UserService : IUserService
 
         // Everything below runs only once the batch is durable, so no eviction and no audit record can
         // describe a deletion that did not happen.
-        _cache.InvalidatePortal(portalId);
-        _cache.InvalidateUser(portalId, account.Username);
-
-        // The grant-cache eviction the permission contract owns, deferred to here because this method owned
-        // the commit. Evicting inside the scope would have discarded warm entries for a batch that might
-        // still have rolled back, and would have opened a window for a concurrent reader to repopulate them
-        // from rows the transaction was about to remove.
-        await _permissions
-            .InvalidateUserPermissionCachesAsync(portalId, cancellationToken)
-            .ConfigureAwait(false);
 
         // MIGRATION: reproduces the legacy USER_DELETED audit entry, whose one measured call site is
         // UserController.vb:L240 - AddLog("Username", objUser.Username, _portalSettings, objUser.UserID,
@@ -1702,6 +1926,20 @@ public sealed class UserService : IUserService
         // the account identifier it recorded is the subject, so the two facts the legacy record held both
         // survive. The account-fully-removed distinction is net-new detail: the legacy delete had no
         // multi-tenant retention arm to report.
+        //
+        // MIGRATION: THIS IS NOW THE FIRST THING AFTER THE COMMIT, AND THE ORDER IS THE FIX. It used to sit
+        // behind the three cache evictions below, the last of which - the grant-cache eviction - is an
+        // awaited call that OBSERVED THE CANCELLATION TOKEN at the time, now delegated to the permission
+        // contract and synchronous. A caller who disconnected in the moment after
+        // the commit therefore had the account deleted, permanently and irreversibly, with no record anywhere
+        // that it had happened: the token was signalled, the eviction threw, the exception left the member
+        // and this record was never reached. Deleting an account is the single least reversible operation
+        // this service performs and the one an investigation is most likely to ask about, so its record is
+        // the last thing that may be allowed to depend on the caller still being connected.
+        //
+        // Both facts the record needs - the account's key and whether the row itself was removed - are
+        // already in memory, so nothing about emitting them here weakens the record. The evictions follow,
+        // and may now fail without erasing the history of a deletion that has already happened.
         RecordAudit(
             AuditEventNames.UserDeleted,
             portalId,
@@ -1710,6 +1948,15 @@ public sealed class UserService : IUserService
             {
                 ["AccountRemoved"] = (!holdsAnotherMembership).ToString(CultureInfo.InvariantCulture),
             });
+
+        _cache.InvalidatePortal(portalId);
+        _cache.InvalidateUser(portalId, account.Username);
+
+        // The grant-cache eviction the permission contract owns, deferred to here because this method owned
+        // the commit. Evicting inside the scope would have discarded warm entries for a batch that might
+        // still have rolled back, and would have opened a window for a concurrent reader to repopulate them
+        // from rows the transaction was about to remove.
+        _permissions.InvalidateUserPermissionCaches();
 
         return Result.Success();
     }
@@ -2570,8 +2817,19 @@ public sealed class UserService : IUserService
 
         foreach (ProfilePropertyDefinition definition in mandatory)
         {
+            // MIGRATION: EMPTINESS IS TESTED EXACTLY AS THE LEGACY TESTED IT - against the empty string, not
+            // against whitespace. ProfileController.vb ValidateProfile reads
+            //     If propertyDefinition.Required And propertyDefinition.PropertyValue = Null.NullString Then
+            // and Null.vb declares NullString as the EMPTY STRING, so a stored answer of " " satisfied the
+            // legacy rule and let the account sign in. IsNullOrWhiteSpace is therefore a TIGHTENING, and the
+            // consequence falls on exactly the accounts least able to escape it: an existing account whose
+            // stored answer is a space is refused entry to the very form it would have to use to correct the
+            // answer, and it has no way to tell what is wrong. Whether a space is a satisfactory answer is a
+            // policy question, and the place to answer it is the per-property validation expression the
+            // definition already carries - not the completeness gate, which only asks whether an answer
+            // exists. Recorded in MIGRATION_NOTES.md.
             if (!answers.TryGetValue(definition.PropertyDefinitionId, out string? answer)
-                || string.IsNullOrWhiteSpace(answer))
+                || string.IsNullOrEmpty(answer))
             {
                 return Result<bool>.Success(true);
             }
@@ -2750,8 +3008,15 @@ public sealed class UserService : IUserService
                 continue;
             }
 
+            // MIGRATION: the same empty-string test the completeness gate applies, for the same reason and
+            // from the same legacy line - ProfileController.vb ValidateProfile compares the answer against
+            // Null.NullString, which Null.vb declares as the EMPTY STRING. The two must agree or the pair
+            // becomes incoherent in one direction or the other: a write rule stricter than the completeness
+            // rule refuses an answer that would have satisfied sign-in, and a laxer one accepts an answer
+            // that will lock the account out on its next sign-in. Whether a whitespace answer is
+            // satisfactory belongs to the property's own validation expression, applied above.
             if (!submitted.TryGetValue(definition.PropertyDefinitionId, out UserProfileValueDto? property)
-                || string.IsNullOrWhiteSpace(property.PropertyValue))
+                || string.IsNullOrEmpty(property.PropertyValue))
             {
                 return Result.Failure(
                     ProfileRequiredPropertyMissingCode,
@@ -3379,6 +3644,18 @@ public sealed class UserService : IUserService
             .ConfigureAwait(false);
 
         if (revoked.IsSuccess)
+        {
+            return null;
+        }
+
+        // SEC-F2. AN UNCONFIRMED RETIREMENT IS NOT AN OBSTACLE; AN UNREACHABLE STORE IS. The token service
+        // now reports success only for a PROVEN retirement, so an account that never signed in on this
+        // instance - the common case - answers "no such family". Abandoning a membership transition for
+        // that would refuse the operation for the safest possible reason: there was nothing to end. A store
+        // that could not ANSWER is the opposite case and still abandons it, because the sessions may exist
+        // and may still be exchangeable. The two are told apart by the reason token the API's own translator
+        // also classifies on, so the readings cannot drift apart.
+        if (!revoked.Reason!.Code.Contains("store_unavailable", StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }

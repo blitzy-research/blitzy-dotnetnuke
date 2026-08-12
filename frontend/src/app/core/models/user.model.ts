@@ -853,6 +853,57 @@ export interface UserListQuery extends PagedRequest {
 export type PagedUserList = PagedResult<UserListItem>;
 
 /**
+ * One selectable account, as an account PICKER needs it.
+ *
+ * ⚠ THIS IS DELIBERATELY NARROWER THAN {@link UserListItem} AND MUST STAY THAT WAY. A
+ * performance and privacy review measured the role-assignment screen filling its account
+ * drop-down — and its account-count probe — from the account LISTING, whose row carries a
+ * postal address, a telephone number, an electronic-mail address, a creation instant, a
+ * last-login instant and four status flags. All of that crossed the wire and sat in browser
+ * memory so that three values could be rendered, on a screen permitted to enumerate a tenant
+ * of up to a thousand accounts. `GET /api/v1/users/choices` answers exactly these three
+ * members, and this type is where the client's half of that minimisation is stated.
+ *
+ * ⚠ DO NOT ADD A MEMBER. A screen needing more than a key and a caption is READING an account,
+ * not choosing one, and {@link UserDetail} is the shape for that. Widening this type would
+ * re-open the exposure silently, because every existing consumer would keep compiling.
+ *
+ * No `portalId` is carried, unlike the listing row: the endpoint is scoped to the resolved
+ * tenant, so every row in a page belongs to the same one by construction.
+ */
+export interface UserChoice {
+  /**
+   * The account's identifier, and the value an option submits.
+   *
+   * Compare against `null` or `undefined` rather than testing truthiness — see the note on
+   * sentinels and identity values at the top of this file.
+   */
+  readonly userId: number;
+
+  /** The sign-in name, shown in brackets so two identical display names stay distinguishable. */
+  readonly username: string;
+
+  /**
+   * The name the option is captioned with.
+   *
+   * Typed `string` rather than `string | null` because the column is declared not-null with an
+   * empty-string default, so an account that never recorded one arrives with the EMPTY STRING.
+   * That is a conforming value and not an absence: a caller captions such an option with
+   * {@link UserChoice.username} rather than treating the row as unusable.
+   */
+  readonly displayName: string;
+}
+
+/**
+ * One page of the account picker: the choices plus the envelope carrying the total.
+ *
+ * The total is what makes a single-row request a COUNT PROBE — the cheapest way to ask how many
+ * accounts a tenant holds, which is the question the legacy control's own threshold rule asked
+ * before it decided whether to offer a drop-down at all (`UserModuleBase.vb:L178-L186`).
+ */
+export type PagedUserChoiceList = PagedResult<UserChoice>;
+
+/**
  * The closed vocabulary of {@link MemberService.subscriptionAction}.
  *
  * The three spellings the API publishes, held as an array so that the decoder validates
@@ -1135,6 +1186,25 @@ export enum PasswordFormat {
   /** Stored reversibly under a symmetric key. Never to be used for a new credential. */
   Encrypted = 2,
 }
+
+/**
+ * Decodes one selectable account.
+ *
+ * Three members and no more, checked against the declared shape rather than trusted, so a server
+ * that started sending a fourth field would be refused HERE rather than silently retained in
+ * browser memory. That is the whole point of the narrow contract: the exposure this endpoint closes
+ * would otherwise return without a single line changing on the client.
+ *
+ * The display name is decoded as a PLAIN STRING, so the empty string passes. That is the legacy
+ * spelling of an absent string — `Library/Components/Shared/Null.vb:L71-L75` returns `""` literally
+ * — so an account that never recorded a display name is captioned by its login name and is not
+ * refused.
+ */
+export const decodeUserChoice: Decoder<UserChoice> = objectOf<UserChoice>({
+  userId: decodeInteger,
+  username: decodeString,
+  displayName: decodeString,
+});
 
 /**
  * Decodes one listed account row.

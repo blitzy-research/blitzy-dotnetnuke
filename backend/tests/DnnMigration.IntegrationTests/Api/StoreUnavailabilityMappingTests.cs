@@ -145,6 +145,66 @@ public sealed class StoreUnavailabilityMappingTests
     }
 
     /// <summary>
+    /// A cache production timeout is answered 500 with no retry hint, even when the store classifier would
+    /// call everything an outage.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE THIRD PART OF A THREE-PART FIX, AND THE PART THAT PROVES THE OTHER TWO ARE WIRED UP. The
+    /// in-process cache used to signal an expired single-flight budget with a plain
+    /// <see cref="TimeoutException"/>, and the store classifier used to read that bare type as the database
+    /// being unreachable. A cache defect - a producer that hangs, a budget set too low, a lock held too long -
+    /// therefore reached the caller as <c>503</c> with a retry hint pointing at a database that was in fact
+    /// perfectly healthy, and every retry hit the same hanging producer. The cache now raises a type of its
+    /// own and the classifier now requires structural provider or mapper context, so neither half can produce
+    /// that answer any more.
+    /// </para>
+    /// <para>
+    /// The arrangement is deliberately hostile: the classifier is substituted to answer YES for every
+    /// failure. If the cache arm did not sit ABOVE the outage guard in the handler's description, this test
+    /// would see 503 - which makes the assertion a test of the ARM ORDER, not merely of the type. That order
+    /// is load-bearing and invisible in a diff, so it is pinned here rather than left to a comment.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ACacheProductionTimeout_IsAnswered500EvenWhenTheClassifierWouldSayOutage()
+    {
+        using Harness harness = Harness.Create(storeIsUnavailable: true);
+
+        bool handled = await harness.Handler.TryHandleAsync(
+            harness.Context,
+            new CacheProductionTimeoutException(
+                "A cached value took longer than the shared production budget to produce."),
+            CancellationToken.None);
+
+        handled.Should().BeTrue();
+
+        harness.Context.Response.StatusCode.Should().Be(
+            StatusCodes.Status500InternalServerError,
+            "a cache producer that did not finish in its budget is this application's defect, and answering "
+            + "it as a dependency outage tells the caller to retry into the same hanging producer while "
+            + "pointing the investigation at a database that never failed");
+
+        harness.Context.Response.Headers.RetryAfter.Should().BeEmpty(
+            "there is no interval after which a hung producer becomes healthy, so there is nothing to "
+            + "advertise");
+
+        harness.Written.Should().NotBeNull();
+        harness.Written!.Status.Should().Be(StatusCodes.Status500InternalServerError);
+        harness.Written.Detail.Should().Be(UnexpectedFailureDetail);
+        harness.Written.Detail.Should().NotContain(
+            "production budget",
+            "the cache's own wording is an implementation detail of this process");
+
+        harness.Records.Entries.Should().Contain(
+            entry => entry.Level == LogLevel.Error,
+            "the condition is still a fault this deployment must see; only the status and the retry advice "
+            + "change");
+    }
+
+    /// <summary>
     /// A failure already classified by the layer that owns it keeps that classification, whatever the store
     /// classifier says.
     /// </summary>
@@ -183,6 +243,15 @@ public sealed class StoreUnavailabilityMappingTests
     /// on and hands the REAL exception to the REAL implementation, resolved from the composition root rather
     /// than constructed here. A loopback port with no listener is refused immediately, so no timeout is waited
     /// out and nothing outside this host is contacted.
+    /// <para>
+    /// ⚠ THE PORT IS OBTAINED FROM THE OPERATING SYSTEM, NOT SPELLED HERE. This fact used to name a fixed high
+    /// port and assert, in effect, that nothing on the machine had bound it - an assertion this suite is in no
+    /// position to make, because several clones of this repository build and test in parallel on one host. A
+    /// collision would not fail loudly either: a process that ACCEPTED the connection would turn "refused
+    /// immediately" into a handshake with something unrelated, and this fact would then report whatever that
+    /// something did. <see cref="RefusedEndpoint"/> asks the kernel for a free ephemeral port and releases it,
+    /// so the refusal is a property the kernel established rather than one this file hoped for.
+    /// </para>
     /// </remarks>
     [Fact]
     [Trait("Category", "Integration")]
@@ -193,8 +262,7 @@ public sealed class StoreUnavailabilityMappingTests
         try
         {
             await using SqlConnection connection = new(
-                "Server=127.0.0.1,14399;Database=DnnMigrationProbe;User Id=probe;Password=probe;"
-                + "TrustServerCertificate=True;Encrypt=True;Connect Timeout=2");
+                RefusedEndpoint.ConnectionString("DnnMigrationProbe"));
 
             await connection.OpenAsync();
         }

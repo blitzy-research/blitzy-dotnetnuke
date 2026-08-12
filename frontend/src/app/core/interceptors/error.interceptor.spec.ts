@@ -201,6 +201,15 @@ const NETWORK_UNAVAILABLE_TEXT =
 const REFERENCE_LABEL = 'Reference:';
 
 /**
+ * A canonical identifier as the reverse proxy returns it on a response.
+ *
+ * The COMPACT 32-character form, deliberately distinct from the hyphenated {@link CORRELATION_ID} the
+ * document fixtures carry, so a specification asserting which of the two was quoted cannot pass by
+ * coincidence. Both forms are canonical; only the source differs.
+ */
+const GATEWAY_CORRELATION_ID = '4d19ae7c1b8f4e2a9d6c3f5b7a091e2d';
+
+/**
  * Any body the testing backend can be told to respond with.
  *
  * DERIVED from the testing backend's own signature rather than restated as a union,
@@ -976,6 +985,109 @@ describe('errorInterceptor', () => {
       expect(message).toBe(`An unexpected error occurred. ${REFERENCE_LABEL} ${CORRELATION_ID}`);
     });
 
+    it('falls back to the response header when the body carries no correlation identifier', async () => {
+      // ⚠ THE GATEWAY IS WHY THIS MATTERS. Not every failure response is written by the API. A 502 or
+      // 503 produced by the reverse proxy because the API could not be reached carries a document the
+      // PROXY composed, and a 504 may carry none - and those are precisely the failures an operator is
+      // most likely to report. Until this fallback existed they were the ones with nothing to report them
+      // BY: no reference in the body, none quoted, and an operator describing a gateway failure with no
+      // join key to the request.
+      //
+      // The header is present on those responses because the proxy sets it: it validates the inbound
+      // identifier against the same canonical shape this client generates, or generates one of its own,
+      // returns it on the response and embeds the identical value in whatever document it composes.
+      const body: ProblemDetails = {
+        title: 'Service Unavailable',
+        status: 503,
+        detail: 'The application is temporarily unavailable.',
+      };
+
+      const pending = firstValueFrom(http.get(PORTALS_URL));
+
+      httpMock.expectOne(PORTALS_URL).flush(body, {
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: {
+          'Content-Type': 'application/problem+json',
+          'X-Correlation-Id': GATEWAY_CORRELATION_ID,
+        },
+      });
+
+      await expectAsync(pending).toBeRejected();
+
+      expect(onlyMessage())
+        .withContext('the identifier the proxy returned is what the operator quotes')
+        .toBe(
+          `The application is temporarily unavailable. ${REFERENCE_LABEL} ${GATEWAY_CORRELATION_ID}`,
+        );
+    });
+
+    it('refuses a response header that is not a canonical identifier', async () => {
+      // ⚠ A RESPONSE HEADER IS SERVER-SUPPLIED TEXT. An intermediary that echoed something arbitrary
+      // into it would otherwise put that arbitrary text in front of an operator - the exact class of
+      // defect the canonical shape was introduced to close on the REQUEST path, reopened on the response
+      // path. The same predicate the correlation interceptor applies outbound is applied here, so
+      // anything that is not a plain 32-character or hyphenated-UUID hexadecimal value is absent.
+      const body: ProblemDetails = {
+        title: 'Service Unavailable',
+        status: 503,
+        detail: 'The application is temporarily unavailable.',
+      };
+
+      const pending = firstValueFrom(http.get(PORTALS_URL));
+
+      httpMock.expectOne(PORTALS_URL).flush(body, {
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: {
+          'Content-Type': 'application/problem+json',
+          'X-Correlation-Id': 'Integr8tion!Pass',
+        },
+      });
+
+      await expectAsync(pending).toBeRejected();
+
+      const message = onlyMessage();
+
+      expect(message)
+        .withContext('nothing arbitrary from a header reaches an operator')
+        .not.toContain('Integr8tion!Pass');
+      expect(message)
+        .withContext('and no empty reference label is left behind either')
+        .toBe('The application is temporarily unavailable.');
+    });
+
+    it('prefers the document over the header, because the API knows its own identifier', async () => {
+      // The header is a FALLBACK and not an override. When the API wrote the document it put the
+      // identifier it actually recorded the request under into it, and that is the authoritative value;
+      // reading the header in preference would let an intermediary that rewrote the header detach the
+      // reference from the record it is meant to find.
+      const body: ProblemDetails = {
+        title: 'Internal Server Error',
+        status: 500,
+        detail: 'An unexpected error occurred.',
+        correlationId: CORRELATION_ID,
+      };
+
+      const pending = firstValueFrom(http.get(PORTALS_URL));
+
+      httpMock.expectOne(PORTALS_URL).flush(body, {
+        status: 500,
+        statusText: 'Internal Server Error',
+        headers: {
+          'Content-Type': 'application/problem+json',
+          'X-Correlation-Id': GATEWAY_CORRELATION_ID,
+        },
+      });
+
+      await expectAsync(pending).toBeRejected();
+
+      const message = onlyMessage();
+
+      expect(message).toContain(CORRELATION_ID);
+      expect(message).not.toContain(GATEWAY_CORRELATION_ID);
+    });
+
     it('is omitted for a refusal, which is already self-explanatory', async () => {
       const refusals: readonly number[] = [400, 403, 404, 409, 422, 429];
       const raisedMessages: string[] = [];
@@ -1588,6 +1700,68 @@ describe('errorInterceptor', () => {
       // would add noise and invite them to report a working system as broken.
       expect(entry.reference).toBeNull();
       expect(entry.message).not.toContain(REFERENCE_LABEL);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // THE NAVIGATION SWEEP IS NOT PRE-EMPTED
+  // -------------------------------------------------------------------------
+
+  describe('the navigation exemption', () => {
+    it('is NOT claimed for a failure this interceptor announces', async () => {
+      // ⚠ THIS ASSERTION IS INVERTED FROM THE BEHAVIOUR IT REPLACES. This interceptor used to close by
+      // claiming the queue's one-navigation exemption for EVERY failure it announced. The stated reason
+      // was sound for the cases it named - an expired session, a refused destination, a read that fails
+      // during a route resolution - each followed by a redirect that would otherwise sweep the
+      // explanation away before the operator saw it.
+      //
+      // But most failures are followed by no navigation at all: a validation refusal, a conflict, a rate
+      // limit, a failed save on a screen the operator stays on. For those the exemption preserved nothing
+      // - it made a stale message outlive the operator's NEXT deliberate change of screen, so a statement
+      // about the form they had finished with followed them to the one they had moved to. And because the
+      // exemption is a single grant on the queue, spending it here on a failure that needed nothing
+      // consumed it for whatever genuinely did.
+      const body: ProblemDetails = {
+        title: 'Conflict',
+        status: 409,
+        detail: 'That name is already in use.',
+      };
+
+      await expectRejection(body, 409, 'Conflict');
+
+      expect(messages()).withContext('the failure is announced').toHaveSize(1);
+
+      // The shell calls this on a COMPLETED navigation, which is the event that means the operator has
+      // genuinely arrived somewhere else.
+      notifications.clearOnNavigation();
+
+      expect(messages())
+        .withContext('a conflict the operator stays put for does not follow them to the next screen')
+        .toEqual([]);
+    });
+
+    it('leaves retention to the callers that know a departure is coming', async () => {
+      // REMOVING THE BLANKET EXEMPTION LOSES NOTHING, because every path that actually redirects or
+      // ejects claims it explicitly and at the point it knows a departure is imminent - the permission
+      // guard, the authentication store, the session-teardown service, and the module-import,
+      // portal-settings, role-form and membership-settings screens. This proves the mechanism still works
+      // when it IS claimed, so the removal above is a narrowing rather than a loss.
+      const body: ProblemDetails = {
+        title: 'Forbidden',
+        status: 403,
+        detail: 'You do not hold that permission.',
+      };
+
+      await expectRejection(body, 403, 'Forbidden');
+
+      // Exactly what a redirecting caller does immediately after the announcement and before requesting
+      // the navigation.
+      notifications.retainAcrossNavigation();
+      notifications.clearOnNavigation();
+
+      expect(messages())
+        .withContext('a caller that asks for the reprieve still gets it')
+        .toEqual(['You do not hold that permission.']);
     });
   });
 });

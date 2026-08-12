@@ -22,31 +22,36 @@
  * as such in `MIGRATION_NOTES.md`.
  *
  * ---------------------------------------------------------------------------
- * WHY THIS NEEDS NO CODE IN ANY SCREEN
+ * WHY EVERY PROTECTED SCREEN REGISTERS ITSELF, AND WHY IT DID NOT USED TO
  * ---------------------------------------------------------------------------
- * ⚠ NOT ONE OF THE FOURTEEN FORM SCREENS IS MODIFIED BY THIS GATE, and that is a deliberate
- * design constraint rather than a happy accident. The obvious shape — an interface every form
- * implements, or a directive every form template carries — costs an edit in fourteen screens
- * and, far worse, is silently incomplete the moment a fifteenth screen is written: the omission
- * produces no error and no test failure, only the original defect again on one screen.
+ * ⚠ THIS GATE ONCE DISCOVERED THE FORMS BY REFLECTION, AND THAT COST THE WHOLE APPLICATION ITS
+ * FORMS-FREE STARTUP. It enumerated `Object.values(component)`, unwrapped anything that was a
+ * signal, and asked every `FormGroup` it found whether it was dirty. The appeal was that no
+ * screen had to be edited; the price was an `import { FormGroup } from '@angular/forms'` in a
+ * module that `app.routes.ts` — which is EAGER — imports. A static walk of the import graph from
+ * `main.ts` reached 45 eager modules and found `@angular/forms` reachable through exactly one of
+ * them: this file. Every form screen in the application is lazily loaded, so the forms package
+ * had no business being in the initial bundle at all, and it was there to support a convenience
+ * in a route guard. A performance review measured it against the frozen bundle budget.
  *
- * This gate instead discovers the forms. A component's reactive forms are its own fields, so
- * they are enumerable, and Angular publishes a real type test for each thing this needs to
- * know: {@link isSignal} for "is this a signal I may read?" and `instanceof FormGroup` for "is
- * this a form?". Neither is a naming convention, so nothing has to be remembered. The census of
- * shapes it has to cope with was taken from the code rather than assumed, and all three occur:
+ * ⚠ REFLECTION WAS ALSO NEVER AS COMPLETE AS IT LOOKED. It could only see dirty state that
+ * happens to BE a `FormGroup` field: a screen whose unsaved entry lives in a signal, in a child
+ * component, or in a form built inside a closure was invisible to it, and the invisibility
+ * produced no error and no test failure. Nine screens had already registered an explicit probe
+ * with {@link UnsavedChangesTracker} for exactly that reason, so the application was carrying
+ * two mechanisms answering one question, and the reflective one was the weaker.
  *
- *   - twelve screens hold a plain `FormGroup` field, variously named;
- *   - the site-settings and add-portal screen holds TWO (`createForm` and `editForm`), only one
- *     of which is mounted at a time — so a gate that looked for a single well-known member
- *     would have to know which;
- *   - the profile screen's form is a `Signal<FormGroup>`, rebuilt when the property definitions
- *     arrive, so its identity changes during the screen's life and a reference captured once
- *     would go stale.
+ * So the tracker is now the ONLY mechanism, and each of the fifteen protected screens registers
+ * a probe in a field initialiser. That is one line per screen and it says what the screen means
+ * — `() => this.form.dirty && this.saving() === false` — rather than leaving a gate to infer it.
+ * The registration is released automatically when the screen is destroyed, so there is no handle
+ * to forget.
  *
- * Reading a signal is free of side effects, which is what makes unwrapping one safe here. An
- * arbitrary zero-argument function is NOT called: `isSignal` is what separates the two, and
- * without it this would be invoking unknown component methods during a navigation.
+ * ⚠ THE ONE THING TO WATCH WHEN ADDING A SIXTEENTH SCREEN: a route that declares this gate while
+ * its component registers no probe is protected in name only. That is the failure mode reflection
+ * was meant to prevent, and it is now covered by a specification instead — the guard's own suite
+ * walks the route table and asserts that every route declaring this gate names a component that
+ * registers a probe.
  *
  * ---------------------------------------------------------------------------
  * WHICH DEPARTURES ARE CHALLENGED, AND WHY THAT IS NOT "ALL OF THEM"
@@ -87,12 +92,15 @@
  * affordances. A native prompt is also keyboard-operable, announced by assistive technology and
  * impossible to mis-focus, none of which comes for free in a custom dialog.
  *
- * `beforeunload` itself is registered by `layout/shell/shell.component.ts`, which is mounted for
- * the whole life of the application; this file owns only the route half.
+ * `beforeunload` is registered by {@link UnsavedChangesTracker}, which is root-provided and
+ * therefore lives for the whole of a session. It used to be registered TWICE — the application
+ * shell installed a second listener of its own, over the reflective probe — and one hazard with
+ * two owners is one owner too many: the two could disagree, and a performance review counted the
+ * duplication as work done twice on every attempt to leave. The tracker owns it alone now, and the
+ * shell consumes state rather than keeping its own.
  */
 
-import { DestroyRef, Injectable, isSignal, inject } from '@angular/core';
-import { FormGroup } from '@angular/forms';
+import { DestroyRef, Injectable, inject } from '@angular/core';
 import { Router } from '@angular/router';
 
 import type { CanDeactivateFn } from '@angular/router';
@@ -112,64 +120,15 @@ export const DISCARD_CHANGES_PROMPT =
   'You have changes on this screen that have not been saved. Leave without saving them?';
 
 /**
- * Reports whether a component is holding edits that have not been saved.
- *
- * Enumerates the component's own fields, unwraps any that are signals, and asks every
- * `FormGroup` it finds whether it is dirty. A screen holding two forms is dirty when EITHER is,
- * which is correct for the add-portal screen: only one of its two is mounted at a time, and the
- * unmounted one is pristine because nothing has touched it.
- *
- * ⚠ `dirty` IS THE RIGHT QUESTION AND `valid` IS NOT. A half-typed value that fails its rule is
- * still work the operator would be upset to lose — arguably more so, since they cannot save it
- * yet. Angular sets `dirty` on the first edit a person makes and never on a programmatic
- * `setValue`, which is exactly the distinction needed: a form populated from a record it just
- * read is pristine, and the screens that canonicalise a value on blur already refuse to do so
- * to a pristine control for this reason.
- *
- * `disabled` groups are skipped by Angular's own `dirty` bookkeeping, so a read-only screen —
- * the portal-maintained Administrators role, for instance — cannot report itself dirty.
- *
- * Exported so that `layout/shell/shell.component.ts` can ask the identical question of the
- * currently routed component when the BROWSER is about to leave — a reload, a tab close, a
- * navigation to another origin. Those never reach the router and so never reach this gate, and
- * they are half of the measured loss. One predicate serves both channels deliberately: two
- * copies of "what counts as unsaved" would eventually disagree, and the disagreement would show
- * up as a screen that warns on one exit route and not the other.
- *
- * @param component The deactivating component instance, as the router supplies it.
- * @returns True when at least one of its forms has been edited and not saved.
- */
-export function holdsUnsavedEdits(component: unknown): boolean {
-  if (component === null || typeof component !== 'object') {
-    return false;
-  }
-
-  for (const value of Object.values(component)) {
-    // Reading a signal is side-effect-free; an arbitrary function is NOT invoked, which is the
-    // whole reason this tests `isSignal` rather than `typeof value === 'function'`.
-    const resolved: unknown = isSignal(value) ? value() : value;
-
-    if (resolved instanceof FormGroup && resolved.dirty) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-/**
  * Reports whether the screen currently on display is one this gate protects.
  *
- * ⚠ THE ROUTE TABLE IS THE SINGLE DECLARATION, AND THIS IS WHAT LETS THE BROWSER-EXIT CHANNEL
- * SHARE IT. The gate is attached to nineteen routes and deliberately NOT to the four listing
- * routes, because a listing's search box is a `FormGroup` too: typing a filter term marks it
- * dirty, and a `beforeunload` handler that consulted {@link holdsUnsavedEdits} alone would warn
- * an operator about "unsaved changes" for a search term they had typed and already seen applied.
- *
- * Rather than maintain a second list of protected screens — which would be the same defect as a
- * per-screen interface, one list drifting from the other — this reads the decision back off the
- * route that is actually active. Adding the gate to a new form route therefore extends BOTH
- * channels, and forgetting to add it withholds both, which is at least consistent.
+ * ⚠ WHY A ROUTE-TABLE TEST SURVIVES THE REMOVAL OF THE REFLECTIVE PROBE. It is no longer needed to
+ * keep a listing's search box from raising a false warning — a listing registers no probe, so the
+ * tracker cannot see its filter control at all — but it remains the only way to ask "is the screen
+ * in front of the operator one the application promised to protect?" without maintaining a second
+ * list of protected screens beside the route table. The guard's own specification uses it to walk
+ * the route table and prove that every route declaring this gate reaches a component that registers
+ * a probe, which is the check that replaced reflection's accidental completeness.
  *
  * The deepest activated route is the one consulted, because the gate is declared on leaves.
  *
@@ -293,20 +252,22 @@ export class UnsavedChangesTracker {
  * as they were — so declining the prompt costs the operator nothing, not even their scroll
  * position.
  *
- * @param component The component being deactivated.
  * @returns Whether the navigation may proceed.
  *
- * ⚠ TWO SOURCES OF TRUTH ABOUT ONE QUESTION, AND EITHER ONE IS ENOUGH. A screen may declare its
- * unsaved state in two ways: by holding a dirty `FormGroup` the reflective probe above can find, or
- * by registering its own predicate with {@link UnsavedChangesTracker} - which is what a screen whose
- * dirty state is not simply "the form is dirty" does, and what covers the exits a route guard cannot
- * see at all. Consulting both is what keeps the fourteen editing screens covered without asking any
- * of them to state the same fact twice.
+ * ⚠ ONE SOURCE OF TRUTH, AND IT USED TO BE TWO. A screen's unsaved state was read either from a
+ * dirty `FormGroup` found by reflecting over the component's fields, or from a predicate the screen
+ * had registered with {@link UnsavedChangesTracker}. Consulting both looked like belt and braces and
+ * was not: the reflective half pulled `@angular/forms` into the eagerly loaded bundle for an
+ * application whose every form screen is lazy, and it could only ever see dirty state that happened
+ * to be a `FormGroup` field — so a screen holding its entry anywhere else was silently unprotected.
+ * Every protected screen now registers a probe, and the tracker is the whole answer.
+ *
+ * The deactivating component is deliberately NOT inspected, which is why this takes no parameter.
  */
-export const unsavedChangesGuard: CanDeactivateFn<unknown> = (component) => {
+export const unsavedChangesGuard: CanDeactivateFn<unknown> = () => {
   const tracker = inject(UnsavedChangesTracker);
 
-  if (holdsUnsavedEdits(component) === false && tracker.isDirty() === false) {
+  if (tracker.isDirty() === false) {
     return true;
   }
 
@@ -326,9 +287,9 @@ export const unsavedChangesGuard: CanDeactivateFn<unknown> = (component) => {
   // exemption written for a successful save. A browser audit reproduced it end to end: typing into
   // `/roles/new` and clicking a sidebar link prompted correctly, and `history.back()` from the same
   // dirty form changed the route with NO prompt and discarded the edits silently. `beforeunload` does
-  // not cover it either - it is registered by three parties here and none of them sees a
-  // same-document navigation - so this guard was the only thing standing between the Back button and
-  // an operator's unsaved work.
+  // not cover it either - the tracker registers it once and a same-document navigation does not fire
+  // it at all - so this guard was the only thing standing between the Back button and an operator's
+  // unsaved work.
   //
   // The trigger is what actually answers the question, and it is answered POSITIVELY rather than by
   // excluding what is known to be wrong: only an `'imperative'` navigation is one this application

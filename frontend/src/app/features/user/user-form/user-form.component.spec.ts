@@ -1045,6 +1045,176 @@ describe('UserFormComponent', () => {
         .toBeFalse();
     });
 
+    // ⚠ MAJOR (CWE-316 cleartext storage) — WHAT HAPPENS TO THE TYPED CREDENTIAL AFTER THE ACCOUNT EXISTS.
+    //
+    // The password and its confirmation are the only secrets this form holds. Once the server has stored the
+    // account this copy has no further purpose, yet settling the form does not remove it: the controls keep
+    // their values and the two password inputs keep those values in the live document.
+    //
+    // This screen has TWO ways for a departure to fail to dispose of them, not one. The ordinary branch's
+    // navigation can be refused by a guard, resolve `false`, or reject when a lazy chunk fails; and the
+    // generated-credential branch does not navigate AT ALL - it deliberately stays here for as long as the
+    // operator takes to write the generated password down. The cases below pin the clearing in each.
+
+    describe('discarding the typed credential once the account exists', () => {
+      it('empties both credential controls and both boxes before navigating away', () => {
+        create();
+        fillCreationForm('Str0ngPass');
+
+        // On the screen before the write, which is what makes the assertion after it mean something.
+        expect(field<HTMLInputElement>(CONTROL_ID.password).value).toBe('Str0ngPass');
+        expect(field<HTMLInputElement>(CONTROL_ID.confirmPassword).value).toBe('Str0ngPass');
+
+        press(CREATE_SUBMIT_LABEL);
+        expectRequest('POST', USERS_URL).flush(envelope(account(9)), {
+          status: 201,
+          statusText: 'Created',
+        });
+        fixture.detectChanges();
+        expectNoListingReRead();
+
+        // The navigation completed here, so the screen is gone from the router's point of view - but the
+        // component is still mounted in this fixture, which is exactly the state a refused navigation leaves
+        // a real operator in, and the controls are empty in both.
+        expect(query<HTMLInputElement>(`#${CONTROL_ID.password}`)?.value ?? '').toBe('');
+        expect(query<HTMLInputElement>(`#${CONTROL_ID.confirmPassword}`)?.value ?? '').toBe('');
+        expect(host().outerHTML)
+          .withContext('the credential appears nowhere in the document')
+          .not.toContain('Str0ngPass');
+      });
+
+      it('empties them even when the navigation is REFUSED, which is the case that matters', () => {
+        // A guard answering false is the ordinary way this happens. The account already exists, so the
+        // credential is stored and useless here - and the screen stays mounted, which is why relying on the
+        // navigation to dispose of it was not enough.
+        navigateSpy.and.resolveTo(false);
+
+        create();
+        fillCreationForm('Str0ngPass');
+        press(CREATE_SUBMIT_LABEL);
+        expectRequest('POST', USERS_URL).flush(envelope(account(9)), {
+          status: 201,
+          statusText: 'Created',
+        });
+        fixture.detectChanges();
+        expectNoListingReRead();
+
+        expect(field<HTMLInputElement>(CONTROL_ID.password).value).toBe('');
+        expect(field<HTMLInputElement>(CONTROL_ID.confirmPassword).value).toBe('');
+        expect(host().outerHTML).not.toContain('Str0ngPass');
+      });
+
+      it('empties them even when the navigation REJECTS', () => {
+        // The other way a navigation fails to complete: a rejected promise, which a failed lazy chunk
+        // produces. The clearing happens before the call, so the rejection cannot affect it - and the
+        // rejection itself is handled rather than left unhandled.
+        navigateSpy.and.rejectWith(new Error('a chunk failed to load'));
+
+        create();
+        fillCreationForm('Str0ngPass');
+        press(CREATE_SUBMIT_LABEL);
+        expectRequest('POST', USERS_URL).flush(envelope(account(9)), {
+          status: 201,
+          statusText: 'Created',
+        });
+        fixture.detectChanges();
+        expectNoListingReRead();
+
+        expect(field<HTMLInputElement>(CONTROL_ID.password).value).toBe('');
+        expect(field<HTMLInputElement>(CONTROL_ID.confirmPassword).value).toBe('');
+        expect(host().outerHTML).not.toContain('Str0ngPass');
+      });
+
+      it('leaves the entry an operator can re-read alone, so a refused trip is not lost work', () => {
+        // The counterpart, and the reason the whole form is not wiped. Only the two credential controls are
+        // secrets; clearing the name or the address would turn a refused navigation into lost work for no
+        // security gain, since every one of those values is on the screen to be read.
+        navigateSpy.and.resolveTo(false);
+
+        create();
+        fillCreationForm('Str0ngPass');
+        press(CREATE_SUBMIT_LABEL);
+        expectRequest('POST', USERS_URL).flush(envelope(account(9)), {
+          status: 201,
+          statusText: 'Created',
+        });
+        fixture.detectChanges();
+        expectNoListingReRead();
+
+        expect(field<HTMLInputElement>(CONTROL_ID.username).value).toBe('grace.hopper');
+        expect(field<HTMLInputElement>(CONTROL_ID.firstName).value).toBe('Grace');
+        expect(field<HTMLInputElement>(CONTROL_ID.email).value).toBe('grace@example.test');
+      });
+
+      it('shows no complaint about the credential it has just discarded', () => {
+        // Cleared with `reset`, not with a value assignment, so each control returns to pristine and
+        // untouched along with its value. Otherwise the group's password rules would fire against the very
+        // credential the screen deliberately removed, and the operator would be told to supply a password
+        // for an account that already exists.
+        navigateSpy.and.resolveTo(false);
+
+        create();
+        fillCreationForm('Str0ngPass');
+        press(CREATE_SUBMIT_LABEL);
+        expectRequest('POST', USERS_URL).flush(envelope(account(9)), {
+          status: 201,
+          statusText: 'Created',
+        });
+        fixture.detectChanges();
+        expectNoListingReRead();
+
+        expect(fieldErrors())
+          .withContext('no message about a credential that is gone on purpose')
+          .toEqual([]);
+      });
+
+      it('empties them on the GENERATED path too, which does not navigate at all', () => {
+        // ⚠ THE WORST CASE OF THE THREE, AND THE ONE NO NAVIGATION COULD EVER HAVE COVERED. When the screen
+        // generates the credential it holds the account open so the operator can write the value down, and
+        // there is no field for a typed credential in that state - but a person who TYPES a password and
+        // then chooses generation still leaves the typed value in the control behind the panel. The panel
+        // stays until dismissed, so before this the typed credential sat there for as long as the operator
+        // took, with no navigation pending to remove it.
+        create();
+
+        type(CONTROL_ID.username, 'grace.hopper');
+        type(CONTROL_ID.firstName, 'Grace');
+        type(CONTROL_ID.lastName, 'Hopper');
+        type(CONTROL_ID.displayName, 'Grace Hopper');
+        type(CONTROL_ID.email, 'grace@example.test');
+        type(CONTROL_ID.password, 'Str0ngPass');
+        type(CONTROL_ID.confirmPassword, 'Str0ngPass');
+        toggle(CONTROL_ID.randomPassword, true);
+        press(CREATE_SUBMIT_LABEL);
+
+        const write = expectRequest('POST', USERS_URL);
+        const generated: string = (write.request.body as CreateUserRequest).password;
+
+        expect(generated)
+          .withContext('the credential sent is the generated one, not the typed one')
+          .not.toBe('Str0ngPass');
+
+        write.flush(envelope(account(9)), { status: 201, statusText: 'Created' });
+        fixture.detectChanges();
+        expectNoListingReRead();
+
+        // The screen deliberately stays: no navigation has been requested, because the hand-over is
+        // pending.
+        expect(navigateSpy).withContext('the redirect is deferred, not dropped').not.toHaveBeenCalled();
+
+        // And the TYPED credential is gone even though nothing navigated.
+        expect(host().outerHTML)
+          .withContext('the typed credential is discarded even with the panel open')
+          .not.toContain('Str0ngPass');
+
+        // The GENERATED one is deliberately still disclosed - that is the hand-over this panel exists for,
+        // and it is the one credential this screen is supposed to be showing.
+        expect(host().textContent ?? '')
+          .withContext('the one-time hand-over is unaffected')
+          .toContain(generated);
+      });
+    });
+
     it('re-reads the listing after a write once a search HAS been chosen', () => {
       create();
 

@@ -207,6 +207,31 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         + "Reload the resource and submit different values.";
 
     /// <summary>
+    /// Explanation returned when the store refused a write because the record had already been changed
+    /// by another caller.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A SAFETY NET, exactly like the duplicate arm above. Every whole-record write path compares the
+    /// token the caller round-tripped and answers with its own reason code, naming the resource and
+    /// telling the caller to reload it, so a caller normally never reaches this text. What that
+    /// comparison cannot do on its own is close the window between the read and the flush - it is a
+    /// pre-check, and two callers can both pass one - which is why those paths run the read, the
+    /// comparison and the flush inside one serialisable scope and why the store's refusal of the losing
+    /// half arrives here as a signal rather than as a status.
+    /// </para>
+    /// <para>
+    /// The wording carries the one instruction that recovers from it and discloses nothing about WHICH
+    /// value moved: a caller able to infer the changed column from a refusal would be reading another
+    /// caller's edit through an error message. It names no resource either, because at this point none
+    /// is known - a handler that guessed would be wrong for exactly the paths this net covers.
+    /// </para>
+    /// </remarks>
+    private const string ConcurrentWriteDetail =
+        "The record was changed by someone else after you read it, so nothing was written. "
+        + "Reload the resource and apply your change again.";
+
+    /// <summary>
     /// Explanation returned when a dependency this request needed could not be reached or could
     /// not serve.
     /// </summary>
@@ -654,6 +679,21 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         // DuplicateRecordDetail for why that text names no field and never publishes the constraint name.
         DuplicateKeyException => (StatusCodes.Status409Conflict, DuplicateRecordDetail),
 
+        // A LOST UPDATE IS THE CALLER'S CONFLICT TOO, AND FOR THE SAME REASONS. The store refused a write
+        // because the row had already moved: it did exactly its job and it preserved somebody's committed
+        // edit, so 409 with an instruction to reload is what the caller needs to hear, and the 500 this
+        // family was answered before was wrong on both counts - it reported a defect that does not exist and
+        // it raised a server-fault log entry for an ordinary collision.
+        //
+        // Like the arm above it names no persistence type. The signal is a DOMAIN type raised at the
+        // persistence seam, where an affected-row count of zero and a serialisation-failure error number are
+        // both recognisable, precisely so the transport can classify the outcome without referencing the
+        // mapper or the database client.
+        //
+        // It is a net, not the route: each write path catches the same signal and answers with the reason
+        // code its own token comparison emits, which names the resource and is reached first.
+        ConcurrencyConflictException => (StatusCodes.Status409Conflict, ConcurrentWriteDetail),
+
         // MIGRATION: A TRANSPORT REFUSAL CARRIES THE STATUS THE HOST ALREADY CHOSE. The host raises
         // this type when it declines to read a request itself - the body exceeding the configured size
         // ceiling, a malformed chunked body, a declared length that disagrees with what arrived - and it
@@ -697,6 +737,26 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         // and would mask a fault behind a retry loop, which is strictly worse than the 500 this replaces.
         // The log level follows the status family with no further change - both are 5xx - so an outage is
         // still recorded at Error and still raises whatever a deployment alerts on.
+        // MIGRATION: A STALLED CACHE PRODUCTION IS THIS SERVER'S DEFECT, NOT A DEPENDENCY OUTAGE, AND THIS
+        // ARM IS WHERE THE TWO ARE TOLD APART. It sits ABOVE the availability guard deliberately, and the
+        // order is the whole of its effect: reaching the guard with this condition is what used to answer
+        // 503 with a Retry-After. The cache raised a plain TimeoutException when a value factory outran its
+        // budget, the classifier read any bare timeout in the chain as an unreachable database, and a caller
+        // was consequently told to retry a request that would fail identically while the actual defect - a
+        // factory ignoring the cancellation token it was handed - was hidden behind the retry hint.
+        //
+        // Two changes settle it and BOTH are needed. The cache now raises a cache-specific type, and the
+        // classifier now requires structural data-access context before reading a generic timeout as an
+        // outage. This arm is the third: it maps the condition EXPLICITLY, so the mapping is a stated
+        // decision rather than a consequence of falling through to the general case, and a reader can see
+        // that the omission of a retry hint is deliberate. 500 is the honest status - the request can be
+        // reissued, but nothing about waiting makes it more likely to succeed - and the published wording is
+        // the same fixed sentence every unexpected failure carries, so the cache key, the value shape and
+        // the budget stay out of the response. The log entry above records the failure for the operator.
+        CacheProductionTimeoutException => (
+            StatusCodes.Status500InternalServerError,
+            UnexpectedFailureDetail),
+
         Exception when storeFailures.IsStoreUnavailable(exception) => (
             StatusCodes.Status503ServiceUnavailable,
             StoreUnavailableDetail),
@@ -1307,10 +1367,30 @@ public static class ApiResults
     /// </returns>
     /// <exception cref="ArgumentNullException">Any argument is <see langword="null"/>.</exception>
     /// <remarks>
+    /// <para>
     /// The location is derived from the request path rather than from a named route, because every creation
     /// endpoint in this API posts to a collection whose member address is that path plus the identifier. A
     /// named-route lookup would add a second place the address is spelled, and a mismatch between them fails
     /// only at run time and only in the header.
+    /// </para>
+    /// <para>
+    /// THE PATH BASE IS PART OF THAT ADDRESS AND OMITTING IT NAMES THE WRONG TENANT. A child portal is
+    /// addressed by a path segment beneath a shared host name, and
+    /// <see cref="Middleware.TenantPathBaseMiddleware"/> moves that segment out of the routable path and into
+    /// the path base before routing runs - it has to, or the request matches no route at all. By the time an
+    /// action returns, therefore, the address the caller actually posted to is the path base FOLLOWED BY the
+    /// path, and the path alone is the parent's address rather than the child's. Composing from the path alone
+    /// handed every child-tenant creation a location pointing at the shared host's root, which resolves to the
+    /// PARENT tenant; following it reached a route naming a resource the parent does not own and was refused.
+    /// The defect was invisible to the creating caller, who received a correct <c>201</c> and a correct body,
+    /// and only surfaced for whoever followed the header.
+    /// </para>
+    /// <para>
+    /// Both halves are taken in their URI form rather than their decoded one, because this value is written
+    /// into a header: a path segment carrying a space or a reserved character must reach the caller encoded, and
+    /// the decoded property would emit it raw. The identifier needs no such treatment - every creation endpoint
+    /// projects an integer key - so it is formatted invariantly and appended as-is.
+    /// </para>
     /// </remarks>
     // MIGRATION: a creation answers with the SAME envelope a read answers with, which is the whole point of
     // having one. A client that posts and then re-reads the resource unwraps one shape in both directions,
@@ -1340,7 +1420,14 @@ public static class ApiResults
                 "A creation reported success but produced no representation to return.");
         }
 
-        string collectionPath = controller.Request.Path.Value?.TrimEnd('/') ?? string.Empty;
+        // MIGRATION: the collection address is the PATH BASE plus the PATH, not the path alone. A tenant
+        // addressed by a path segment beneath a shared host has that segment in the path base by the time an
+        // action runs, so the path alone spells the parent's address and a child's creation would be located
+        // under the wrong tenant.
+        string collectionPath = (controller.Request.PathBase.ToUriComponent()
+                + controller.Request.Path.ToUriComponent())
+            .TrimEnd('/');
+
         string location = FormattableString.Invariant($"{collectionPath}/{identify(value)}");
 
         return controller.Created(location, ApiResponse<TValue>.Success(value));
@@ -1436,9 +1523,69 @@ public static class ApiResults
 
         bool looksAuthored = message.Length <= MaximumPublishedDetailLength
             && message.IndexOf('\n', StringComparison.Ordinal) < 0
-            && message.IndexOf('\r', StringComparison.Ordinal) < 0;
+            && message.IndexOf('\r', StringComparison.Ordinal) < 0
+            && !NamesAnExceptionType(message);
 
         return looksAuthored ? message : UnauthoredDetail;
+    }
+
+    /// <summary>
+    /// Reports whether a message contains a word that names a CLR exception type.
+    /// </summary>
+    /// <param name="message">The message a failed outcome carried; never blank.</param>
+    /// <returns>
+    /// <see langword="true"/> when any whitespace-delimited word ends in <c>Exception</c>, ignoring trailing
+    /// punctuation.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// THE THIRD REFUSAL, ADDED BECAUSE THE FIRST TWO DID NOT CATCH THE CASE THAT ACTUALLY OCCURRED. A
+    /// service caught a credential-store failure and put <c>exception.GetType().Name</c> into the message on
+    /// its failed outcome, reasoning that the underlying cause should survive for a caller to report. The
+    /// value it produced was one short single line, so both existing tests passed it, and this edge then
+    /// published the internal type of a component the caller has no relationship with as the RFC 7807
+    /// <c>detail</c> - naming, in that instance, the database client. That source is fixed AT SOURCE, which
+    /// is where the rule belongs; this test closes the CLASS, because the premise is a reasonable-sounding
+    /// one that a future author will reach for again and nothing about a <see cref="string"/> announces
+    /// where it came from.
+    /// </para>
+    /// <para>
+    /// The test is a word test rather than a substring test, so a legitimate sentence containing the word
+    /// "exception" in prose is unaffected: only a word ENDING in <c>Exception</c> matches, which is the .NET
+    /// naming convention for the type family and a shape no authored explanation in this solution uses.
+    /// Trailing punctuation is trimmed first because the offending value ended in a full stop, so a test
+    /// that compared the raw word would have missed the very instance that prompted it.
+    /// </para>
+    /// <para>
+    /// LIKE THE OTHER TWO, THIS IS DEFENCE IN DEPTH AND NOT A REDACTOR. It cannot tell whether a short
+    /// single-line message quotes something it should not; what it can do is refuse the one shape that is
+    /// never authored and is always internal. A message it refuses is replaced wholesale by
+    /// <see cref="UnauthoredDetail"/> rather than edited, because a partially rewritten explanation is one
+    /// nobody wrote.
+    /// </para>
+    /// </remarks>
+    private static bool NamesAnExceptionType(string message)
+    {
+        const string suffix = "Exception";
+
+        ReadOnlySpan<char> remaining = message.AsSpan();
+
+        while (!remaining.IsEmpty)
+        {
+            int separator = remaining.IndexOfAny(' ', '\t');
+            ReadOnlySpan<char> word = separator < 0 ? remaining : remaining[..separator];
+
+            // Trailing punctuation is trimmed because the value that prompted this test ended in a full
+            // stop, so comparing the raw word would have missed the instance it exists for.
+            if (word.TrimEnd(".,;:)]}\"'").EndsWith(suffix, StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            remaining = separator < 0 ? ReadOnlySpan<char>.Empty : remaining[(separator + 1)..];
+        }
+
+        return false;
     }
 
     /// <summary>Chooses the status code for one failure code.</summary>

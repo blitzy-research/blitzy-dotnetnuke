@@ -1736,6 +1736,16 @@ describe('authInterceptor', () => {
       const notifications = TestBed.inject(NotificationService);
       const retain = spyOn(notifications, 'retainAcrossNavigation').and.callThrough();
 
+      // ⚠ SPIED AT THE RAISING SEAM, NOT ONLY AT THE QUEUE, AND THAT IS WHAT MAKES THE OWNERSHIP
+      // ASSERTION REAL. This file used to raise the sentence itself as well, so it had TWO publishers -
+      // and the queue-depth assertion below could not see it, because `notify` collapses an entry that
+      // repeats the newest one on every stored member. The duplicate was absorbed, the depth stayed one,
+      // and the operator's experience depended on a de-duplication rule holding rather than on only one
+      // party speaking; anything that perturbed the identity comparison, a differing retention flag most
+      // of all, would have surfaced the message twice. Counting the raises is what catches a second
+      // publisher whether or not the queue happens to hide it.
+      const warn = spyOn(notifications, 'warning').and.callThrough();
+
       tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
 
       const pending = firstValueFrom(http.get(PROTECTED_URL));
@@ -1744,6 +1754,10 @@ describe('authInterceptor', () => {
       refuse(httpMock.expectOne(REFRESH_URL));
 
       expect(httpStatusOf(await reasonFor(pending))).toBe(401);
+
+      expect(warn)
+        .withContext('one owner raises the sentence, and it is the purge rather than this interceptor')
+        .toHaveBeenCalledTimes(1);
 
       const queued = notifications.notifications();
 
@@ -1756,6 +1770,15 @@ describe('authInterceptor', () => {
       // Exempted from the navigation sweep, or the shell would clear it on the very `NavigationEnd`
       // this message exists to accompany - which is how it would come to be raised and never seen.
       expect(retain).toHaveBeenCalledTimes(1);
+
+      // Proven as SURVIVAL rather than as a flag: two mechanisms exempt an entry - the per-entry
+      // `survivesNavigation` member and the queue's one-shot reprieve - and this path uses the second.
+      // Driving the sweep asserts the property the operator depends on however it was obtained.
+      notifications.clearOnNavigation();
+
+      expect(notifications.notifications().map((entry) => entry.message))
+        .withContext('the explanation is still there to read once the redirect has landed')
+        .toEqual([SESSION_ENDED_MESSAGE]);
     });
 
     it('does not announce anything when the refusal was recoverable', async () => {
@@ -2113,9 +2136,16 @@ describe('authInterceptor', () => {
       // caller stitch a browser-side observation to the server log lines for the same request. The retry
       // inherits it for the same reason it inherits a stamped one: the clone is taken from the request the
       // subject was handed.
+      //
+      // ⚠ THE SUPPLIED VALUE IS CANONICAL, AND IT HAS TO BE. "Usable" means one of the two canonical
+      // shapes — 32 hexadecimal characters or the hyphenated 36-character rendering — because a
+      // correlation identifier of arbitrary printable text can carry a secret into the server's logs.
+      // A readable label such as `'from-the-caller'` is REPLACED by the correlation interceptor, so a
+      // specification written with one would assert the replacement path while claiming to assert
+      // preservation.
       tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
 
-      const supplied = 'fake-correlation-id-from-the-caller';
+      const supplied = '7c1b8f4e2a9d6c3f5b7a091e2d4d19ae';
 
       const pending = firstValueFrom(
         http.get(PROTECTED_URL, { headers: { [CORRELATION_ID_HEADER]: supplied } }),

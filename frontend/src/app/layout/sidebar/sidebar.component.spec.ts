@@ -246,7 +246,7 @@ const WILDCARD_PATH = '**';
 interface ExpectedItem {
   readonly address: string;
   readonly label: string;
-  readonly policy: 'PortalAdministrator' | 'HostAdministrator';
+  readonly policy: 'PortalAdministrator' | 'HostAdministrator' | 'PortalContentEditor';
 }
 
 /** One expected group: its stable key, its heading text, and its destinations in order. */
@@ -281,9 +281,14 @@ const EXPECTED_GROUPS: readonly ExpectedGroup[] = [
   {
     id: 'module',
     label: 'Module',
-    // `ModulesController.cs:L187` (listing) and `:L627` (import).
+    // `ModulesController.cs:L187` (listing) and `:L627` (import). The create entry between them
+    // is the one rail destination that is NOT tenant administration: its screen's supporting
+    // reads carry `PortalContentEditor` (`ModuleDefinitionsController.cs:168`,
+    // `TabsController.cs:187`), which admits a caller holding EDIT on any one of the tenant's
+    // pages as well as the tenant's administrators.
     items: [
       { address: '/modules', label: 'Modules', policy: 'PortalAdministrator' },
+      { address: '/modules/new', label: 'Add Module', policy: 'PortalContentEditor' },
       { address: '/modules/import', label: 'Import Module', policy: 'PortalAdministrator' },
     ],
   },
@@ -361,13 +366,42 @@ const ADMINISTRATION_ONLY_ADDRESSES: readonly string[] = [
 ];
 
 /**
+ * The destinations offered to a caller holding EDIT anywhere in the tenant, administrator or not.
+ *
+ * ⚠ THE ONE SET THAT IS NOT AN ADMINISTRATION SET, and the reason the rail reads a third authority
+ * fact at all. `PortalContentEditor` admits the tenant's administrators OR a caller holding EDIT on
+ * at least one of its pages, so every address here is reachable by a caller who administers
+ * nothing. Before this set existed the only link to module creation sat inside the module listing,
+ * which is administration-gated, so such a caller had to guess the address.
+ */
+const CONTENT_EDIT_ADDRESSES: readonly string[] = ['/modules/new'];
+
+/** The policy every content-edit destination's route must declare. */
+const CONTENT_EDIT_POLICY = 'PortalContentEditor';
+
+/**
  * The addresses a caller that administers the tenant but holds no host account is offered.
  *
- * Derived rather than restated, and deliberately NOT equal to the whole rail: the tenant
- * collection above is withheld from this caller, so this is the set that proves a group can be
- * dropped while its siblings survive intact.
+ * ⚠ IN PRESENTATION ORDER, AND THAT IS WHY IT IS WRITTEN OUT RATHER THAN CONCATENATED. The
+ * rendered comparison is order-sensitive, and the content-edit entry sits BETWEEN two
+ * administration entries in the module group - so appending one set to the other would produce
+ * a set that is right and an order that is wrong.
+ *
+ * Deliberately NOT equal to the whole rail: the tenant collection is withheld from this caller,
+ * so this is the set that proves a group can be dropped while its siblings survive intact. It
+ * DOES include the content-edit entry, because the policy's first arm is tenant administration -
+ * an administrator holds it without holding any grant.
  */
-const TENANT_ADMINISTRATION_ADDRESSES: readonly string[] = ADMINISTRATION_ONLY_ADDRESSES;
+const TENANT_ADMINISTRATION_ADDRESSES: readonly string[] = [
+  '/modules',
+  '/modules/new',
+  '/modules/import',
+  '/users',
+  '/settings/membership',
+  '/settings/profile-definitions',
+  '/roles',
+  '/role-groups/new',
+];
 
 /** The policy name every gated destination's route must declare. */
 const ADMINISTRATION_POLICY = 'PortalAdministrator';
@@ -399,6 +433,23 @@ const FEATURE_BARRELS: ReadonlyMap<string, readonly Route[]> = new Map<string, r
  * will refuse.
  */
 const PERSISTED_PERMISSION_KEYS: readonly string[] = ['VIEW', 'EDIT', 'READ', 'WRITE'];
+
+/**
+ * The three authority facts the rail takes as required inputs.
+ *
+ * The third is OPTIONAL here and defaults to `false` at the mount, because a caller who holds no
+ * grant carries no permission key: an unstated third authority means "holds EDIT nowhere", which is
+ * the conservative reading and the one that keeps the content-gated entry out of every spec that
+ * says nothing about it.
+ */
+interface RailAuthority {
+  /** Whether the caller holds a host account, as the server reported it. */
+  readonly hostAccount: boolean;
+  /** Whether the server reported the caller as an administrator of the resolved tenant. */
+  readonly administersTenant: boolean;
+  /** Whether the caller holds the `EDIT` key anywhere in that tenant. Defaults to `false`. */
+  readonly editsContent?: boolean;
+}
 
 /** One descendant case: an address a reader can actually be at, and the entry it belongs under. */
 interface DescendantCase {
@@ -820,7 +871,7 @@ describe('SidebarComponent', () => {
    */
   async function createComponent(
     routes: Routes,
-    authority: { readonly hostAccount: boolean; readonly administersTenant: boolean } = {
+    authority: RailAuthority = {
       hostAccount: true,
       administersTenant: true,
     },
@@ -844,12 +895,18 @@ describe('SidebarComponent', () => {
     // inline declaration on the host outranks the `:host` rule, so this states the arrangement
     // instead of inferring it, and the resize event is what makes the component re-read it.
     //
-    // No render happens here: the two authority inputs are REQUIRED, and rendering before they
+    // No render happens here: all THREE authority inputs are REQUIRED, and rendering before they
     // are supplied raises the framework's required-input error.
     declareArrangement(arrangement);
 
     fixture.componentRef.setInput('hostAccount', authority.hostAccount);
     fixture.componentRef.setInput('administersTenant', authority.administersTenant);
+    // ⚠ DEFAULTED TO FALSE, NEVER TO THE HOST DEFAULT ABOVE. The content-edit fact is the
+    // advisory one, and a caller who holds no grant carries no key - so an unstated third
+    // authority means "holds EDIT nowhere". Defaulting it true would make the content-gated
+    // entry appear in every spec that says nothing about it, which is the opposite of what a
+    // silent default should do.
+    fixture.componentRef.setInput('editsContent', authority.editsContent ?? false);
 
     fixture.detectChanges();
   }
@@ -2160,6 +2217,12 @@ describe('SidebarComponent', () => {
           .toBe(HOST_POLICY);
       }
 
+      for (const address of CONTENT_EDIT_ADDRESSES) {
+        expect(declaredPolicyFor(address))
+          .withContext(`${address} is content-gated by the rail, so its route must declare that policy`)
+          .toBe(CONTENT_EDIT_POLICY);
+      }
+
       for (const address of UNGATED_ADDRESSES) {
         expect(declaredPolicyFor(address))
           .withContext(`${address} is offered to everyone, so its route must declare no policy`)
@@ -2167,16 +2230,19 @@ describe('SidebarComponent', () => {
       }
     });
 
-    it('accounts for every rendered destination in exactly one of the three sets', () => {
+    it('accounts for every rendered destination in exactly one of the four sets', () => {
       // Guards the SUITE rather than the component: a destination added to the rail but to
       // none of the sets would escape every arm of the cross-check above, and this states the
-      // invariant that keeps the lists exhaustive. Three sets rather than two, because the
-      // tenant collection is HOST-only and a tenant administrator is refused it — folding it in
-      // with the tenant-administration entries would have asserted the wrong policy for it.
+      // invariant that keeps the lists exhaustive. FOUR sets rather than two, and each split is
+      // load-bearing: the tenant collection is HOST-only and a tenant administrator is refused
+      // it, and module creation is CONTENT-gated and a caller who administers nothing may still
+      // reach it. Folding either in with the tenant-administration entries would assert the
+      // wrong policy for it.
       const combined = [
         ...UNGATED_ADDRESSES,
         ...HOST_ONLY_ADDRESSES,
         ...ADMINISTRATION_ONLY_ADDRESSES,
+        ...CONTENT_EDIT_ADDRESSES,
       ];
 
       expect(new Set<string>(combined).size).toBe(combined.length);
@@ -2198,7 +2264,7 @@ describe('SidebarComponent', () => {
 
       const markup = host().innerHTML;
 
-      for (const address of ADMINISTRATION_ONLY_ADDRESSES) {
+      for (const address of [...ADMINISTRATION_ONLY_ADDRESSES, ...CONTENT_EDIT_ADDRESSES]) {
         expect(markup)
           .withContext(`${address} must not appear in the document at all`)
           .not.toContain(address);
@@ -2290,11 +2356,12 @@ describe('SidebarComponent', () => {
       // to do with shared state.
       pinArrangementOf(second, true);
 
-      // The authority inputs are required, so a second instance must state them too — the
+      // All THREE authority inputs are required, so a second instance must state them too — the
       // same authority as the first, so any difference observed below is the collapse state
       // and nothing else.
       second.componentRef.setInput('hostAccount', true);
       second.componentRef.setInput('administersTenant', true);
+      second.componentRef.setInput('editsContent', false);
       second.detectChanges();
 
       component.toggleCollapsed();
@@ -2318,10 +2385,11 @@ describe('SidebarComponent', () => {
       // different breakpoint branches.
       pinArrangementOf(second, true);
 
-      // Stated identically to the first instance, so the comparison below is about
+      // All three stated identically to the first instance, so the comparison below is about
       // determinism rather than about two differently authorised callers.
       second.componentRef.setInput('hostAccount', true);
       second.componentRef.setInput('administersTenant', true);
+      second.componentRef.setInput('editsContent', false);
       second.detectChanges();
 
       const secondHost = second.nativeElement as HTMLElement;
@@ -2430,10 +2498,7 @@ describe('SidebarComponent', () => {
      * module when the test module has already been instantiated" — and comparing callers
      * within one test is the only way to assert that filtering only ever removes.
      */
-    async function addressesFor(authority: {
-      readonly hostAccount: boolean;
-      readonly administersTenant: boolean;
-    }): Promise<readonly string[]> {
+    async function addressesFor(authority: RailAuthority): Promise<readonly string[]> {
       TestBed.resetTestingModule();
       await createComponent([], authority);
 
@@ -2446,6 +2511,90 @@ describe('SidebarComponent', () => {
         (heading: HTMLElement): string => normalise(heading.textContent),
       );
     }
+
+    it('offers module creation to a page editor who administers nothing at all', async () => {
+      // ⚠ THE POSITIVE CONTROL FOR THE DISCOVERABILITY FINDING, and the case that cannot be
+      // replaced by any of the withholding cases above. Before this entry existed, the ONLY link
+      // to the create screen sat inside the module listing, which is administration-gated - so a
+      // caller holding EDIT on one of the tenant's pages, whom `PortalContentEditor` admits and
+      // whom the server would serve, was offered nothing anywhere and had to guess the address.
+      //
+      // This caller administers NOTHING: no host account, no tenant administration. Every other
+      // entry is therefore correctly withheld, which is what makes the one offered entry
+      // meaningful rather than a side effect of a widened rail.
+      expect(
+        await addressesFor({ hostAccount: false, administersTenant: false, editsContent: true }),
+      ).toEqual(CONTENT_EDIT_ADDRESSES);
+    });
+
+    it('emits the navigation landmark for a page editor, because one entry survives', async () => {
+      // The landmark is withheld entirely when nothing is offered, so a caller offered exactly one
+      // entry is the boundary case: the group and its list must both be present, or the single
+      // surviving entry would be unreachable.
+      await createComponent([], {
+        hostAccount: false,
+        administersTenant: false,
+        editsContent: true,
+      });
+
+      expect(host().querySelectorAll('nav').length).toBe(1);
+      expect(renderedGroupHeadings()).toEqual(['Module']);
+      expect(host().querySelectorAll('li.app-sidebar__item').length).toBe(1);
+    });
+
+    it('withholds module creation from a caller holding the key nowhere', async () => {
+      // The negative half, and the reason the fact is read rather than assumed. A signed-in
+      // caller who administers nothing AND holds no grant is offered nothing, landmark included.
+      expect(
+        await addressesFor({ hostAccount: false, administersTenant: false, editsContent: false }),
+      ).toEqual([]);
+    });
+
+    it('offers module creation to a tenant administrator carrying no permission key', async () => {
+      // ⚠ THE ARM THAT WOULD BE MISSING IF THE KEY ALONE WERE READ, and it is a measured hazard
+      // rather than a hypothetical. `PermissionEvaluator.ListEffectivePortalPermissionKeysAsync`
+      // builds the advisory key list from GRANT ROWS ALONE and has no administrator arm, while the
+      // server's own handler (`PermissionService.HasAnyTabPermissionInPortalAsync`) asks its
+      // administration question FIRST. So a tenant administrator whose pages carry no explicit
+      // grants holds the policy and carries no key - and gating this entry on the key alone would
+      // hide it from the tenant's own administrator.
+      const addresses = await addressesFor({
+        hostAccount: false,
+        administersTenant: true,
+        editsContent: false,
+      });
+
+      expect(addresses).toContain('/modules/new');
+      expect(addresses).toEqual(TENANT_ADMINISTRATION_ADDRESSES);
+    });
+
+    it('adds nothing for a host account, whose entries are already complete', async () => {
+      // The third fact must WIDEN and never reorder or duplicate. A host account is already
+      // offered every entry, so raising the key changes nothing at all - and an entry appearing
+      // twice, or the module group re-ordering, would show up here as an inequality.
+      expect(
+        await addressesFor({ hostAccount: true, administersTenant: true, editsContent: true }),
+      ).toEqual(EXPECTED_ADDRESSES);
+    });
+
+    it('follows a change in the content-edit fact without being recreated', async () => {
+      // The determination arrives asynchronously with the current-account read, so the rail must
+      // widen when it lands. Asserted in both directions: a caller whose last grant is removed
+      // must lose the entry just as promptly.
+      await createComponent([], { hostAccount: false, administersTenant: false });
+
+      expect(renderedAddresses()).toEqual([]);
+
+      fixture.componentRef.setInput('editsContent', true);
+      fixture.detectChanges();
+
+      expect(renderedAddresses()).toEqual(CONTENT_EDIT_ADDRESSES);
+
+      fixture.componentRef.setInput('editsContent', false);
+      fixture.detectChanges();
+
+      expect(renderedAddresses()).toEqual([]);
+    });
 
     it('offers a host account every declared destination', async () => {
       // A host account satisfies tenant administration as well
@@ -2474,6 +2623,9 @@ describe('SidebarComponent', () => {
       expect(renderedGroupHeadings()).toEqual(['Module', 'User', 'Role']);
       expect(addresses).toEqual([
         '/modules',
+        // Offered to this caller through the policy's ADMINISTRATION arm, not through a grant:
+        // this operator carries no permission key at all in this case.
+        '/modules/new',
         '/modules/import',
         '/users',
         '/settings/membership',

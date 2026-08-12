@@ -28,20 +28,30 @@ namespace DnnMigration.Application.Validation;
 //   whose only legacy validator was a CompareValidator would convert a legitimate blank into an
 //   HTTP 400 and would breach Minimal Change Clause item 4, which requires that validation rules match.
 
-// MIGRATION: 3 of 10 -- THE ONE NET-NEW PRESENCE RULE, and why the schema rather than the markup
-//   justifies it. NotEmpty() on the portal name is the single unconditional presence rule in this file.
-//   The markup declared none, so this rule is NOT a reproduction; it is authorised by Rule T4 from
-//   [PortalName] [nvarchar] (128) NOT NULL at 01.00.00.SqlDataProvider:L79.
+// MIGRATION: 3 of 10 -- THERE IS NO PRESENCE RULE ANYWHERE IN THIS FILE, AND THE ONE THAT WAS HERE
+//   WAS WITHDRAWN AS A PARITY BREAK. NotEmpty() was declared on the portal name and defended on the
+//   schema rather than on the markup, reasoning that although an empty string satisfies a NOT NULL
+//   constraint, the legacy null contract's WRITE side converted it: Library/Components/Shared/Null.vb
+//   exposes NullString as literally "" and its GetNull helper rewrites a matching String field to a
+//   database null, so a blank title supposedly reached the column as NULL and was REJECTED there.
 //
-//   The justification is stronger than "the column is NOT NULL", because an empty string does satisfy
-//   a NOT NULL constraint. The decisive fact is the legacy null contract's WRITE side:
-//   Library/Components/Shared/Null.vb exposes NullString as literally "" and its GetNull helper
-//   converts a String field equal to NullString back into a database null before the value reaches the
-//   stored procedure. A blank portal name therefore became "" in memory, was rewritten to NULL on the
-//   way out, and was REJECTED by the NOT NULL column. The legacy application did not accept a blank
-//   portal name -- it failed at the database. This rule reports that same rejection as a field-level
-//   validation failure instead of an unhandled provider exception. The outcome class is unchanged;
-//   only the diagnosis improves.
+//   THE PREMISE IS FALSE FOR THIS PROCEDURE, and the source says so plainly.
+//   Library/Providers/DataProviders/SqlDataProvider/SqlDataProvider.vb:L632 passes PortalName RAW:
+//   ExecuteNonQuery(..., "UpdatePortalInfo", PortalId, PortalName, GetNull(LogoFile),
+//   GetNull(FooterText), ...) -- fourteen of the twenty-seven arguments are wrapped in GetNull and
+//   PortalName is deliberately not one of them. Nothing upstream wraps it either:
+//   PortalController.vb:L1568-L1570 forwards the parameter straight to the provider, and
+//   Website/admin/Portal/SiteSettings.ascx.vb:L772 passes txtPortalName.Text untouched. A blank title
+//   therefore reached [PortalName] [nvarchar] (128) NOT NULL as the empty string, which that
+//   constraint accepts, and the legacy screen -- whose only validators are two CompareValidators, with
+//   no RequiredFieldValidator anywhere on its 568 lines and MaxLength="128" the only attribute on
+//   txtPortalName -- stored it without complaint.
+//
+//   So the rule refused an input the legacy application accepted, which Minimal Change Clause item 3
+//   forbids: identical inputs must produce identical outcomes. Only the width bound survives, and it
+//   is the markup's own MaxLength. A portal whose title is genuinely blank is listed under an empty
+//   Title cell exactly as the legacy grid listed it; making that a validation failure is a product
+//   decision, not a migration one.
 
 // MIGRATION: 4 of 10 -- NO LOWER BOUND ON THE FEE OR ON ANY QUOTA, and declaring one would be a real
 //   defect rather than a safeguard. The tempting shape is five
@@ -342,13 +352,6 @@ public abstract class PortalSettingsUpdateRequestValidator<TRequest> : AbstractV
         + FormattableString.Invariant($"{SqlServerRange.MaximumDateTime:yyyy-MM-dd}, which is the range the stored column can hold.");
 
     /// <summary>
-    /// Message reported when the portal name is absent or blank. The wording is net-new, because the
-    /// legacy screen declared no validator on the control and therefore had no message to reproduce;
-    /// the rule itself is justified by the <c>NOT NULL</c> column rather than by the markup.
-    /// </summary>
-    private const string PortalNameRequiredMessage = "Site Title is required.";
-
-    /// <summary>
     /// Message reported when the registration mode carries a value that names no member of
     /// <c>UserRegistrationMode</c>. It names the four modes the legacy option list offered at
     /// <c>Website/admin/Portal/sitesettings.ascx:L230-L233</c>.
@@ -379,11 +382,11 @@ public abstract class PortalSettingsUpdateRequestValidator<TRequest> : AbstractV
         // reported together instead of one per round trip.
         ClassLevelCascadeMode = CascadeMode.Continue;
 
-        // The only unconditional presence rule in this file. See migration note 3 above: the markup
-        // declared none, and the authority is the NOT NULL column combined with the legacy write-side
-        // conversion of the empty string into a database null.
+        // A WIDTH BOUND AND NOTHING ELSE, which is the whole of what the legacy markup declared on
+        // this control. See migration note 3 above for the presence rule that was here and why it was
+        // withdrawn: the legacy write path does NOT wrap PortalName in GetNull, so a blank title was
+        // stored as the empty string rather than refused, and refusing it here broke parity.
         RuleFor(request => request.PortalName)
-            .NotEmpty().WithMessage(PortalNameRequiredMessage)
             .MaximumLength(PortalNameMaximumLength);
 
         RuleFor(request => request.LogoFile)

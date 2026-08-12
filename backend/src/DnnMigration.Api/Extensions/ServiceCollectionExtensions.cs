@@ -115,6 +115,60 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public const string KnownNetworksSectionName = "Proxy:KnownNetworks";
 
+    /// <summary>
+    /// Configuration key naming the directory from which file-delivered secrets are read:
+    /// <c>Secrets:Directory</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Read by the composition root before the key-per-file source is added, so it can only be supplied by a
+    /// source that has already been read - an <c>appsettings</c> entry, or the environment variable
+    /// <c>Secrets__Directory</c>. That ordering is deliberate rather than a limitation: a directory named by
+    /// the very files it would load could not be resolved at all.
+    /// </para>
+    /// <para>
+    /// It exists because the conventional mount point differs by orchestrator - <c>docker compose</c> and
+    /// Docker Swarm mount secrets under <c>/run/secrets</c>, while a Kubernetes projected volume is mounted
+    /// wherever the pod spec says - and a deployment must not have to rebuild the image to say so.
+    /// </para>
+    /// </remarks>
+    public const string SecretsDirectorySectionName = "Secrets:Directory";
+
+    /// <summary>
+    /// The directory file-delivered secrets are read from when the deployment names none:
+    /// <c>/run/secrets</c>.
+    /// </summary>
+    /// <remarks>
+    /// The path <c>docker compose</c> and Docker Swarm mount a declared secret at, which makes the smallest
+    /// step away from environment-variable delivery a compose <c>secrets:</c> block and no code change. The
+    /// source is registered as optional, so on a host that mounts nothing - the base compose topology, the
+    /// test host, a workstation - this path simply contributes no keys.
+    /// </remarks>
+    public const string DefaultSecretsDirectory = "/run/secrets";
+
+    /// <summary>
+    /// Configuration key listing the host names this API answers on: <c>AllowedHosts</c>.
+    /// </summary>
+    /// <remarks>
+    /// Consumed by the framework's own host-filtering stage, which the generic host configures from this key
+    /// without any registration in this solution. It is named here as a constant because
+    /// <see cref="AddTransportSecurity"/> validates its entries, and a validator that spelled the key
+    /// differently from the framework would validate nothing at all.
+    /// </remarks>
+    public const string PermittedHostsSectionName = "AllowedHosts";
+
+    /// <summary>
+    /// The separator the host-filter setting uses between entries.
+    /// </summary>
+    /// <remarks>
+    /// A semicolon, matching the framework's own parsing of <see cref="PermittedHostsSectionName"/>. A comma
+    /// is NOT a separator there, so an entry list written with commas is one host name as far as the
+    /// framework is concerned - which the reserved-name check below will not diagnose and the host filter
+    /// will refuse every request over. That is a deployment error rather than something this guard can
+    /// repair, and it is called out in the deployment template.
+    /// </remarks>
+    private const char PermittedHostsSeparator = ';';
+
 
     /// <summary>
     /// Reports whether the deployment has named at least one reverse proxy whose forwarded headers
@@ -344,6 +398,27 @@ public static class ServiceCollectionExtensions
         // so the same projection is required for them.
         services.AddSingleton(
             provider => provider.GetRequiredService<IOptions<CachingOptions>>().Value);
+
+        // The refresh-token store's shape and identity. Bound here for the same reason the four above are,
+        // and validated on start so that a deployment naming a store this build cannot resolve, or a capacity
+        // the store cannot work with, fails while the host is starting rather than at a caller's first
+        // refresh. Deliberately NOT projected as a bound value: its only consumers are the store and the
+        // health probe, both of which are Infrastructure types taking IOptions<T>, so a projection would be a
+        // registration with no consumer.
+        //
+        // Whether the DECLARED provider matches the store the container actually resolves is a question about
+        // the container rather than about these values, so it is not answered here - Infrastructure's
+        // ValidateRefreshTokenStoreTopology answers it once the graph is built, and Program.cs calls it
+        // immediately after the host is built. An options validator cannot: resolving IRefreshTokenStore from
+        // inside options validation would re-enter the options creation that triggered it.
+        services
+            .AddOptions<RefreshTokenStoreOptions>()
+            .Bind(configuration.GetSection(RefreshTokenStoreOptions.SectionName))
+            .ValidateOnStart();
+
+        services.AddSingleton<
+            IValidateOptions<RefreshTokenStoreOptions>,
+            RefreshTokenStoreOptionsValidator>();
     }
 
     /// <summary>
@@ -570,6 +645,8 @@ public static class ServiceCollectionExtensions
                 + $"through 65535 when '{ApplicationBuilderExtensions.HttpsRedirectionSectionName}' is true.");
         }
 
+        ValidatePermittedHosts(configuration);
+
         services.AddHttpsRedirection(options =>
         {
             options.RedirectStatusCode = StatusCodes.Status308PermanentRedirect;
@@ -582,6 +659,70 @@ public static class ServiceCollectionExtensions
             options.Preload = false;
             options.MaxAge = TimeSpan.FromDays(365);
         });
+    }
+
+    /// <summary>
+    /// Refuses to start when the host filter names a documentation host rather than the deployment's own.
+    /// </summary>
+    /// <param name="configuration">Configuration carrying the host-filter setting.</param>
+    /// <exception cref="InvalidOperationException">
+    /// An entry is a name reserved for documentation, or an unreplaced editing marker.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// <b>WHY THE HOST FILTER IS VALIDATED HERE AT ALL.</b> <c>AllowedHosts</c> is consumed by the framework's
+    /// own host-filtering stage, which the generic host registers from this exact key, so nothing in this
+    /// solution reads it and nothing would ever have noticed a wrong value. The consequence of a wrong value
+    /// is total and silent: every request whose <c>Host</c> is absent from the list is answered <b>400</b> by
+    /// a middleware the deployment never knowingly configured, while the process reports itself healthy on
+    /// the loopback probe that IS in the list.
+    /// </para>
+    /// <para>
+    /// <b>AND WHY REJECTION IS SCOPED TO DOCUMENTATION NAMES.</b> The TLS overlay derives the host filter,
+    /// the proxy's <c>server_name</c>, the permitted browser origin and the expected certificate from ONE
+    /// deployment setting, so the single most likely wrong value is the illustration that setting's template
+    /// carries. A reserved documentation name can never be served to a real browser, so refusing to start on
+    /// one costs a correct deployment nothing and converts the previous failure mode - a public deployment
+    /// answering 400 to all of its own traffic - into a start-up message naming the setting. Names that a
+    /// private deployment legitimately uses are NOT refused; <see cref="ReservedDeploymentHosts"/> records
+    /// exactly which and why.
+    /// </para>
+    /// <para>
+    /// The wildcard <c>*</c> is skipped rather than refused. It is the shipped default of
+    /// <c>appsettings.json</c> and the correct value for the loopback-published validation topology, and
+    /// deciding whether a deployment may run without host filtering is a policy question that belongs to the
+    /// deployment rather than to this guard.
+    /// </para>
+    /// </remarks>
+    private static void ValidatePermittedHosts(IConfiguration configuration)
+    {
+        string? configured = configuration[PermittedHostsSectionName];
+
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            return;
+        }
+
+        foreach (string entry in configured.Split(
+            PermittedHostsSeparator,
+            StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (entry.Equals("*", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            string? rejection = ReservedDeploymentHosts.DescribeRejection(entry);
+
+            if (rejection is not null)
+            {
+                throw new InvalidOperationException(
+                    $"'{entry}' cannot be an entry of '{PermittedHostsSectionName}': {rejection} Set the "
+                    + "deployment's own public host name - in the container topology that is the single "
+                    + "DNN_PUBLIC_HOST value, from which the host filter, the reverse proxy's server_name "
+                    + "and the permitted browser origin are all derived.");
+            }
+        }
     }
 
 
@@ -994,6 +1135,61 @@ public static class ServiceCollectionExtensions
             {
                 failures.Add(
                     $"'{CachingOptions.SectionName}:{nameof(CachingOptions.PerformanceMultiplier)}' is {options.PerformanceMultiplier}; it must be between {CachingOptions.MinimumPerformanceMultiplier} and {CachingOptions.MaximumPerformanceMultiplier} inclusive. Zero is permitted and disables caching.");
+            }
+
+            return failures.Count == 0
+                ? ValidateOptionsResult.Success
+                : ValidateOptionsResult.Fail(failures);
+        }
+    }
+
+    /// <summary>
+    /// Validates the refresh-token store settings while the host is starting.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The same two-part split the other validators here use. The options type judges what it can alone -
+    /// that the provider is a name this build recognises and that neither number makes the store unusable -
+    /// and this validator wires that judgement into <c>ValidateOnStart</c> and adds the rules only a host can
+    /// decide: the operational floor and ceiling on tracked generations, and the ceiling on the
+    /// concurrent-use grace. A defect both halves cover is reported twice, in each half's own wording, for
+    /// the reason recorded on the password-policy validator above.
+    /// </para>
+    /// <para>
+    /// The numeric rules are applied even when the deployment declares an external store. A value that is
+    /// only wrong under the in-process store is still wrong, and finding it at the moment a deployment moves
+    /// back - which is a rollback, and therefore the worst moment to discover a configuration error - is
+    /// strictly worse than finding it now.
+    /// </para>
+    /// </remarks>
+    private sealed class RefreshTokenStoreOptionsValidator : IValidateOptions<RefreshTokenStoreOptions>
+    {
+        /// <summary>Validates <paramref name="options"/>.</summary>
+        /// <param name="name">Unused; this type has one instance.</param>
+        /// <param name="options">The bound settings.</param>
+        /// <returns>A successful result, or a failure describing every problem found.</returns>
+        /// <exception cref="ArgumentNullException">
+        /// <paramref name="options"/> is <see langword="null"/>.
+        /// </exception>
+        public ValidateOptionsResult Validate(string? name, RefreshTokenStoreOptions options)
+        {
+            ArgumentNullException.ThrowIfNull(options);
+
+            List<string> failures = [];
+
+            failures.AddRange(options.Validate());
+
+            if (options.MaximumTrackedTokens is < RefreshTokenStoreOptions.MinimumTrackedTokenCeiling
+                or > RefreshTokenStoreOptions.MaximumTrackedTokenCeiling)
+            {
+                failures.Add(FormattableString.Invariant(
+                    $"'{RefreshTokenStoreOptions.SectionName}:{nameof(RefreshTokenStoreOptions.MaximumTrackedTokens)}' is {options.MaximumTrackedTokens}; it must be between {RefreshTokenStoreOptions.MinimumTrackedTokenCeiling} and {RefreshTokenStoreOptions.MaximumTrackedTokenCeiling} inclusive. Below the floor a single active caller can evict its own refresh family; above the ceiling the process-local store's memory footprint is the problem to solve rather than its capacity, and the answer is a shared store registered behind IRefreshTokenStore."));
+            }
+
+            if (options.ConcurrentUseGraceSeconds > RefreshTokenStoreOptions.MaximumConcurrentUseGraceSeconds)
+            {
+                failures.Add(FormattableString.Invariant(
+                    $"'{RefreshTokenStoreOptions.SectionName}:{nameof(RefreshTokenStoreOptions.ConcurrentUseGraceSeconds)}' is {options.ConcurrentUseGraceSeconds}; it must not exceed {RefreshTokenStoreOptions.MaximumConcurrentUseGraceSeconds}. The grace is the window in which a spent refresh token presented again by the same client fingerprint is forgiven rather than treated as theft, so a long window weakens replay detection. Zero is permitted and disables the grace."));
             }
 
             return failures.Count == 0

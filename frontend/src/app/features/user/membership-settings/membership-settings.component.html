@@ -585,9 +585,11 @@
           honoured by whatever renders that profile". That is withdrawn. The account
           resource publishes five self-service endpoints, and EVERY ONE OF THEM CHECKS
           THIS SETTING on the server: a tenant that clears it makes each of them refuse
-          with its own reason rather than merely hiding a screen. The screen it governs is
-          `member-services.component.ts`, the sibling in this folder, reached at
-          `/users/{userId}/services`.
+          with its own reason rather than merely hiding a screen. It governs those
+          endpoints and not a screen in this workspace: the sibling component that
+          presented them at `/users/{userId}/services` is withdrawn, because AAP 0.4.4
+          freezes the route table at twenty-five screens and names no member-services
+          address among them.
 
           The enforcement is deliberately the server's and not this client's. The legacy
           container folded the setting into a tab's visibility, which a client can only

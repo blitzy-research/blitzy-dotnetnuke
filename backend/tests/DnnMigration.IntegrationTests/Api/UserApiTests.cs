@@ -5502,7 +5502,7 @@ public sealed class UserApiTests
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
-        string supplied = "user-suite-" + Suffix();
+        string supplied = ApiTestFixture.NewCorrelationId();
         Uri absent = UserRoute(_fixture.Seed.PortalId, UnknownUserId);
 
         using HttpRequestMessage echoed = ApiTestFixture.WithCorrelationId(
@@ -5675,5 +5675,265 @@ public sealed class UserApiTests
 
         int after = (await ListAsync(client, string.Empty)).TotalCount;
         after.Should().Be(before + 2, "neither create was refused, so both accounts joined the tenant");
+    }
+
+    /// <summary>
+    /// The account picker answers <c>200 OK</c> with the tenant's accounts, and its rows carry the key and the
+    /// two captions AND NOTHING ELSE.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// THE ABSENT MEMBERS ARE THE ASSERTION. This endpoint exists because a picker was being filled from the
+    /// account listing, whose row carries a postal address, a telephone number, an electronic-mail address, two
+    /// audit instants and four status flags - all transferred so that a name and a login could be rendered. The
+    /// test therefore reads the RAW JSON and enumerates the property names, because a typed deserialisation
+    /// would silently discard any extra member the server sent and would pass even if the exposure came back.
+    /// </para>
+    /// <para>
+    /// The host account is withheld here as it is from the listing: the installation's operator is not one of
+    /// the tenant's accounts even though it holds a membership row so that it can administer the tenant, and
+    /// offering it as a role-assignment choice would disclose the operator's login name to every tenant
+    /// administrator.
+    /// </para>
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListAccountChoices_ReturnsOkWithTheKeyAndTwoCaptionsOnly()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri("/api/v1/users/choices?pageIndex=0&pageSize=100", UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        string body = await response.Content.ReadAsStringAsync();
+        using JsonDocument document = JsonDocument.Parse(body);
+
+        JsonElement items = document.RootElement.GetProperty("items");
+        items.GetArrayLength().Should().BeGreaterThan(0, "the tenant holds accounts");
+
+        foreach (JsonElement row in items.EnumerateArray())
+        {
+            IReadOnlyList<string> members = row.EnumerateObject().Select(member => member.Name).ToList();
+
+            members.Should().BeEquivalentTo(
+                new[] { "userId", "username", "displayName" },
+                "the picker's contract is a key and two captions; any further member is the over-fetch this "
+                    + "endpoint was created to eliminate");
+        }
+
+        PagedEnvelope<UserChoiceDto>? page = await response.Content
+            .ReadFromJsonAsync<PagedEnvelope<UserChoiceDto>>(ApiTestFixture.Json);
+
+        page.Should().NotBeNull();
+        page!.Meta.TotalCount.Should().BeGreaterThanOrEqualTo(2);
+        page.Meta.TotalCount.Should().NotBe(LegacySentinelTotal);
+
+        IReadOnlyList<string> names = page.Items.Select(item => item.Username).ToList();
+        names.Should().Contain(IntegrationSeed.AdminUserName)
+            .And.Contain(IntegrationSeed.MemberUserName)
+            .And.NotContain(IntegrationSeed.HostUserName);
+    }
+
+    /// <summary>The picker's name filter matches a prefix of the login name.</summary>
+    /// <remarks>
+    /// The login name alone is matched, because the legacy name box resolved an account by it
+    /// (<c>SecurityRoles.ascx.vb:L476-L488</c>) and the caller that walks this endpoint for a typed name
+    /// relies on ordering by that login name to put an exact match on the first page. A prefix rather than a
+    /// substring, because every legacy account search appended a single trailing wildcard to the search text.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListAccountChoices_FilteredByLoginNamePrefix_ReturnsOnlyMatchingAccounts()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage response = await client.GetAsync(new Uri(
+            "/api/v1/users/choices?pageIndex=0&pageSize=100&query="
+                + IntegrationSeed.MemberUserName,
+            UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<UserChoiceDto>? page = await response.Content
+            .ReadFromJsonAsync<PagedEnvelope<UserChoiceDto>>(ApiTestFixture.Json);
+
+        page.Should().NotBeNull();
+        page!.Items.Should().NotBeEmpty();
+        page.Items.Should().OnlyContain(item =>
+            item.Username.StartsWith(IntegrationSeed.MemberUserName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// A wildcard in the picker's filter matches itself rather than acting as a pattern.
+    /// </summary>
+    /// <remarks>
+    /// The legacy pattern was assembled by string concatenation, so a caller's own per-cent sign became a
+    /// wildcard and one character matched every account in the installation. Expressed through an escaped
+    /// <c>LIKE</c> the caller's text is DATA, so a filter of a single per-cent sign matches only an account
+    /// whose name genuinely begins with one - of which the tenant has none.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListAccountChoices_FilteredByAWildcard_TreatsItAsALiteral()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri("/api/v1/users/choices?pageIndex=0&pageSize=100&query=%25", UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<UserChoiceDto>? page = await response.Content
+            .ReadFromJsonAsync<PagedEnvelope<UserChoiceDto>>(ApiTestFixture.Json);
+
+        page.Should().NotBeNull();
+        page!.Items.Should().BeEmpty("a per-cent sign is a literal here, and no account name begins with one");
+        page.Meta.TotalCount.Should().Be(0);
+    }
+
+    /// <summary>
+    /// A single-row request answers the tenant's account total, which is the count probe the legacy control's
+    /// own threshold rule needs.
+    /// </summary>
+    /// <remarks>
+    /// <c>UserModuleBase.vb:L178-L186</c> read the tenant's account count and offered the drop-down only at or
+    /// below one thousand accounts. That probe used to be served by the account listing, so reading a number
+    /// disclosed a complete account row; here the one row it returns carries a key and two captions, and the
+    /// total is the same total.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListAccountChoices_WithASingleRowRequest_ReportsTheTenantTotal()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage probe = await client.GetAsync(
+            new Uri("/api/v1/users/choices?pageIndex=0&pageSize=1", UriKind.Relative));
+
+        probe.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<UserChoiceDto>? probed = await probe.Content
+            .ReadFromJsonAsync<PagedEnvelope<UserChoiceDto>>(ApiTestFixture.Json);
+
+        using HttpResponseMessage full = await client.GetAsync(
+            new Uri("/api/v1/users/choices?pageIndex=0&pageSize=100", UriKind.Relative));
+
+        PagedEnvelope<UserChoiceDto>? whole = await full.Content
+            .ReadFromJsonAsync<PagedEnvelope<UserChoiceDto>>(ApiTestFixture.Json);
+
+        probed.Should().NotBeNull();
+        whole.Should().NotBeNull();
+
+        probed!.Items.Should().HaveCount(1, "the probe wants the total, not the accounts");
+        probed.Meta.TotalCount.Should().Be(whole!.Meta.TotalCount);
+    }
+
+    /// <summary>
+    /// The picker applies the shared page-size ceiling, so it cannot be asked for an unbounded page.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListAccountChoices_AboveThePageSizeCeiling_ReturnsBadRequest()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        int beyond = PagedRequestValidator.MaximumPageSize + 1;
+
+        using HttpResponseMessage response = await client.GetAsync(new Uri(
+            "/api/v1/users/choices?pageIndex=0&pageSize="
+                + beyond.ToString(CultureInfo.InvariantCulture),
+            UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        ValidationProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull();
+        problem!.Errors.Keys.Should().Contain(nameof(UserChoicePagedRequest.PageSize));
+    }
+
+    /// <summary>
+    /// The picker applies the shared filter-length ceiling, so a typeahead term cannot arrive unbounded.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListAccountChoices_AboveTheFilterLengthCeiling_ReturnsBadRequest()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        string tooLong = new('a', PagedRequestValidator.QueryMaximumLength + 1);
+
+        using HttpResponseMessage response = await client.GetAsync(new Uri(
+            "/api/v1/users/choices?pageIndex=0&pageSize=10&query=" + tooLong,
+            UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        ValidationProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull();
+        problem!.Errors.Keys.Should().Contain(nameof(UserChoicePagedRequest.Query));
+    }
+
+    /// <summary>
+    /// The picker refuses an ordering by a field it does not return, so no accepted parameter is discarded.
+    /// </summary>
+    /// <remarks>
+    /// The account listing accepts <c>Email</c> as an ordering; this endpoint does not, and the difference is
+    /// the projection. Ordering a drop-down by a value none of its options displays is an ordering the operator
+    /// cannot verify, so it is refused rather than honoured invisibly or accepted and dropped.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListAccountChoices_OrderedByAFieldItDoesNotReturn_ReturnsBadRequest()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage response = await client.GetAsync(new Uri(
+            "/api/v1/users/choices?pageIndex=0&pageSize=10&sortBy=Email",
+            UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        ValidationProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull();
+        problem!.Errors.Keys.Should().Contain(nameof(UserChoicePagedRequest.SortBy));
+    }
+
+    /// <summary>
+    /// The picker carries the same authorisation policy as the account collection, so narrowing the projection
+    /// widened nothing.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListAccountChoices_AsRegisteredMember_ReturnsForbidden()
+    {
+        using HttpClient client = await _fixture.CreateClientForAsync(
+            IntegrationSeed.MemberUserName,
+            ApiTestFixture.KnownPassword);
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri("/api/v1/users/choices?pageIndex=0&pageSize=10", UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>The picker refuses an anonymous caller.</summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListAccountChoices_Anonymously_ReturnsUnauthorized()
+    {
+        using HttpClient client = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri("/api/v1/users/choices?pageIndex=0&pageSize=10", UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 }

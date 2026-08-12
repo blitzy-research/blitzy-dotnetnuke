@@ -1,12 +1,13 @@
 /**
- * The account administration feature's lazy route barrel: six child routes, no logic.
+ * The account administration feature's lazy route barrel: five child routes, no logic.
  *
  * MIGRATION: the legacy five-tab container is replaced by ROUTING, and the tab set is deliberately not
  * reproduced one-for-one. `cmdUser` becomes `:userId`, `cmdProfile` becomes `:userId/profile` and
  * `cmdPassword` becomes `:userId/password`; `cmdRoles` becomes no route here at all, and `cmdServices` and
- * the sixth `pnlRegister` panel are DROPPED, because there is no member-services endpoint server-side and
- * public self-registration is not part of an administration console. Dropping a tab is a functional reduction
- * rather than a re-arrangement, which is why it is recorded rather than left to be inferred from an absence.
+ * the sixth `pnlRegister` panel are DROPPED, because the console's route table is closed at the addresses the
+ * migration plan enumerates and public self-registration is not part of an administration console. Dropping a
+ * tab is a functional reduction rather than a re-arrangement, which is why it is recorded rather than left to
+ * be inferred from an absence.
  *
  * MIGRATION: no per-account roles route exists in the application's closed route table, so the legacy
  * `cmdRoles` tab and the grid's role-membership column have no counterpart here. Role membership is reached
@@ -22,18 +23,27 @@
  *
  * MIGRATION: the five-tab `pnlTabs` container is replaced by ROUTING, and the tab set is
  * deliberately not reproduced one-for-one. `cmdUser` becomes `:userId`, `cmdProfile`
- * becomes `:userId/profile`, `cmdPassword` becomes `:userId/password`, and `cmdServices`
- * becomes `:userId/services`. `cmdRoles` becomes no route here at all — see the next note.
- * The sixth panel `pnlRegister` is DROPPED: public self-registration is not part of an
- * administration console. Dropping a tab is a functional reduction rather than a
- * re-arrangement, which is why it is recorded here instead of being left to be inferred
- * from an absence.
+ * becomes `:userId/profile` and `cmdPassword` becomes `:userId/password`. `cmdRoles`
+ * becomes no route here at all — see the next note. The sixth panel `pnlRegister` is
+ * DROPPED: public self-registration is not part of an administration console. Dropping a
+ * tab is a functional reduction rather than a re-arrangement, which is why it is recorded
+ * here instead of being left to be inferred from an absence.
  *
- * ⚠ THE SERVICES ROUTE WAS ITSELF A DOCUMENTED OMISSION UNTIL THE ENDPOINTS EXISTED. An
- * earlier revision of this note recorded `cmdServices` as dropped "because there is no
- * member-services endpoint server-side", which was true of the API as it then stood; the
- * account resource now publishes the five self-service endpoints the legacy panel needed,
- * so the omission is withdrawn and the tab has a route again.
+ * ⚠ `cmdServices` IS DROPPED TOO, AND THE ROUTE IT BRIEFLY HELD IS WITHDRAWN. An
+ * intermediate revision mounted the legacy self-service panel at `:userId/services`,
+ * reasoning that the account resource had grown the five endpoints the panel needed and so
+ * the earlier omission could be lifted. The endpoints are real and they stay published, but
+ * the address was not this barrel's to add: the migration plan freezes the console's route
+ * table at twenty-five screens and enumerates seven of them for accounts —
+ * `/users`, `/users/new`, `/users/:userId`, `/users/:userId/profile`,
+ * `/users/:userId/password`, `/settings/membership` and `/settings/profile-definitions` —
+ * with no member-services address among them, and it maps
+ * `Website/admin/Users/MemberServices.ascx.vb` into the membership-settings folder as one of
+ * three legacy screens consolidated rather than as a screen of its own. A twenty-sixth leaf
+ * is a specification change, and the console the plan describes is an ADMINISTRATION
+ * console: self-service subscription management is a different product surface. The five
+ * endpoints and their typed client wrappers remain in place for it, so restoring the screen
+ * is a route declaration plus a component and not a contract change.
  *
  * Declaration order is load-bearing. The router matches in declaration order and takes the first match, and
  * `:userId` matches ANY single segment - including the literal `new`. `'new'` must therefore stay above
@@ -149,7 +159,7 @@ import { permissionGuard } from '../../core/guards/permission.guard';
 import { unsavedChangesGuard } from '../../core/guards/unsaved-changes.guard';
 
 /**
- * The six child routes mounted beneath `/users`.
+ * The five child routes mounted beneath `/users`.
  *
  * Named exactly as `app.routes.ts` resolves it — `m.USER_ROUTES` — and exported by name rather than as a
  * default: a rename would leave the dynamic import resolving to `undefined` and take the whole `/users` tree
@@ -350,41 +360,5 @@ export const USER_ROUTES: Routes = [
     data: { permission: 'AccountOwnerOrPortalAdministrator' },
     loadComponent: () =>
       import('./user-password/user-password.component').then((m) => m.UserPasswordComponent),
-  },
-  {
-    /**
-     * `/users/{userId}/services` — the account's own subscriptions; the legacy `cmdServices`
-     * tab.
-     *
-     * ⚠ GATED ON OWNERSHIP ALONE, WITH NO ADMINISTRATOR ARM, which is what all five of its
-     * endpoints declare. See the policy note in the file header for the measurement behind
-     * that: the legacy panel operated on the signed-in account and its container hid the tab
-     * from an administrator, so the union policy would publish an affordance the legacy
-     * application refused. An administrator's route to the same underlying rows is the role
-     * resource, at `/roles/:roleId/users`, where effective and expiry dates are administered.
-     *
-     * The component lives in the `membership-settings` folder rather than in one named after
-     * itself, because that is the folder the transformation plan maps
-     * `Website/admin/Users/MemberServices.ascx.vb` into. It is nevertheless a separate
-     * component from the tenant's account policy screen: the two differ in whose data they
-     * show and in who may see it, and one route cannot satisfy two authorisation policies.
-     *
-     * No custom matching and no coercion on the parameter: the component parses it with the
-     * shared route-identifier grammar, and the sentinel discipline in the file header forbids
-     * reading any numeric value as absence.
-     *
-     * Titled from the measured `cmdServices.Text` tab label = "Manage Services". The panel's
-     * own resource file declares no title, because it was a tab inside a container that
-     * supplied one.
-     */
-    path: ':userId/services',
-    canDeactivate: [unsavedChangesGuard],
-    title: 'Manage Services',
-    canActivate: [permissionGuard],
-    data: { permission: 'AccountOwner' },
-    loadComponent: () =>
-      import('./membership-settings/member-services/member-services.component').then(
-        (m) => m.MemberServicesComponent,
-      ),
   },
 ];

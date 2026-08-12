@@ -26,9 +26,17 @@ namespace DnnMigration.UnitTests.Security;
 /// at all.
 /// </para>
 /// <para>
-/// The implementation is deliberately out of reach from this project - the unit-test project references
-/// Application and Domain only, by design - so what is asserted here is the contract every implementation is
-/// held to, which is exactly the layer at which this guarantee lives.
+/// WHAT THIS FILE DOES NOT COVER, AND WHERE THAT COVERAGE LIVES. The implementation is out of reach from this
+/// project, and deliberately so: AAP 0.5.2.2 fixes the unit-test project's only edge to the Application layer,
+/// so nothing here can name a type in Infrastructure. What is asserted below is therefore the contract every
+/// implementation is held to, which is exactly the layer at which a structural guarantee lives - and it is
+/// blind, by construction, to everything the implementation DOES with what it is handed. A reason code
+/// carrying a newline forging a second log line, an exception message written verbatim as though it were a
+/// code, the wrong level, a template composed by interpolation instead of held constant, or a logging provider
+/// whose failure escapes and fails the request: every one of those would leave this file green.
+/// <c>DnnMigration.IntegrationTests.Services.SecurityDiagnosticsTests</c> is where the concrete recorder is
+/// resolved and driven, and it covers each of those. Neither suite is sufficient alone, which is why both
+/// exist rather than one standing in for the other.
 /// </para>
 /// </remarks>
 public class SecurityDiagnosticsContractTests

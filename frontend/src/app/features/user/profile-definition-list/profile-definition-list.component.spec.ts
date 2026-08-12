@@ -29,6 +29,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { provideRouter } from '@angular/router';
 
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { UserStore } from '../../../core/state/user.store';
 import { ProfileDefinitionListComponent } from './profile-definition-list.component';
@@ -1422,6 +1423,46 @@ describe('ProfileDefinitionListComponent', () => {
   // THE INLINE FORM
 
   describe('the inline create form', () => {
+    it('registers an unsaved-entry probe that a closed editor leaves silent', () => {
+      /*
+       * ⚠ THIS SCREEN'S ROUTE DECLARES `unsavedChangesGuard`, AND THE DECLARATION USED TO BE
+       * ANSWERED BY REFLECTION over the component's fields. That sweep is gone - it made
+       * `@angular/forms` reachable from the eager import graph of an application whose every form
+       * screen is lazily loaded - so this screen registers a probe of its own. A screen declaring the
+       * gate without one is not merely unprotected: it LOOKS protected in the route table, and the
+       * guard reads it as clean.
+       *
+       * ⚠ THE THREE STATES ARE ASSERTED IN SEQUENCE BECAUSE THE MIDDLE ONE IS THE WHOLE POINT ON A
+       * SCREEN LIKE THIS. One `FormGroup` serves creation and the editing of every row in turn, so a
+       * cancelled editor could plausibly leave the group dirty and warn about entry the operator had
+       * already abandoned - a false prompt on every subsequent exit. Closing resets the group, and
+       * this pins that: silent, then dirty, then silent again.
+       *
+       * `isDirty()` is the guard's own public surface, so this asserts through the very call the
+       * guard makes rather than through an internal.
+       */
+      const tracker = TestBed.inject(UnsavedChangesTracker);
+
+      arrive();
+
+      // THE CONTROL, and on this screen it is also a real claim: a closed editor holds nothing, so
+      // the bulk visibility affordances and the reorder commands cannot make this screen warn.
+      expect(tracker.isDirty()).withContext('a closed editor is not unsaved entry').toBeFalse();
+
+      press(ADD_LABEL);
+      type('profile-definition-name', 'Nickname');
+
+      expect(tracker.isDirty())
+        .withContext('a typed definition with no write in flight is what the guard catches')
+        .toBeTrue();
+
+      press(CANCEL_LABEL);
+
+      expect(tracker.isDirty())
+        .withContext('an abandoned editor must not warn on every later departure')
+        .toBeFalse();
+    });
+
     it('is closed on arrival and opens in place without navigating', () => {
       arrive();
 

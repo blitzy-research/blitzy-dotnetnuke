@@ -679,18 +679,31 @@ describe('PortalListComponent', () => {
       }
     });
 
-    it('binds the title column to the portal-name member, not to a title member', () => {
+    // ⚠ MAJOR (reachability) — THIS SPECIFICATION WAS REWRITTEN BECAUSE THE COLUMN CHANGED KIND. It
+    // pinned the column's `field` at `portalName`, which was the right assertion while the title was
+    // BOUND text - and bound text can carry no affordance, which is why the portal record screen at
+    // `/portals/:portalId` had no inbound link anywhere in the application. The title is now rendered
+    // through a template that wraps the same member in a link to that record, and `field` and
+    // `cellTemplate` are mutually exclusive on the shared contract, so the member assertion moves from
+    // the descriptor to the rendered cell, where it proves the same thing more directly.
+    it('renders the title column from the portal-name member, not from a title member', () => {
       const byKey = new Map(columns().map((column) => [column.key, column]));
       const title = byKey.get('portalName');
 
-      // The HEADING is `Title` - the local `Title.Header` value - while the bound member is `PortalName`.
+      // The HEADING is `Title` - the local `Title.Header` value - while the member read is `PortalName`.
       // The two differ, and following the heading instead of the markup would read a member that does not
       // exist on the contract: `undefined` at run time with no compile error to warn of it.
       expect(title?.label).toBe('Title');
-      expect((title as DataTableTextColumn<PortalListItem>).field).toBe('portalName');
+      expect(title?.kind).toBe('template');
       expect(byKey.has('title')).toBeFalse();
-    });
 
+      // The characters the cell paints are the contract member's, unchanged by the change of kind - which
+      // is what makes this a reachability fix and not a display change. `portalRow()` titles the row
+      // `Baseline Portal`, and it is read from the row header the descriptor still declares.
+      expect(
+        host().querySelector<HTMLElement>('tbody th[scope="row"]')?.textContent?.trim(),
+      ).toBe('Baseline Portal');
+    });
     it('renders the per-column alignment onto the header and body cells alike', () => {
       const headerAligns: readonly (string | null)[] = queryAll<HTMLElement>('thead th').map(
         (cell) => cell.getAttribute('data-align'),
@@ -851,6 +864,77 @@ describe('PortalListComponent', () => {
       // format string to it and to no other; the fee it formats is `hostFee`.
       expect(headings.indexOf('Hosting Fee')).toBe(8);
       expect(cells[8]).toBe('0.00');
+    });
+  });
+
+  // THE RECORD SCREEN'S WAY IN
+  //
+  //  ⚠ MAJOR (reachability) — its own block, because it is the only thing standing between the portal
+  //  record form and being unreachable. `/portals/:portalId` is part of the frozen route table and
+  //  renders that form, yet before this every affordance naming a portal went to the create form or to
+  //  the settings CHILD route, so the screen could be reached only by typing its address.
+
+  describe('the record link', () => {
+    // ⚠ MAJOR (reachability) — THE RECORD SCREEN'S ONLY INBOUND AFFORDANCE, ASSERTED AS SUCH.
+    //
+    // `/portals/:portalId` is part of the frozen route table and renders the portal record form, yet
+    // before this every affordance naming a portal went to the create form or to the settings CHILD
+    // route, so the record screen was reachable only by typing its address. This case is what stops that
+    // recurring: it requires an anchor whose address is the record route itself, and it requires the
+    // sibling settings command to keep its own distinct destination, so neither affordance can quietly
+    // absorb the other.
+    it('links the row title to the portal RECORD, distinctly from the settings command', () => {
+      settleFirstPage([portalRow({ portalId: 31, portalName: 'Contoso Intranet' })]);
+
+      const record: HTMLAnchorElement | null = host().querySelector<HTMLAnchorElement>(
+        'a.portal-list__record-link',
+      );
+
+      // The record route, with no trailing child segment - that segment is the settings screen.
+      expect(record?.getAttribute('href')).toBe('/portals/31');
+      expect(record?.getAttribute('href')).not.toBe('/portals/31/settings');
+
+      // WCAG 2.5.3: the TITLE is the accessible name, so a person driving this by voice says the portal's
+      // own name. No `aria-label`, which would replace that name with a composed sentence.
+      expect(record?.textContent?.trim()).toBe('Contoso Intranet');
+      expect(record?.hasAttribute('aria-label')).toBeFalse();
+
+      // Where it leads is carried as a DESCRIPTION, announced after the name rather than instead of it.
+      expect(record?.getAttribute('title')).toBe('Open this portal record: Contoso Intranet');
+
+      // It lives in the cell that identifies the row, so the link and the row header are one element deep
+      // rather than two competing affordances in one cell.
+      expect(
+        host().querySelector<HTMLElement>('tbody th[scope="row"] a.portal-list__record-link'),
+      ).not.toBeNull();
+
+      // And the settings command still goes where it went, so the two destinations stay distinct.
+      expect(
+        host().querySelector<HTMLAnchorElement>('a.portal-list__row-command')?.getAttribute('href'),
+      ).toBe('/portals/31/settings');
+    });
+
+    it('targets the record route with the identifier untouched, including -1 and 0', () => {
+      // Both markers are legitimate portal identifiers: `Portals.PortalID` is
+      // `[int] IDENTITY (-1, 1) NOT NULL`, so the first portal is numbered -1 and the second 0, and -1 is
+      // simultaneously the legacy absent-integer marker. Read through the precomputed lookup the template
+      // indexes, so the assertion exercises the path the rendered link takes.
+      settleFirstPage([
+        portalRow({ portalId: FIRST_PORTAL_ID }),
+        portalRow({ portalId: SECOND_PORTAL_ID }),
+      ]);
+
+      const links: Record<number, (string | number)[]> =
+        member<() => Record<number, (string | number)[]>>('recordLinks')();
+
+      expect(links[FIRST_PORTAL_ID]).toEqual(['/portals', -1]);
+      expect(links[SECOND_PORTAL_ID]).toEqual(['/portals', 0]);
+
+      const hrefs: readonly string[] = Array.from(
+        host().querySelectorAll<HTMLAnchorElement>('a.portal-list__record-link'),
+      ).map((anchor) => anchor.getAttribute('href') ?? '');
+
+      expect(hrefs).toEqual(['/portals/-1', '/portals/0']);
     });
   });
 
@@ -1256,7 +1340,10 @@ describe('PortalListComponent', () => {
       );
 
       expect(anchors.length).toBe(2);
-      expect(anchors[0]?.getAttribute('href')).toBe('http://localhost:4200');
+      // ⚠ MAJOR (CWE-319) — HTTPS, WHERE THIS ASSERTED `http://`. A bare host name is the normal stored
+      // form on this column, so the previous scheme downgraded practically every link on the screen to
+      // cleartext even from a TLS-served administration session. See the no-downgrade case below.
+      expect(anchors[0]?.getAttribute('href')).toBe('https://localhost:4200');
       // Already absolute - left exactly as stored, not re-serialised by the parser: normalising would
       // lower-case the host and append a trailing slash, so the address in the status bar would stop being
       // the value the operator actually stored.
@@ -1266,6 +1353,52 @@ describe('PortalListComponent', () => {
       // anchor's TEXT, escaped by interpolation. Read WITHOUT the visually-hidden new-context phrase, which
       // is part of the accessible name and not part of the host name.
       expect(visibleLabel(anchors[0])).toBe('localhost:4200');
+    });
+
+    // ⚠ MAJOR (CWE-319 cleartext transmission) — THE NO-DOWNGRADE RULE, ASSERTED IN BOTH DIRECTIONS.
+    //
+    // `dbo.PortalAlias.HTTPAlias` holds a bare host name in the ordinary case, so whatever scheme this
+    // screen supplies is the scheme almost every alias link on it carries. It supplied `http://`, which
+    // downgraded every one of them to cleartext - from an administration session served over TLS, against
+    // the very tenants this application administers.
+    //
+    // Both halves matter and a fix that only did the first would be worse than none. A bare host name gets
+    // TLS, because secure is the safe default and matches what the legacy helper did on a secure request;
+    // and an explicit `http://` is honoured EXACTLY as stored, because a deployment that genuinely has no
+    // TLS must be able to say so and because rewriting a stored value would make this row disagree with the
+    // edit screen. Neither direction is a guess about the deployment: one is the default, the other is the
+    // operator's own statement.
+    it('gives a bare host name TLS and never rewrites an explicit http one', () => {
+      settleFirstPage([
+        portalRow({
+          portalId: SECOND_PORTAL_ID,
+          aliases: [
+            'bare.example',
+            'bare-with-port.example:8080',
+            'http://insecure.example',
+            'https://secure.example',
+          ],
+        }),
+      ]);
+
+      const hrefs: readonly string[] = queryAll<HTMLAnchorElement>('.portal-list__alias > a').map(
+        (anchor) => anchor.getAttribute('href') ?? '',
+      );
+
+      expect(hrefs).toEqual([
+        // Supplied: the secure scheme, for the two values that state none.
+        'https://bare.example',
+        'https://bare-with-port.example:8080',
+        // Stated: left exactly as the operator stored it, in both directions.
+        'http://insecure.example',
+        'https://secure.example',
+      ]);
+
+      // Stated as a negative too, because this is the regression that matters: no link on the screen may
+      // acquire a cleartext scheme this screen invented.
+      expect(hrefs.filter((href) => href.startsWith('http://')))
+        .withContext('the only cleartext link is the one the operator asked for')
+        .toEqual(['http://insecure.example']);
     });
 
     it('renders a host name whose scheme is not http as INERT TEXT rather than as a link', () => {
@@ -1350,7 +1483,7 @@ describe('PortalListComponent', () => {
     // well-formed values - which is exactly the coverage that lets an injection through.
     //
     // ONE mechanism defends this, and it is an ALLOWLIST rather than a denylist. The projection prefixes
-    // `http://` unless the value already carries `mailto:`, `://`, `~` or a double backslash, and then
+    // `https://` unless the value already carries `mailto:`, `://`, `~` or a double backslash, and then
     // requires the result to PARSE as a URL whose protocol is exactly `http:` or `https:` and whose host is
     // non-empty. Everything else projects a null href, and a null href renders no anchor at all - the stored
     // value still appears, as interpolated text.
@@ -1367,8 +1500,8 @@ describe('PortalListComponent', () => {
         portalRow({ portalId: SECOND_PORTAL_ID, aliases: ['javascript:alert(1)'] }),
       ]);
 
-      // The value carries none of the four markers, so `http://` is prefixed - and
-      // `http://javascript:alert(1)` does not parse, because `alert(1)` is not a port. No address is
+      // The value carries none of the four markers, so `https://` is prefixed - and
+      // `https://javascript:alert(1)` does not parse, because `alert(1)` is not a port. No address is
       // projected, so nothing is navigable.
       expect(queryAll<HTMLAnchorElement>('.portal-list__alias > a'))
         .withContext('nothing navigable')
@@ -1426,8 +1559,8 @@ describe('PortalListComponent', () => {
 
       const cell: HTMLElement | undefined = queryAll<HTMLElement>('.portal-list__alias')[0];
 
-      // Prefixing yields `http://<img …>host.example`, which is not a host, so no address is projected and
-      // the value is shown as it was stored.
+      // Prefixing yields `https://<img …>host.example`, which is not a host, so no address is projected
+      // and the value is shown as it was stored.
       expect(queryAll<HTMLAnchorElement>('.portal-list__alias > a')).toHaveSize(0);
       expect(cell?.querySelector('img'))
         .withContext('interpolation escapes it; nothing is parsed as an element')
@@ -1488,7 +1621,7 @@ describe('PortalListComponent', () => {
       );
 
       expect(anchors.length).toBe(1);
-      expect(anchors[0]?.getAttribute('href')).toBe('http://one.example');
+      expect(anchors[0]?.getAttribute('href')).toBe('https://one.example');
       expect(anchors[0]?.getAttribute('href'))
         .withContext('never the empty attribute the legacy screen rendered')
         .not.toBe('');

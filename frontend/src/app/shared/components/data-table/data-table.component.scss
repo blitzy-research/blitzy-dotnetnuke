@@ -460,10 +460,16 @@
 // directions and the box does not change when the direction flips either. `text-align` keeps
 // the glyph centred in the box it was given, and `flex-shrink: 0` stops the reservation
 // being negotiated away when the heading text is long enough to compete for the measure.
+//
+// ⚠ THE RESERVATION IS A TOKEN AND WAS A LITERAL. It read `1em`, which is a design value like
+// any other and the vocabulary rule admits only `0`, `none`, `auto`, `inherit`, `currentColor`
+// and `transparent`. `--size-one-em` names it, and naming it also records the intent the bare
+// unit could not: the box is sized in the element's OWN font size, which is the step declared
+// on the next line, so raising or lowering that step carries the reservation with it.
 .data-table__sort-indicator {
   display: inline-block;
   flex-shrink: 0;
-  inline-size: 1em;
+  inline-size: var(--size-one-em);
   font-size: var(--font-size-xs);
   line-height: var(--line-height-none);
   text-align: center;

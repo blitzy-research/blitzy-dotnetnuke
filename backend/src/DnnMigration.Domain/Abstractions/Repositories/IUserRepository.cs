@@ -258,6 +258,80 @@ public interface IUserRepository
         bool descending = false,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Returns one page of a portal's accounts as an account picker needs them: the key and the two
+    /// captions, and nothing else.
+    /// </summary>
+    /// <param name="portalId">Portal identifier.</param>
+    /// <param name="pageIndex">Zero-based page index; the first page is index zero.</param>
+    /// <param name="pageSize">Page size; zero requests every match unpaged.</param>
+    /// <param name="namePrefix">
+    /// Case-insensitive prefix of the LOGIN NAME, or <see langword="null"/> for all. A prefix rather
+    /// than a substring, because the legacy account searches appended a single trailing wildcard to
+    /// the search text (<c>Website/admin/Users/Users.ascx.vb</c> lines 269, 271 and 274) and this
+    /// member answers the same question the same way. Every wildcard in the caller's text matches
+    /// itself, so an operator's own per-cent sign is data rather than a pattern.
+    /// <para>
+    /// The display name is deliberately NOT matched, even though it is returned. The legacy name box
+    /// resolved an account by its login name (<c>SecurityRoles.ascx.vb:L476-L488</c>), and a caller
+    /// walking this member for a typed name relies on ordering by that login name to put an exact
+    /// match on the first page - which a wider filter would break.
+    /// </para>
+    /// </param>
+    /// <param name="sortBy">
+    /// Name of the caption to order by - the display name or the login name - or
+    /// <see langword="null"/> for the display-name order the legacy drop-down presented. An
+    /// unrecognised name falls back to that same default order.
+    /// </param>
+    /// <param name="descending">Whether <paramref name="sortBy"/> is applied in descending order.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// One page of choices carrying the total across all pages. Page indexing is zero-based, matching
+    /// <see cref="ListAsync"/> and the envelope a caller reads back.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ A SEPARATE MEMBER FROM <see cref="ListAsync"/> ON PURPOSE, AND IT MUST NOT BE FOLDED BACK INTO
+    /// IT. A performance and privacy review measured the role-assignment picker filling itself from the
+    /// account listing: for every candidate account it moved a postal address, a telephone number, an
+    /// electronic-mail address, two audit instants and four status flags out of the database and into
+    /// browser memory so that a name and a login could be rendered. On a tenant the picker is allowed to
+    /// enumerate that is up to a thousand accounts' worth of personal detail transferred to draw a
+    /// drop-down. Authorisation to read the grid is not a licence to send fields the caller cannot use.
+    /// </para>
+    /// <para>
+    /// The listing ALSO composes each row after the page is taken - the profile values behind the
+    /// address and telephone columns, and the tenant's designated administrator so the grid can withhold
+    /// a delete affordance - so a picker built on it pays for a projection it renders none of. This
+    /// member reads the three columns and stops: no profile read, no portal read, no membership-settings
+    /// read, no per-row composition.
+    /// </para>
+    /// <para>
+    /// THE ORDERING IS A REQUEST OF THIS MEMBER for the same reason it is on <see cref="ListAsync"/>:
+    /// paging is applied by the database, so rows are ordered, then skipped, then taken, and a caller
+    /// that re-ordered the returned page would only be re-ordering the rows that one page happened to
+    /// contain. The two names it admits are the two captions the options SHOW - a picker cannot
+    /// meaningfully be ordered by a value the operator cannot see, which is why this member's admissible
+    /// set is narrower than the listing's and is exactly its own projection. An ordering is applied
+    /// unconditionally, including for an absent or unrecognised name, and always ends on the primary key
+    /// so the sequence is total and a page boundary cannot repeat or drop a row.
+    /// </para>
+    /// <para>
+    /// Host super-users are excluded and unauthorised memberships are included, which is the pair
+    /// <c>UserModuleBase.vb:L178-L186</c> enumerated: the legacy picker offered every account holding a
+    /// membership row for the tenant, whether or not that membership was authorised, and never offered a
+    /// host account.
+    /// </para>
+    /// </remarks>
+    Task<PagedResult<AccountChoice>> ListAccountChoicesAsync(
+        int portalId,
+        int pageIndex,
+        int pageSize,
+        string? namePrefix,
+        string? sortBy = null,
+        bool descending = false,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Returns one user by key, or <see langword="null"/> when absent or not a member of the portal.</summary>
     /// <param name="portalId">Portal identifier the user must belong to, or <see langword="null"/> to ignore membership.</param>
     /// <param name="userId">User identifier.</param>

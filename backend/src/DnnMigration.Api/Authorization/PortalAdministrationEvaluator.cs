@@ -153,6 +153,34 @@ internal sealed class PortalAdministrationEvaluator
             : null;
     }
 
+    /// <summary>
+    /// The token that is cancelled when the caller abandons the request being authorised.
+    /// </summary>
+    /// <value>
+    /// The current request's abort token, or <see cref="CancellationToken.None"/> when this evaluator is
+    /// reached outside a request.
+    /// </value>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS IS EXPOSED HERE RATHER THAN OBTAINED BY THE HANDLERS. The framework's authorisation context
+    /// carries no cancellation token of its own, so a handler has no token to pass and previously passed
+    /// <see cref="CancellationToken.None"/> - which quietly opted every store read an authorisation decision
+    /// makes out of cancellation, in a solution whose rule is that every I/O-bound path is cancellable
+    /// (AAP rule T6). This evaluator already holds the request accessor it needs in order to read route
+    /// values, so the token is available here and nowhere else, and surfacing it costs the handlers no new
+    /// dependency.
+    /// </para>
+    /// <para>
+    /// A missing request yields <see cref="CancellationToken.None"/> rather than throwing, because that is the
+    /// state a unit test evaluating a requirement in isolation is in, and it is the same state
+    /// <see cref="ReadRouteInt(string)"/> already treats as "no route values". Answering with an uncancellable
+    /// token there preserves exactly the behaviour that existed before, so nothing outside a live request
+    /// changes.
+    /// </para>
+    /// </remarks>
+    internal CancellationToken RequestAborted =>
+        _httpContextAccessor.HttpContext?.RequestAborted ?? CancellationToken.None;
+
     /// <summary>Reads one route value of the current request as an integer.</summary>
     /// <param name="key">The route value name.</param>
     /// <returns>The value, or <see langword="null"/> when absent, unparseable or there is no request.</returns>

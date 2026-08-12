@@ -255,6 +255,19 @@ public static class CorsExtensions
             return "it is not a well-formed absolute address.";
         }
 
+        // The last check, and the only one about WHICH host rather than about the value's shape. A
+        // documentation name or an unreplaced editing marker is well-formed, lower-case, scheme-prefixed and
+        // path-free - it passes every check above - and it is still certainly wrong: no browser can ever
+        // send it as an origin, so the policy it configures would admit nothing while looking configured.
+        // The TLS overlay derives this value and the API's host filter from ONE deployment setting, so the
+        // same illustration reaching both is exactly the mistake worth failing on.
+        string? reservation = ReservedDeploymentHosts.DescribeRejection(origin[authorityStart..]);
+
+        if (reservation is not null)
+        {
+            return reservation;
+        }
+
         return null;
     }
 

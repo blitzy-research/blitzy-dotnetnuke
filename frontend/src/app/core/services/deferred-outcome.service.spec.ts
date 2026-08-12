@@ -36,6 +36,17 @@ describe('DeferredOutcomeService', () => {
   }
 
   /**
+   * Declines to word a refusal.
+   *
+   * Used by every case that is about the SUCCESS path, so those cases assert one thing each: a caller
+   * returning `null` for a failure states it silently, exactly as a caller returning `null` for a success
+   * does. The refusal-relay cases below supply a real notice instead.
+   */
+  function declineFailure(): null {
+    return null;
+  }
+
+  /**
    * Drains the root effect queue.
    *
    * The watch is a ROOT effect - created with the root environment injector, which is the entire point of
@@ -68,19 +79,19 @@ describe('DeferredOutcomeService', () => {
     // context is gone; a watch that needed one would throw exactly when it was needed. Called here as a
     // plain method on an already-resolved instance, with no `runInInjectionContext` anywhere.
     expect(() => {
-      service.announceWhenSettled(verdict, () => 'The role was created.');
+      service.announceWhenSettled(verdict, () => 'The role was created.', declineFailure);
     }).not.toThrow();
   });
 
   it('says nothing while the write is still in flight', () => {
-    service.announceWhenSettled(verdict, () => 'The role was created.');
+    service.announceWhenSettled(verdict, () => 'The role was created.', declineFailure);
     flush();
 
     expect(queuedMessages()).withContext('nothing has settled yet').toEqual([]);
   });
 
   it('states the outcome once the write settles successfully', () => {
-    service.announceWhenSettled(verdict, () => 'The role was created.');
+    service.announceWhenSettled(verdict, () => 'The role was created.', declineFailure);
     flush();
 
     verdict.set('succeeded');
@@ -95,7 +106,7 @@ describe('DeferredOutcomeService', () => {
     // value is not known when the watch is registered. A string captured at registration could not carry it.
     let stored: string | null = null;
 
-    service.announceWhenSettled(verdict, () => `Account ${stored ?? '?'} was created.`);
+    service.announceWhenSettled(verdict, () => `Account ${stored ?? '?'} was created.`, declineFailure);
     flush();
 
     stored = 'qa7probe';
@@ -106,7 +117,7 @@ describe('DeferredOutcomeService', () => {
   });
 
   it('says nothing when the caller declines to word the outcome', () => {
-    service.announceWhenSettled(verdict, () => null);
+    service.announceWhenSettled(verdict, () => null, declineFailure);
     flush();
 
     verdict.set('succeeded');
@@ -117,14 +128,62 @@ describe('DeferredOutcomeService', () => {
       .toEqual([]);
   });
 
-  it('relays NO refusal, because a refusal without its screen is worse than silence', () => {
-    // ⚠ DELIBERATE, AND NOT AN OVERSIGHT. A failure in this application is a document - a title, a detail,
-    // per-field messages and the support reference an operator quotes - and its home is the banner ON the
-    // screen that attempted the write. That screen is gone: there is no field for a field message to sit
-    // beside and no form to correct, so a decontextualised sentence thrown at whatever screen the operator
-    // moved to would report a problem without showing it or letting them fix it. The store still holds the
-    // failure, so returning to the screen presents it in full.
-    service.announceWhenSettled(verdict, () => 'The role was created.');
+  it('relays a refusal as one bounded sentence and its support reference', () => {
+    // ⚠ THIS ASSERTION IS INVERTED FROM THE ONE IT REPLACES, which required silence. The old reasoning was
+    // that a failure in this application is a DOCUMENT - a title, a detail, per-field messages, a support
+    // reference - whose home is the banner ON the screen that attempted the write; that screen is gone, so
+    // there is no field for a field message to sit beside, and the store still holds the failure for anyone
+    // who returns.
+    //
+    // All of that is true about the document and none of it justifies silence about the FACT. An operator
+    // who submitted a write and moved on believes it committed; nothing tells them otherwise, and an absent
+    // confirmation is indistinguishable from one they clicked away from. They find out when something
+    // downstream needs a record that is not there. "Returning to the screen presents it in full" presumes
+    // they know they have a reason to return, which is exactly what they do not know.
+    service.announceWhenSettled(verdict, () => 'The role was created.', () => ({
+      message: 'The role could not be created',
+      reference: '4d19ae7c1b8f4e2a9d6c3f5b7a091e2d',
+    }));
+    flush();
+
+    verdict.set('failed');
+    flush();
+
+    // The queue composes the stored `message` from the sentence and the reference it was handed
+    // separately, so the rendered form carries both - which is the point of passing the reference as its
+    // own argument rather than concatenating it here: the two are bounded independently, so a long
+    // sentence cannot truncate the identifier off the end.
+    expect(queuedMessages()).toEqual([
+      'The role could not be created Reference: 4d19ae7c1b8f4e2a9d6c3f5b7a091e2d',
+    ]);
+    expect(queuedSeverities()).withContext('the write did not happen').toEqual(['error']);
+
+    const queued = notifications.notifications();
+
+    expect(queued[0]?.reference)
+      .withContext('the reference is carried as a reference, so it renders like every other one')
+      .toBe('4d19ae7c1b8f4e2a9d6c3f5b7a091e2d');
+  });
+
+  it('relays a refusal that carried no reference, rather than inventing one', () => {
+    // A transport failure has no document and therefore no reference. The sentence is still owed.
+    service.announceWhenSettled(verdict, () => 'The role was created.', () => ({
+      message: 'The role could not be created',
+      reference: null,
+    }));
+    flush();
+
+    verdict.set('failed');
+    flush();
+
+    expect(queuedMessages()).toEqual(['The role could not be created']);
+    expect(notifications.notifications()[0]?.reference).toBeNull();
+  });
+
+  it('says nothing when the caller declines to word a refusal', () => {
+    // The symmetry with the success path is deliberate: a caller that has already redirected, or that does
+    // not want a particular refusal relayed, keeps the option of silence by returning null.
+    service.announceWhenSettled(verdict, () => 'The role was created.', declineFailure);
     flush();
 
     verdict.set('failed');
@@ -133,8 +192,52 @@ describe('DeferredOutcomeService', () => {
     expect(queuedMessages()).toEqual([]);
   });
 
+  it('composes the refusal at announce time, so it may name what arrived with the response', () => {
+    // The reference is read from the store's record of THIS write, which does not exist when the watch is
+    // registered. A value captured at registration could not carry it.
+    let reference: string | null = null;
+
+    service.announceWhenSettled(verdict, () => 'The role was created.', () => ({
+      message: 'The role could not be created',
+      reference,
+    }));
+    flush();
+
+    reference = '764349256f59ef77af077f6619f899ee';
+    verdict.set('failed');
+    flush();
+
+    expect(notifications.notifications()[0]?.reference).toBe('764349256f59ef77af077f6619f899ee');
+  });
+
+  it('does not word a refusal on a write that succeeded, or a success on one that failed', () => {
+    // Each describer is evaluated only on its own outcome. Calling both, or the wrong one, would put a
+    // failure sentence on a completed write - the worst possible reading of a trail an operator acts on.
+    const successCalls: number[] = [];
+    const failureCalls: number[] = [];
+
+    service.announceWhenSettled(
+      verdict,
+      () => {
+        successCalls.push(1);
+        return 'The role was created.';
+      },
+      () => {
+        failureCalls.push(1);
+        return { message: 'The role could not be created', reference: null };
+      },
+    );
+    flush();
+
+    verdict.set('succeeded');
+    flush();
+
+    expect(successCalls.length).toBe(1);
+    expect(failureCalls.length).withContext('the write succeeded').toBe(0);
+  });
+
   it('speaks exactly ONCE, and stops watching after it has spoken', () => {
-    service.announceWhenSettled(verdict, () => 'The role was created.');
+    service.announceWhenSettled(verdict, () => 'The role was created.', declineFailure);
     flush();
 
     verdict.set('succeeded');
@@ -156,8 +259,8 @@ describe('DeferredOutcomeService', () => {
   it('watches two writes independently', () => {
     const second: WritableSignal<DeferredOutcome> = signal<DeferredOutcome>('pending');
 
-    service.announceWhenSettled(verdict, () => 'The role was created.');
-    service.announceWhenSettled(second, () => 'The account was created.');
+    service.announceWhenSettled(verdict, () => 'The role was created.', declineFailure);
+    service.announceWhenSettled(second, () => 'The account was created.', declineFailure);
     flush();
 
     second.set('succeeded');
@@ -177,7 +280,7 @@ describe('DeferredOutcomeService', () => {
     // The navigation the operator chose completed before the write settled, so there is no departure left
     // for the statement to outlive. Claiming one would spend the exemption on their NEXT change of screen
     // and leave the confirmation sitting over something it has nothing to do with.
-    service.announceWhenSettled(verdict, () => 'The role was created.');
+    service.announceWhenSettled(verdict, () => 'The role was created.', declineFailure);
     flush();
 
     verdict.set('succeeded');

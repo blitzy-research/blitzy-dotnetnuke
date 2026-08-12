@@ -14,9 +14,10 @@
 # the file the plan freezes, and every difference is one of the four the review
 # asked for:
 #
-#   1. TLS is terminated at the front end. docker/nginx.tls.conf is mounted into
-#      the include directory nginx.conf already scans, and the certificate pair
-#      is mounted read-only beside it.
+#   1. TLS is terminated at the front end. docker/nginx.tls.conf.template is mounted
+#      into the image's template directory, rendered from DNN_PUBLIC_HOST by the
+#      image's own entrypoint into the include directory nginx.conf already scans,
+#      and the certificate pair is mounted read-only beside it.
 #   2. Port 80 keeps listening (the container health probe needs it) and browser
 #      traffic for the deployment's own server name is redirected to 443 by the
 #      mounted block.
@@ -31,12 +32,23 @@
 #      over TLS, and its rate limiter partitions every caller behind the proxy
 #      into one budget.
 #
-# WHAT THE DEPLOYMENT MUST SUPPLY (in docker/.env, see .env.example):
-#     TLS_CERTIFICATE_DIRECTORY  host directory holding fullchain.pem and
-#                                privkey.pem
-#     FRONTEND_ORIGIN            the https origin the SPA is served from, so the
-#                                API's cross-origin policy admits it
-# and the server_name inside docker/nginx.tls.conf.
+# WHAT THE DEPLOYMENT MUST SUPPLY (in docker/.env, see .env.example). Both are
+# REQUIRED: compose refuses to create a container when either is unset or blank, so
+# the failure arrives before anything serves rather than as a certificate mismatch
+# or a rejected request later.
+#     DNN_PUBLIC_HOST            the public host name browsers address. ONE input,
+#                                four consumers: the TLS server_name, the port-80
+#                                redirect's scope, the API's AllowedHosts entry and
+#                                the API's permitted browser origin
+#     TLS_CERTIFICATE_DIRECTORY  host directory holding fullchain.pem and privkey.pem,
+#                                valid for DNN_PUBLIC_HOST
+# NOTHING inside a tracked file has to be edited. That is the correction this
+# revision makes: this overlay previously hard-coded dnn.example.com in the API's
+# AllowedHosts while the mounted server block hard-coded it in both server names,
+# and only the cross-origin origin was parameterised - so a deployment that set its
+# origin and nothing else got a redirect scoped to a name no browser sends, a
+# certificate that matched no server_name, and an API that host-filtered its own
+# traffic away. Every one of those required a source edit to avoid.
 # =============================================================================
 version: '3.8'
 
@@ -79,20 +91,84 @@ services:
       # gateway, and a caller reaching the published API port directly is
       # source-translated to that gateway - so trusting the subnet would trust a
       # directly reachable caller as if it were the proxy.
-      # Host filtering: the names this API answers on. Replace with the
-      # deployment's own; the loopback entries keep the container probe working.
-      AllowedHosts: "dnn.example.com;localhost;127.0.0.1"
-      Cors__AllowedOrigins__0: ${FRONTEND_ORIGIN:-https://dnn.example.com}
+      #
+      # HOST FILTERING AND THE BROWSER ORIGIN, BOTH DERIVED FROM THE ONE PUBLIC HOST
+      # NAME. This is the correction: these two lines previously read
+      # `AllowedHosts: "dnn.example.com;localhost;127.0.0.1"` and
+      # `Cors__AllowedOrigins__0: ${FRONTEND_ORIGIN:-https://dnn.example.com}`, so a
+      # deployment that set FRONTEND_ORIGIN - the documented workflow - moved its
+      # cross-origin policy and nothing else. Its real host stayed absent from the
+      # API's host filter, so every request was refused with 400 by a control nobody
+      # had configured wrongly, and the mounted server block's server_name still named
+      # the example, so the port-80 redirect never matched its browsers and the
+      # certificate matched no server. Deriving all of it from DNN_PUBLIC_HOST makes
+      # those three facts one fact.
+      #
+      # The loopback entries are retained deliberately: the container's own HEALTHCHECK
+      # addresses http://localhost:8080/health, and host filtering applies to it too -
+      # dropping them would report the container unhealthy for its whole life and hold
+      # the front end behind `condition: service_healthy` for ever.
+      #
+      # The API refuses to START when this names a reserved example domain
+      # (Api/Extensions/ServiceCollectionExtensions.cs), so a deployment that copies the
+      # template's illustration verbatim fails closed at start-up instead of serving
+      # traffic under a name nothing else agrees on. Compose refuses even earlier when
+      # the variable is unset or blank.
+      AllowedHosts: ${DNN_PUBLIC_HOST:?DNN_PUBLIC_HOST must be the public host name browsers address, e.g. admin.acme.example - it becomes the TLS server_name, this AllowedHosts entry and the permitted browser origin, and the certificate must be valid for it};localhost;127.0.0.1
+      # The single browser origin the API admits cross-origin, over TLS, at the same
+      # name. FRONTEND_ORIGIN is deliberately NOT read here: two variables that must
+      # agree are two variables that can disagree, and the base topology's own
+      # FRONTEND_ORIGIN default (http://localhost:4200, for a workstation dev server)
+      # would be a cleartext origin in a TLS deployment.
+      Cors__AllowedOrigins__0: https://${DNN_PUBLIC_HOST}
 
   frontend:
-    # !override REPLACES the base list - without the tag, 4200:80 from the base file
-    # would remain published alongside these two. See the note on the api service.
+    # !override REPLACES the base list - without the tag, the base file's
+    # 127.0.0.1:4200:80 would remain published alongside these two. See the note on
+    # the api service.
+    #
+    # THIS is the only topology that publishes on a public interface, and it is the
+    # only one that may: the base file binds the front end to the loopback address
+    # because it speaks plain HTTP, and cleartext that carries a sign-in credential
+    # has no business on a routable interface. Here the listener on 443 is encrypted
+    # and the listener on 80 exists only to redirect a browser to it.
     ports: !override
       - "80:80"
       - "443:443"
+    environment:
+      # THE ONE PUBLIC IDENTITY OF THIS DEPLOYMENT. It is rendered into the mounted
+      # server block's two `server_name` directives by the nginx image's own
+      # entrypoint, and the api service above derives its AllowedHosts and its
+      # cross-origin allow-list from the SAME variable - so a deployment cannot end
+      # up with a redirect scoped to one name, a certificate for another and an API
+      # that refuses both. Compose refuses to create a container while it is unset or
+      # blank (see the api service, which requires the same variable), and the API
+      # refuses to start on a reserved example domain.
+      DNN_PUBLIC_HOST: ${DNN_PUBLIC_HOST:?DNN_PUBLIC_HOST must be the public host name browsers address, e.g. admin.acme.example - it becomes the TLS server_name, the API AllowedHosts entry and the permitted browser origin, and the certificate must be valid for it}
+      # Where the rendered file must land: the directory docker/nginx.conf already
+      # scans with `include /etc/nginx/tls/*.conf`. The default is
+      # /etc/nginx/conf.d/, which this image's main configuration does not include at
+      # all, so leaving it unset would render the file somewhere nothing reads and
+      # serve plain HTTP only - with no error anywhere. The directory itself is
+      # created by docker/frontend.Dockerfile, because the entrypoint skips rendering
+      # when it is not writable.
+      NGINX_ENVSUBST_OUTPUT_DIR: /etc/nginx/tls
+      # Confines substitution to names beginning DNN_. Without a filter the
+      # entrypoint hands envsubst EVERY environment variable, so any nginx variable
+      # sharing a name with one would be replaced - a class of failure that would
+      # appear as a configuration syntax error at start-up, or worse as a silently
+      # emptied directive.
+      NGINX_ENVSUBST_FILTER: "^DNN_"
     volumes:
-      # The server block. nginx.conf loads /etc/nginx/tls/*.conf, so mounting it
-      # here is the whole activation step.
-      - ./nginx.tls.conf:/etc/nginx/tls/nginx.tls.conf:ro
-      # The certificate pair, in a directory the *.conf glob cannot match.
-      - ${TLS_CERTIFICATE_DIRECTORY:-./certificates}:/etc/nginx/tls/certificates:ro
+      # The server block, as a TEMPLATE. The image's entrypoint
+      # (/docker-entrypoint.d/20-envsubst-on-templates.sh) renders every
+      # /etc/nginx/templates/*.template into the output directory named above before
+      # nginx starts, so mounting this file plus the certificate pair is the whole
+      # activation step - no tracked file is edited and no image is rebuilt.
+      - ./nginx.tls.conf.template:/etc/nginx/templates/nginx.tls.conf.template:ro
+      # The certificate pair, in a directory the *.conf glob cannot match, and
+      # REQUIRED rather than defaulted: a fallback path meant a deployment that
+      # forgot it got an nginx that could not start, reported through a certificate
+      # error rather than through the missing setting that caused it. The
+      # certificate must be valid for DNN_PUBLIC_HOST above.
+      - ${TLS_CERTIFICATE_DIRECTORY:?TLS_CERTIFICATE_DIRECTORY must be a host directory holding fullchain.pem and privkey.pem valid for DNN_PUBLIC_HOST}:/etc/nginx/tls/certificates:ro

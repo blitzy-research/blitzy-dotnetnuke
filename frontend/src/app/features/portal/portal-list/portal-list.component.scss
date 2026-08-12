@@ -14,6 +14,7 @@
 //     .portal-list__action
 //     .portal-list__row-command
 //     .portal-list__row-command--danger
+//     .portal-list__record-link
 //     .portal-list__aliases
 //     .portal-list__alias
 //     .portal-list__new-context
@@ -203,7 +204,20 @@
   border-radius: var(--radius-sm);
   cursor: pointer;
 
-  @include mx.focus-ring;
+  // NO `mx.focus-ring` INCLUDE HERE, AND THE RING IS NOT LOST BY ITS ABSENCE. `_reset.scss`
+  // L296-304 applies that same parameterless mixin to `a, button, input, select, textarea,
+  // summary, [tabindex]:not([tabindex='-1'])`, and this control is a `<button>` - so an include
+  // here re-emitted a byte-identical `:focus-visible` block, differing only in specificity, which
+  // cannot change a computed value when the declarations are the same. Verified as removable
+  // rather than assumed: the mixin takes no arguments (`_mixins.scss` L343), and no rule in the
+  // global layer or this file sets `outline` or `box-shadow` on a button between the reset's
+  // weight and this one - `.page-action` (`_forms.scss` L502) declares neither, and the only
+  // shared `box-shadow` is on `table[data-sticky-head] thead th`. Nothing outranked the reset,
+  // so nothing was holding a line by being restated here.
+  //
+  // The 4 kB component-style budget is what makes the duplication worth removing rather than
+  // merely worth noting, and the sibling comment below states the standing rule: the budget is
+  // never raised to accommodate duplication.
 
   @include mx.hover {
     color: var(--color-primary-hover);
@@ -272,8 +286,20 @@
 // ahead of the danger variant below, or the variant's own hover would lose.
 .portal-list__action,
 .portal-list__row-command,
+.portal-list__record-link,
 .portal-list__alias > a {
-  @include mx.focus-ring;
+  // THE FOCUS RING ARRIVES FROM THE GLOBAL LAYER FOR ALL FOUR OF THESE, for the reason set out on
+  // `.portal-list__letter` above: `_reset.scss` L296-304 includes the same parameterless
+  // `mx.focus-ring` on `a` and on `button`, and every element carrying these four classes is one or
+  // the other - measured from the template, not assumed: `.portal-list__action` and
+  // `.portal-list__row-command` render as `<a>` or `<button>` depending on whether the affordance
+  // navigates or acts, `.portal-list__record-link` is the row-title `<a>`, and
+  // `.portal-list__alias > a` is an anchor by construction. Re-including the mixin here emitted a
+  // second, byte-identical `:focus-visible` rule, which is the largest single duplication this
+  // stylesheet contained.
+  //
+  // What this rule still owns is the HOVER treatment below, and that genuinely cannot move to the
+  // global layer - it must be emitted once for the set, at this weight, and in this position.
 
   // ⚠ UNGATED, and the pointer-capability guard was REMOVED after a measurement showed it
   // silently disabled the hover treatment on this screen while leaving it working on others.
@@ -330,6 +356,26 @@
 .portal-list__alias > a {
   display: inline-block;
   min-inline-size: var(--target-size-compact);
+  min-block-size: var(--target-size-compact);
+}
+
+// ⚠ MAJOR (reachability) — THE ROW TITLE IS NOW A LINK, and this rule exists only to give it a
+// conforming target. The colour, the underline and the focus ring all arrive from the global anchor
+// layer, so nothing here re-specifies appearance: an inline anchor's target is its own line box, which
+// this ramp puts at roughly twenty-one pixels, and the compact step is the WCAG 2.5.8 floor.
+//
+// ZERO VISUAL COST, and that is arithmetic rather than hope. This cell shares its row with the
+// settings command, whose own rule floors it at `--target-size-min` - nearly twice this value - so the
+// row's height is decided there and a twenty-four-pixel title box cannot add a pixel to it. The
+// COMPACT step rather than the minimum one for the same reason the alias links take it: this is a
+// content hyperlink in a data cell, not a command affordance, and AAP 0.3.5 ranks visual continuity
+// with the legacy grid above the larger heuristic target.
+//
+// `inline-block` so the block floor applies at all - it is ignored on a purely inline box - and no
+// inline floor, because a title is never as narrow as a host name and forcing one would pad short
+// titles away from the column edge the legacy grid aligned them to.
+.portal-list__record-link {
+  display: inline-block;
   min-block-size: var(--target-size-compact);
 }
 
@@ -471,7 +517,7 @@
 // The destructive command. Colour is a reinforcement and never the only signal: the command
 // reads "Delete", its accessible name names the portal, and it opens a confirmation.
 .portal-list__row-command--danger {
-  color: var(--color-danger-text);
+  color: var(--color-danger);
 
   // ⚠ THE HOVER KEEPS THE SAME COLOUR, AND CHANGING IT IS WHAT BROKE THE CONTRAST. This text sits
   // below the large-text threshold, so it needs 4.5:1, and the bright danger token
@@ -488,7 +534,7 @@
     // on `.portal-list__row-command:hover`, which has exactly this selector's specificity, so
     // omitting the colour here does not "keep" the danger colour - it hands the destructive command
     // the ordinary action's blue on hover. Naming it makes the intent true rather than merely stated.
-    color: var(--color-danger-text);
+    color: var(--color-danger);
     text-decoration: underline;
   }
 
@@ -599,13 +645,15 @@
 //                     with no lower bound, so a negative fee is legal and stays legal.
 //
 // In both cases the WORD is the state and the colour is a second cue for a reader who can use it,
-// never the only one - which is what keeps this out of "colour alone" territory. The accessible
-// danger token is used rather than the accent one because both are TEXT: `--color-danger` measures
-// 3.99:1 on white and 3.44:1 on the striped row and fails both, while `--color-danger-text`
-// measures 7.20:1 and 6.21:1.
+// never the only one - which is what keeps this out of "colour alone" territory, and which is what
+// makes the hue's own contrast a secondary matter here rather than the load-bearing one.
+// `--color-danger` is the vocabulary's only danger value; a darkened sibling was used here briefly
+// and is withdrawn, because the colour vocabulary is closed at the nine values the design
+// specification enumerates. The measured ratios and the reason they are accepted are stated on that
+// token's own declaration, and the bold weight below is the second non-colour cue.
 .portal-list__expired,
 .portal-list__fee--negative {
-  color: var(--color-danger-text);
+  color: var(--color-danger);
   font-weight: var(--font-weight-bold);
 }
 

@@ -1893,21 +1893,25 @@ describe('PortalSettingsComponent', () => {
       expect(messagesFor('Page Quota:')).toContain('Enter a whole number.');
     });
 
-    // ⚠ #24 — THIS SPECIFICATION WAS REWRITTEN, AND THE REWRITE IS THE FIX.
+    // ⚠ THIS SPECIFICATION HAS BEEN REWRITTEN TWICE, AND IT IS BACK WHERE IT STARTED.
     //
-    // It previously asserted that NO control declares a presence rule, on the authority of
-    // `Website/admin/Portal/sitesettings.ascx`, which really does declare no
-    // `RequiredFieldValidator` anywhere on its 568 lines. That authority is sound for nine of the
-    // ten controls and WRONG for the tenth, because the modern SERVER declares
-    // `NotEmpty()` on the site title - `UpdatePortalRequestValidator.cs:L386`, message
-    // `"Site Title is required."` at L349 - so the title IS required and the screen was merely
-    // silent about it. Runtime testing measured the consequence: clearing the title and
-    // submitting produced a 400 with no indication of which field or why.
+    // It first asserted that NO control declares a presence rule, on the authority of
+    // `Website/admin/Portal/sitesettings.ascx`, which declares no `RequiredFieldValidator` anywhere
+    // on its 568 lines. It was then rewritten to require the site title, on the authority of a
+    // `NotEmpty()` the modern update contract carried — and that server rule has now been withdrawn
+    // as a parity break, so the original assertion is restored.
     //
-    // Aligning the specification to the server rather than preserving a screen that disagreed with
-    // it is what Rule T5 asks for: the accepted input set is unchanged - the server refused an
-    // empty title before this change and refuses it now - and only the moment of refusal moves.
-    it('declares a presence rule on the site title ALONE, mirroring the server that requires it', () => {
+    // The rule was defended on the grounds that although an empty string satisfies a NOT NULL
+    // constraint, the legacy null contract rewrote it to a database null which the column then
+    // rejected. The legacy source disproves it:
+    // `Library/Providers/DataProviders/SqlDataProvider/SqlDataProvider.vb:L632` passes `PortalName`
+    // RAW while wrapping fourteen of its twenty-seven sibling arguments in `GetNull`;
+    // `PortalController.vb:L1568-L1570` forwards the parameter untouched; and
+    // `SiteSettings.ascx.vb:L772` passes `txtPortalName.Text` as typed. A blank title reached
+    // `[PortalName] [nvarchar] (128) NOT NULL` as the empty string, which that constraint accepts,
+    // and the legacy screen stored it. Minimal Change Clause item 3 is what settles it: identical
+    // inputs must produce identical outcomes.
+    it('declares no presence rule on ANY control, exactly as the legacy screen declared none', () => {
       const controls = form().controls;
 
       controls.portalName.setValue('');
@@ -1922,13 +1926,10 @@ describe('PortalSettingsComponent', () => {
       controls.userQuota.setValue('');
       fixture.detectChanges();
 
-      // The title is the ONLY reason the form is rejected.
-      expect(controls.portalName.valid).toBeFalse();
-      expect(controls.portalName.errors?.['required']).toBeTruthy();
-      expect(form().valid).toBeFalse();
-
-      // Every other control is still submittable while empty, exactly as the legacy screen was:
-      // nine emptied controls, nine valid.
+      // Ten emptied controls, ten valid, and a submittable form — which is what "no presence rule
+      // anywhere" means in practice and what the legacy screen did.
+      expect(controls.portalName.valid).toBeTrue();
+      expect(controls.portalName.errors).toBeNull();
       expect(controls.description.valid).toBeTrue();
       expect(controls.keyWords.valid).toBeTrue();
       expect(controls.footerText.valid).toBeTrue();
@@ -1938,16 +1939,10 @@ describe('PortalSettingsComponent', () => {
       expect(controls.hostSpace.valid).toBeTrue();
       expect(controls.pageQuota.valid).toBeTrue();
       expect(controls.userQuota.valid).toBeTrue();
-
-      // Restoring the title alone makes the whole form submittable, which proves no other control
-      // gained a rule alongside it.
-      controls.portalName.setValue('A Title');
-      fixture.detectChanges();
-
       expect(form().valid).toBeTrue();
     });
 
-    it('reports the required title with the server\'s own wording, so both authorities say one thing', () => {
+    it('reports nothing at all for an emptied title, because neither tier refuses one', () => {
       // The site title lives on the BASIC tab and this block's setup shows the advanced one, so the
       // tab is switched back before the field is read. A field on an inactive panel is not rendered
       // at all, which is a real property of this screen rather than a testing artefact.
@@ -1960,13 +1955,13 @@ describe('PortalSettingsComponent', () => {
       control.markAsTouched();
       fixture.detectChanges();
 
-      expect(messagesFor('Title:')).toEqual(['Site Title is required.']);
+      expect(messagesFor('Title:')).toEqual([]);
     });
 
-    it('treats a whitespace-only title as empty, because the server does', () => {
-      // FluentValidation's NotEmpty counts a whitespace-only string as empty and Angular's
-      // Validators.required does not, so the submit path normalises the value first. Without that
-      // the client would pass a title of three spaces to a server that refuses it.
+    it('still normalises a whitespace-only title, so what is stored is the empty string', () => {
+      // The normalisation survives the withdrawn presence rule, and its purpose is now solely
+      // consistency with the sibling portal record screen, which trims its own title: without it one
+      // screen would store three spaces where the other stored nothing for the same entry.
       const control = form().controls.portalName;
 
       control.setValue('   ');
@@ -1978,8 +1973,25 @@ describe('PortalSettingsComponent', () => {
       fixture.detectChanges();
 
       expect(control.value).toBe('');
-      expect(control.valid).toBeFalse();
-      expect(control.errors?.['required']).toBeTruthy();
+      expect(control.valid)
+        .withContext('and it is still submittable once trimmed, because nothing requires it')
+        .toBeTrue();
+
+      // ⚠ THE SAVE IS SETTLED, AND ITS EXISTENCE IS HALF THE POINT. While the withdrawn presence rule
+      // stood, this submission was refused locally and issued no request at all; now it reaches the
+      // endpoint, which is exactly the parity that was lost.
+      const write = takeSave(0);
+
+      // ABSENCE ON THE WIRE, and the stored outcome is still the empty string. This screen composes every
+      // optional text member through one rule - a blank box sends `null` - and the server coalesces it:
+      // `PortalMappings` writes `request.PortalName ?? string.Empty` into
+      // `[PortalName] [nvarchar] (128) NOT NULL`, which is the legacy stored value for a blank title. So
+      // the three spaces become nothing stored, exactly as `SiteSettings.ascx.vb:L772` passing
+      // `txtPortalName.Text` into an unwrapped argument did.
+      expect(bodyOf(write).portalName)
+        .withContext('absence, which the server stores as the empty string')
+        .toBeNull();
+      completeSave(write, settingsBody({ portalName: '' }));
     });
 
     it('reports the data-type semantics rather than mere presence: blank passes, malformed fails', () => {
@@ -3611,6 +3623,55 @@ describe('PortalSettingsComponent', () => {
     });
   });
 
+  // =========================================================================
+  // O3. THE REVISION MARKER'S OWN CONTRACT
+  // =========================================================================
+  //
+  // Mounted WITHOUT arriving anywhere first, deliberately: the subject is a malformed read, and a
+  // screen that already holds a decoded projection is not the state in which that matters.
+
+  describe('O3. a projection with no revision marker', () => {
+    beforeEach(() => {
+      holdsHostAccount.set(true);
+    });
+
+    // ⚠ MINOR (client/API contract) — THIS SPECIFICATION WAS REWRITTEN, AND THE REWRITE IS THE FIX.
+    //
+    // It asserted that a projection serving NO marker produced a marker-less save, and called that a
+    // last-writer-wins update. The premise was false: `PortalSettingsDto.ConcurrencyToken` is declared
+    // `public string ... = string.Empty` and is always populated by `PortalMappings.ConcurrencyTokenFor`,
+    // so a projection serving no marker is a MALFORMED response rather than a supported mode.
+    //
+    // Tolerating it was the defect, and on THIS screen it was the most expensive place to tolerate it: the
+    // save returns nine members the screen never displays, so a marker-less stale save restores nine stale
+    // values over committed edits neither administrator opened, and the API answers 200. The decoder now
+    // refuses the response, and this case pins the consequence - no projection, so no form and no save.
+    it('offers no form and composes no save when the projection served no marker', () => {
+      fixture.componentRef.setInput('portalId', 7);
+
+      // The malformed projection. Spread through a literal rather than through `settingsBody`, because the
+      // member is non-nullable on the contract now and a fixture cannot express the malformed shape.
+      http
+        .expectOne(settingsUrl(7))
+        .flush(envelope({ ...settingsBody({ portalId: 7 }), concurrencyToken: null }));
+      http.expectOne(portalUrl(7)).flush(envelope(detailBody({ portalId: 7 })));
+      http.expectOne(tabsUrl(7)).flush(envelope(pageListing()));
+      answerAdministrators(7);
+      fixture.detectChanges();
+
+      // Nothing to edit, because nothing decoded.
+      expect(input('portalName'))
+        .withContext('no form is offered against a projection that did not decode')
+        .toBeFalsy();
+
+      // And the thing this protects: no save can be composed, so no marker-less whole-record replacement
+      // can reach the endpoint.
+      expect(http.match(() => true))
+        .withContext('no write is composed from a projection that did not decode')
+        .toHaveSize(0);
+    });
+  });
+
   describe('P. the dropped fields', () => {
     beforeEach(() => {
       holdsHostAccount.set(true);
@@ -3865,16 +3926,18 @@ describe('PortalSettingsComponent', () => {
       completeSave(write);
     });
 
-    it('returns null when the projection served no marker, rather than inventing one', () => {
-      // A last-writer-wins save, exactly as this screen behaved before the member existed. A fabricated
-      // token that happened to match would defeat the very check it appears to satisfy.
-      arrive(7, { settings: settingsBody({ portalId: 7, concurrencyToken: null }) });
+
+    it('always carries a marker on a save, because a projection serving none is refused', () => {
+      // The positive half of the pair, stated as a total: every save this screen can compose carries a
+      // marker, because the only path to composing one is a projection that decoded.
       submit();
 
-      const write = takeSave(7);
+      const write = takeSave(0);
 
-      expect(bodyOf(write).concurrencyToken).toBeNull();
-      completeSave(write, settingsBody({ portalId: 7, concurrencyToken: null }));
+      expect(typeof bodyOf(write).concurrencyToken)
+        .withContext('a marker, never a null this screen invented and never one it omitted')
+        .toBe('string');
+      completeSave(write);
     });
 
     it('adopts the marker the response carries, so a second save is not stale', () => {

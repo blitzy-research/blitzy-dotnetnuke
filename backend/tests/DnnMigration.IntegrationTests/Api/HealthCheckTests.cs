@@ -93,11 +93,22 @@ public sealed class HealthCheckTests
 
     /// <summary>Host and port the unreachable-dependency host is pointed at.</summary>
     /// <remarks>
-    /// A loopback address with a port nothing binds, so a connection attempt is refused immediately rather than
-    /// waiting out a timeout. Loopback rather than a routable address on purpose: a test must not depend on
-    /// name resolution or on reaching anything outside the machine it runs on.
+    /// <para>
+    /// A loopback address with a port nothing is listening on, so a connection attempt is refused immediately
+    /// rather than waiting out a timeout. Loopback rather than a routable address on purpose: a test must not
+    /// depend on name resolution or on reaching anything outside the machine it runs on.
+    /// </para>
+    /// <para>
+    /// ⚠ THE PORT IS ASKED FOR RATHER THAN CHOSEN. This used to be a constant naming a fixed high port, which
+    /// silently assumed nothing else on the machine had bound it - and several clones of this repository build
+    /// and test in parallel on one host, each with its own containers and tooling. A collision would not fail
+    /// loudly: a process that ACCEPTED the connection would replace the intended refusal with a handshake
+    /// against something unrelated, and the 503 this suite exists to prove would be attributed to the wrong
+    /// cause. <see cref="RefusedEndpoint"/> obtains the port from the kernel and releases it, so the refusal is
+    /// established rather than assumed. It is therefore a static readonly field rather than a constant.
+    /// </para>
     /// </remarks>
-    private const string UnreachableHostAddress = "127.0.0.1,14330";
+    private static readonly string UnreachableHostAddress = RefusedEndpoint.ServerAddress;
 
     /// <summary>Database name the unreachable-dependency host names.</summary>
     /// <remarks>
@@ -125,6 +136,26 @@ public sealed class HealthCheckTests
 
     /// <summary>Name of the process-local failed-audit-delivery probe.</summary>
     private const string AuditPipelineProbeName = "audit-pipeline";
+
+    /// <summary>Name of the probe that reports the refresh-token store's identity, locality and capacity.</summary>
+    /// <remarks>
+    /// Registered for the LIVENESS view and never the readiness one. The store it reports on holds refresh
+    /// state in this process, so it reaches nothing external and cannot hold a starting container back; and
+    /// neither a process-local store nor a saturated one stops this instance serving requests, so withdrawing
+    /// the instance from rotation over it would cost more than the condition does.
+    /// </remarks>
+    private const string RefreshTokenStoreProbeName = "refresh-token-store";
+
+    /// <summary>
+    /// A phrase from the refresh-token store probe's healthy description, asserted PRESENT in the operator log.
+    /// </summary>
+    /// <remarks>
+    /// The store's process-local state model used to be recorded in prose only - in the store's own remarks, in
+    /// <c>README.md</c> and in <c>MIGRATION_NOTES.md</c> - so a running deployment offered no way to confirm
+    /// it. This phrase is how the running application now states it, and asserting it here is what makes the
+    /// report a property of the delivery rather than of a document.
+    /// </remarks>
+    private const string RefreshTokenLocalityPhrase = "not shared between replicas";
 
     /// <summary>The media type the document must be served as.</summary>
     private const string JsonMediaType = "application/json";
@@ -567,6 +598,14 @@ public sealed class HealthCheckTests
         body.Should().NotContainEquivalentOf(
             AuditPipelineProbeName,
             "the audit-delivery counter is named to an operator through the log, never to an anonymous caller");
+        body.Should().NotContainEquivalentOf(
+            RefreshTokenStoreProbeName,
+            "the refresh-token store's identity and capacity are operational detail, so they reach an operator "
+            + "through the log and never an anonymous caller");
+        body.Should().NotContainEquivalentOf(
+            RefreshTokenLocalityPhrase,
+            "and neither does its finding - telling an unauthenticated caller that refresh state is "
+            + "process-local hands them the shape of this deployment");
     }
 
     /// <summary>
@@ -631,6 +670,21 @@ public sealed class HealthCheckTests
                 AuditPipelineProbeName,
                 "a failed audit delivery must be observable even though it deliberately does not fail the "
                 + "completed business operation");
+
+            // The second probe that belongs here, and for the same two reasons: it reads a dictionary held in
+            // this process, so it can hold the container's start-up on nothing, and it is the only place the
+            // refresh-token store's state model becomes visible from a running deployment rather than from a
+            // document. Its DESCRIPTION is asserted as well as its name, because the roll-call is the one
+            // channel that carries it - the anonymous body names no probe and the log deliberately omits every
+            // probe's data dictionary.
+            probes.Should().Contain(
+                RefreshTokenStoreProbeName,
+                "an operator has to be able to see which refresh-token store this instance is running before "
+                + "deciding whether a second instance is safe");
+            probes.Should().Contain(
+                RefreshTokenLocalityPhrase,
+                "reporting the probe's name without its finding would tell an operator that state locality was "
+                + "checked and not what the answer was");
 
             document.RootElement.GetProperty("status").GetString().Should().BeOneOf(
                 new[] { HealthyStatus, DegradedStatus },
@@ -698,6 +752,11 @@ public sealed class HealthCheckTests
                 AuditPipelineProbeName,
                 "the audit-delivery counter reaches nothing external, so it is registered for the liveness "
                 + "view and the two views select over the readiness tag with complementary predicates");
+            probes.Should().NotContain(
+                RefreshTokenStoreProbeName,
+                "readiness decides whether traffic should reach this instance, and neither a process-local "
+                + "refresh store nor a saturated one stops it answering - so reporting it here would withdraw "
+                + "a working instance over a condition whose cost is a sign-in");
         }
     }
 
@@ -885,16 +944,17 @@ public sealed class HealthCheckTests
     /// The value count is asserted as well as the value, because appending rather than assigning would send
     /// both the supplied identifier and a generated one. A reader taking the first value would still see the
     /// right answer and the assertion would pass while the response carried a smuggled second identifier.
-    /// The supplied value is a single short printable-ASCII token on purpose: the middleware trusts an inbound
-    /// header only when exactly one line is present and its content is printable US-ASCII within a length
-    /// bound, so a value outside that shape would be replaced by a generated one and this test would be
-    /// asserting the rejection path while appearing to assert the echo path.
+    /// The supplied value comes from <see cref="ApiTestFixture.NewCorrelationId"/> on purpose: the middleware
+    /// trusts an inbound header only when exactly one line is present and its content is one of two CANONICAL
+    /// shapes - 32 hexadecimal characters, or the hyphenated 36-character UUID rendering - so a readable label
+    /// would be replaced by a generated one and this test would be asserting the rejection path while
+    /// appearing to assert the echo path.
     /// </para>
     /// </remarks>
     [Fact]
     public async Task Health_WithSuppliedCorrelationId_EchoesExactlyThatValue()
     {
-        const string Supplied = "health-round-trip-6f2a1c";
+        string Supplied = ApiTestFixture.NewCorrelationId();
 
         using HttpClient client = _fixture.CreateAnonymousClient();
         using HttpRequestMessage request = ApiTestFixture.WithCorrelationId(
@@ -1247,9 +1307,9 @@ public sealed class HealthCheckTests
     /// <remarks>
     /// Derived from the fixture's configuration so that the connection string is the ONLY difference from the
     /// shared host: a second difference would leave the 503 attributable to something other than the
-    /// dependency. The connect timeout is one second, and the port is one nothing binds, so the probes fail by
-    /// refusal rather than by waiting - a long timeout here would make the fact slow without making it
-    /// stronger.
+    /// dependency. The connect timeout is one second, and the port is one the kernel has confirmed nothing is
+    /// listening on (see <see cref="UnreachableHostAddress"/>), so the probes fail by refusal rather than by
+    /// waiting - a long timeout here would make the fact slow without making it stronger.
     /// </remarks>
     private Dictionary<string, string?> UnreachableDependencyConfiguration() =>
         new(_fixture.HostConfiguration(), StringComparer.Ordinal)

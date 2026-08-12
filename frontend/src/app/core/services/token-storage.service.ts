@@ -120,6 +120,14 @@ export class TokenStorageService {
   private readonly _generation = signal(0);
 
   /**
+   * A refresh token whose revocation the server has not yet acknowledged.
+   *
+   * Separate from {@link _session} so that discarding the session — which signing out does
+   * at once — cannot take the only credential capable of ending it on the server with it.
+   */
+  private readonly _pendingRevocation = signal<string | null>(null);
+
+  /**
    * The current session, or null when nobody is signed in.
    *
    * A signal rather than an observable so that a component reading it in a
@@ -182,6 +190,11 @@ export class TokenStorageService {
    * mechanism.
    */
   readonly generation: Signal<number> = this._generation.asReadonly();
+
+  /**
+   * The credential held for an unacknowledged sign-out, or `null` when none is outstanding.
+   */
+  readonly pendingRevocation: Signal<string | null> = this._pendingRevocation.asReadonly();
 
   /**
    * The bearer token to present, or null when there is none.
@@ -303,6 +316,42 @@ export class TokenStorageService {
   clear(): void {
     this._session.set(null);
     this.advanceGeneration();
+  }
+
+  /**
+   * Holds one refresh token aside so a sign-out whose server call has not been
+   * acknowledged can still be retried.
+   *
+   * ⚠ THIS SLOT IS DELIBERATELY NOT CLEARED BY {@link clear}, AND THAT IS THE WHOLE POINT.
+   * Signing out discards the session immediately — it has to, because the operator asked
+   * to be signed out and the local state must not survive the request — but the refresh
+   * token is also the ONLY credential that can end the session on the server. Discarding
+   * it with the session left a live server-side session with nothing left to revoke it
+   * with: every 429, 503 and network failure became an unrecoverable residue.
+   *
+   * It stays in memory, like the session itself. Writing it to `localStorage` would make
+   * a long-lived credential survive the tab that created it, which is a larger risk than
+   * the one this slot removes.
+   *
+   * @param refreshToken The credential awaiting acknowledged revocation.
+   */
+  retainForRevocation(refreshToken: string): void {
+    if (refreshToken.length === 0) {
+      return;
+    }
+
+    this._pendingRevocation.set(refreshToken);
+  }
+
+  /**
+   * Forgets the retained credential.
+   *
+   * Called when the server has acknowledged the revocation, and when it has answered that
+   * the value can never name a session — a malformed or unknown credential is terminal, so
+   * retaining it would only produce a notice nothing can clear.
+   */
+  clearPendingRevocation(): void {
+    this._pendingRevocation.set(null);
   }
 
   /**

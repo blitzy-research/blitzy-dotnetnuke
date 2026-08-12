@@ -560,6 +560,54 @@ function membershipSettings(overrides: Partial<MembershipSettings> = {}): Member
 const TENANT_PAGE_SIZE = membershipSettings().recordsPerPage;
 
 /**
+ * The policy a tenant with NO SETTINGS SOURCE is answered with: the platform defaults, marked as
+ * defaults.
+ *
+ * ⚠ #5/#6 — A SUCCESSFUL `200`, NOT A `404`, AND THAT IS THE WHOLE POINT OF THIS BUILDER. The server
+ * answers a portal holding no "User Accounts" module instance with the measured legacy defaults and
+ * `isStored: false`; the write for the same address answers `409`. The backend authority is
+ * `backend/tests/DnnMigration.IntegrationTests/Api/UserApiTests.cs`
+ * `MembershipSettings_WithoutAUserAccountsModule_ReadsDefaultsAndRefusesTheWrite`. A fixture that
+ * synthesised a `404` for this state taught this screen to treat an ordinary tenant as a broken one.
+ *
+ * Every value is the one `UserModuleBase.GetSettings`
+ * (`Library/Components/Users/UserModuleBase.vb` L98-L190) applied for an absent key, which is why the
+ * column set it produces is the same four-hidden, five-shown selection the component falls back to
+ * when it holds no policy at all — the difference being that here the SERVER supplied them.
+ *
+ * ⚠ ITS DISPLAY MODE IS THE NO-QUERY ONE, and that is measured rather than convenient:
+ * `UserModuleBase.vb` L126-L130 defaults `Display_Mode` to it, so a tenant that has configured
+ * nothing opens with no rows until an operator presses a letter or searches
+ * (`Users.ascx.vb` L494-L506 and the `BindData` switch at L248-L290).
+ *
+ * @param overrides Members to replace.
+ * @returns The policy.
+ */
+function unstoredMembershipSettings(
+  overrides: Partial<MembershipSettings> = {},
+): MembershipSettings {
+  return membershipSettings({
+    isStored: false,
+    columnFirstName: false,
+    columnLastName: false,
+    columnDisplayName: true,
+    columnAddress: true,
+    columnTelephone: true,
+    columnEmail: false,
+    columnCreatedDate: true,
+    columnLastLogin: false,
+    columnAuthorized: true,
+    displayMode: 2,
+    recordsPerPage: 10,
+    profileDefaultVisibility: 2,
+    profileDisplayVisibility: true,
+    profileManageServices: true,
+    securityRequireValidProfileAtLogin: true,
+    ...overrides,
+  });
+}
+
+/**
  * One tenant-declared profile property, in the shape `decodeProfilePropertyDefinition` accepts.
  *
  * Declared as a local shape rather than imported, because the profile contract is not one of this
@@ -1438,7 +1486,7 @@ describe('UserListComponent', () => {
       expect(rows()).toHaveSize(1);
     });
 
-    it('lists the accounts even when the tenant stores no policy, at the shared fallback size', () => {
+    it('lists the accounts even when the policy read is REFUSED, at the shared fallback size', () => {
       create();
 
       expectRequest('GET', MEMBERSHIP_SETTINGS_URL).flush(
@@ -1456,13 +1504,18 @@ describe('UserListComponent', () => {
        * listing at all. The fallback is the paging contract's own `DEFAULT_PAGE_SIZE`, which is where
        * the legacy default of ten from `UserModuleBase.vb` L134-L136 now lives — so this case asserts
        * that a size was sent WITHOUT restating the number, because the number belongs to that contract.
+       *
+       * ⚠ A REFUSAL, NOT AN UNSTORED TENANT. The status here means the policy could not be read at all;
+       * a tenant that merely stores nothing is answered `200` with the server's own defaults and is
+       * asserted separately below. Conflating the two is what made this screen report a healthy tenant
+       * as a degraded one.
        */
       expect(carries(listing, PAGE_SIZE_PARAM)).toBeTrue();
       expect(paramOf(listing, PAGE_SIZE_PARAM)).not.toBe(String(TENANT_PAGE_SIZE));
       expect(rows()).toHaveSize(1);
     });
 
-    it('shows only the four columns the legacy defaults left visible when the tenant stores no policy', () => {
+    it('shows only the four columns the legacy defaults left visible when the policy read is REFUSED', () => {
       create();
       expectRequest('GET', MEMBERSHIP_SETTINGS_URL).flush(
         problem('not_found', 404, 'That portal could not be resolved.'),
@@ -1478,6 +1531,9 @@ describe('UserListComponent', () => {
        * left FOUR of the nine optional columns HIDDEN: both name parts, the electronic-mail column and
        * the last-login column. A default of true everywhere would have shown four columns the legacy
        * screen did not, so the four absences are asserted as firmly as the five presences.
+       *
+       * These are the component's OWN fallbacks, applied because it holds no policy. The identical set
+       * arrives from the server for a tenant that stores nothing, which the next two cases assert.
        */
       const headings: readonly string[] = textOf(HEADER_SELECTOR);
 
@@ -1490,6 +1546,73 @@ describe('UserListComponent', () => {
       expect(headings).not.toContain(LAST_NAME_HEADING);
       expect(headings).not.toContain(EMAIL_HEADING);
       expect(headings).not.toContain(LAST_LOGIN_HEADING);
+    });
+
+    it('takes the default columns and page size from the SERVER when the tenant stores no policy', async () => {
+      /*
+       * ⚠ #5/#6 — THE REAL CONTRACT FOR A TENANT WITH NO SETTINGS SOURCE, WHICH NO CASE USED TO FLUSH.
+       * The read succeeds: `200`, the measured legacy defaults, `isStored: false`. Nothing about it is a
+       * failure, so this screen must show no banner, no retry and no degradation notice — the values on
+       * screen came from the server and are exactly the ones the legacy screen applied for the same
+       * tenant. The authority for the response shape is
+       * `UserApiTests.MembershipSettings_WithoutAUserAccountsModule_ReadsDefaultsAndRefusesTheWrite`.
+       *
+       * ⚠ NO LISTING IS ISSUED ON ARRIVAL, and that is the policy being honoured. The measured default
+       * display mode is the no-query one (`UserModuleBase.vb` L126-L130), so the screen waits to be
+       * asked — which is why the page size is proved through the unfiltered affordance rather than
+       * through an arrival read.
+       */
+      create();
+      answerSettings(unstoredMembershipSettings());
+      answerDefinitions();
+      expectNoListRead();
+
+      await pressLetter(ALL_FILTER_LABEL);
+
+      const unfiltered = expectListRead('the unfiltered read');
+
+      // Ten, from the document the server sent — not the four this file's stored fixture declares, and
+      // not a literal chosen here.
+      expect(paramOf(unfiltered, PAGE_SIZE_PARAM)).toBe(
+        String(unstoredMembershipSettings().recordsPerPage),
+      );
+
+      unfiltered.flush(pageOf([userRow()], 1, 0, 10));
+      fixture.detectChanges();
+
+      const headings: readonly string[] = textOf(HEADER_SELECTOR);
+
+      expect(headings).toContain(USERNAME_HEADING);
+      expect(headings).toContain(DISPLAY_NAME_HEADING);
+      expect(headings).toContain(ADDRESS_HEADING);
+      expect(headings).toContain(TELEPHONE_HEADING);
+      expect(headings).toContain(CREATED_DATE_HEADING);
+      expect(headings).not.toContain(FIRST_NAME_HEADING);
+      expect(headings).not.toContain(LAST_NAME_HEADING);
+      expect(headings).not.toContain(EMAIL_HEADING);
+      expect(headings).not.toContain(LAST_LOGIN_HEADING);
+      expect(rows()).toHaveSize(1);
+    });
+
+    it('discloses NOTHING when the tenant stores no policy, because nothing was lost', () => {
+      /*
+       * ⚠ THE MIRROR OF THE #5 DEFECT, AND THE HALF THAT WAS STILL WRONG. A tenant that stores no policy
+       * used to be answered `404`, which this screen reported as degradation — a notice claiming the
+       * settings "could not be read" over a screen whose settings had been read perfectly well. The
+       * server now supplies the defaults, so there is nothing to disclose here at all: the provenance is
+       * published by the store and explained on the POLICY screen, which is the only surface on which
+       * the distinction changes what an operator may do.
+       */
+      create();
+      answerSettings(unstoredMembershipSettings());
+      answerDefinitions();
+      expectNoListRead();
+
+      expect(query('.user-list__policy-notice'))
+        .withContext('the values on screen are the server\u2019s own defaults, so nothing degraded')
+        .toBeNull();
+      expect(query('.user-list__failure')).toBeNull();
+      expect(query(RETRY_SELECTOR)).toBeNull();
     });
 
     it('paints the page heading and the three header actions from the resource wording', () => {
@@ -1544,7 +1667,7 @@ describe('UserListComponent', () => {
       expect(query(RETRY_SELECTOR)).toBeNull();
     });
 
-    it('does NOT raise the screen-level failure surface when only the account policy fails', () => {
+    it('does NOT raise the screen-level failure surface when only the account policy read fails', () => {
       /*
        * ⚠ #5 — THE DEFECT, STATED AS AN ASSERTION. The account-policy read used to open the screen's
        * failure surface: an assertive banner reading "Not Found", with a Try-again command, sitting
@@ -1606,7 +1729,9 @@ describe('UserListComponent', () => {
 
     it('shows no degradation notice while the policy reads successfully', () => {
       // The counterpart of the case above. The notice must be absent in the ordinary state, or it would
-      // be describing a degradation that is not happening.
+      // be describing a degradation that is not happening. The sibling case in the arrival suite asserts
+      // the same for the OTHER successful state — a tenant that stores no policy at all — because that
+      // state is a `200` too and used to be reported here as degradation.
       arrive();
 
       expect(query('.user-list__policy-notice')).toBeNull();
@@ -4049,6 +4174,193 @@ describe('UserListComponent', () => {
 
       expect(cell.querySelector(EMAIL_LINK_SELECTOR)).toBeNull();
       expect(textIn(cell)).toBe('');
+    });
+
+    // ⚠ MAJOR (CWE-20 improper input validation) — HOSTILE STORED ADDRESSES.
+    //
+    // `dbo.Users.Email` is `[nvarchar] (256) NOT NULL` with no format constraint, and the legacy
+    // application applied none: `AddUser` stored whatever the caller supplied. So the column holds
+    // arbitrary operator-supplied text on any installation with a history, and the previous rule for
+    // building a target - "contains an at-sign" - passed everything after that character into the
+    // `mailto:` address verbatim.
+    //
+    // A `mailto:` address is not opaque text to a mail client. Everything after `?` is a QUERY whose
+    // `to`, `cc`, `bcc`, `subject` and `body` fields are honoured; a newline or `%0A` injects a HEADER;
+    // and a second separator addresses a second recipient. In each case the operator reads the stored
+    // address in the cell and their mail client composes something else.
+    //
+    // Every case below asserts the SAME TWO THINGS: no link is emitted, and the stored value is still
+    // shown exactly as stored. The second half is what makes the narrowing safe - nothing is hidden
+    // from the operator and nothing is rewritten, only the link is withheld.
+
+    describe('a hostile stored address is shown but never linked', () => {
+      /**
+       * Renders one stored address and returns its cell.
+       *
+       * @param email The stored value.
+       * @returns The rendered electronic-mail cell.
+       */
+      function emailCellFor(email: string): HTMLElement {
+        arrive(pageOf([userRow(7, { email })]));
+
+        return cellUnder(EMAIL_HEADING);
+      }
+
+      /**
+       * Asserts that a stored value is displayed verbatim with nothing to follow.
+       *
+       * @param email The stored value.
+       * @param why What makes the value hostile, for the failure message.
+       */
+      function showsButDoesNotLink(email: string, why: string): void {
+        const cell: HTMLElement = emailCellFor(email);
+
+        expect(cell.querySelector(EMAIL_LINK_SELECTOR))
+          .withContext(`nothing navigable for ${why}`)
+          .toBeNull();
+        expect(textIn(cell))
+          .withContext(`and the stored value is still shown for ${why}`)
+          .toBe(email);
+        expect(cell.querySelector('a')).withContext('no anchor of any class either').toBeNull();
+      }
+
+      it('refuses a value carrying a mailto QUERY that would copy a third party', () => {
+        // The headline case. `bcc` is honoured by every mail client, so this composed a message that
+        // silently copied an address the operator never saw and never chose.
+        showsButDoesNotLink(
+          'grace@example.test?bcc=harvester@elsewhere.test',
+          'a bcc field smuggled into the address',
+        );
+      });
+
+      it('refuses a value carrying a subject and a body', () => {
+        // The same mechanism, pre-filling the message rather than its recipients: the operator presses a
+        // link that says one thing and their client opens a composed message saying another.
+        showsButDoesNotLink(
+          'grace@example.test?subject=Urgent&body=Send%20the%20token',
+          'a pre-composed subject and body',
+        );
+      });
+
+      it('refuses a value carrying a HEADER injected as an escape', () => {
+        // `%0A` is a line feed once the client decodes the address, and a line feed in a mailto target
+        // starts a new header. Percent-encoding is refused as a family for exactly this reason.
+        showsButDoesNotLink(
+          'grace@example.test%0Abcc:harvester@elsewhere.test',
+          'a percent-encoded line break',
+        );
+      });
+
+      it('refuses a value carrying a LITERAL carriage return and line feed', () => {
+        // The un-encoded form of the same attack. Stored control characters are entirely possible in an
+        // `nvarchar` column that no constraint governs.
+        showsButDoesNotLink(
+          'grace@example.test\r\nbcc:harvester@elsewhere.test',
+          'a literal header break',
+        );
+      });
+
+      // ⚠ ONE CASE PER VALUE, GENERATED, AND THE SHAPE IS FORCED BY THE HARNESS. Each mount reads the
+      // membership settings, the profile definitions and the listing, so a case cannot render a second
+      // stored value without a second mount - and the end-of-test verification would report the first
+      // mount's requests as outstanding. Generating the cases keeps one mount each while stating every
+      // hostile shape by name in the reporter's output.
+      const REFUSED_VALUES: readonly (readonly [string, string])[] = [
+        // Neither whitespace nor punctuation, so the two rules above do not catch them: refused by code
+        // point, because a stored control character is entirely possible in a column no constraint governs.
+        ['grace\u0000@example.test', 'an embedded null'],
+        ['grace@example.test\u007f', 'an embedded delete'],
+        // A comma and a semicolon are both recipient separators in a mailto address, and both shapes
+        // really occur in legacy address columns because operators typed them.
+        ['grace@example.test,harvester@elsewhere.test', 'a comma-separated pair of mailboxes'],
+        ['grace@example.test;harvester@elsewhere.test', 'a semicolon-separated pair of mailboxes'],
+        // Two at-signs are not a mailbox, and the previous rule - "contains an at-sign" - admitted them.
+        ['grace@@example.test', 'a doubled separator'],
+        ['grace@example@elsewhere.test', 'two separators'],
+        // Nothing on one side of the separator.
+        ['@example.test', 'no local part'],
+        ['grace@', 'no domain'],
+        // Three shapes a lenient reading would admit and a mail client would read differently from the
+        // characters on the screen.
+        ['"Grace Hopper" <grace@example.test>', 'a display-name form'],
+        ['grace@[192.168.0.1]', 'a domain literal'],
+        ['javascript:alert(1)@example.test', 'a scheme-bearing value'],
+      ];
+
+      for (const [email, why] of REFUSED_VALUES) {
+        it(`refuses a stored value carrying ${why}`, () => {
+          showsButDoesNotLink(email, why);
+        });
+      }
+
+      it('refuses a value carrying markup, and parses none of it', () => {
+        const hostile = '<img src=x onerror="window.__dnnMailSentinel = true">@example.test';
+        const cell: HTMLElement = emailCellFor(hostile);
+
+        expect(cell.querySelector(EMAIL_LINK_SELECTOR)).toBeNull();
+        expect(cell.querySelector('img'))
+          .withContext('interpolation escapes it; nothing is parsed as an element')
+          .toBeNull();
+        expect(textIn(cell)).toBe(hostile);
+        expect((window as unknown as Record<string, unknown>)['__dnnMailSentinel']).toBeUndefined();
+      });
+
+      it('refuses a value padded with whitespace, because the padding is part of the target', () => {
+        // The legacy helper trimmed only for its BLANK test and linked the untrimmed value, so leading or
+        // trailing space went into the address. Trimming it here would rewrite what an operator stored,
+        // so the value is shown as stored and simply not linked.
+        //
+        // ⚠ READ THROUGH `textContent` RATHER THAN THROUGH THE TRIMMING READER, because the padding IS the
+        // subject: the shared reader trims, so it cannot tell a stored ' x ' from a stored 'x', and using
+        // it here would assert the opposite of what this case is about. The DOM keeps the value exactly as
+        // received - an operator correcting a padded address has to be able to see the padding.
+        const cell: HTMLElement = emailCellFor(' grace@example.test ');
+
+        expect(cell.querySelector(EMAIL_LINK_SELECTOR))
+          .withContext('nothing navigable, because the padding would enter the target')
+          .toBeNull();
+        // Asserted as CONTAINMENT rather than equality, because the template's own control-flow block
+        // contributes whitespace text nodes around the interpolation; the value's own padding is what
+        // this reads, and equality here would be an assertion about template formatting.
+        expect(cell.textContent ?? '')
+          .withContext('and the padding survives into the document, untrimmed')
+          .toContain(' grace@example.test ');
+        expect((cell.textContent ?? '').trim()).toBe('grace@example.test');
+      });
+
+      // ⚠ THE COUNTERPART SET, AND IT IS WHAT STOPS THE GATE FROM BEING A REGRESSION. A rule strict
+      // enough to refuse the values above must still admit the addresses this column actually holds:
+      // dots, hyphens, plus-addressing and underscores in the local part, and a multi-label domain. One
+      // case per value for the same harness reason as the refusals.
+      const ADMITTED_VALUES: readonly string[] = [
+        'grace@example.test',
+        'grace.hopper@example.test',
+        'grace-hopper@sub.example.co.uk',
+        'grace+admin@example.test',
+        'grace_hopper@example.test',
+        'GRACE@EXAMPLE.TEST',
+      ];
+
+      for (const address of ADMITTED_VALUES) {
+        it(`still links the ordinary address ${address}`, () => {
+          const cell: HTMLElement = emailCellFor(address);
+          const link = queryOrFail<HTMLAnchorElement>(cell, EMAIL_LINK_SELECTOR);
+
+          // The target is the address itself: no query, no fragment, no second recipient, and nothing
+          // percent-escaped, because the gate admits only characters that need no escaping.
+          expect(link.getAttribute('href'))
+            .withContext('the target is the address and nothing else')
+            .toBe(`mailto:${address}`);
+          expect(textIn(link)).toBe(address);
+
+          const target: string = (link.getAttribute('href') ?? '').slice('mailto:'.length);
+
+          expect(target).withContext('no query').not.toContain('?');
+          expect(target).withContext('no fragment').not.toContain('#');
+          expect(target).withContext('no second recipient').not.toContain(',');
+          expect(target.split('@').length).withContext('exactly one mailbox').toBe(2);
+        });
+      }
     });
 
     it('never renders the telephone number as a mailto link, even one containing an at-sign', () => {

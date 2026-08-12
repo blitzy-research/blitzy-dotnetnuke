@@ -281,10 +281,48 @@ internal sealed class JwtTokenService : ITokenService
             TokenStoreUnavailableCode,
             TokenStoreUnavailableMessage);
 
-    private static Result Retired(RefreshTokenOutcome outcome) =>
-        outcome is RefreshTokenOutcome.StoreUnavailable or RefreshTokenOutcome.CapacityExhausted
-            ? Result.Failure(TokenStoreUnavailableCode, TokenStoreUnavailableMessage)
-            : Result.Success();
+    /// <summary>
+    /// Translates a revocation outcome, reporting success ONLY when the store proved the family was
+    /// retired.
+    /// </summary>
+    /// <param name="outcome">What the store reported.</param>
+    /// <returns>A successful result only for a proven retirement.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ <c>Unknown</c> IS A FAILURE HERE, AND IT USED TO BE A SUCCESS. Every outcome except
+    /// store-unavailable and capacity-exhausted was mapped to success, on the reading that a token the
+    /// store cannot find must already be gone. That reading is only sound for a store that sees ALL of the
+    /// state. With families held per process it was demonstrably unsound: replica B, asked to end a session
+    /// established on replica A, does not recognise the token, answered <c>Unknown</c>, and reported a
+    /// successful sign-out while replica A went on honouring the very token that was presented for
+    /// revocation. The client then discarded its only copy, so the live session could not even be retried.
+    /// </para>
+    /// <para>
+    /// So the rule is now the strict one: a retirement is successful when the store retired something
+    /// (<c>Succeeded</c>) or when it holds the family and had already retired it
+    /// (<c>AlreadyRevoked</c>). Anything else - a token this store never knew, an expired or replayed
+    /// presentation, an unreachable store - is reported as an unconfirmed retirement so the caller keeps
+    /// the credential and can try again. A deployment that wants "unknown means gone" to be true configures
+    /// the shared store, where the store's ignorance really is the whole system's.
+    /// </para>
+    /// </remarks>
+    private Result Retired(RefreshTokenOutcome outcome) => outcome switch
+    {
+        RefreshTokenOutcome.Succeeded or RefreshTokenOutcome.AlreadyRevoked => Result.Success(),
+
+        // An authoritative store that holds no such family has proved there is nothing left to retire, so
+        // this is a completed sign-out. A process-local store has proved only its own ignorance.
+        RefreshTokenOutcome.Unknown when _refreshTokens.IsAuthoritativeAcrossReplicas => Result.Success(),
+        RefreshTokenOutcome.StoreUnavailable or RefreshTokenOutcome.CapacityExhausted =>
+            Result.Failure(TokenStoreUnavailableCode, TokenStoreUnavailableMessage),
+        RefreshTokenOutcome.Expired => Result.Failure(
+            RefreshTokenExpiredCode,
+            "The refresh token has expired, so no session was retired by this request."),
+        _ => Result.Failure(
+            RefreshTokenNotFoundCode,
+            "This instance holds no such refresh-token family, so no session can be confirmed as retired. "
+            + "Retain the credential and retry."),
+    };
 
     private static DateTime Utc(DateTime value) => value.Kind == DateTimeKind.Utc
         ? value

@@ -571,7 +571,7 @@ public sealed class ProblemDetailsContractTests
     [Fact]
     public async Task ProblemDocument_PublishesTheCorrelationIdentifierTheHeaderCarries()
     {
-        const string Supplied = "problem-details-support-reference";
+        string Supplied = ApiTestFixture.NewCorrelationId();
 
         using HttpClient client = _fixture.CreateAnonymousClient();
         using HttpRequestMessage request = new(HttpMethod.Get, new Uri("/api/v1/portals", UriKind.Relative));

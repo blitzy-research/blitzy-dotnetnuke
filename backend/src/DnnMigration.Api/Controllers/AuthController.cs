@@ -453,10 +453,19 @@ public sealed class AuthController : ControllerBase
     /// <response code="429">The shared credential budget for this window is spent.</response>
     /// <remarks>
     /// <para>
-    /// This is how a client learns what it may do. The permission codes returned here are the ones minted into
-    /// the caller's token, which is why no client needs the administrative permission-query operations to
-    /// describe itself - and why a client must still not treat this as enforcement. Every decision is made
-    /// again on the server for every request.
+    /// This is how a client learns what it may do, and the roles and permission codes it returns are READ FROM
+    /// THE STORE at the time of this request - they are not read off the token. The token carries no role claim
+    /// and no permission claim at all: the issuer mints only the account, token and tenant identifiers and the
+    /// issued-at instant. An earlier revision of this note said the codes were "the ones minted into the
+    /// caller's token", which described a token this application does not issue.
+    /// </para>
+    /// <para>
+    /// That distinction is the point rather than a detail. Authority copied into a token is a snapshot that goes
+    /// on asserting what the store has since withdrawn, for as long as the token lives; because this operation
+    /// resolves authority live, a role revoked a moment ago is absent from the very next call. It is still not
+    /// enforcement, and a client must not treat it as such - every decision is made again on the server for
+    /// every request - but a client acting on what it returns is acting on current authority rather than on a
+    /// stale copy.
     /// </para>
     /// <para>
     /// The authorisation requirement is a bare one: any authenticated caller may describe itself. No named

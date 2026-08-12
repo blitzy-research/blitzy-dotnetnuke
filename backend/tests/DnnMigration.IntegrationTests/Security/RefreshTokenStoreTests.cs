@@ -220,7 +220,7 @@ public sealed class RefreshTokenStoreTests
     // MIGRATION: the fact that a CONSUMED generation stays a theft signal after its own sliding expiry and
     // before the family ceiling lived here, and it forced that state by issuing an UPDATE against
     // [DnnMigration].[RefreshTokens]. With no such table there is nothing to update, so the fact moved to
-    // DnnMigration.UnitTests/Security/RefreshTokenStoreBehaviorTests, where a controllable clock reaches the
+    // DnnMigration.IntegrationTests/Security/RefreshTokenStoreBehaviorTests, where a controllable clock reaches the
     // same state through the contract instead of behind it. Nothing was dropped: the assertion is stronger
     // there, because it also proves the surviving successor is revoked rather than merely refused.
 

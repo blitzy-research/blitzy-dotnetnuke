@@ -125,23 +125,30 @@ public interface IRoleRepository
     // Roles - membership DataProvider.vb L91-L98
     // ---------------------------------------------------------------------------------------------
 
-    // MIGRATION: THE TWO PORTAL-SCOPED READS ARE DELIBERATELY ASYMMETRIC AND MUST NOT BE CONFLATED.
-    // The terminal GetPortalRoles (04.08.00.SqlDataProvider:L18-L42) filters on
-    // ( R.PortalId = @PortalId OR R.PortalId is null ) and orders by R.RoleName, so it ADMITS the
-    // installation-wide roles whose owning portal is absent. The terminal GetRole
-    // (04.00.04.SqlDataProvider:L311-L336) filters on RoleId = @RoleId AND PortalId = @PortalId, a
-    // strict equality that EXCLUDES them, because a null never equals a portal identifier. The
-    // difference is observable - a host role is listed by one and unreachable by the other - so it is
-    // preserved rather than tidied away.
+    // MIGRATION: THE TWO PORTAL-SCOPED READS ARE DELIBERATELY ASYMMETRIC, AND THE ASYMMETRY IS
+    // UNOBSERVABLE AGAINST A FAITHFUL INSTALLATION. The terminal GetPortalRoles
+    // (04.08.00.SqlDataProvider:L18-L42) filters on ( R.PortalId = @PortalId OR R.PortalId is null )
+    // and orders by R.RoleName. The terminal GetRole (04.00.04.SqlDataProvider:L311-L336) filters on
+    // RoleId = @RoleId AND PortalId = @PortalId, a strict equality that a null never satisfies. Both
+    // predicates are reproduced exactly, because the Minimal Change Clause protects them.
+    //
+    // What must NOT be inferred from the first one is that a role with no owning portal exists. The
+    // terminal Roles.PortalID is int NOT NULL (01.00.05.SqlDataProvider:L2749, corroborated by the
+    // fresh-install snapshot at DotNetNuke.Schema.SqlDataProvider:L6209 and recorded in
+    // backend/tests/DnnMigration.IntegrationTests/Schema/TerminalSchema.manifest), so no installation
+    // can hold such a row and the null branch is unsatisfiable. An earlier note here claimed the
+    // difference was observable, and two persistence tests demonstrated it by inserting the row -
+    // which passed only because the test schema had drifted to declaring the column nullable. The
+    // predicate stays; the claim that anything exercises it does not.
 
     /// <summary>
     /// Returns every role visible to one portal, in name order.
     /// </summary>
     /// <remarks>
-    /// Realises membership <c>DataProvider.vb:L91 GetPortalRoles(PortalId)</c>. The result includes
-    /// the portal's own roles and also the installation-wide roles that have no owning portal, which
-    /// is what the terminal procedure did; see the migration note above for the evidence and for why
-    /// this differs from <see cref="GetByIdAsync"/>.
+    /// Realises membership <c>DataProvider.vb:L91 GetPortalRoles(PortalId)</c>. The predicate is the
+    /// terminal one, which also admits a role with no owning portal - a case the terminal column
+    /// forbids, so it never arises; see the migration note above for the evidence and for why this
+    /// differs from <see cref="GetByIdAsync"/>.
     /// <para>
     /// The whole set is returned because the legacy procedure returned the whole set: a portal holds
     /// tens of roles, not millions, and no legacy role read was ever paged. Any narrowing a screen

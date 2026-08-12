@@ -775,7 +775,7 @@ describe('ModuleStore', () => {
 
     it('treats "nothing selected" as a DISTINCT undefined, never as zero and never as minus one', () => {
       expect(store.selectedModuleId()).toBeUndefined();
-      expect(store.selectedTabModuleId()).toBeUndefined();
+      expect('selectedTabModuleId' in store).toBeFalse();
       expect(store.selectedTabId()).toBeUndefined();
 
       store.selectModule(0);
@@ -792,17 +792,17 @@ describe('ModuleStore', () => {
       store.selectTab(undefined);
       expect(store.selectedTabId()).toBeUndefined();
 
-      store.selectPlacement(0);
-      expect(store.selectedTabModuleId()).toBe(0);
-      store.selectPlacement(undefined);
-      expect(store.selectedTabModuleId()).toBeUndefined();
+      // NO PLACEMENT SELECTION EXISTS TO TEST. A placement is named on the call that addresses it, never
+      // held between calls, so there is no third slice here that could be confused with zero. Asserted
+      // with `in` so it walks the prototype too - a mutator would live there rather than on the instance.
+      expect('selectPlacement' in store).toBeFalse();
     });
 
-    it('addresses one placement of module ZERO when a placement is selected', () => {
-      // A placement identity seeds at 1 rather than at 0, so the three keys are not interchangeable even
-      // where their ranges overlap. Selecting a placement must narrow the read to it.
-      store.selectPlacement(7);
-      store.loadModule(0);
+    it('addresses one placement of module ZERO when a placement is NAMED on the call', () => {
+      // A placement identity seeds at 1 rather than at 0, so the two keys are not interchangeable even
+      // where their ranges overlap. Naming a placement must narrow the read to it, and it is named on the
+      // call rather than selected beforehand: the store holds no placement between calls.
+      store.loadModule(0, 7);
 
       const call = expectRequest('GET', '/api/v1/modules/0');
       expect(call.request.params.get('tabModuleId')).toBe('7');
@@ -2855,7 +2855,6 @@ describe('ModuleStore', () => {
       expect('set' in store.query).toBeFalse();
       expect('set' in store.filter).toBeFalse();
       expect('set' in store.selectedModuleId).toBeFalse();
-      expect('set' in store.selectedTabModuleId).toBeFalse();
       expect('set' in store.selectedTabId).toBeFalse();
       expect('set' in store.tabPortalId).toBeFalse();
       expect('set' in store.importCompleted).toBeFalse();
@@ -2994,8 +2993,7 @@ describe('ModuleStore', () => {
       expect('clearCache' in store).toBeFalse();
     });
 
-    it('clears the loaded module and the selections that addressed it', () => {
-      store.selectPlacement(5);
+    it('clears the loaded module and the selection that addressed it', () => {
       store.loadModule(0, 5);
       expectRequest('GET', '/api/v1/modules/0').flush(envelope(detail({ moduleId: 0, tabModuleId: 5 })));
 
@@ -3006,7 +3004,6 @@ describe('ModuleStore', () => {
 
       expect(store.module()).toBeNull();
       expect(store.selectedModuleId()).toBeUndefined();
-      expect(store.selectedTabModuleId()).toBeUndefined();
     });
   });
   // ===================================================================================================

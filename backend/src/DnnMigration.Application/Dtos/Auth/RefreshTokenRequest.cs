@@ -56,10 +56,23 @@ public sealed class RefreshTokenRequest
     //            it for this request to have been translated from.
 
     // MIGRATION: FormsAuthentication.SignOut has no counterpart in a stateless
-    //            bearer-token design, so ending a session becomes a token left to elapse
-    //            plus a client-side discard. That is why the logout endpoint accepts no
-    //            body at all, and why no revoke flag is added to this type to compensate
-    //            for its absence.
+    //            bearer-token design, so ending a session becomes the ACCESS token left to
+    //            elapse plus a client-side discard - the access token is self-contained and
+    //            cannot be recalled once issued.
+    //
+    //            The refresh token is the part that CAN be withdrawn, and the logout
+    //            endpoint exists to withdraw it: POST /api/v1/auth/logout binds THIS type
+    //            from the body and revokes the token it names, so the rotation family
+    //            cannot be redeemed again. An earlier revision of this note stated that the
+    //            endpoint "accepts no body at all", which contradicted the endpoint it
+    //            described; the correct statement is that no revoke FLAG is added to this
+    //            type, because revocation is the whole of what that endpoint does and a flag
+    //            would only let a caller ask for it to be skipped.
+    //
+    //            What remains true, and is the reason this note exists: signing out cannot
+    //            invalidate an access token already in the caller's hands. Its short
+    //            lifetime is what bounds that window, and this type is what closes the
+    //            longer one.
 
     // MIGRATION: The state that makes each refresh token redeemable exactly once is held
     //            server-side on purpose. Exposing any part of it here would hand the

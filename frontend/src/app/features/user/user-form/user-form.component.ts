@@ -400,6 +400,25 @@ export const PASSWORD_CHANGE_REQUIRED_MESSAGE = 'This user must change their pas
 export const USER_UPDATED_MESSAGE = 'User account updated';
 
 /**
+ * Read to an operator when a save that outlived this screen was refused.
+ *
+ * ⚠ IT NAMES THE OPERATION AND NOT THE FORM, because it is read on whatever screen the operator moved to
+ * after submitting. "The changes could not be saved" beside a listing of portals says nothing; naming the
+ * account operation makes the sentence self-contained. It carries no field detail and no server wording -
+ * both belong to the banner on this screen, which still presents them in full on return.
+ */
+export const USER_UPDATE_FAILED_MESSAGE = 'User account could not be updated';
+
+/**
+ * Read to an operator when a creation that outlived this screen was refused.
+ *
+ * The counterpart of {@link USER_UPDATE_FAILED_MESSAGE}, and self-contained for the same reason. It does
+ * not name the account: the creation did not happen, so there is no stored name to quote, and quoting the
+ * submitted one would assert that a record bearing it exists.
+ */
+export const USER_CREATE_FAILED_MESSAGE = 'User account could not be created';
+
+/**
  * Success wording after an account is created — U-M9.
  *
  * ⚠ THE SCREEN CONFIRMED NOTHING AT ALL BEFORE THIS, AND THE NAVIGATION IS WHAT MADE THAT SERIOUS.
@@ -993,7 +1012,6 @@ export function passwordRulesValidator(isCreateMode: () => boolean): ValidatorFn
     ErrorBannerComponent,
     LoadingSpinnerComponent,
     DateDisplayPipe,
-    FocusFirstInvalidDirective,
   ],
   templateUrl: './user-form.component.html',
   styleUrl: './user-form.component.scss',
@@ -1959,6 +1977,34 @@ export class UserFormComponent {
         // unsaved from this point on regardless of which of the two paths carries the operator away.
         this.form.markAsPristine();
         this.form.markAsUntouched();
+
+        // ⚠ MAJOR (CWE-316 cleartext storage) — THE CREDENTIAL CONTROLS ARE DISCARDED HERE, BEFORE
+        // EITHER DEPARTURE AND BEFORE THE DEFERRED ONE. The account exists and the server holds its
+        // credential, so the copy in these two controls has no further purpose - and marking the form
+        // settled above does not remove it: the controls keep their values, and the two password inputs
+        // bound to them keep those values in the live document.
+        //
+        // Leaving it to the navigation is what made this a defect rather than a theoretical one, and this
+        // screen has TWO ways for that to fail rather than one. The ordinary branch's navigation is
+        // asynchronous and can be refused by a guard, resolve `false`, or reject when a lazy chunk fails.
+        // The credential branch does not navigate at all: it DELIBERATELY stays on this screen, for as
+        // long as the operator takes to write the generated password down, and before this the typed
+        // credential sat in the form behind that panel for exactly as long.
+        //
+        // `reset` rather than a value assignment, so the value, the dirty flag and the touched flag go
+        // together and no complaint about a credential that no longer exists is left on the screen - which
+        // matters here because the group validator reports the password rules and would otherwise fire
+        // against the very credential this line removed. Nothing else is cleared: every other value on
+        // this form is one an operator can see and re-read, so wiping it would turn a refused navigation
+        // into lost work for no security gain.
+        //
+        // THE REVEALED CREDENTIAL IS NOT THIS VALUE and is unaffected. A generated password is never typed
+        // into a control at all - it is held in a private field, moved to `_revealedCredential` below, and
+        // discarded by `dismissCredential`. That disclosure is the deliberate one-time hand-over the screen
+        // exists to perform; this is the incidental copy nothing needs.
+        this.form.controls.password.reset('');
+        this.form.controls.confirmPassword.reset('');
+
         // ⚠ U-M9 — ANNOUNCED BEFORE EITHER OUTCOME BRANCH, so both are confirmed by one statement. The
         // credential branch below does not navigate and the ordinary branch does, and a confirmation
         // written into only one of them would leave the other silent — which is the defect, since the
@@ -1985,7 +2031,13 @@ export class UserFormComponent {
 
         // Replaced, not pushed: the work is done, so BACK must not return to a form for a record that
         // now exists. See the note on the sign-in screen's departure for the same rule stated in full.
-        void this.router.navigate(['/users'], { replaceUrl: true });
+        //
+        // The rejection is handled, following the pattern the shell, the sign-in screen and both account
+        // screens already use: a `navigate` that REJECTS - which a failed lazy chunk produces - would
+        // otherwise surface as an unhandled rejection attributed to whatever ran next. There is nothing
+        // further to do about it here, because the account exists, the confirmation is queued and the
+        // credential controls above are already discarded.
+        void this.router.navigate(['/users'], { replaceUrl: true }).catch(() => false);
       });
     });
 
@@ -2137,15 +2189,27 @@ export class UserFormComponent {
     // Named from the account the SERVER confirmed rather than from the form, for the reason the create
     // bridge records: the two can differ, and a confirmation naming something that was not stored is worse
     // than none. Evaluated at announce time, so the record has arrived by the time it is read.
-    this.deferredOutcome.announceWhenSettled(verdict, () => {
-      if (updated) {
-        return USER_UPDATED_MESSAGE;
-      }
+    this.deferredOutcome.announceWhenSettled(
+      verdict,
+      () => {
+        if (updated) {
+          return USER_UPDATED_MESSAGE;
+        }
 
-      const stored = this.selectedUser();
+        const stored = this.selectedUser();
 
-      return stored === null ? null : USER_CREATED_MESSAGE.replace('{name}', stored.username);
-    });
+        return stored === null ? null : USER_CREATED_MESSAGE.replace('{name}', stored.username);
+      },
+      // A REFUSAL IS RELAYED, and this screen supplies the wording. The sentence names the operation
+      // rather than the form, because it will be read on whatever screen the operator moved to - and an
+      // operator told nothing believes the account was saved. Only the sentence and the support reference
+      // travel; the failure document stays in the store, so returning here still presents it in full with
+      // its per-field messages beside the fields they belong to.
+      () => ({
+        message: updated ? USER_UPDATE_FAILED_MESSAGE : USER_CREATE_FAILED_MESSAGE,
+        reference: this.store.failure()?.summary.supportReference ?? null,
+      }),
+    );
   }
 
   // COMMANDS — SUBMIT
@@ -2468,7 +2532,13 @@ export class UserFormComponent {
     // Replaced, not pushed. This is the tail of a CREATE - the panel exists only because an account
     // was just made and its generated credential had to be handed over - so returning here would
     // offer a form for a record that now exists, and would do so with the credential already gone.
-    void this.router.navigate(['/users'], { replaceUrl: true });
+    //
+    // ⚠ MAJOR (CWE-316) — NOTHING IS CLEARED HERE, AND THAT IS NOT AN OMISSION. The two credential
+    // CONTROLS were emptied when the creation settled, before this panel was ever shown, so by the time
+    // an operator dismisses it there is no typed credential left to remove; the generated value is
+    // dropped on the line above and is held nowhere else. The rejection is handled for the same reason
+    // the settling departure handles it.
+    void this.router.navigate(['/users'], { replaceUrl: true }).catch(() => false);
   }
 
   // TEMPLATE HELPERS

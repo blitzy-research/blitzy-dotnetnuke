@@ -30,13 +30,15 @@ namespace DnnMigration.Application.Validation;
 /// annotations below.
 /// </para>
 /// <para>
-/// <b>Two of the legacy validators disagree with their own error text, and both disagreements are
-/// preserved rather than repaired.</b> The billing-period comparison is strictly greater than zero
-/// while its message says "or Equal to"; the trial-fee comparison admits zero while its message says
-/// "Greater Than Zero". In each case the operator is the behaviour and is reproduced exactly, and the
-/// wording is carried across unchanged, because a discovered defect in a migration is annotated and
-/// not silently corrected. Rewording either message would make the response text disagree with the
-/// legacy screen a caller may still be comparing against.
+/// <b>Every legacy comparison agrees with its own error text, and each message is carried across
+/// character for character.</b> Measured in <c>App_LocalResources/EditRoles.ascx.resx</c> against the
+/// operators declared in <c>editroles.ascx</c>: <c>valServiceFee2</c> and <c>valTrialFee2</c> are
+/// <c>GreaterThanEqual</c> and both read "Greater Than or Equal to Zero", while
+/// <c>valBillingPeriod2</c> and <c>valTrialPeriod2</c> are <c>GreaterThan</c> and both read "Greater
+/// Than Zero". There is no legacy self-disagreement to preserve. An earlier revision of this file
+/// asserted two such disagreements and preserved them; they had been introduced here, by two message
+/// strings swapped between the period rule and the fee rule, and the wording is now back to what the
+/// legacy screen said. Every operator is unchanged.
 /// </para>
 /// <para>
 /// <b>Every fee and period rule is conditional on the value being present, and on nothing else.</b>
@@ -80,21 +82,20 @@ namespace DnnMigration.Application.Validation;
 // be rendering a server-supplied tag. The WORDING is what behavioural equivalence is about, and the
 // wording is unchanged.
 //
-// MIGRATION: valBillingPeriod2 disagrees with itself, and the disagreement is preserved. Its
-// operator is GreaterThan against 0 (editroles.ascx L114) while its text reads "Billing Period Must
-// Be Greater Than or Equal to Zero" (L113). The OPERATOR is reproduced - a submitted zero is
-// refused - and the text is carried across unchanged. This is a legacy defect, and the migration
-// discipline for a discovered defect is to annotate it, not to repair it: correcting the text would
-// change what a caller reads, and relaxing the operator would accept a billing cycle of zero units,
-// which could never advance an expiry date.
+// MIGRATION: NEITHER THE BILLING-PERIOD RULE NOR THE TRIAL-FEE RULE DISAGREES WITH ITSELF IN THE
+// LEGACY, and an earlier revision of this file said both did and set out to preserve the
+// disagreement. Measured in EditRoles.ascx.resx, against the operators declared in editroles.ascx
+// above: valBillingPeriod2.Text is "Billing Period Must Be Greater Than Zero" against
+// Operator="GreaterThan" (L114), and valTrialFee2.Text is "Trial Fee Must Be Greater Than or Equal to
+// Zero" against Operator="GreaterThanEqual" (L128). Both agree, as do valServiceFee2 and
+// valTrialPeriod2. The two contradictions were introduced here, by two message strings that had in
+// effect been swapped between the period rule and the fee rule, and are corrected in RoleTermsRules.
+// Every operator below is unchanged - only the wording moved, back to what the legacy screen actually
+// said.
 //
-// MIGRATION: NEITHER OF THESE RULES DISAGREES WITH ITSELF IN THE LEGACY, and an earlier revision of
-// this file said both did. Measured in EditRoles.ascx.resx: valBillingPeriod2.Text is "Billing Period
-// Must Be Greater Than Zero" against Operator="GreaterThan", and valTrialFee2.Text is "Trial Fee Must
-// Be Greater Than or Equal to Zero" against Operator="GreaterThanEqual". Both agree. The two
-// contradictions were introduced here, by two message strings that had in effect been swapped between
-// the period rule and the fee rule, and are corrected in RoleTermsRules. Every operator below is
-// unchanged - only the wording moved, back to what the legacy screen actually said.
+// Note also that the withdrawn annotation cited the markup for the message text. It does not live
+// there: every one of these validators carries a resourcekey and takes its text from the resource
+// file, which is why that file is the measurement above.
 //
 // MIGRATION: a CompareValidator SUCCEEDS against an empty control. It compares nothing when there is
 // nothing to compare, so all eight comparisons were silent for a role with no paid terms; only

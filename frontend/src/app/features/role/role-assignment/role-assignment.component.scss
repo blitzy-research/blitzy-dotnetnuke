@@ -211,7 +211,7 @@
   margin: 0;
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-bold);
-  color: var(--color-danger-text);
+  color: var(--color-danger);
   overflow-wrap: break-word;
 }
 
@@ -475,25 +475,6 @@
   border-block-start: var(--border-width) var(--border-style) var(--color-text-muted);
 }
 
-// The page-ceiling caveat, rendered immediately above the region it qualifies.
-//
-// Muted ink and not danger ink: a shortfall is a caveat on a listing that succeeded, not a
-// refusal, and colouring it as a refusal would put it in competition with the shared failure
-// surface that sits at the top of the screen. The weight is raised so it is not read as
-// incidental helper text, which is what the muted ink alone would suggest.
-//
-// `margin: 0` for the same reason as the unresolved sentence above: the paragraph is a grid
-// item of the host, so the browser's own block margin would stack onto the host's gap and
-// produce a rhythm neither value describes. The measure is capped at the same named step, so
-// the two standing sentences on this screen wrap identically.
-.role-assignment__truncated {
-  max-inline-size: mx.breakpoint('md');
-  margin: 0;
-  font-weight: var(--font-weight-bold);
-  color: var(--color-text-muted);
-  overflow-wrap: break-word;
-}
-
 // -----------------------------------------------------------------------------
 //  THE TWO PROJECTED GRID CELLS
 // -----------------------------------------------------------------------------
@@ -549,11 +530,13 @@
 // The lifecycle qualifier beside a date bound — R-M24.
 //
 // The WORD is the state and the colour is a second cue for a reader who can use it, never the only
-// one, which is what keeps this out of "colour alone" territory. The accessible danger token is used
-// rather than the accent one because this is TEXT: `--color-danger` measures 3.99:1 on white and
-// fails, while `--color-danger-text` measures 7.20:1. It is the same rule, the same tokens and the
-// same reasoning the portal listing applies to its own lapsed-term qualifier, deliberately - two
-// listings marking the same class of fact should not look like two different decisions.
+// one, which is what keeps this out of "colour alone" territory and what makes the hue's own
+// contrast a secondary matter here. `--color-danger` is the vocabulary's only danger value; a
+// darkened sibling was used here briefly and is withdrawn, because the colour vocabulary is closed
+// at the nine values the design specification enumerates, and the measured ratios are stated on that
+// token's own declaration. It is the same rule, the same token and the same reasoning the portal
+// listing applies to its own lapsed-term qualifier, deliberately - two listings marking the same
+// class of fact should not look like two different decisions.
 //
 // ⚠ `nowrap` IS SAFE HERE ONLY BECAUSE BOTH QUALIFIERS ARE SINGLE WORDS, and that is why both are.
 // A word broken mid-way reads as a different word, so it keeps the rule; a phrase held together by
@@ -564,7 +547,7 @@
 // here, this rule must be withdrawn from it rather than the cell widened to accommodate it.
 .role-assignment__lifecycle {
   margin-inline-start: var(--space-1);
-  color: var(--color-danger-text);
+  color: var(--color-danger);
   font-weight: var(--font-weight-bold);
   white-space: nowrap;
 }

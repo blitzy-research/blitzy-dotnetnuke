@@ -2425,6 +2425,24 @@ export class PortalStore implements OnDestroy {
     this._sortDir.set(null);
     this._listLoading.set(false);
 
+    // ⚠ THE LATCH GOES WITH THE SLICE IT DESCRIBES, AND LEAVING IT BEHIND REOPENED A DEFECT THIS
+    // STORE HAD ALREADY CLOSED ONCE. It records that a listing read COMPLETED, and every other
+    // member of the listing slice above is cleared here - so a latch that survived said "a listing
+    // is in hand" about a page that had just been emptied, for a session that no longer existed.
+    //
+    // What that costs is exactly what `refreshListingIfRead` was written to prevent, transplanted
+    // into the next session. The next operator signs in, saves a portal's settings, and the store
+    // re-reads a listing that operator never requested: a PORTAL ADMINISTRATOR IS NOT PERMITTED TO
+    // READ THE PORTAL LISTING, so the read answers 403, the failure interceptor raises "You do not
+    // have access to this content." globally, and it lands on whichever screen they had reached by
+    // then - a permission complaint about a listing they never asked for, on an unrelated screen,
+    // immediately after a save that SUCCEEDED. See `refreshListingIfRead` for the measurement.
+    //
+    // Cleared here rather than on sign-in, because this is the point at which the previous session's
+    // state is discarded and it is the only point guaranteed to precede the next session's first
+    // write. A sign-in hook would leave a window in which the latch was stale.
+    this.listingRead = false;
+
     this._selectedPortalId.set(undefined);
     this._selectedPortal.set(null);
     this._detailLoading.set(false);

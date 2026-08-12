@@ -32,6 +32,36 @@ namespace DnnMigration.Api.Middleware;
 /// over one would be a denial of service the caller controls.
 /// </para>
 /// <para>
+/// <b>ONLY A CANONICAL, NON-SEMANTIC SHAPE IS TRUSTED, AND THAT IS THE WHOLE OF THE VALIDATION
+/// RULE.</b> An earlier revision accepted any non-blank printable US-ASCII value up to 128
+/// characters. That blocked carriage return and line feed - so it closed log forging and response
+/// splitting - but it did nothing about SEMANTIC content, and semantic content is the more
+/// consequential exposure: a caller could send a password, a bearer token, an e-mail address or an
+/// API key as its correlation header and this stage would then publish that value to
+/// <see cref="HttpContext.Items"/>, to <see cref="HttpContext.TraceIdentifier"/>, onto the ambient
+/// logging scope that every request, exception and audit entry is written within, back onto the
+/// response header, into the RFC 7807 <c>correlationId</c> member and finally onto the operator's
+/// screen as a support reference. A secret reaching retained logs by way of a diagnostic aid is a
+/// disclosure whichever way it arrived, and the caller chose it.
+/// </para>
+/// <para>
+/// The shape accepted is therefore closed to two forms, both of which are pure hexadecimal and
+/// therefore carry no words, no punctuation and no structure a secret could be smuggled inside:
+/// 32 hexadecimal characters, which is what this stage itself generates, and the canonical
+/// hyphenated 36-character UUID form <c>8-4-4-4-12</c>, which is what the single-page application
+/// generates. Case is immaterial and is neither required nor rewritten. Anything else - including
+/// a caller's own scheme, however well intentioned - is discarded and replaced, so nothing this
+/// stage publishes can be a value with meaning to anybody.
+/// </para>
+/// <para>
+/// THE CLIENT APPLIES THE IDENTICAL RULE, in <c>core/interceptors/correlation-id.interceptor.ts</c>,
+/// and the two must not drift: a value one side keeps and the other replaces leaves the browser
+/// holding an identifier that appears in no server log line, which is indistinguishable from having
+/// none. The reverse proxy applies the same rule a third time, in <c>docker/nginx.conf</c>, where a
+/// non-canonical value is replaced with nginx's own 32-hexadecimal request identifier before it is
+/// forwarded here.
+/// </para>
+/// <para>
 /// <b>One instance serves the whole application.</b> Registration through
 /// <c>UseMiddleware&lt;CorrelationIdMiddleware&gt;()</c> activates a single instance for the
 /// application's lifetime, so this type must hold nothing request-scoped. Its only dependencies are
@@ -73,26 +103,33 @@ public sealed class CorrelationIdMiddleware
     private const string ScopePropertyName = "CorrelationId";
 
     /// <summary>
-    /// The greatest length, in characters, at which an inbound header value is still trusted.
+    /// The length of the unhyphenated canonical form: a <see cref="Guid"/> rendered with <c>"N"</c>.
     /// </summary>
     /// <remarks>
-    /// A generated identifier is 32 characters, so this leaves generous room for a caller's own
-    /// scheme while keeping an oversized header from being copied onto every log line the request
-    /// produces.
+    /// This is the form this stage generates, so an identifier that made a round trip through a
+    /// caller and came back is kept rather than replaced - which is what lets a retried request be
+    /// recognised as the same logical operation as its first attempt.
     /// </remarks>
-    private const int MaxLength = 128;
+    private const int CompactFormLength = 32;
 
     /// <summary>
-    /// The lowest character accepted in an inbound identifier: the space, the first printable
-    /// character in US-ASCII.
+    /// The length of the hyphenated canonical form: the RFC 4122 <c>8-4-4-4-12</c> rendering.
     /// </summary>
-    private const char LowestAcceptedCharacter = ' ';
+    /// <remarks>
+    /// This is the form the single-page application generates, through
+    /// <c>crypto.randomUUID()</c> or an equivalent, so a browser-supplied identifier takes this
+    /// branch.
+    /// </remarks>
+    private const int HyphenatedFormLength = 36;
 
     /// <summary>
-    /// The highest character accepted in an inbound identifier: the tilde, the last printable
-    /// character in US-ASCII.
+    /// The character positions of the four hyphens in the hyphenated canonical form.
     /// </summary>
-    private const char HighestAcceptedCharacter = '~';
+    /// <remarks>
+    /// Declared rather than derived so the shape test reads as the specification it enforces. Every
+    /// other position in that form must be a hexadecimal digit.
+    /// </remarks>
+    private static readonly int[] HyphenPositions = [8, 13, 18, 23];
 
     private readonly RequestDelegate _next;
     private readonly ILogger<CorrelationIdMiddleware> _logger;
@@ -195,16 +232,18 @@ public sealed class CorrelationIdMiddleware
 
         // The rejected value is deliberately absent from this entry: writing an
         // unvalidated header into the sink is the very attack the rejection
-        // prevents, so only its shape is recorded. Trace level, because the request
-        // and response envelope belongs to the request-logging middleware that runs
-        // next and this must not duplicate it. The level is tested first because an
-        // absent header is an ordinary case on this path - a health probe sends none
-        // - and the arguments would otherwise be boxed into an array on every such
-        // request only for a disabled logger to discard them.
+        // prevents, so only its shape is recorded - the number of header lines that
+        // arrived and the length of the one that was refused, neither of which can
+        // carry a secret. Trace level, because the request and response envelope
+        // belongs to the request-logging middleware that runs next and this must not
+        // duplicate it. The level is tested first because an absent header is an
+        // ordinary case on this path - a health probe sends none - and the arguments
+        // would otherwise be boxed into an array on every such request only for a
+        // disabled logger to discard them.
         if (_logger.IsEnabled(LogLevel.Trace))
         {
             _logger.LogTrace(
-                "No usable inbound {HeaderName} header was supplied, so a correlation identifier was generated. Inbound header values: {InboundValueCount}. Rejected length: {RejectedLength}.",
+                "No canonical inbound {HeaderName} header was supplied, so a correlation identifier was generated. Inbound header values: {InboundValueCount}. Rejected length: {RejectedLength}.",
                 HeaderName,
                 inbound.Count,
                 candidate?.Length ?? 0);
@@ -222,28 +261,107 @@ public sealed class CorrelationIdMiddleware
     /// or repeated.
     /// </param>
     /// <returns>
-    /// <see langword="true"/> when <paramref name="candidate"/> holds something other than
-    /// whitespace, is no longer than <see cref="MaxLength"/> characters, and consists entirely of
-    /// printable US-ASCII; otherwise <see langword="false"/>. The nullable-state annotation is what
-    /// lets both this method and its caller treat an accepted value as non-null without a
-    /// suppression.
+    /// <see langword="true"/> when <paramref name="candidate"/> is one of the two canonical forms -
+    /// <see cref="CompactFormLength"/> hexadecimal characters, or the hyphenated
+    /// <see cref="HyphenatedFormLength"/>-character <c>8-4-4-4-12</c> form - and otherwise
+    /// <see langword="false"/>. The nullable-state annotation is what lets both this method and its
+    /// caller treat an accepted value as non-null without a suppression.
     /// </returns>
+    /// <remarks>
+    /// <para>
+    /// THE SHAPE IS THE SECURITY CONTROL, and it subsumes the two it replaces. Every character
+    /// admitted is a hexadecimal digit or, at four fixed positions, a hyphen, so a control character
+    /// cannot appear - which closes the log forging and response splitting the previous
+    /// printable-ASCII test existed for - and neither can a word, a delimiter, an at-sign, a dot or
+    /// a slash, which is what closes the semantic exposure that test did not address. There is no
+    /// separate length bound because each accepted form has one exact length.
+    /// </para>
+    /// <para>
+    /// The value is NEITHER TRIMMED NOR RE-CASED. A caller's identifier is either usable exactly as
+    /// it arrived or is replaced outright, because a repaired value is one the caller has never
+    /// seen: it would appear in this server's logs while the caller quoted the value it sent, which
+    /// is the precise failure a shared identifier exists to prevent. Case is accepted in either
+    /// register and preserved as received for the same reason.
+    /// </para>
+    /// <para>
+    /// No regular expression and no allocation. This runs on every request, before anything else in
+    /// the pipeline, so the test is a single pass over the characters already in memory.
+    /// </para>
+    /// </remarks>
     private static bool IsUsable([NotNullWhen(true)] string? candidate)
     {
-        if (string.IsNullOrWhiteSpace(candidate))
+        if (candidate is null)
         {
             return false;
         }
 
-        if (candidate.Length > MaxLength)
+        return candidate.Length switch
         {
-            return false;
+            CompactFormLength => IsHexadecimalThroughout(candidate),
+            HyphenatedFormLength => IsHyphenatedUuid(candidate),
+            _ => false,
+        };
+    }
+
+    /// <summary>Reports whether every character of a value is a hexadecimal digit.</summary>
+    /// <param name="candidate">The value to test; never <see langword="null"/>.</param>
+    /// <returns><see langword="true"/> when the value is hexadecimal throughout.</returns>
+    private static bool IsHexadecimalThroughout(string candidate)
+    {
+        foreach (char character in candidate)
+        {
+            if (!Uri.IsHexDigit(character))
+            {
+                return false;
+            }
         }
 
-        // Accepting only printable US-ASCII rejects every control character in a
-        // single test, carriage return and line feed among them. That is the point
-        // of this method: a value carrying CR or LF could otherwise terminate a log
-        // line, or a response header, and let the caller append a line of its own.
-        return !candidate.AsSpan().ContainsAnyExceptInRange(LowestAcceptedCharacter, HighestAcceptedCharacter);
+        return true;
+    }
+
+    /// <summary>
+    /// Reports whether a 36-character value is the canonical hyphenated UUID rendering.
+    /// </summary>
+    /// <param name="candidate">
+    /// The value to test; never <see langword="null"/> and exactly
+    /// <see cref="HyphenatedFormLength"/> characters.
+    /// </param>
+    /// <returns>
+    /// <see langword="true"/> when the four hyphens sit at the specified positions and every other
+    /// position holds a hexadecimal digit.
+    /// </returns>
+    /// <remarks>
+    /// Tested by position rather than through <see cref="Guid.TryParseExact(string, string, out
+    /// Guid)"/> because a successful parse would answer a different question. That method accepts a
+    /// value this stage must refuse - the braced and parenthesised renderings among them, depending
+    /// on the format specifier - and, more to the point, it discards the original text: a parse
+    /// tells us a value CAN be read as an identifier, whereas what has to be true here is that the
+    /// text about to be logged and echoed is already in the one shape agreed with the client and the
+    /// proxy.
+    /// </remarks>
+    private static bool IsHyphenatedUuid(string candidate)
+    {
+        for (int position = 0; position < candidate.Length; position++)
+        {
+            bool hyphenExpected = Array.IndexOf(HyphenPositions, position) >= 0;
+            char character = candidate[position];
+
+            if (hyphenExpected)
+            {
+                if (character != '-')
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (!Uri.IsHexDigit(character))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

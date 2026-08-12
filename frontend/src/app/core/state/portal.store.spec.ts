@@ -255,13 +255,15 @@
  *   actually receive. Asserting a legacy key would be a green test over a value that
  *   never crosses the wire.
  *
- * D-B — THE FILTER'S MATCH SEMANTICS ARE THE SERVER'S, AND THEY ARE NOT WHAT THE LEGACY
- *   PATTERN WAS. The brief describes the portal-name filter as anchored at the start of
- *   the name, which is what the legacy trailing wildcard produced. The implemented
- *   repository trims the text, folds its case and tests the name for the fragment
- *   anywhere within it, and the transport contract documents the parameter accordingly.
- *   That difference changes nothing this file can assert, because the client-side
- *   obligation is identical under either predicate: transmit the operator's text
+ * D-B — THE FILTER'S MATCH SEMANTICS ARE THE SERVER'S, AND THEY MATCH THE LEGACY
+ *   ANCHORING. The brief describes the portal-name filter as anchored at the start of the
+ *   name, which is what the legacy trailing wildcard produced, and the implemented
+ *   repository agrees: it trims the text, folds its case on both sides and issues a
+ *   starts-with predicate. An earlier revision of this note claimed the repository tested
+ *   for the fragment anywhere within the name and that the two therefore diverged; that was
+ *   not true of the delivered code, and the same claim was corrected in the service
+ *   alongside this one. Either way it changes nothing this file can assert, because the
+ *   client-side obligation is identical under any predicate: transmit the operator's text
  *   unaltered and add no pattern character. This file asserts exactly that and describes
  *   the predicate nowhere, so it stays correct if the server changes its mind.
  *

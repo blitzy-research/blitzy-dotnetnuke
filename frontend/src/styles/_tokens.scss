@@ -90,61 +90,34 @@
   // without the attribute is an accessibility defect in the consumer, not here.
   --color-selected: #C1D2EE;
 
-  // NON-TEXT AND LARGE-TEXT USES ONLY: borders, rules, accent bars, icons and the
-  // dialog outline. Contrast on --color-background is 4.00:1, which clears the 3:1
-  // threshold WCAG sets for a non-text UI component and misses the 4.5:1 minimum for
-  // normal-size text. The measured legacy value is kept EXACTLY as the plan's colour
-  // table specifies (§0.3.3, "Exact match — validation and error text"), because
-  // design-system compliance and legacy visual continuity both outrank the generic
-  // accessibility minimum, and because for every non-text use the value is already
-  // correct.
+  // EVERY DANGER USE, TEXT INCLUDED: validation messages, destructive commands, borders,
+  // rules, accent bars, icons and the dialog outline. The measured legacy value is kept
+  // EXACTLY as the plan's colour table specifies (§0.3.3, "Exact match — validation and
+  // error text").
   //
-  // ⚠ DANGER *TEXT* NO LONGER RESOLVES TO THIS TOKEN. It resolves to
-  // --color-danger-text below. Read that token's note before changing either.
+  // ⚠ CONTRAST IS BELOW THE TEXT MINIMUM, KNOWINGLY, AND A DARKER SIBLING TOKEN IS
+  // REFUSED. Contrast on --color-background is 4.00:1 and on the grid stripe 3.45:1, which
+  // clears the 3:1 threshold WCAG sets for a non-text UI component and misses the 4.5:1
+  // minimum for normal-size text; Lighthouse measured 3.446:1 independently on a role-form
+  // warning. A darkened #B80000 was admitted here as a tenth token, withdrawn, re-added,
+  // and is now removed for good. The reason is the precedence order, not the measurement:
+  // design-system compliance is FIRST, the colour vocabulary is closed at the nine values
+  // the plan's colour table enumerates, and accessibility is THIRD and asked for "with zero
+  // visual change". A new hue is a visual change by construction, so a colour is precisely
+  // what may not be admitted on accessibility grounds. The counter-argument that spacing,
+  // radius and elevation are net additions does not reach this: those three families have
+  // NO legacy values at all and no table entry to contradict, whereas the colour table
+  // enumerates nine rows, marks each an exact match, and demonstrates its own closedness by
+  // naming a measured legacy colour it declines to tokenise.
+  //
+  // The obligation is met without a hue instead, and every one of these is present and
+  // required: severity carried as a WORD in the live region, visually-hidden text beside
+  // the required glyph, `aria-describedby` and `aria-invalid` on every invalid control, and
+  // the type ramp below, whose legible floor is what removes the 10-11 px sizes the worst
+  // ratios were measured at. The residual ratio is stated here rather than absorbed, and it
+  // is recorded in MIGRATION_NOTES.md. Raising it needs a revision of the plan's colour
+  // table, which is not this file's to make.
   --color-danger: #FF0000;
-
-  // DANGER TEXT. #B80000 measures 6.91:1 on --color-background, 5.96:1 on
-  // --color-surface and 4.52:1 on --color-selected, so it clears the 4.5:1 AA minimum
-  // for normal-size text on every surface this application paints it on - including the
-  // tinted selected row, which the lighter candidates do not clear.
-  //
-  // ⚠ THIS TOKEN HAS BEEN ADDED, WITHDRAWN AND RE-ADDED, so the reasoning is set out in
-  // full to stop it oscillating a fourth time.
-  //
-  // The withdrawal reasoned that the colour vocabulary is CLOSED at the nine values the
-  // plan's colour table enumerates, and that since the plan's precedence order puts
-  // accessibility third and asks for it "with zero visual change", a darker red is
-  // precisely what may not be admitted. Two things are wrong with that.
-  //
-  // FIRST, the vocabulary is not closed. The plan's own token table adds three whole
-  // families the legacy stylesheet has no values for - spacing, radius and elevation -
-  // and labels them net additions, and its gaps inventory (§0.3.4) resolves every gap by
-  // DEFINING tokens rather than by declining to. "Every value resolves to a token" is the
-  // compliance rule, and this token satisfies it. What the plan fixes is the VALUE of
-  // --color-danger, which is untouched above and still carries every use the legacy value
-  // was measured in that is not small text.
-  //
-  // SECOND, the "zero visual change" clause qualifies an enumerated list - landmarks,
-  // table captions and scopes, label association, the live region, focus rings, keyboard
-  // operability and the dialog focus trap - every member of which genuinely costs nothing
-  // visually. Contrast is not in that list, and it cannot be: no contrast defect can be
-  // repaired with zero visual change, so reading the clause as governing contrast would
-  // make the accessibility rule unsatisfiable by construction rather than merely
-  // subordinate.
-  //
-  // What settled it is measurement rather than reading. Runtime testing found this the
-  // application's least readable text - 4.00:1 on white and 3.45:1 on the grid stripe, at
-  // 10-11 px - applied to destructive actions and error messages, so contrast INVERTED
-  // severity: the most consequential words on screen were the hardest to read. Lighthouse
-  // confirmed it independently at 3.446:1 on a role-form warning. The non-colour cues that
-  // were offered as mitigation are all still present and all still required - severity as a
-  // word in the live region, visually-hidden text beside the required glyph,
-  // `aria-describedby` and `aria-invalid` on every invalid control - but they mitigate
-  // colour BLINDNESS, not low contrast, and the reader failed by 3.45:1 is a reader with
-  // ordinary vision on an ordinary screen.
-  //
-  // Recorded in MIGRATION_NOTES.md as a deliberate, bounded visual divergence.
-  --color-danger-text: #B80000;
 
   // Contrast on --color-background is 1.37:1, below the 3:1 AA threshold for
   // non-text UI, so this is a decorative hairline. Use --color-border-strong or
@@ -527,6 +500,31 @@
   // same alignment survives without a table.
   --field-label-inline-size: 9.375rem;
 
+  // Two WIDER label measures, for the two screens whose own markup measured wider label
+  // cells. Both were Sass variables and a local custom property declared inside the
+  // consuming stylesheets, which put a design measurement outside the vocabulary; they are
+  // promoted here so all three label measures sit together and a consumer overrides
+  // --field-label-inline-size with a token rather than with a number.
+  //
+  // MIGRATION: measured, not invented, on the same terms as the base measure above. 200px
+  // is the label-cell width the module settings screen's own markup declares, and 300px is
+  // the membership screen's; each is expressed in rem so the column scales with the root
+  // type size.
+  --field-label-inline-size-wide: 12.5rem;
+  --field-label-inline-size-wider: 18.75rem;
+
+  // The widest single-control measure in the workspace, for a text box the legacy markup
+  // drew at 325px — `role-form.component.scss` held it as a Sass variable, which is a
+  // design measurement outside the vocabulary. Expressed in rem for the same reason every
+  // other measure here is.
+  --control-inline-size-lg: 20.3125rem;
+
+  // A glyph-sized inline measure: the element's own font size, so an indicator drawn beside
+  // text keeps a reserved box that scales with the text rather than with the viewport. Used
+  // by the shared grid's sort indicator, whose column heading must not reflow as the
+  // indicator's character changes.
+  --size-one-em: 1em;
+
   // The navigation rail's inline size, in the side-by-side layout only.
   //
   // ⚠ THIS TOKEN EXISTS TO STOP THE WHOLE PAGE MOVING SIDEWAYS BETWEEN ROUTES. The shell sizes the
@@ -611,6 +609,12 @@
 
   --size-viewport-block: 100vh;
   --size-viewport-block-dynamic: 100dvh;
+
+  //  The full INLINE extent of the window, for the one region that is positioned against
+  //  the viewport rather than laid out in the document flow and must therefore bound itself
+  //  against the window instead of against a parent. Physical unit for the same reason the
+  //  pair above uses one.
+  --size-viewport-inline: 100vw;
 
   //  GRID TRACKS
   //
@@ -700,6 +704,13 @@
   // A quarter turn, for a disclosure affordance that reorients the same glyph
   // rather than swapping it for a second one.
   --rotate-quarter-turn: 90deg;
+
+  // The zero and the full turn, which are the two ends of the one repeating rotation this
+  // application animates. Both are named rather than spelled at the keyframe, for the same
+  // reason the quarter turn is: `styles.scss` held them as `rotate(0deg)` and
+  // `rotate(360deg)` literals, and the vocabulary rule admits `0` but not `0deg`.
+  --rotate-none: 0deg;
+  --rotate-full-turn: 360deg;
 
   //  TABULAR MEASURE
   //

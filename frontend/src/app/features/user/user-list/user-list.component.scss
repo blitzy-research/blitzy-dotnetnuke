@@ -290,7 +290,7 @@
 //  one line.
 .user-list__row-mark {
   margin-inline-start: var(--space-1);
-  color: var(--color-danger-text);
+  color: var(--color-danger);
   font-weight: var(--font-weight-bold);
 }
 
@@ -682,10 +682,10 @@
 //  is what stops the group rule above reaching this element — and the affordance is not
 //  lost, because the anchors' underline and the reset's own hover treatment carry it.
 .user-list__row-action--danger {
-  color: var(--color-danger-text);
+  color: var(--color-danger);
 
   @include mx.hover {
-    color: var(--color-danger-text);
+    color: var(--color-danger);
   }
 }
 

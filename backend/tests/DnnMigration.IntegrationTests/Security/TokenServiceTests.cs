@@ -663,16 +663,20 @@ public sealed class TokenServiceTests : IDisposable
     }
 
     /// <summary>
-    /// Revocation is idempotent and succeeds whatever state the presented value was in.
+    /// Revocation is idempotent for a family the store holds, and UNCONFIRMED for a value it does not.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// Sign-out must be safe to repeat and safe to call with a value the store never issued: a client that
-    /// retried a sign-out, or signed out with a value already spent, would otherwise be handed a failure for
-    /// an operation whose goal - that the value cannot be exchanged - already holds.
+    /// SEC-F2. The first two assertions are the idempotence sign-out depends on: repeating it asks for a
+    /// state that already holds, so it succeeds. The third one changed, and the change is the point. A value
+    /// this store never issued used to be reported as a completed sign-out on the reading that nothing was
+    /// left exchangeable - but a PROCESS-LOCAL store cannot know that. Presented with a session established
+    /// on another replica it answers exactly as it does here, and reporting success left that session live
+    /// while the client dropped the only credential that could have retried. The permissive reading is now
+    /// earned by a store that is authoritative across replicas, and withheld from one that is not.
     /// </remarks>
     [Fact]
-    public async Task RevokeRefreshTokenAsync_SucceedsWhateverStateTheValueWasIn()
+    public async Task RevokeRefreshTokenAsync_IsIdempotentForAHeldFamilyAndUnconfirmedOtherwise()
     {
         const int AccountId = 90_011;
 
@@ -685,9 +689,10 @@ public sealed class TokenServiceTests : IDisposable
         (await tokens.RevokeRefreshTokenAsync(issued.RefreshToken)).IsSuccess.Should().BeTrue();
         (await tokens.RevokeRefreshTokenAsync(issued.RefreshToken)).IsSuccess.Should().BeTrue(
             "a repeated sign-out asks for a state that already holds");
-        (await tokens.RevokeRefreshTokenAsync("never-issued-value-4c1b")).IsSuccess.Should().BeTrue(
-            "signing out with a value the store never issued leaves nothing exchangeable, which is the "
-            + "outcome the caller asked for");
+        (await tokens.RevokeRefreshTokenAsync("never-issued-value-4c1b")).IsFailure.Should().BeTrue(
+            "a store that sees only its own process has not proved that a value it does not hold is "
+            + "unexchangeable anywhere, so the retirement is reported as unconfirmed and the caller keeps "
+            + "its credential");
     }
 
     /// <summary>
@@ -729,8 +734,12 @@ public sealed class TokenServiceTests : IDisposable
         (await tokens.RefreshAsync(other.RefreshToken, HolderBinding)).IsSuccess.Should().BeTrue(
             "another account's session is not collateral damage");
 
-        (await tokens.RevokeAllRefreshTokensAsync(90_014)).IsSuccess.Should().BeTrue(
-            "an account holding nothing is already in the state the operation asks for");
+        // SEC-F2. An account this store holds nothing for is reported as UNCONFIRMED rather than as a
+        // completed retirement, because a process-local store has established only its own ignorance. The
+        // cascading callers - account deletion and tenant removal - tell that apart from an unanswerable
+        // store themselves and proceed, which is asserted by their own suites.
+        (await tokens.RevokeAllRefreshTokensAsync(90_014)).IsFailure.Should().BeTrue(
+            "a store that sees only its own process cannot prove an account holds no session elsewhere");
     }
 
     /// <summary>

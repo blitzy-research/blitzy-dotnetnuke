@@ -187,27 +187,54 @@ public sealed class Role : Entity<int>
     /// </remarks>
     public override int Identity => RoleId;
 
-    // MIGRATION: THIS FOREIGN KEY IS NULLABLE AND MUST NOT BE TIGHTENED. Two pieces of evidence
-    // invite the opposite conclusion and both are wrong. First, RoleInfo.vb declares the legacy
-    // field `_PortalID As Integer` (line 44), a non-nullable VB value type that had no way to
-    // express absence and used the Null.NullInteger marker instead. Second, and more persuasively,
-    // 01.00.05.SqlDataProvider line 2749 builds its replacement table as `PortalID int NOT NULL`
-    // during a temporary-table swap. Neither is the terminal state: the baseline declares
+    // MIGRATION: THE COLUMN IS NOT NULL; THE PROPERTY IS NULLABLE ON PURPOSE. This comment
+    // previously argued the opposite and was wrong on the chronology, so the correction is recorded
+    // here rather than quietly swapped in.
+    //
+    // What it claimed: that the terminal column is nullable, because the baseline declares
     // `[PortalID] [int] NULL` (01.00.00 line 116), the first rebuild restates it as `PortalID int
-    // NULL` (01.00.04 line 1323), and the schema this migration actually binds against agrees -
-    // backend/tests/DnnMigration.IntegrationTests/Schema/DnnSchema.sql line 259 declares
-    // `[PortalID] int NULL`. A transient shape adopted inside a rebuild is not the shape the chain
-    // terminates in. The nullability is load-bearing rather than incidental: a role with no portal
-    // is a host-level role, and it is also what makes IX_RoleName scope a name to a tenant.
+    // NULL` (01.00.04 line 1323), and DnnSchema.sql agreed. Two of those three were superseded
+    // states and the third was circular - DnnSchema.sql was scripted FROM this model, so it could
+    // not be evidence about it.
+    //
+    // What the chain actually does: 01.00.04 rebuilds Roles through Tmp_Roles with PortalID NULL and
+    // renames it back, and then 01.00.05 rebuilds it AGAIN - Tmp_Roles at line 2746 declares
+    // `PortalID int NOT NULL` (line 2749), dbo.Roles is dropped at line 2779 and Tmp_Roles is
+    // renamed over it at line 2781, unguarded. No later script alters the column: a case-insensitive
+    // sweep of all four object-naming forms across the 83 versioned scripts finds exactly two
+    // `ALTER COLUMN PortalID` statements and both are on ProfilePropertyDefinition. 01.00.05 is
+    // LATER than 01.00.04, so NOT NULL is the state the chain terminates in, and the independent Red
+    // Gate fresh-install snapshot agrees - `[PortalID] [int] NOT NULL` at
+    // DotNetNuke.Schema.SqlDataProvider line 6209. The legacy code agrees too: RoleInfo.vb declares
+    // `_PortalID As Integer` (line 44) and every RoleController member takes `PortalId As Integer`,
+    // so no legacy path could write a null. All of this is recorded, with citations, in
+    // backend/tests/DnnMigration.IntegrationTests/Schema/TerminalSchema.manifest.
+    //
+    // WHY THE PROPERTY STAYS int? ANYWAY, and why that is not a contradiction: the terminal listing
+    // procedure filters on `( R.PortalId = @PortalId OR R.PortalId is null )`
+    // (04.08.00.SqlDataProvider line 40) and IRoleRepository.GetByPortalIdAsync reproduces it
+    // verbatim under the Minimal Change Clause. That predicate cannot be expressed over a
+    // non-nullable property. A nullable property over a NOT NULL column is the permissive direction
+    // and is safe: every read succeeds, and a write of null is refused by the database rather than
+    // by the model. Tightening to int would delete the predicate and would also throw
+    // SqlNullValueException against any installation later upgraded to a DotNetNuke version that
+    // relaxed the column.
+    //
+    // WHAT MUST NOT BE INFERRED FROM IT: that a role with no owning portal exists. Against a
+    // faithful installation it cannot, the null branch of that predicate is unsatisfiable, and no
+    // test may fabricate such a row to exercise it - two once did, and they passed only because the
+    // test schema had drifted. The divergence is asserted by name in LegacySchemaFidelityTests and
+    // recorded in MIGRATION_NOTES.md.
 
     /// <summary>
     /// Gets or sets the portal that owns this role (<c>PortalID</c>, cascade delete).
     /// </summary>
     /// <value>
-    /// The identity of the owning portal, or <see langword="null"/> for a host-level role that
-    /// belongs to the installation rather than to a tenant. Note that <c>dbo.Portals.PortalID</c> is
-    /// itself <c>IDENTITY(-1, 1)</c>, so -1 and 0 are both real portal identities and neither of
-    /// them means "no portal" - only the null does.
+    /// The identity of the owning portal. The terminal column is <c>int NOT NULL</c>, so a stored row
+    /// always carries one; the property is nullable only so that the legacy listing predicate can be
+    /// expressed, and <see langword="null"/> is refused by the store. Note that
+    /// <c>dbo.Portals.PortalID</c> is itself <c>IDENTITY(-1, 1)</c>, so -1 and 0 are both real portal
+    /// identities and neither of them means "no portal".
     /// </value>
     public int? PortalId { get; set; }
 

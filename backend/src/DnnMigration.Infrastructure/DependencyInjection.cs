@@ -46,6 +46,7 @@
 // its own - which is the failure mode worth foreclosing, because every authorisation decision trusts it.
 using System.Globalization;
 using DnnMigration.Application.Abstractions;
+using DnnMigration.Application.Options;
 using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Infrastructure.HealthChecks;
@@ -79,6 +80,11 @@ public static class DependencyInjection
     private const string AuditPipelineHealthCheckName = "audit-pipeline";
 
     /// <summary>
+    /// The name under which the refresh-token store's identity, replica safety and capacity are surfaced.
+    /// </summary>
+    private const string RefreshTokenStoreHealthCheckName = "refresh-token-store";
+
+    /// <summary>
     /// Tag marking a probe as a READINESS signal rather than a liveness one.
     /// </summary>
     /// <remarks>
@@ -96,6 +102,16 @@ public static class DependencyInjection
 
     /// <summary>Tag naming the accountability trail a probe examines.</summary>
     private const string AuditTag = "audit";
+
+    /// <summary>
+    /// Tag naming the process-local session state a probe examines.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="AuditTag"/> so that a monitor can select the state-locality report on its own -
+    /// which matters because it is the probe a deployment consults before it considers running a second API
+    /// instance.
+    /// </remarks>
+    private const string SessionStateTag = "session-state";
 
     /// <summary>
     /// Greatest time the dependency probe is allowed before the infrastructure abandons it.
@@ -586,6 +602,26 @@ public static class DependencyInjection
     /// state, needs no database object, and can be the singleton the plan specifies. The store's own remarks
     /// record the operational consequence of process-local refresh state.
     /// </para>
+    /// <para>
+    /// <strong>THE STORE IS SUBSTITUTABLE WITHOUT EDITING THIS LAYER, AND THAT IS THE ANSWER TO THE
+    /// PROCESS-LOCAL LIMITATION.</strong> Both consumers - the token service registered below and the
+    /// application layer's authentication service - depend on the public Domain contract
+    /// <c>IRefreshTokenStore</c> rather than on the concrete type, and a service collection resolves the LAST
+    /// registration of a service. A deployment needing cross-process refresh continuity therefore calls
+    /// <c>AddInfrastructure</c>, then registers its own implementation, then sets
+    /// <c>RefreshTokenStore:Provider</c> to <c>External</c>; nothing in this file, in the store, or in either
+    /// consumer changes. <c>ValidateRefreshTokenStoreTopology</c> then refuses to let the host start if the
+    /// declaration and the registration disagree, so the substitution cannot half-happen. The seam is covered
+    /// by a test rather than merely asserted here.
+    /// </para>
+    /// <para>
+    /// The CONCRETE registration above is kept deliberately, and it is not redundant under substitution: the
+    /// health probe needs to recognise whether the active store is this solution's in order to report capacity
+    /// honestly, and a singleton nobody resolves is never constructed. What must not change is the factory
+    /// form of the contract registration - registering the abstraction against the implementation TYPE would
+    /// create a second, empty store, and with a process-local store two instances are not merely wasteful but
+    /// wrong, because the state IS the instance.
+    /// </para>
     /// </remarks>
     private static void AddSecurity(
         IServiceCollection services,
@@ -597,6 +633,65 @@ public static class DependencyInjection
         services.AddSingleton<IOptions<LegacyCredentialOptions>>(
             Options.Create(legacyCredentialOptions));
         services.AddSingleton<ILegacyCredentialVerifier, LegacyCredentialVerifier>();
+
+        AddRefreshTokenStore(services, configuration);
+
+        services.AddSingleton<ITokenService, JwtTokenService>();
+    }
+
+    /// <summary>Registers the refresh-token store the configuration selects.</summary>
+    /// <param name="services">The collection to add to.</param>
+    /// <param name="configuration">The host configuration.</param>
+    /// <remarks>
+    /// <para>
+    /// TWO IMPLEMENTATIONS, ONE ABSTRACTION, AND THE CHOICE IS THE DEPLOYMENT'S. A refresh-token family is
+    /// the only server-side session record this API keeps, so a revocation reaches exactly as far as the
+    /// store does. Configure <c>RefreshTokenStore:Provider=SqlServer</c> with a connection string of its
+    /// own and families become durable and shared: a restart keeps them, a second replica sees them, and a
+    /// sign-out performed on one instance is observed by every other. Leave the section out and the
+    /// families stay in the serving process, which is exactly equivalent for the single-container topology
+    /// the supplied compose file describes and materially weaker for anything larger.
+    /// </para>
+    /// <para>
+    /// The shared store's catalogue MUST NOT be the DotNetNuke catalogue, and that is enforced rather than
+    /// advised: <see cref="RefreshTokenStoreOptions.Validate"/> compares the two connection strings and
+    /// refuses a configuration that points them at one database, so AAP rule T4 - the existing schema is
+    /// immutable - cannot be breached by a configuration mistake. Session state is held BESIDE the frozen
+    /// schema, never inside it.
+    /// </para>
+    /// <para>
+    /// A misconfigured shared store is a START-UP failure, not a silent downgrade to the process-local
+    /// store. Falling back would be the worst available outcome: the deployment would believe it had
+    /// cross-replica revocation and would not have it.
+    /// </para>
+    /// </remarks>
+    private static void AddRefreshTokenStore(
+        IServiceCollection services,
+        IConfiguration configuration)
+    {
+        RefreshTokenStoreOptions options = new();
+        configuration.GetSection(RefreshTokenStoreOptions.SectionName).Bind(options);
+
+        IReadOnlyList<string> failures = options.Validate(
+            configuration.GetConnectionString("Default"));
+
+        if (failures.Count != 0)
+        {
+            throw new OptionsValidationException(
+                RefreshTokenStoreOptions.SectionName,
+                typeof(RefreshTokenStoreOptions),
+                failures);
+        }
+
+        services.AddSingleton<IOptions<RefreshTokenStoreOptions>>(Options.Create(options));
+
+        if (options.UsesSharedStore)
+        {
+            services.AddSingleton<IRefreshTokenStore, SqlServerRefreshTokenStore>();
+
+            return;
+        }
+
         services.AddSingleton<RefreshTokenStore>();
 
         // Resolved through the concrete registration above rather than registered against the
@@ -607,8 +702,6 @@ public static class DependencyInjection
         // longer merely wasteful, it is a correctness failure, because the state is the instance.
         services.AddSingleton<IRefreshTokenStore>(
             provider => provider.GetRequiredService<RefreshTokenStore>());
-
-        services.AddSingleton<ITokenService, JwtTokenService>();
     }
 
     /// <summary>Reads and validates the migration-only legacy credential settings.</summary>
@@ -685,6 +778,20 @@ public static class DependencyInjection
     /// The clock is a singleton so that every time-dependent decision in the solution reads one source
     /// and a test can replace it wholesale. MIGRATION: the legacy code read <c>Date.Now</c> at each site,
     /// which is why none of that logic could be tested at a chosen instant.
+    /// </para>
+    /// <para>
+    /// The cache is PROCESS-LOCAL, and so therefore is every invalidation performed through it. AAP section
+    /// 0.2.2.2 excludes the legacy caching-provider family on the express grounds that its responsibilities
+    /// "are met natively by <c>IMemoryCache</c>", and AAP section 0.5.1.3 maps the legacy cache to
+    /// "<c>IMemoryCache</c> behind <c>ICacheService</c>", so a process-local cache is what the plan specifies
+    /// rather than a shortcut taken against it. The consequence is stated so that it is not discovered: a
+    /// second API instance would keep serving its own cached projection of a row another instance had just
+    /// changed, until that entry's own expiry - at most the entity's base lifetime multiplied by
+    /// <c>Caching:PerformanceMultiplier</c>, and immediately if that multiplier is set to zero, which disables
+    /// caching outright. <c>ICacheService</c> is a public Domain contract and is substitutable on exactly the
+    /// terms the refresh-token store is, so a deployment that needs cross-process invalidation registers its
+    /// own implementation after this call. The limitation, and this bounded escape from it, are recorded in
+    /// <c>MIGRATION_NOTES.md</c> and in <c>README.md</c>.
     /// </para>
     /// <para>
     /// The cache service is a singleton over the framework memory cache, which is itself a singleton -
@@ -822,6 +929,16 @@ public static class DependencyInjection
     /// accountability trail is incomplete without taking the application down after a completed mutation.
     /// </para>
     /// <para>
+    /// The THIRD check reports the refresh-token store's identity, its replica safety and its capacity, and it
+    /// is a liveness probe with a degraded failure status for exactly the reasons the audit probe is. It exists
+    /// because the store's process-local state model previously had no expression in a running deployment: the
+    /// limitation was documented in three places and observable in none, and its one dynamic consequence -
+    /// that reaching the tracked-generation ceiling retires the oldest refresh families early - was invisible
+    /// until callers started reporting unexpected sign-outs. It must NOT be readiness-tagged: neither a
+    /// process-local store nor a saturated one stops this instance serving requests, so withdrawing it from
+    /// rotation would cost more than the condition does.
+    /// </para>
+    /// <para>
     /// Every view must be anonymous. The container probe carries no credential, so a health path behind
     /// authentication would report the container unhealthy forever and the frontend would never start.
     /// </para>
@@ -840,6 +957,11 @@ public static class DependencyInjection
     {
         services.AddScoped<DatabaseHealthCheck>();
 
+        // A singleton, because both of its collaborators are singletons and it holds no request state.
+        // Registered explicitly rather than left to the health-check builder's create-if-absent behaviour, so
+        // that one instance answers every probe and the registration is visible here beside the other two.
+        services.AddSingleton<RefreshTokenStoreHealth>();
+
         services
             .AddHealthChecks()
             .AddCheck<DatabaseHealthCheck>(
@@ -850,6 +972,118 @@ public static class DependencyInjection
             .AddCheck<AuditPipelineHealth>(
                 AuditPipelineHealthCheckName,
                 failureStatus: HealthStatus.Degraded,
-                tags: new[] { LivenessTag, AuditTag });
+                tags: new[] { LivenessTag, AuditTag })
+            .AddCheck<RefreshTokenStoreHealth>(
+                RefreshTokenStoreHealthCheckName,
+                failureStatus: HealthStatus.Degraded,
+                tags: new[] { LivenessTag, SessionStateTag });
+    }
+
+    /// <summary>
+    /// Refuses to let the host finish starting when the declared refresh-token store and the store the
+    /// container actually resolves are not the same thing.
+    /// </summary>
+    /// <param name="services">The built service provider, resolved from after the container is composed.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="services"/> is <see langword="null"/>.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// The configured provider and the registered implementation disagree, in either direction.
+    /// </exception>
+    /// <exception cref="OptionsValidationException">The store settings are invalid.</exception>
+    /// <remarks>
+    /// <para>
+    /// <strong>WHY THIS EXISTS AT ALL.</strong> This solution's refresh-token store is process-local, so
+    /// refresh state is neither shared between replicas nor carried across a restart. The plan's own
+    /// constraints are what make that the shipped state model - AAP rule T4 forbids adding a table to the
+    /// existing DotNetNuke schema, AAP section 0.6 freezes a dependency inventory containing no
+    /// distributed-cache client, and AAP section 0.9.3 reproduces a two-service container topology verbatim -
+    /// and the limitation is recorded in <c>MIGRATION_NOTES.md</c>. What it must never become is a limitation a
+    /// deployment does not know it has. Two failures are possible, and both used to be silent:
+    /// </para>
+    /// <para>
+    /// A deployment declares <c>RefreshTokenStore:Provider=External</c>, intending to run several replicas
+    /// behind its own shared store, but never registers one - so it scales out on top of this process-local
+    /// store and refresh fails unpredictably depending on which replica answers. And a deployment registers a
+    /// replacement while still declaring <c>InProcess</c> - so its configuration, its documentation and its
+    /// operators all describe a store it is not running. Neither is detectable from behaviour until it costs a
+    /// user a session, so both are start-up failures here.
+    /// </para>
+    /// <para>
+    /// <strong>WHY IT IS AN EXPLICIT CALL RATHER THAN A HOSTED SERVICE OR AN OPTIONS VALIDATOR.</strong> The
+    /// question is about the composed CONTAINER, not about a configuration value, so an
+    /// <c>IValidateOptions&lt;T&gt;</c> cannot answer it: resolving <c>IRefreshTokenStore</c> from inside
+    /// options validation would re-enter the very options creation that triggered the validation, because the
+    /// store depends on these settings. A hosted service would work, but it would put the check somewhere no
+    /// reader of the composition root can see, and this solution registers no hosted service at all - adding
+    /// one to carry a start-up assertion would be a mechanism introduced for a single caller. An explicit call
+    /// immediately after the host is built runs before anything is served, is exercised by every integration
+    /// test that builds the host, and can be unit-tested against a bare service collection.
+    /// </para>
+    /// <para>
+    /// Resolving the store here also constructs it eagerly, which is a deliberate secondary benefit: the
+    /// store validates its own settings in its constructor, so an unusable capacity or grace becomes a
+    /// start-up abort rather than a failure on the first sign-in.
+    /// </para>
+    /// <para>
+    /// The refusal names the configuration key and the corrective action in both directions and quotes no
+    /// value beyond the provider name, which is one of two accepted words.
+    /// </para>
+    /// </remarks>
+    public static void ValidateRefreshTokenStoreTopology(IServiceProvider services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        RefreshTokenStoreOptions settings = services
+            .GetRequiredService<IOptions<RefreshTokenStoreOptions>>()
+            .Value;
+
+        IReadOnlyList<string> failures = settings.Validate();
+        if (failures.Count != 0)
+        {
+            throw new OptionsValidationException(
+                RefreshTokenStoreOptions.SectionName,
+                typeof(RefreshTokenStoreOptions),
+                failures);
+        }
+
+        // Resolving the CONTRACT is the whole point: the container hands back the last registration of it, so
+        // this is the instance the token service and the authentication service will use. Comparing against the
+        // concrete type - rather than against the instance registered here - is what makes the check survive a
+        // host that resolves the store before this runs.
+        bool thisSolutionsStore =
+            services.GetRequiredService<IRefreshTokenStore>() is RefreshTokenStore;
+
+        if (settings.UsesExternalStore && thisSolutionsStore)
+        {
+            throw new InvalidOperationException(
+                $"'{RefreshTokenStoreOptions.SectionName}:{nameof(RefreshTokenStoreOptions.Provider)}' is "
+                + $"'{RefreshTokenStoreOptions.ExternalProvider}', which declares that this deployment "
+                + "supplies its own refresh-token store, but the store the container resolves is this "
+                + "solution's process-local one. Register the replacement AFTER AddInfrastructure - the last "
+                + "registration of IRefreshTokenStore wins - or set the provider to "
+                + $"'{RefreshTokenStoreOptions.InProcessProvider}' and accept that refresh state is neither "
+                + "shared between replicas nor carried across a restart.");
+        }
+
+        if (settings.UsesSharedStore && thisSolutionsStore)
+        {
+            throw new InvalidOperationException(
+                $"'{RefreshTokenStoreOptions.SectionName}:{nameof(RefreshTokenStoreOptions.Provider)}' is "
+                + $"'{RefreshTokenStoreOptions.SqlServerProvider}', which selects this solution's shared, "
+                + "durable store, but the store the container resolves is its process-local one. The shared "
+                + "registration is conditional on the same setting, so this can only mean a later "
+                + "registration of IRefreshTokenStore displaced it: remove that registration, or declare "
+                + $"'{RefreshTokenStoreOptions.ExternalProvider}' so the configuration, the health report "
+                + "and the operators all describe the store actually running.");
+        }
+
+        if (settings.UsesInProcessStore && !thisSolutionsStore)
+        {
+            throw new InvalidOperationException(
+                $"'{RefreshTokenStoreOptions.SectionName}:{nameof(RefreshTokenStoreOptions.Provider)}' is "
+                + $"'{RefreshTokenStoreOptions.InProcessProvider}', but an IRefreshTokenStore other than this "
+                + "solution's process-local store is registered. Set the provider to "
+                + $"'{RefreshTokenStoreOptions.ExternalProvider}' so that the deployment's configuration, its "
+                + "health report and its operators all describe the store it is actually running.");
+        }
     }
 }

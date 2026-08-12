@@ -1,6 +1,7 @@
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { type ApplicationConfig, provideZoneChangeDetection } from '@angular/core';
 import {
+  PreloadAllModules,
   provideRouter,
   withComponentInputBinding,
   withInMemoryScrolling,
@@ -8,7 +9,6 @@ import {
 } from '@angular/router';
 
 import { APP_ROUTES } from './app.routes';
-import { AuthenticatedPreloadingStrategy } from './core/config/authenticated-preloading.strategy';
 import { correlationIdInterceptor } from './core/interceptors/correlation-id.interceptor';
 import { authInterceptor } from './core/interceptors/auth.interceptor';
 import { errorInterceptor } from './core/interceptors/error.interceptor';
@@ -192,18 +192,24 @@ export const appConfig: ApplicationConfig = {
        * visit several screens in one session, so the bundles are very likely to be
        * wanted. A public site with a single landing page would choose differently.
        *
-       * ⚠ GATED ON A HELD SESSION, and no longer the framework's built-in. With
-       * `PreloadAllModules` the fetching began as soon as the FIRST navigation
-       * settled, and for an anonymous visitor that navigation settles on the
-       * sign-in screen — so 163,918 bytes, 54.49% of all the application's
-       * JavaScript, were downloaded by anyone who could reach the login page,
-       * carrying every administration route name and every API endpoint with them.
-       * The strategy named below preserves the eager behaviour argued for above
-       * EXACTLY and changes only when it starts. See its own file for why this is
-       * defence in depth rather than an access-control measure, and for the record
-       * of this departure from the plan's literal wording.
+       * ⚠ THE FRAMEWORK'S BUILT-IN, NAMED EXACTLY AS THE PROJECT PLAN NAMES IT, and a
+       * bespoke substitute for it is deliberately NOT used. An earlier revision
+       * installed a session-gated strategy of its own, on the grounds that
+       * `PreloadAllModules` begins fetching as soon as the FIRST navigation settles —
+       * which for an anonymous visitor is the sign-in screen, so 163,918 bytes,
+       * 54.49% of the application's JavaScript, reached anyone who could reach that
+       * screen, carrying every administration route name with it. The measurement was
+       * real; the conclusion was not this file's to draw. The plan fixes the router
+       * configuration verbatim as
+       * `provideRouter(routes, withComponentInputBinding(), withInMemoryScrolling(…), withPreloading(PreloadAllModules))`,
+       * and a bundle name is not authority: every one of those routes is refused by
+       * its own gate and re-authorised server-side, so what was downloaded could not
+       * be used. Substituting a different strategy traded a frozen specification for
+       * a bandwidth saving, which is the wrong direction. Should the exposure be
+       * judged to outweigh the specification, that is an amendment to the plan rather
+       * than a local decision here.
        */
-      withPreloading(AuthenticatedPreloadingStrategy),
+      withPreloading(PreloadAllModules),
     ),
 
     /**

@@ -992,13 +992,6 @@ export class ModuleStore implements OnDestroy {
    */
   private readonly _selectedModuleId = signal<number | undefined>(undefined);
 
-  /**
-   * The placement the screens are working with, or `undefined` to address the module itself.
-   *
-   * A placement identifier seeds at 1 rather than 0, but no lower bound is assumed and no value is
-   * treated as absent: `undefined` is the only absence.
-   */
-  private readonly _selectedTabModuleId = signal<number | undefined>(undefined);
 
   /** Whether a single-module read is in flight. */
   private readonly _moduleLoading = signal(false);
@@ -1194,8 +1187,6 @@ export class ModuleStore implements OnDestroy {
   /** The selected module, or `undefined`. Test with `=== undefined`. */
   readonly selectedModuleId = this._selectedModuleId.asReadonly();
 
-  /** The selected placement, or `undefined` to address the module itself. */
-  readonly selectedTabModuleId = this._selectedTabModuleId.asReadonly();
 
   /** Whether a single-module read is in flight. */
   readonly moduleLoading = this._moduleLoading.asReadonly();
@@ -1367,19 +1358,6 @@ export class ModuleStore implements OnDestroy {
     this._selectedModuleId.set(moduleId);
   }
 
-  /**
-   * Selects the placement subsequent module operations address, or clears it.
-   *
-   * With a placement selected, a read, a replacement, a removal or a settings operation addresses ONE
-   * occurrence of the module on ONE page. With none selected, it addresses the module itself, which for
-   * a module whose all-pages flag is set means every occurrence. The two are materially different and
-   * this store never substitutes one for the other.
-   *
-   * @param tabModuleId The placement to select. Pass `undefined` to address the module itself.
-   */
-  selectPlacement(tabModuleId: number | undefined): void {
-    this._selectedTabModuleId.set(tabModuleId);
-  }
 
   /**
    * Selects the page the screens are working with, or clears the selection.
@@ -2310,7 +2288,6 @@ export class ModuleStore implements OnDestroy {
 
     this._module.set(null);
     this._selectedModuleId.set(undefined);
-    this._selectedTabModuleId.set(undefined);
     this._moduleLoading.set(false);
   }
 
@@ -2384,7 +2361,6 @@ export class ModuleStore implements OnDestroy {
 
     this._module.set(null);
     this._selectedModuleId.set(undefined);
-    this._selectedTabModuleId.set(undefined);
     this._moduleLoading.set(false);
     this._saving.set(false);
 
@@ -2710,22 +2686,15 @@ export class ModuleStore implements OnDestroy {
   /**
    * Resolves which placement an operation addresses.
    *
-   * An explicit argument wins; when none is given the stored selection is used; when that too is absent
-   * the result is `undefined`, which addresses the MODULE rather than one of its placements. Every test
-   * is an exact `=== undefined`, because a placement identifier is an opaque key and no numeric value of
-   * it means "absent".
+   * The caller names the placement or names nothing; naming nothing addresses the MODULE rather than one
+   * of its placements. The test is an exact `=== undefined`, because a placement identifier is an opaque
+   * key and no numeric value of it means "absent" - in particular not zero.
    *
-   * @param tabModuleId The placement named by the caller, or `undefined` to use the stored selection.
+   * @param tabModuleId The placement named by the caller, or `undefined` to address the module itself.
    * @returns The selector to forward, or `undefined` to address the module itself.
    */
   private resolvePlacement(tabModuleId?: number): ModulePlacement | undefined {
-    if (tabModuleId !== undefined) {
-      return { tabModuleId };
-    }
-
-    const selected: number | undefined = this._selectedTabModuleId();
-
-    return selected === undefined ? undefined : { tabModuleId: selected };
+    return tabModuleId === undefined ? undefined : { tabModuleId };
   }
 
   /**
@@ -2746,8 +2715,7 @@ export class ModuleStore implements OnDestroy {
    * addressed.
    */
   private replaceListedPlacement(detail: ModuleDetail, tabModuleId?: number): void {
-    const addressedPlacement: boolean =
-      tabModuleId !== undefined || this._selectedTabModuleId() !== undefined;
+    const addressedPlacement: boolean = tabModuleId !== undefined;
 
     if (!addressedPlacement || detail.allTabs) {
       this.loadModules();

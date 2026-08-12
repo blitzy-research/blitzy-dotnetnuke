@@ -294,17 +294,6 @@ const ALIAS_REPLACED_MESSAGE =
   'Changing the Portal Type reset the Portal Alias. Re-enter the alias you want for this portal.';
 
 
-/**
- * The refusal for a blank site title on the EDIT path — R-M20.
- *
- * The server's own wording, restated verbatim from `UpdatePortalRequestValidator:L349` so the field and
- * the API cannot disagree about one rule. NET-NEW rather than measured: the legacy edit screen declared
- * no validator on the title at all, so there is nothing to reproduce, and the rule is justified by the
- * `[nvarchar] (128) NOT NULL` column. The sibling site-settings screen restates the same sentence
- * against the same rule.
- */
-const PORTAL_NAME_REQUIRED_MESSAGE = 'Site Title is required.';
-
 /** `valFirstName.ErrorMessage` — `signup.ascx:L80`. */
 const FIRST_NAME_REQUIRED_MESSAGE = 'First Name Is Required.';
 
@@ -783,24 +772,25 @@ const CREATE_REQUIRED_MESSAGE: Readonly<Record<PortalCreateField, string | null>
 /**
  * The requiredness sentence for each control of the EDIT form, or `null` where there is no such rule.
  *
- * ⚠ THIS MAP IS NOT THE CREATION MAP, AND THE ONE DIFFERENCE IS THE SERVER'S. The update contract
- * declares `NotEmpty()` on `PortalName` (`UpdatePortalRequestValidator:L385-L387`) and the creation
- * contract declares only `MaximumLength` (`CreatePortalRequestValidator:L473-L474`), because the legacy
- * `valPortalName` validator at `signup.ascx:L40-L41` guarded the ALIAS despite its message naming the
- * portal name. So a blank title is genuinely acceptable when a portal is created and genuinely refused
- * when one is amended, and the two forms mirror their own endpoint rather than each other.
+ * ⚠ EVERY ENTRY IS `null`, WHICH MAKES THIS MAP AGREE WITH THE CREATION MAP, and an earlier revision
+ * had them disagree about the title. It declared the title required here and not there, mirroring the
+ * update contract's `NotEmpty()` on `PortalName` while the creation contract declared only
+ * `MaximumLength`.
  *
- * The sentence is the SERVER'S OWN, restated verbatim so the field and the API cannot disagree about
- * the wording of one rule. It is net-new rather than measured: the legacy edit screen declared no
- * validator on the title, so there is nothing to reproduce, and the rule is justified by the
- * `[nvarchar] (128) NOT NULL` column rather than by markup. The sibling site-settings screen took the
- * same decision against the same server rule and restates the same sentence.
+ * The server rule it mirrored was itself the defect, and it has been withdrawn.
+ * `Website/admin/Portal/sitesettings.ascx` declares TWO validators on 568 lines, both
+ * `CompareValidator`s, with no `RequiredFieldValidator` anywhere and `MaxLength="128"` the only
+ * attribute on `txtPortalName`; and the write path stored a blank title rather than refusing it —
+ * `SqlDataProvider.vb:L632` passes `PortalName` raw while wrapping fourteen of its sibling arguments in
+ * `GetNull`, `PortalController.vb:L1568-L1570` forwards it untouched, and
+ * `SiteSettings.ascx.vb:L772` passes `txtPortalName.Text` as typed, so the empty string reached a
+ * `NOT NULL` column that accepts it. Refusing that input broke Minimal Change Clause item 3.
  *
- * Written as a TOTAL map so that adding a control forces a decision about its requiredness rather than
- * letting one be inherited by silence.
+ * The map is retained rather than deleted, and stays TOTAL, so that adding a control forces a decision
+ * about its requiredness rather than letting one be inherited by silence.
  */
 const EDIT_REQUIRED_MESSAGE: Readonly<Record<PortalEditField, string | null>> = Object.freeze({
-  title: PORTAL_NAME_REQUIRED_MESSAGE,
+  title: null,
   description: null,
   keywords: null,
 });
@@ -1157,7 +1147,6 @@ const NOT_FOUND_STATUS = 404;
     FormFieldComponent,
     ErrorBannerComponent,
     LoadingSpinnerComponent,
-    FocusFirstInvalidDirective,
   ],
   templateUrl: './portal-form.component.html',
   styleUrl: './portal-form.component.scss',
@@ -1398,17 +1387,16 @@ export class PortalFormComponent {
 
   /** The edit form. Bound only while {@link isEditMode} is true. */
   protected readonly editForm: FormGroup<PortalEditFormModel> = new FormGroup<PortalEditFormModel>({
-    // ⚠ REQUIRED HERE AND DELIBERATELY NOT ON THE CREATION FORM, and the asymmetry is the SERVER'S,
-    // not a slip. `UpdatePortalRequestValidator:L385-L387` declares `NotEmpty()` on `PortalName` with
-    // the message restated below, whereas `CreatePortalRequestValidator:L473-L474` declares only
-    // `MaximumLength` — because the legacy `valPortalName` validator at `signup.ascx:L40-L41` guarded
-    // the ALIAS despite its message naming the portal name, so a creation genuinely accepted a blank
-    // title. Mirroring the server field for field is what stops this form declaring a value valid that
-    // the API will refuse; mirroring it on the creation form too would refuse a value the API accepts.
-    // The sibling site-settings screen took the same decision against the same server rule.
+    // ⚠ NOT REQUIRED, ON EITHER FORM, AND THE SYMMETRY IS THE LEGACY SCREEN'S. An earlier revision
+    // declared `Validators.required` here and not on the creation form, mirroring a `NotEmpty()` the
+    // update contract carried on `PortalName`. That server rule is withdrawn as a parity break — the
+    // legacy site-settings markup declares no presence validator on `txtPortalName` and the legacy
+    // write path stored a blank title as the empty string in a `NOT NULL` column that accepts it, so
+    // both tiers accepted an input this control refused. The width bound is the markup's own
+    // `MaxLength="128"` and stays. See EDIT_REQUIRED_MESSAGE for the citations.
     title: new FormControl<string>('', {
       nonNullable: true,
-      validators: [Validators.required, Validators.maxLength(TITLE_MAX_LENGTH)],
+      validators: [Validators.maxLength(TITLE_MAX_LENGTH)],
     }),
     description: new FormControl<string>('', {
       nonNullable: true,
@@ -2749,6 +2737,28 @@ export class PortalFormComponent {
     this.editForm.markAsPristine();
     this.editForm.markAsUntouched();
 
+    // ⚠ MAJOR (CWE-316 cleartext storage) — THE CREDENTIAL IS DISCARDED HERE, BEFORE THE NAVIGATION
+    // AND NOT AS A CONSEQUENCE OF IT. The administrator password and its confirmation are the only
+    // secrets this screen ever holds, and marking the form settled above does not remove them: the
+    // controls keep their values, and the two password inputs bound to them keep those values in the
+    // live document.
+    //
+    // Relying on the navigation to take them away is what made this a defect rather than a
+    // theoretical one. The navigation below is asynchronous and CAN NOT COMPLETE: a route guard may
+    // refuse it, `navigate` may resolve `false`, the operator may have a confirmation dialogue open,
+    // or a lazy chunk may fail to load. In every one of those cases the write has already succeeded -
+    // the credential is stored server-side and this copy has no further purpose - and the screen stays
+    // mounted with the password readable in the DOM, recoverable from the component heap, and
+    // available to any browser or extension that walks the form. Clearing it first makes the window
+    // zero-width in every outcome rather than in the happy one.
+    //
+    // BOTH controls, and `reset` rather than `setValue('')`, so the value, the dirty flag and the
+    // touched flag all go together and no validation message about a credential that no longer exists
+    // is left on the screen. Nothing else is cleared: the entry an operator can see and re-read is not
+    // a secret and wiping the whole form would only make a refused navigation look like a lost draft.
+    this.createForm.controls.password.reset('');
+    this.createForm.controls.confirm.reset('');
+
     // `true`: the confirmation is raised immediately before a deliberate redirect and is meant to be
     // read at the destination - see the redirect below.
     this.notifications.success(message, true);
@@ -2759,6 +2769,13 @@ export class PortalFormComponent {
     // and the comment above this method says the list 'is where the written row is visible', which is
     // exactly why it has to survive the trip there. Replacing rather than pushing keeps BACK from
     // returning to a form for a record that now exists.
-    void this.router.navigate([PORTAL_LIST_ROUTE], { replaceUrl: true });
+    //
+    // ⚠ THE REJECTION IS HANDLED, following the pattern the shell, the sign-in screen and both account
+    // screens already use. A `navigate` that REJECTS - which a failed lazy chunk produces - would
+    // otherwise surface as an unhandled promise rejection, reported nowhere useful and attributed to
+    // whatever ran next. There is nothing further to do about it here: the write has succeeded, the
+    // confirmation is queued, and the credential above is already discarded, so the operator is left on
+    // a settled screen rather than on one holding a stored secret.
+    void this.router.navigate([PORTAL_LIST_ROUTE], { replaceUrl: true }).catch(() => false);
   }
 }

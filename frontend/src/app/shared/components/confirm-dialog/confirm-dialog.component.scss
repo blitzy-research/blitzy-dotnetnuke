@@ -198,19 +198,21 @@
 .confirm-dialog__button--danger {
   border-color: var(--color-danger);
 
-  // The destructive label now reads in the danger TEXT token rather than in the link
-  // colour. It was the link colour because the only red available failed the contrast
-  // minimum at this size, so severity had to be carried by weight and wording alone;
-  // --color-danger-text clears 4.5:1 on every surface this dialog paints on, so the
-  // label can state its severity in colour as well without costing a reader anything.
-  color: var(--color-danger-text);
+  // The destructive label reads in the vocabulary's danger value rather than in the link
+  // colour, so the border, the label and the word all state one thing. A darkened sibling
+  // token was used here briefly and is withdrawn: the colour vocabulary is closed at the nine
+  // values the design specification enumerates, and the residual text contrast is stated on
+  // `--color-danger`'s own declaration. The bold weight below, the label reading "Delete", the
+  // red border and the fact that an alert dialog had to be opened are the non-colour cues that
+  // carry severity to a reader the hue does not reach.
+  color: var(--color-danger);
   font-weight: var(--font-weight-bold);
 
   &:enabled:hover {
-    color: var(--color-danger-text);
+    color: var(--color-danger);
   }
 
   &:enabled:active {
-    color: var(--color-danger-text);
+    color: var(--color-danger);
   }
 }

@@ -1814,11 +1814,13 @@ public class MappingTests
     /// This fact is the one that pins it.
     /// </para>
     /// <para>
-    /// A page move is consequently not available through this contract, and reinstating it needs a second
-    /// member naming the destination: one page identifier cannot be both the placement being edited and the
-    /// page it should end up on. The service refuses a request naming a page the module does not occupy, so
-    /// the input below never reaches the projection in production; the divergence from the legacy screen is
-    /// recorded in MIGRATION_NOTES.md.
+    /// That second member was subsequently ADDED rather than left outstanding, so a page move IS available
+    /// through this contract: <see cref="UpdateModuleRequest.MoveToTabId"/> names the destination while
+    /// <c>TabId</c> keeps selecting the placement being edited. One page identifier could not be both, which
+    /// is why there are two. This fact stays exactly as it is and is not weakened by that addition - it pins
+    /// the SELECTOR half of the pair, and the projection must still never write the submitted page onto the
+    /// placement it selected. The move is performed by the service after the projection has applied, not by
+    /// the projection, so nothing below changes.
     /// </para>
     /// </remarks>
     [Fact]

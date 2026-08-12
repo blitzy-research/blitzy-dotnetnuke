@@ -389,17 +389,25 @@ export interface Role {
   readonly iconFile: string | null;
 
   /**
-   * Opaque marker of the revision this role was read at, or `null` when the API served none.
+   * Opaque marker of the revision this role was read at.
    *
    * ⚠ SEND IT BACK UNREAD AND UNMODIFIED. It is a server-minted token whose internal form is not part
    * of this contract; nothing on this side may parse it, compare it for ordering, display it, or
    * synthesise one. Its only correct use is to be carried from a read into the matching
    * {@link UpdateRoleRequest} so the server can tell whether the role changed in between.
    *
-   * `null` is a real state and is not an error: an API that serves no token cannot detect a conflict,
-   * so an update sent without one is a last-writer-wins update. A screen must not invent a token to
-   * fill the gap, because a wrong token is refused and a fabricated one that happens to match would
-   * defeat the very check it appears to satisfy.
+   * ⚠ REQUIRED ON THE WAY IN, nullable on the way out, and the asymmetry is the server's.
+   * `RoleDetailDto.ConcurrencyToken` is declared `public string ... = string.Empty` — a non-nullable
+   * member that `RoleMappings.ConcurrencyTokenFor` always populates — so a response omitting it or
+   * serving a null is a malformed response and the decoder says so. Widening it to `string | null`
+   * here was the defect: the null decoded silently, flowed into
+   * {@link UpdateRoleRequest.concurrencyToken}, which the server permits as a last-writer-wins update,
+   * and the optimistic check the marker exists to perform was skipped with nothing anywhere reporting
+   * that it had been. The REQUEST member stays nullable, which is what the server actually permits.
+   *
+   * The empty string is the server's own unset spelling and is carried as received. A screen must not
+   * invent or substitute a token, because a wrong token is refused and a fabricated one that happens
+   * to match would defeat the very check it appears to satisfy.
    *
    * MIGRATION: NO LEGACY COUNTERPART. `UpdateRole`
    * (`Library/Providers/MembershipProviders/DataProvider/SqlDataProvider.vb:L242-L243`) took thirteen
@@ -409,7 +417,7 @@ export interface Role {
    * field they disagreed about. The token is the target's answer to that, and it is recorded as an
    * addition in `MIGRATION_NOTES.md`.
    */
-  readonly concurrencyToken: string | null;
+  readonly concurrencyToken: string;
 }
 
 /**
@@ -874,11 +882,13 @@ export const decodeRoleListItem: Decoder<RoleListItem> = objectOf<RoleListItem>(
  * nullable because a role need not belong to a group, and that null is the only expression of "ungrouped" —
  * it is never coalesced to zero, which would silently move the role into the first group.
  *
- * `concurrencyToken` is decoded as a NULLABLE STRING and nothing more. It is deliberately not validated for
+ * `concurrencyToken` is decoded as a REQUIRED STRING and nothing more. It is deliberately not validated for
  * shape, length or encoding: it is the server's own opaque marker, and a decoder that asserted a format
- * would start rejecting valid tokens the moment the server changed how it mints them. Absent is tolerated
- * for the same reason — an API build that serves no token must not make a role undecodable — and the absence
- * is then visible to the screen as `null` rather than hidden behind a substituted value.
+ * would start rejecting valid tokens the moment the server changed how it mints them. What it IS checked for
+ * is presence, because `RoleDetailDto.ConcurrencyToken` is a non-nullable member the mapper always populates,
+ * so a response omitting it is malformed. Tolerating absence was the defect: the null decoded silently,
+ * reached a write the server treats as last-writer-wins, and the optimistic check was skipped with nothing
+ * anywhere saying so. The empty string is the server's own unset spelling and is carried through as received.
  */
 export const decodeRole: Decoder<Role> = objectOf<Role>({
   roleId: decodeInteger,
@@ -895,7 +905,8 @@ export const decodeRole: Decoder<Role> = objectOf<Role>({
   autoAssignment: decodeBoolean,
   rsvpCode: nullable(decodeString),
   iconFile: nullable(decodeString),
-  concurrencyToken: nullable(decodeString),
+  // ⚠ REQUIRED, NOT NULLABLE, and `nullable(...)` here was the defect. See the note above.
+  concurrencyToken: decodeString,
 });
 
 /**

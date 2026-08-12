@@ -396,20 +396,34 @@ $_breakpoint-epsilon: 0.001rem;
 }
 
 // -----------------------------------------------------------------------------
-//  MOTION GUARD
+//  MOTION
 // -----------------------------------------------------------------------------
-//  Applies its content only where the reader has NOT asked their operating system
-//  for reduced motion.
+//  ONE guard and one rotation, in one section. Both the guard and its section banner
+//  were declared TWICE in this file, with identical bodies and overlapping prose, so a
+//  reader met the same mixin explained two different ways and a later edit could have
+//  changed one copy and not the other. The two accounts are merged below and the
+//  duplicate declaration is gone.
 //
-//  ⚠ WHY THIS MIXIN EXISTS AT ALL, since the exported surface is deliberately
-//  closed. The header of this file states that a consumer needing any other
-//  at-rule - "a reduced-motion guard, a hover-capability query" - "must report the
-//  gap and degrade, never write the query itself". The progress indicator did
-//  exactly that: it recorded that it could not rotate because no such guard was
-//  exported and a component stylesheet may not author a feature query of its own,
-//  and it degraded to a static glyph. A static indeterminate indicator does not
-//  report progress, so the gap was reported and is now CLOSED HERE, in the one file
-//  permitted the query, rather than worked around at the call site.
+//  MIGRATION: A NET ADDITION, and it is added here rather than in a component for the
+//  same reason every media query lives in this file: a component stylesheet may not
+//  author a raw `@media`, so a component that needs motion cannot guard it and must
+//  therefore be given a guard to use. Without one the only compliant choice was to
+//  ship no motion at all - which is what happened, and what left the application's
+//  primary asynchronous affordance conveying nothing: runtime measurement found ZERO
+//  `@keyframes` rules in the whole bundle, so the "spinner" was a static ring that
+//  never moved while a request was in flight. The legacy portal declared no motion
+//  vocabulary, so nothing is being diverged FROM here; a spinner that spins is a net
+//  addition in the same sense as the spacing scale.
+//
+//  ⚠ WHY THE GUARD EXISTS AT ALL, since the exported surface is deliberately closed.
+//  The header of this file states that a consumer needing any other at-rule - "a
+//  reduced-motion guard, a hover-capability query" - "must report the gap and degrade,
+//  never write the query itself". The progress indicator did exactly that: it recorded
+//  that it could not rotate because no such guard was exported and a component
+//  stylesheet may not author a feature query of its own, and it degraded to a static
+//  glyph. A static indeterminate indicator does not report progress, so the gap was
+//  reported and is now CLOSED HERE, in the one file permitted the query, rather than
+//  worked around at the call site.
 //
 //  ⚠ `no-preference` AND NOT `not (reduce)`. The guard admits motion only on an
 //  explicit absence of preference, so a browser that reports the feature as
@@ -418,36 +432,11 @@ $_breakpoint-epsilon: 0.001rem;
 //  preference: nobody is harmed by a still indicator, and a reader who cannot
 //  tolerate movement is harmed by an unexpected one.
 //
-//  The static presentation therefore remains the base state and this only ever
-//  ADDS movement, which is also why no `animation: none` counterpart is needed.
-@mixin motion-safe {
-  @media (prefers-reduced-motion: no-preference) {
-    @content;
-  }
-}
-// ---------------------------------------------------------------------------------
-//  MOTION
-// ---------------------------------------------------------------------------------
-//  MIGRATION: A NET ADDITION, and it is added here rather than in a component for the
-//  same reason every media query lives in this file: a component stylesheet may not
-//  author a raw `@media`, so a component that needs motion cannot guard it and must
-//  therefore be given a guard to use. Without one the only compliant choice was to
-//  ship no motion at all - which is what happened, and what left the application's
-//  primary asynchronous affordance conveying nothing: runtime measurement found ZERO
-//  `@keyframes` rules in the whole bundle, so the "spinner" was a static ring that
-//  never moved while a request was in flight.
-//  The legacy portal declared no motion vocabulary, so nothing is being diverged FROM
-//  here; a spinner that spins is a net addition in the same sense as the spacing scale.
-//  The guard is what makes it admissible: `motion-safe` wraps a declaration so that it
-//  is applied only when the reader has NOT asked their system to reduce motion, which
-//  means the reduced-motion presentation is the DEFAULT and the movement is the
-//  enhancement - the safe direction, since a reader who expresses no preference is the
-//  one the media query treats as `no-preference`.
-/// The duration of the one repeating indicator this application animates.
-///
-/// Deliberately a single value rather than a scale. One component animates, so a scale
-/// would be three unused tokens and an invitation to animate more.
-$_motion-duration-indicator: 900ms;
+//  The static presentation therefore remains the base state and the guard only ever
+//  ADDS movement, which is also why no `animation: none` counterpart is needed - and it
+//  is what makes the movement admissible: the reduced-motion presentation is the
+//  DEFAULT and the movement is the enhancement.
+
 /// Wraps declarations that must only apply when motion is welcome.
 ///
 /// @content Declarations applied when the reader has not requested reduced motion.
@@ -463,9 +452,22 @@ $_motion-duration-indicator: 900ms;
 /// single time in the bundle and a component cannot invent a second, differently-timed
 /// spin. `will-change` is deliberately absent: a compositor hint for a 24 px element is
 /// a cost, not an optimisation.
+///
+/// ⚠ THE DURATION AND THE EASING ARE TOKENS AND WERE A SASS VARIABLE AND A KEYWORD. A
+/// private `$_motion-duration-indicator: 900ms` was declared in this file alongside a
+/// literal `linear`, while `--duration-rotate` and `--easing-rotate` already existed in
+/// the token vocabulary carrying exactly this purpose - so one motion had two
+/// authorities that disagreed on the duration, and the one outside the vocabulary won.
+/// Both now resolve to the tokens, which is also why the shorthand is written out as
+/// three longhand declarations: `animation` cannot be assembled from custom properties
+/// reliably, because an invalid substitution in a shorthand invalidates the whole
+/// declaration at computed-value time rather than falling back per component.
 @mixin indeterminate-spin {
   @include motion-safe {
-    animation: dnn-indeterminate-spin $_motion-duration-indicator linear infinite;
+    animation-name: dnn-indeterminate-spin;
+    animation-duration: var(--duration-rotate);
+    animation-timing-function: var(--easing-rotate);
+    animation-iteration-count: infinite;
   }
 }
 

@@ -266,44 +266,23 @@ public sealed class RoleRepositoryTests
             elsewhere.Where(role => role.PortalId != null).Should().BeEmpty();
             elsewhere.Select(role => role.RoleId).Should().NotContain(first);
 
-            // MIGRATION: THE READ ADMITS ROLES WITH NO OWNING PORTAL. The terminal GetPortalRoles filters
-            // on ( R.PortalId = @PortalId OR R.PortalId is null ) at 04.08.00.SqlDataProvider:L40, so an
-            // installation-wide role is visible to every tenant. That is asserted with a real host role
-            // rather than inferred, because the seeded installation defines none and an absent case would
-            // let a strict-equality regression pass unnoticed. Note the contrast with GetByIdAsync, whose
-            // terminal procedure is a strict equality - the two are deliberately asymmetric.
-            Role hostRole = new()
-            {
-                PortalId = null,
-                RoleName = FormattableString.Invariant($"Host {marker}"),
-                Description = "Created by the persistence role suite.",
-            };
-
-            using (IServiceScope hostScope = _fixture.Services.CreateScope())
-            {
-                IRoleRepository hostRoles = hostScope.ServiceProvider.GetRequiredService<IRoleRepository>();
-                IUnitOfWork hostUnitOfWork = hostScope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-
-                await hostRoles.AddAsync(hostRole);
-                await hostUnitOfWork.SaveChangesAsync();
-            }
-
-            try
-            {
-                using IServiceScope withHost = _fixture.Services.CreateScope();
-                IRoleRepository reading = withHost.ServiceProvider.GetRequiredService<IRoleRepository>();
-
-                (await reading.GetByPortalIdAsync(portalId)).Select(role => role.RoleId)
-                    .Should().Contain(hostRole.RoleId, "a role with no owning portal is visible to every tenant");
-
-                // The same role is unreachable through the by-key read, whose portal condition is strict.
-                (await reading.GetByIdAsync(hostRole.RoleId, portalId)).Should()
-                    .BeNull("GetRole compares PortalId for equality, which a null never satisfies");
-            }
-            finally
-            {
-                await RemoveRoleAsync(hostRole.RoleId);
-            }
+            // MIGRATION: THE READ CARRIES A PREDICATE THAT THE TERMINAL COLUMN LEAVES UNSATISFIABLE, and
+            // this suite used to fabricate a row to exercise it. The terminal GetPortalRoles filters on
+            // ( R.PortalId = @PortalId OR R.PortalId is null ) at 04.08.00.SqlDataProvider:L40, and the
+            // repository reproduces that predicate faithfully - but Roles.PortalID is int NOT NULL in the
+            // terminal schema (01.00.05.SqlDataProvider:2749, corroborated by the fresh-install snapshot at
+            // DotNetNuke.Schema.SqlDataProvider:6209), so no installation can hold such a row and the null
+            // branch can never be true.
+            //
+            // The earlier version of this test inserted a role with PortalId = null and asserted that the
+            // listing returned it. It passed only because Schema/DnnSchema.sql had drifted to declaring the
+            // column NULL, which measuring against Schema/TerminalSchema.manifest exposed. Asserting
+            // behaviour over data production cannot hold is worse than asserting nothing, because it reads
+            // downstream as proof of a capability that does not exist. The constraint that makes the branch
+            // unreachable is proved instead by LegacySchemaFidelityTests
+            // Roles_RefusesARoleThatBelongsToNoPortal, and the rollback on that refusal by the sibling test
+            // below. The predicate itself stays in the repository because the legacy procedure wrote it and
+            // the Minimal Change Clause protects that, not because anything can exercise it.
         }
         finally
         {
@@ -2145,79 +2124,91 @@ public sealed class RoleRepositoryTests
     }
 
     /// <summary>
-    /// A role belonging to no tenant is offered to every tenant's listing, and is still not addressable
-    /// through a tenant-scoped read.
+    /// A role belonging to no tenant is refused by the store, and the refusal leaves the tenant's listing
+    /// exactly as it was.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
-    /// <c>Roles.PortalID</c> is <c>int NULL</c> - alone among the identifying columns of this contract -
-    /// and the terminal listing procedure admits a role whose tenant is null into every tenant's list.
-    /// The entity therefore models the column as <c>int?</c> and the listing member reproduces that
-    /// inclusion. It is asserted here because it is invisible in ordinary data: every role a tenant
-    /// creates carries a tenant, so a mapping that dropped the inclusion would pass every other
-    /// assertion in this file.
+    /// <strong>This test replaces one that asserted the opposite, and the correction is the point.</strong>
+    /// It used to insert a role with <c>PortalId = null</c> and assert that every tenant's listing returned
+    /// it, on the strength of <c>Roles.PortalID</c> being <c>int NULL</c>. That declaration was wrong:
+    /// <c>Schema/DnnSchema.sql</c> had drifted, and measuring it against the independently derived
+    /// <c>Schema/TerminalSchema.manifest</c> showed the terminal column is <c>int NOT NULL</c>
+    /// (<c>01.00.05.SqlDataProvider:2749</c>, corroborated by the fresh-install snapshot at
+    /// <c>DotNetNuke.Schema.SqlDataProvider:6209</c>). The old test therefore proved a capability no
+    /// installation has, and it could only ever have passed against a fixture that was itself wrong.
     /// </para>
     /// <para>
-    /// MIGRATION: THE LISTING AND THE SINGLE READ DISAGREE ABOUT SUCH A ROLE, AND THAT DISAGREEMENT IS
-    /// PRESERVED RATHER THAN REPAIRED. The tenant-scoped single read requires the tenant keys to be equal,
-    /// which a null never is, so a role visible in a tenant's list cannot be fetched by that tenant's own
-    /// single read. The same asymmetry exists in the legacy pair - the listing procedure's <c>OR
-    /// PortalID IS NULL</c> against the single-role procedure's equality test - so it is recorded here as
-    /// the measured behaviour of both, not smoothed over. Repairing it would be an opportunistic change to
-    /// a rule the Minimal Change Clause protects; it is documented instead.
+    /// <strong>What is asserted here instead is a repository property rather than a schema one.</strong>
+    /// That the column refuses the row is proved by <c>LegacySchemaFidelityTests</c>
+    /// <c>Roles_RefusesARoleThatBelongsToNoPortal</c>; what this adds is that the refusal is CLEAN - the
+    /// unit of work leaves nothing behind, and a subsequent read through a fresh scope sees precisely the
+    /// roles that existed before the attempt. A half-applied write would be invisible to the schema
+    /// assertion and visible only here.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the repository still reproduces the terminal listing predicate
+    /// <c>( R.PortalId = @PortalId OR R.PortalId is null )</c>
+    /// (<c>04.08.00.SqlDataProvider:L40</c>) and the strict equality of the single read
+    /// (<c>04.00.04.SqlDataProvider:L311-L336</c>). Against a faithful installation the null branch of the
+    /// first is unsatisfiable, so the asymmetry between the two is unobservable. It is preserved because the
+    /// legacy procedures wrote it and the Minimal Change Clause protects them, and it is recorded as
+    /// unobservable rather than left looking like tested behaviour.
     /// </para>
     /// </remarks>
     [Fact]
-    public async Task GetByPortalIdAsync_AdmitsARoleThatBelongsToNoTenant()
+    public async Task GetByPortalIdAsync_IsUnaffectedByARefusedRoleThatBelongsToNoTenant()
     {
         int portalId = await CreatePortalAsync();
-        string roleName = FormattableString.Invariant($"Installation Wide {Suffix()}");
-        int roleId;
-
-        using (IServiceScope writing = _fixture.Services.CreateScope())
-        {
-            IRoleRepository roles = writing.ServiceProvider.GetRequiredService<IRoleRepository>();
-            IUnitOfWork unitOfWork = writing.ServiceProvider.GetRequiredService<IUnitOfWork>();
-
-            Role role = new()
-            {
-                PortalId = null,
-                RoleName = roleName,
-                Description = "Created by the persistence role suite.",
-            };
-
-            await roles.AddAsync(role);
-            await unitOfWork.SaveChangesAsync();
-
-            roleId = role.RoleId;
-        }
+        string marker = Suffix();
+        int owned = await CreateRoleAsync(portalId, FormattableString.Invariant($"Owned {marker}"));
 
         try
         {
-            using IServiceScope reading = _fixture.Services.CreateScope();
-            IRoleRepository reader = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+            IReadOnlyList<int> before;
 
-            (await reader.GetByPortalIdAsync(portalId))
-                .Select(role => role.RoleId)
-                .Should().Contain(roleId, "a role with no tenant is offered to the tenant just created");
+            using (IServiceScope reading = _fixture.Services.CreateScope())
+            {
+                IRoleRepository reader = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+                before = (await reader.GetByPortalIdAsync(portalId)).Select(role => role.RoleId).ToList();
+            }
 
-            (await reader.GetByPortalIdAsync(_fixture.Seed.PortalId))
-                .Select(role => role.RoleId)
-                .Should().Contain(roleId, "and to every other tenant as well");
+            before.Should().Contain(owned);
 
-            (await reader.GetAllAsync())
-                .Select(role => role.RoleId)
-                .Should().Contain(roleId, "the unfiltered read carries it too");
+            string refusedName = FormattableString.Invariant($"Tenant Less {marker}");
 
-            // The asymmetry, asserted rather than corrected.
-            (await reader.GetByIdAsync(roleId, portalId)).Should().BeNull(
-                "a tenant-scoped single read compares the tenant keys, and a null is equal to nothing");
-            (await reader.GetByNameAsync(portalId, roleName)).Should().BeNull();
+            using (IServiceScope writing = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = writing.ServiceProvider.GetRequiredService<IRoleRepository>();
+                IUnitOfWork unitOfWork = writing.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                await roles.AddAsync(new Role
+                {
+                    PortalId = null,
+                    RoleName = refusedName,
+                    Description = "Created by the persistence role suite; the store must refuse it.",
+                });
+
+                Func<Task> write = async () => await unitOfWork.SaveChangesAsync();
+
+                await write.Should().ThrowAsync<DbUpdateException>(
+                    "the terminal column is NOT NULL, so a role with no owning tenant is a row no "
+                    + "installation can hold");
+            }
+
+            using IServiceScope after = _fixture.Services.CreateScope();
+            IRoleRepository afterReader = after.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+            (await afterReader.GetByPortalIdAsync(portalId)).Select(role => role.RoleId)
+                .Should().Equal(before, "a refused write changes nothing that a later read can see");
+
+            (await afterReader.GetByNameAsync(portalId, refusedName)).Should().BeNull(
+                "and it leaves no row behind under the name it tried to use");
         }
         finally
         {
-            await RemoveRoleAsync(roleId);
+            await RemoveRoleAsync(owned);
             await RemovePortalAsync(portalId);
         }
     }

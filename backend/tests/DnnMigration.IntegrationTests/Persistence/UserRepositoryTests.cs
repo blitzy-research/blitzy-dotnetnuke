@@ -49,6 +49,17 @@ public sealed class UserRepositoryTests
 
     private static readonly TimeSpan AttemptWindow = TimeSpan.FromMinutes(10);
 
+    /// <summary>
+    /// Application name the external membership tables are keyed by.
+    /// </summary>
+    /// <remarks>
+    /// Restated here rather than read from the store, which declares it privately. The value is the legacy
+    /// installation's own application name and is a fact about the schema, so a disagreement between the two
+    /// would make every membership seed in this suite attach to nothing - which is precisely what the
+    /// dependant-row assertions would then report.
+    /// </remarks>
+    private const string MembershipApplication = "DotNetNuke";
+
     private readonly ApiTestFixture _fixture;
 
     /// <summary>Initialises a new instance of the <see cref="UserRepositoryTests"/> class.</summary>
@@ -528,6 +539,66 @@ public sealed class UserRepositoryTests
             hash.Should().BeNull();
             format.Should().BeNull();
             salt.Should().BeNull();
+        }
+        finally
+        {
+            await RemoveAccountAsync(userId);
+        }
+    }
+
+    /// <summary>
+    /// Removing a credential clears every dependant membership row first, so an account that held a
+    /// membership role, a profile and a personalisation entry is removed rather than refused.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE DEFECT THIS PINS. The deletion used to remove only <c>aspnet_Membership</c> and
+    /// <c>aspnet_Users</c>. Four tables reference <c>aspnet_Users</c> through NON-cascading foreign keys, and
+    /// the stock <c>aspnet_Users_DeleteUser</c> (<c>InstallCommon.sql</c> lines 421-541, ALTERed at
+    /// <c>04.00.00.SqlDataProvider</c> lines 475-595) clears them in a fixed order before removing the user
+    /// row. Against any real installation the shortened deletion therefore failed with a reference violation
+    /// for every account that had ever held a membership role, stored a profile or personalised a page - and
+    /// this fixture could not observe it, because it provisioned none of those tables. Both halves are fixed:
+    /// the tables are provisioned with their real non-cascading keys, and this test seeds a row in each one.
+    /// </para>
+    /// <para>
+    /// The seeded rows are addressed through the membership user identifier resolved from the account's own
+    /// name, which is how the store itself addresses them, so the test exercises the same join the production
+    /// statement performs rather than a convenient shortcut.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CredentialRemoval_ClearsEveryDependantMembershipRow()
+    {
+        string userName = FormattableString.Invariant($"dep_{Suffix()}");
+        int userId = await CreateAccountAsync(portalId: null, userName);
+
+        try
+        {
+            await SeedMembershipDependantsAsync(userName);
+
+            (await CountMembershipDependantsAsync(userName)).Should().Be(
+                3,
+                "the test is worthless unless the dependant rows really exist before the deletion");
+
+            using IServiceScope scope = _fixture.Services.CreateScope();
+            IUserRepository users = scope.ServiceProvider.GetRequiredService<IUserRepository>();
+
+            bool deleted = await users.DeleteCredentialAsync(userId);
+
+            deleted.Should().BeTrue(
+                "the credential row was present, so its removal is what the outcome reports - and a "
+                + "reference violation raised by a dependant row would have surfaced here as an exception");
+
+            (await CountMembershipUsersAsync(userName)).Should().Be(
+                0,
+                "the membership user row is what the dependants blocked, so its absence is the proof the "
+                + "ordering worked");
+            (await CountMembershipDependantsAsync(userName)).Should().Be(
+                0,
+                "every dependant the stock procedure clears must be gone; a row left behind would outlive "
+                + "the account and be inherited by the next account to reuse the identifier");
         }
         finally
         {
@@ -2687,6 +2758,98 @@ public sealed class UserRepositoryTests
             await unitOfWork.SaveChangesAsync();
         }
     }
+
+    /// <summary>
+    /// Seeds one row in each membership table that references the membership user row, so a deletion has
+    /// something to be blocked by.
+    /// </summary>
+    /// <param name="userName">The account whose membership user row the rows hang off.</param>
+    /// <returns>A task that completes when all three rows exist.</returns>
+    /// <remarks>
+    /// The membership user identifier is resolved through the same application-name join the store performs,
+    /// rather than being captured when the credential was created, so the seed cannot silently attach itself
+    /// to the wrong row. The personalisation row needs a path row, which the stock schema also requires, and
+    /// the path is created for this account alone so concurrent suites cannot collide on it.
+    /// </remarks>
+    private Task SeedMembershipDependantsAsync(string userName) =>
+        _fixture.Database.ExecuteAsync(
+            """
+            DECLARE @applicationId uniqueidentifier;
+            DECLARE @membershipUserId uniqueidentifier;
+            DECLARE @roleId uniqueidentifier = NEWID();
+            DECLARE @pathId uniqueidentifier = NEWID();
+
+            SELECT @applicationId = aa.[ApplicationId], @membershipUserId = au.[UserId]
+            FROM [dbo].[aspnet_Users] au
+            INNER JOIN [dbo].[aspnet_Applications] aa ON aa.[ApplicationId] = au.[ApplicationId]
+            WHERE aa.[LoweredApplicationName] = @loweredApplication AND au.[LoweredUserName] = @loweredUserName;
+
+            INSERT INTO [dbo].[aspnet_Roles]
+                ([ApplicationId], [RoleId], [RoleName], [LoweredRoleName], [Description])
+            VALUES (@applicationId, @roleId, @roleName, LOWER(@roleName), NULL);
+
+            INSERT INTO [dbo].[aspnet_UsersInRoles] ([UserId], [RoleId])
+            VALUES (@membershipUserId, @roleId);
+
+            INSERT INTO [dbo].[aspnet_Profile]
+                ([UserId], [PropertyNames], [PropertyValuesString], [PropertyValuesBinary], [LastUpdatedDate])
+            VALUES (@membershipUserId, N'Suite:S:0:0:', N'', 0x00, SYSUTCDATETIME());
+
+            INSERT INTO [dbo].[aspnet_Paths] ([ApplicationId], [PathId], [Path], [LoweredPath])
+            VALUES (@applicationId, @pathId, @path, LOWER(@path));
+
+            INSERT INTO [dbo].[aspnet_PersonalizationPerUser]
+                ([Id], [PathId], [UserId], [PageSettings], [LastUpdatedDate])
+            VALUES (NEWID(), @pathId, @membershipUserId, 0x00, SYSUTCDATETIME());
+            """,
+            new Dictionary<string, object?>
+            {
+                ["@loweredApplication"] = MembershipApplication.ToLowerInvariant(),
+                ["@loweredUserName"] = userName.ToLowerInvariant(),
+                ["@roleName"] = FormattableString.Invariant($"suite_{userName}"),
+                ["@path"] = FormattableString.Invariant($"~/suite/{userName}.aspx"),
+            });
+
+    /// <summary>Counts the rows that reference an account's membership user row.</summary>
+    /// <param name="userName">The account to count against.</param>
+    /// <returns>The number of dependant rows across the three tables.</returns>
+    private Task<int> CountMembershipDependantsAsync(string userName) =>
+        _fixture.Database.ScalarAsync<int>(
+            """
+            DECLARE @membershipUserId uniqueidentifier;
+
+            SELECT @membershipUserId = au.[UserId]
+            FROM [dbo].[aspnet_Users] au
+            INNER JOIN [dbo].[aspnet_Applications] aa ON aa.[ApplicationId] = au.[ApplicationId]
+            WHERE aa.[LoweredApplicationName] = @loweredApplication AND au.[LoweredUserName] = @loweredUserName;
+
+            SELECT
+                (SELECT COUNT(*) FROM [dbo].[aspnet_UsersInRoles] WHERE [UserId] = @membershipUserId)
+                + (SELECT COUNT(*) FROM [dbo].[aspnet_Profile] WHERE [UserId] = @membershipUserId)
+                + (SELECT COUNT(*) FROM [dbo].[aspnet_PersonalizationPerUser] WHERE [UserId] = @membershipUserId);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["@loweredApplication"] = MembershipApplication.ToLowerInvariant(),
+                ["@loweredUserName"] = userName.ToLowerInvariant(),
+            });
+
+    /// <summary>Counts the membership user rows an account name resolves to.</summary>
+    /// <param name="userName">The account to count.</param>
+    /// <returns>One while the account holds a membership user row, zero once it does not.</returns>
+    private Task<int> CountMembershipUsersAsync(string userName) =>
+        _fixture.Database.ScalarAsync<int>(
+            """
+            SELECT COUNT(*)
+            FROM [dbo].[aspnet_Users] au
+            INNER JOIN [dbo].[aspnet_Applications] aa ON aa.[ApplicationId] = au.[ApplicationId]
+            WHERE aa.[LoweredApplicationName] = @loweredApplication AND au.[LoweredUserName] = @loweredUserName;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["@loweredApplication"] = MembershipApplication.ToLowerInvariant(),
+                ["@loweredUserName"] = userName.ToLowerInvariant(),
+            });
 
     /// <summary>Records a role assignment with explicit dates.</summary>
     /// <param name="userId">The account being assigned.</param>

@@ -183,12 +183,19 @@
 //  mixins partial: Sass emitted it into every one of the 33 stylesheets that load that
 //  partial. The mixin that consumes this name carries the reduced-motion guard, so the
 //  animation is applied only to a reader who has not asked for less motion.
+//
+//  ⚠ BOTH ANGLES RESOLVE TO TOKENS AND BOTH WERE LITERALS. The frames read `rotate(0deg)`
+//  and `rotate(360deg)`, which are design values like any other: the vocabulary rule admits
+//  `0` but not `0deg`, and the transform family already existed in `_tokens.scss` as
+//  `--rotate-quarter-turn`. The zero and the full turn are now declared beside it, so the one
+//  rotation this application animates is described entirely in the vocabulary and a second
+//  animation cannot invent a different turn.
 @keyframes dnn-indeterminate-spin {
   from {
-    transform: rotate(0deg);
+    transform: rotate(var(--rotate-none));
   }
 
   to {
-    transform: rotate(360deg);
+    transform: rotate(var(--rotate-full-turn));
   }
 }

@@ -233,26 +233,6 @@ const OPENING_LETTER = 'A';
 const FIRST_LETTER_SEARCH_TEXT = 'A';
 
 /**
- * The status the account-policy read answers with when the tenant stores no policy.
- *
- * ⚠ THIS IS AN "ABSENT" ANSWER WEARING AN ERROR'S STATUS, and the mismatch originates in the
- * transport rather than in either layer's intent. The Application layer returns a SUCCESSFUL outcome
- * carrying no value, and the shared response helper maps that onto `404` by a convention it documents
- * as "a nullable value on a successful outcome is how this solution expresses 'asked, and it is not
- * there'". There is no cleaner status for a GET whose answer is legitimately nothing.
- *
- * Named rather than inlined because the number alone reads as an error at the one place it is tested,
- * which is precisely the misreading that produced the defect it now prevents.
- *
- * ⚠ UNAMBIGUOUS ONLY BECAUSE THE TENANT IS RESOLVED FIRST. An unresolvable tenant never reaches this
- * read - the controller answers `403` with `portal.tenant_unresolved` before consulting the service,
- * measured directly against a non-aliased origin - so a `404` arriving here after a successful
- * authentication can only mean the resolved tenant has no policy to return.
- */
-const MEMBERSHIP_SETTINGS_ABSENT_STATUS = 404;
-
-
-/**
  * Which search the account listing is currently applying.
  *
  * MIGRATION: the legacy screen chose its query by comparing the search text against
@@ -930,28 +910,38 @@ export class UserStore implements OnDestroy {
    * Whether the tenant stores no account policy at all, as distinct from one that could not be read.
    *
    * ⚠ THIS DISTINCTION IS THE WHOLE POINT, because the slice beside it cannot express it. A null
-   * policy means "no policy in hand" and arises from three unrelated situations — not read yet, read
-   * and refused, read and legitimately absent — and every consumer that tests it for null was
-   * therefore forced to treat an ordinary tenant as a broken one.
+   * policy means "no policy in hand" and arises from two unrelated situations — not read yet, and
+   * read and refused — while a tenant that legitimately stores nothing now arrives as a POLICY, not
+   * as an absence, so every consumer that tested the policy for null was treating an ordinary tenant
+   * as a broken one.
    *
-   * MIGRATION: absence is a LEGITIMATE answer here, not a failure, and the server says so in its own
-   * words. `UserService.GetMembershipSettingsAsync` returns `Success` carrying a null value and
-   * records why: "A tenant with no settings source legitimately answers with no value, which is what
-   * the legacy reader did ... and the screens that consumed it fell back to their own defaults.
-   * Reporting a failure instead would change behaviour those screens depended upon." That traces to
-   * `Library/Components/Users/UserController.vb:L656-L671`, where `GetUserSettings` located the
-   * "User Accounts" module by definition name and assigned its result ONLY inside a not-nothing
-   * guard, so a tenant without that module received `Nothing` and no error whatsoever.
+   * ⚠ READ FROM THE DOCUMENT, NOT FROM THE STATUS LINE. The server answers this read `200` with the
+   * legacy defaults and states which of the two it gave through the contract's own `isStored` member:
+   * `false` means "nothing is stored for this tenant; these ARE the defaults the legacy screens would
+   * have applied", `true` means "an operator decided these". That is the single authority for this
+   * flag, and deriving it from anything else is what the defect below was.
    *
-   * The transport nevertheless has to answer a GET with a status, and the shared translation helper
-   * maps a successful outcome carrying no value onto `404` by documented convention. So the wire
-   * cannot distinguish "absent" from "missing" on the status line alone, and this flag is where that
-   * distinction is recovered and published once instead of being re-derived, differently, per screen.
+   * ⚠ THE DEFECT THIS SLICE USED TO CARRY. It was derived from a `404` on the read, because the
+   * server used to answer a tenant with no settings source with a value-free success that the shared
+   * response helper mapped onto `404`. The server no longer does either: `GetMembershipSettingsAsync`
+   * returns the defaults and never a null, so no `404` is reachable on this address at all and the
+   * old derivation could only ever answer `false`. A tenant with no store therefore looked stored,
+   * the settings screen opened an editable form over it, and the save it invited was refused by the
+   * API. The two halves of the contract are now read from the same place.
+   *
+   * MIGRATION: defaults rather than an absence is the BEHAVIOUR-PRESERVING answer, and the legacy
+   * reader is why. `Library/Components/Users/UserModuleBase.vb:L94-L194` applied a measured default
+   * for every key it could not read, and `Library/Components/Users/UserController.vb:L656-L671`
+   * located the "User Accounts" module by definition name and assigned its result ONLY inside a
+   * not-nothing guard — so a tenant without that module received `Nothing`, no error whatsoever, and
+   * the screens above it rendered those same defaults.
    *
    * ⚠ ABSENCE IS NOT THE SAME AS WRITABILITY. A tenant reaching this state cannot store a policy
-   * either: the write answers `404` with `user.membership_settings.source_missing` and the measured
-   * sentence "Portal -1 has no \"User Accounts\" module instance to store membership settings
-   * against." A consumer must therefore NOT read this flag as licence to offer a save.
+   * either: the write answers `409` with `user.membership-settings.storage-conflict` and the measured
+   * sentence "Portal -1 has no \"User Accounts\" module instance, so there is nowhere to store
+   * membership settings." A consumer must therefore NOT read this flag as licence to offer a save.
+   * The status is a CONFLICT rather than a not-found precisely because the read for the same address
+   * answers `200`: a caller cannot act on an API that says a resource both exists and does not.
    */
   private readonly _membershipSettingsUnconfigured = signal<boolean>(false);
 
@@ -1143,12 +1133,17 @@ export class UserStore implements OnDestroy {
   /**
    * Whether the tenant legitimately stores no account policy, as opposed to one that could not be read.
    *
-   * True only after a read that the server answered with "absent". A read still outstanding, a read
-   * that succeeded, and a read that genuinely failed all report false, so a consumer testing this can
-   * rely on it meaning exactly one thing.
+   * True only after a successful read whose document reported `isStored: false`. A read still
+   * outstanding, a read of a STORED policy, and a read that genuinely failed all report false, so a
+   * consumer testing this can rely on it meaning exactly one thing.
    *
    * ⚠ NOT A LICENCE TO OFFER A SAVE. See the backing slice: the same tenant cannot store a policy
    * either, so a screen reading this must explain the state rather than open a form over it.
+   *
+   * ⚠ THE POLICY IS IN HAND EVEN WHEN THIS IS TRUE. `membershipSettings()` carries the server's own
+   * legacy defaults on this branch, so a consumer reads page size and column visibility from the
+   * document as usual and needs no fallback of its own; what this flag adds is that those values are
+   * defaults rather than decisions.
    */
   readonly membershipSettingsUnconfigured = this._membershipSettingsUnconfigured.asReadonly();
 
@@ -3116,15 +3111,29 @@ export class UserStore implements OnDestroy {
     this._membershipSettingsLoading.set(true);
     this.settingsRequest?.unsubscribe();
     this.settingsRequest = this.transport.getMembershipSettings().subscribe({
-      // A successful read carries the whole policy. A tenant the server cannot resolve is a
-      // not-found problem document and lands in the error handler below, where the listing still
-      // follows at the shared fallback size.
+      // A successful read carries the whole policy, whether or not the tenant stores one: a tenant
+      // with no settings source is answered with the legacy defaults and says so through `isStored`.
+      // Only a read the server could not serve at all - an unresolvable tenant, a refusal, a fault -
+      // lands in the error handler below, where the listing still follows at the shared fallback size.
       next: (settings: MembershipSettings) => {
         this._membershipSettings.set(settings);
         this._membershipSettingsLoading.set(false);
-        // Cleared on every success, so a tenant that gains an account module stops reporting absence
+
+        // ⚠ ABSENCE IS SORTED FROM FAILURE ON THE SUCCESS ARM, WHICH IS WHERE THE SERVER PUTS IT.
+        // `isStored` is the contract's own statement of provenance: `false` means the values just
+        // committed are this platform's defaults because the tenant has no store, `true` means an
+        // operator decided them. Set on every success rather than only cleared, so a tenant that
+        // GAINS an account module stops reporting absence, and one that loses it starts reporting it,
         // without needing the store to be reset.
-        this._membershipSettingsUnconfigured.set(false);
+        //
+        // ⚠ THE DEFECT THIS REPLACES. The flag used to be derived from a `404` on the read, from the
+        // days when the server answered a tenant with no settings source with a value-free success
+        // that the shared response helper mapped onto that status. The server now answers `200` with
+        // the defaults, so that `404` became unreachable and the derivation silently degraded to
+        // "always stored": the settings screen opened an editable form over a policy the tenant has
+        // nowhere to keep, and the save it invited was refused `409` by the API. Reading the flag off
+        // the document is what keeps the two sides of the contract in agreement.
+        this._membershipSettingsUnconfigured.set(settings.isStored === false);
 
         if (thenReadListing) {
           this.readListingAfterSettings();
@@ -3133,30 +3142,22 @@ export class UserStore implements OnDestroy {
       error: (cause: unknown) => {
         this._membershipSettingsLoading.set(false);
 
-        // ⚠ ABSENCE IS SORTED FROM FAILURE HERE, and it is the only read in this store that needs to
-        // be. Every other read asks for something a caller named, so "not there" IS a failure worth
-        // reporting. This one asks for OPTIONAL tenant configuration whose absence has a defined
-        // meaning - fall back to the legacy defaults - which is why the server reports it as a
-        // SUCCESS carrying no value and only the transport's status line makes it look like an error.
-        //
-        // ⚠ THE DEFECT THIS REMOVES was a user-facing one on three working screens: recording a
-        // failure here put "Not Found / The requested resource does not exist. / Reference:
-        // <correlation guid>" and a "Try again" button on a fully loaded account listing, because that
-        // screen surfaces this operation's failure alongside its own. Nothing was wrong, nothing could
-        // be retried into existence, and the reference invited a support conversation about a
-        // correctly functioning tenant.
-        //
-        // Described rather than recorded, so the status can be read without publishing anything: the
-        // slot is set below only on the branch that genuinely warrants it. A non-absent failure still
-        // takes the ordinary path and still reaches every surface that watches for it.
-        const described: UserFailure = this.describeFailure('loadMembershipSettings', cause);
-        const absent: boolean = described.problem?.status === MEMBERSHIP_SETTINGS_ABSENT_STATUS;
+        // ⚠ EVERY FAILURE THAT REACHES HERE IS A FAILURE, and that is a change of meaning rather than
+        // of code. This arm used to filter a `404` out as a legitimate absence, because absence WAS
+        // reported on the status line; it is now reported inside a `200` document, so nothing arriving
+        // here is an ordinary answer any more. A status the transport could not serve is recorded like
+        // any other read's, and no screen is left guessing why its policy is missing.
+        this.recordFailure('loadMembershipSettings', cause);
 
-        this._membershipSettingsUnconfigured.set(absent);
-
-        if (!absent) {
-          this._failure.set(described);
-        }
+        // The policy itself is left as it was rather than being replaced by a client-side stand-in: a
+        // refused REFRESH must not discard a policy an earlier read established, and a first read that
+        // was refused leaves the slice null, which is what the consuming screens' documented fallbacks
+        // are for.
+        //
+        // The flag is cleared for the same reason it is set above - it describes what the DOCUMENT
+        // said, and a read that produced no document said nothing. Leaving a previous read's answer
+        // standing would let a transient fault be reported as a permanent state.
+        this._membershipSettingsUnconfigured.set(false);
 
         if (thenReadListing) {
           this.readListingAfterSettings();

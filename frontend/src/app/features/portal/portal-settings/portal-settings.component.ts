@@ -514,29 +514,6 @@ const HOST_FEE_INVALID_MESSAGE = 'Invalid fee, needs to be a currency value!';
 /** The measured whole-number message for the three quota boxes. */
 const WHOLE_NUMBER_INVALID_MESSAGE = 'Enter a whole number.';
 
-/**
- * Reported when the site title is left empty.
- *
- * ⚠ #24 — THE WORDING IS THE SERVER'S OWN, VERBATIM.
- * `DnnMigration.Application/Validation/UpdatePortalRequestValidator.cs:L349` declares
- * `"Site Title is required."` and its rule at L386 answers a 400 with it. Restating the
- * server's exact sentence is what makes the two authorities agree rather than merely
- * coexist: an operator who submits an empty title now reads the same sentence whether the
- * client caught it or the server did, and a reader who has already been told the field is
- * required is not then told something different by the round trip.
- *
- * This has NO LEGACY RESOURCE PROVENANCE, and that is the point of the finding. A
- * case-insensitive sweep of `Website/admin/Portal/sitesettings.ascx` finds exactly THREE
- * validators on the 568-line screen, all of them comparisons, and NO `RequiredFieldValidator`
- * anywhere — `txtPortalName` carries `MaxLength="128"` and nothing else. The legacy screen
- * therefore let an empty title reach the server, and the legacy server accepted it. The
- * modern server does NOT: its rule is `NotEmpty()`, which is a documented tightening that
- * predates this checkpoint. The defect is that the CLIENT had not been told, so the only
- * feedback for an empty title was a 400 the operator had to provoke. Closing the gap on the
- * client changes no accepted input set whatsoever; it changes only when the operator is told.
- */
-const PORTAL_NAME_REQUIRED_MESSAGE = 'Site Title is required.';
-
 /** The measured whole-number message for the time-zone offset. */
 const TIME_ZONE_INVALID_MESSAGE = 'Enter the offset as a whole number of minutes.';
 
@@ -1151,15 +1128,13 @@ function buildPageOptions(
     FocusFirstInvalidDirective,
     SubmitGuardDirective,
     ReactiveFormsModule,
+    // For the host-name listing link in the page header.
     RouterLink,
     PageHeaderComponent,
     FormFieldComponent,
     LoadingSpinnerComponent,
     ErrorBannerComponent,
     ConfirmDialogComponent,
-    FocusFirstInvalidDirective,
-    // ⚠ #22 — for the host-name listing link in the page header.
-    RouterLink,
   ],
   templateUrl: './portal-settings.component.html',
   styleUrl: './portal-settings.component.scss',
@@ -1291,23 +1266,30 @@ export class PortalSettingsComponent {
    * non-null: they are reached as properties of this group.
    */
   protected readonly form = new FormGroup<PortalSettingsFormModel>({
-    // ⚠ #24 — REQUIRED, MIRRORING THE SERVER RATHER THAN THE LEGACY MARKUP.
+    // ⚠ NOT REQUIRED, MIRRORING THE LEGACY MARKUP AND THE LEGACY WRITE PATH BOTH.
     //
-    // The legacy screen declared no required rule on this field (see
-    // PORTAL_NAME_REQUIRED_MESSAGE for the sweep), but the modern server declares
-    // `NotEmpty()` on it, so the field IS required and the client was simply silent about
-    // it. Runtime testing measured the consequence: clearing the title and submitting
-    // produced a 400 with no field-level indication of which field or why.
+    // A `Validators.required` was declared here, mirroring a `NotEmpty()` the update contract
+    // carried on `PortalName`. Both are withdrawn, because the rule refused an input the legacy
+    // application accepted:
     //
-    // `Validators.required` is deliberately paired with the server's own message rather
-    // than left to a generic one, and the whitespace question is settled by the server's
-    // choice: FluentValidation's `NotEmpty` treats a whitespace-only string as empty, and
-    // Angular's `Validators.required` does NOT. The component normalises this field before
-    // it judges the form — see the submit path — so a whitespace-only title is refused by
-    // the same rule that refuses a blank one, and the two authorities cannot disagree.
+    //   * A case-insensitive sweep of `Website/admin/Portal/sitesettings.ascx` finds exactly two
+    //     validators on its 568 lines, both `CompareValidator`s, and NO `RequiredFieldValidator`
+    //     anywhere — `txtPortalName` carries `MaxLength="128"` and nothing else.
+    //   * The write path stored the blank rather than refusing it.
+    //     `Library/Providers/DataProviders/SqlDataProvider/SqlDataProvider.vb:L632` passes
+    //     `PortalName` RAW while wrapping fourteen of its twenty-seven sibling arguments in
+    //     `GetNull`; `PortalController.vb:L1568-L1570` forwards the parameter untouched; and
+    //     `SiteSettings.ascx.vb:L772` passes `txtPortalName.Text` as typed. So the empty string
+    //     reached `[PortalName] [nvarchar] (128) NOT NULL`, which accepts it.
+    //
+    // Minimal Change Clause item 3 requires identical inputs to produce identical outcomes, and
+    // that is what settles it. The width bound is the markup's own `MaxLength="128"` and stays.
+    // The submit path still normalises this field, for the reason recorded there: what reaches the
+    // wire is the trimmed value, so a title of three spaces is stored as the empty string rather
+    // than as three spaces.
     portalName: new FormControl('', {
       nonNullable: true,
-      validators: [Validators.required, Validators.maxLength(PORTAL_NAME_MAX_LENGTH)],
+      validators: [Validators.maxLength(PORTAL_NAME_MAX_LENGTH)],
     }),
     description: new FormControl('', {
       nonNullable: true,
@@ -2130,13 +2112,13 @@ export class PortalSettingsComponent {
 
     const messages: string[] = [];
 
-    // ⚠ #24 — THE REQUIRED RULE IS REPORTED FIRST, because it is the one that describes the
-    // whole field rather than one property of the value in it, and because a field that is
-    // empty cannot also be too long, so the two never compete for the reader's attention.
-    if (errors['required'] !== undefined) {
-      messages.push(PORTAL_NAME_REQUIRED_MESSAGE);
-    }
-
+    // ⚠ NO REQUIRED RULE IS REPORTED, BECAUSE NO CONTROL ON THIS SCREEN DECLARES ONE. A branch
+    // here reported `"Site Title is required."` against a `Validators.required` on the title,
+    // mirroring a `NotEmpty()` the update contract carried; both are withdrawn as a parity break.
+    // The legacy screen declares no `RequiredFieldValidator` on its 568 lines, and its write path
+    // stored a blank title as the empty string in a column that accepts it, so refusing one here
+    // refused an input both legacy tiers took. See the title control's own note for the citations.
+    //
     // The two measured data-type checks and the two derived ones all report their own
     // measured wording as the error value, so it is surfaced directly.
     for (const key of ['expiryDateType', 'hostFeeType', 'wholeNumber', 'timeZoneOffset']) {
@@ -2178,12 +2160,13 @@ export class PortalSettingsComponent {
       return;
     }
 
-    // ⚠ #24 — NORMALISE THE TITLE BEFORE JUDGING IT, so the client's required rule and the
-    // server's `NotEmpty` agree on what "empty" means. FluentValidation counts a
-    // whitespace-only string as empty and Angular's `Validators.required` does not, so
-    // without this a title of three spaces would pass here and be refused there. Writing the
-    // trimmed value back into the control - rather than trimming only on the way out - is
-    // what makes the refusal visible in the field the operator must fix.
+    // ⚠ NORMALISE THE TITLE BEFORE JUDGING IT, so one resource does not trim where another does.
+    // The sibling portal record screen trims its own title, and runtime testing measured
+    // twenty-three characters typed becoming seventeen sent on one screen and twenty-three on the
+    // other for the same class of field. Writing the trimmed value back into the control - rather
+    // than trimming only on the way out - is what makes the value the operator sees the value that
+    // will be sent. Neither tier refuses a blank title, so this normalisation decides only what a
+    // whitespace-only entry is STORED as: the empty string, not three spaces.
     const titleControl = this.form.controls.portalName;
     const enteredTitle = titleControl.value;
     const normalisedTitle = enteredTitle.trim();
@@ -2251,18 +2234,17 @@ export class PortalSettingsComponent {
    * Opens whatever is hiding the first offending control, then focuses it.
    *
    * ⚠ WITHOUT THIS, A REFUSED SUBMIT ON THIS SCREEN LEAVES THE OPERATOR ON THE BUTTON. The shared
-   * focus directive cannot help here, and the reason is specific rather than incidental: it refuses
-   * to act when the form is VALID at the moment the submit event fires, and on this screen it is. A
-   * title of three spaces satisfies Angular's `required`, so the form is valid when the event is
-   * raised and only becomes invalid inside this handler, where the title is normalised and the value
-   * collapses to the empty string. Both the directive and this handler listen to the same event and
-   * Angular does not order them, so the directive is as likely as not to look before the normalisation
-   * and find nothing to do.
+   * focus directive cannot always help here, and the reason is specific rather than incidental: it
+   * refuses to act when the form is VALID at the moment the submit event fires, and this handler can
+   * change a control's validity AFTER that moment - it normalises the title before judging the form,
+   * so a value whose validity depends on its trimmed form is settled inside the handler. Both the
+   * directive and this handler listen to the same event and Angular does not order them, so the
+   * directive is as likely as not to look before the normalisation and find nothing to do.
    *
-   * Runtime measurement recorded the consequence exactly, by object identity: after a refused
-   * whitespace submit `document.activeElement` was the Update button and not the Title input, with
-   * the error the operator had to fix roughly six hundred pixels above them, and the button carrying
-   * no visible focus ring because the submit came from a pointer.
+   * Runtime measurement recorded the consequence exactly, by object identity: after a refused submit
+   * `document.activeElement` was the Update button and not the offending input, with the error the
+   * operator had to fix roughly six hundred pixels above them, and the button carrying no visible
+   * focus ring because the submit came from a pointer.
    *
    * ⚠ THE SEARCH HAS TO CROSS TWO KINDS OF HIDING, WHICH IS WHY THIS IS NOT ONE `querySelector`.
    * Every collapsed section is opened first: a refusal must not seal its own explanation inside a

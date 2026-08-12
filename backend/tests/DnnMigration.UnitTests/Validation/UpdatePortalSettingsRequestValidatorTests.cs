@@ -57,23 +57,63 @@ public sealed class UpdatePortalSettingsRequestValidatorTests
     }
 
     /// <summary>
-    /// A blank portal title is refused under its field name, producing the validation document advertised
-    /// by the endpoint.
+    /// A blank portal title is ACCEPTED, because the legacy screen accepted one and stored it.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This case asserts the absence of a rule, which is why it exists: a NotEmpty() on this member was
+    /// declared here and refused all three of these inputs, defended on the grounds that the legacy null
+    /// contract rewrote the empty string to a database null and the NOT NULL column then rejected it.
+    /// </para>
+    /// <para>
+    /// The legacy source disproves that.
+    /// <c>Library/Providers/DataProviders/SqlDataProvider/SqlDataProvider.vb:L632</c> passes
+    /// <c>PortalName</c> RAW while wrapping fourteen of its twenty-seven sibling arguments in
+    /// <c>GetNull</c>; <c>PortalController.vb:L1568-L1570</c> forwards the parameter untouched; and
+    /// <c>Website/admin/Portal/SiteSettings.ascx.vb:L772</c> passes <c>txtPortalName.Text</c> as typed.
+    /// A blank title therefore reached <c>[PortalName] [nvarchar] (128) NOT NULL</c> as the empty
+    /// string, which that constraint accepts. The legacy markup agrees: two CompareValidators on 568
+    /// lines, no RequiredFieldValidator anywhere, and <c>MaxLength="128"</c> the only attribute on the
+    /// control.
+    /// </para>
+    /// <para>
+    /// Refusing it broke Minimal Change Clause item 3 -- identical inputs must produce identical
+    /// outcomes -- so the rule is gone and this case pins its absence.
+    /// </para>
+    /// </remarks>
+    /// <param name="portalName">The blank form under test.</param>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
-    public void BlankPortalName_IsRefusedNamingTheField(string? portalName)
+    public void BlankPortalName_IsAcceptedBecauseTheLegacyScreenAcceptedOne(string? portalName)
     {
         UpdatePortalSettingsRequest request = Valid();
         request.PortalName = portalName;
 
         ValidationResult result = _validator.Validate(request);
 
-        result.Errors.Should().ContainSingle()
+        result.IsValid.Should().BeTrue();
+        result.Errors.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The title's only rule is the width the legacy control declared: accepted at the bound and refused
+    /// one character later.
+    /// </summary>
+    [Fact]
+    public void PortalName_UsesTheTerminalHundredAndTwentyEightCharacterWidth()
+    {
+        UpdatePortalSettingsRequest atLimit = Valid();
+        atLimit.PortalName = new string('a', 128);
+        _validator.Validate(atLimit).IsValid.Should().BeTrue();
+
+        UpdatePortalSettingsRequest beyondLimit = Valid();
+        beyondLimit.PortalName = new string('a', 129);
+        ValidationResult tooLong = _validator.Validate(beyondLimit);
+
+        tooLong.Errors.Should().ContainSingle()
             .Which.PropertyName.Should().Be(nameof(UpdatePortalSettingsRequest.PortalName));
-        result.Errors[0].ErrorMessage.Should().Be("Site Title is required.");
     }
 
     /// <summary>

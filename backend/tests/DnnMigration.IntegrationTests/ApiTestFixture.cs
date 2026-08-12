@@ -618,6 +618,29 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     }
 
     /// <summary>
+    /// Produces a correlation identifier in the CANONICAL shape the pipeline keeps.
+    /// </summary>
+    /// <returns>Thirty-two hexadecimal characters, unique per call.</returns>
+    /// <remarks>
+    /// <para>
+    /// Every suite that asserts an identifier is echoed BACK has to send one the pipeline will keep, and
+    /// the accepted shape is narrow by design: <c>Api/Middleware/CorrelationIdMiddleware.cs</c> accepts
+    /// only 32 hexadecimal characters or the hyphenated 36-character UUID rendering, and replaces
+    /// anything else with a generated value. That narrowness is a security control - it is what stops a
+    /// caller from putting a password, a token or an e-mail address into this application's logs, headers
+    /// and problem documents by way of a diagnostic header - so a suite must not widen it.
+    /// </para>
+    /// <para>
+    /// Reaching for this helper rather than writing a readable label such as <c>"portal-suite-7"</c> is
+    /// therefore not a style choice. A label of that shape is replaced by the pipeline, so a test sending
+    /// one would assert the REPLACEMENT path while appearing to assert the echo path - passing for the
+    /// wrong reason today and failing for an unrelated reason tomorrow.
+    /// </para>
+    /// </remarks>
+    public static string NewCorrelationId() =>
+        Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+
+    /// <summary>
     /// Attaches a caller-supplied correlation identifier to a request and hands the request back.
     /// </summary>
     /// <param name="request">The request to stamp.</param>

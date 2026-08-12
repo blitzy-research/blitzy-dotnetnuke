@@ -33,7 +33,7 @@ public sealed class ValidatorRegistrationTests
         // role assignment and the page update - were reached independently by two separate audits of the
         // write surface and were duplicated here for a while for exactly that reason.
         //
-        // SIX of the entries are paging contracts. Each listed collection binds its own derived request with
+        // SEVEN of the entries are paging contracts. Each listed collection binds its own derived request with
         // its own sortable allowlist, rather than sharing one shape, because sharing made one listing accept
         // an ordering it silently discarded and made another refuse an ordering its service could perform.
         // The base contract keeps a registration of its own for any endpoint that binds it. A seventh entry -
@@ -41,6 +41,12 @@ public sealed class ValidatorRegistrationTests
         // FILTER contract that happens to carry paging, and it reuses the account collection's allowlist
         // rather than declaring one, precisely so that the two ways of addressing one collection cannot
         // diverge.
+        //
+        // The seventh paging contract is the account PICKER's, and it is the newest. It is a separate
+        // collection in this sense - its own projection and its own allowlist - rather than a mode of the
+        // account collection, because a picker returns a key and two captions while the account grid returns
+        // a postal address, a telephone number, an electronic-mail address, two audit instants and four
+        // status flags. A screen that only chooses an account was receiving all of them.
         //
         // MIGRATION: two names were WITHDRAWN from this inventory, and their absence is load-bearing.
         // RoleGroupDto and ProfilePropertyDefinitionDto were each bound by both write verbs of their
@@ -130,6 +136,15 @@ public sealed class ValidatorRegistrationTests
                     typeof(RolePagedRequest),
                     typeof(UserPagedRequest),
                     typeof(ModulePagedRequest),
+
+                    // The account PICKER's paging request. A contract of its own because the projection is
+                    // its own: GET api/v1/users/choices answers a key and the two captions an option shows,
+                    // so its sortable allowlist is exactly those two captions rather than the account
+                    // collection's seven names. Sharing the account collection's request would have admitted
+                    // an ordering by an electronic-mail address or a super-user flag that no option
+                    // displays - an ordering the operator could not verify - which is the accept-then-
+                    // discard defect the per-collection split exists to prevent.
+                    typeof(UserChoicePagedRequest),
 
                     // The role-membership paging request. Added because that listing BORROWED
                     // UserPagedRequest, so UserPagedRequestValidator resolved for it and applied the

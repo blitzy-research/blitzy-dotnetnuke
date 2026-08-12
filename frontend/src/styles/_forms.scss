@@ -634,15 +634,20 @@ textarea[aria-invalid='true'] {
 // The bold weight is the non-colour cue that keeps the message perceivable when
 // its colour is not.
 // ⚠ THIS TREATMENT NOW MATCHES THE SHARED FIELD COMPONENT'S, AND IT DID NOT. Two different
-// answers to the same contrast problem had grown up side by side. The shared component paints
-// its message in `--color-danger-text`, a darkened red that clears the contrast floor as text.
-// This class instead avoided the failing hue on text altogether - blue words with a red rule on
-// the leading edge as a non-text indicator - which also cleared the floor, by a different route.
-// Both were defensible in isolation; together they were not, because a reader moving between two
-// module screens met the SAME sentence rendered two ways. Runtime measurement put a number on it:
-// `Icon File must be a relative path within the portal's own folder.` computed rgb(184, 0, 0)
-// with no border on the module form and rgb(37, 86, 154) with a 4px red rule on the module
-// settings screen - seventeen differing computed properties for one rule.
+// answers to the same contrast problem had grown up side by side. The shared component painted its
+// message in the vocabulary's danger hue; this class instead avoided the failing hue on text
+// altogether - blue words with a red rule on the leading edge as a non-text indicator. Both were
+// defensible in isolation; together they were not, because a reader moving between two module
+// screens met the SAME sentence rendered two ways. Runtime measurement put a number on it:
+// `Icon File must be a relative path within the portal's own folder.` computed one colour with no
+// border on the module form and rgb(37, 86, 154) with a 4px red rule on the module settings
+// screen - seventeen differing computed properties for one rule.
+//
+// Both now resolve to `--color-danger`, which is the vocabulary's only danger value: a darkened
+// sibling token existed briefly and is withdrawn, because the colour vocabulary is closed at the
+// nine values the design specification enumerates. The residual text contrast is stated on that
+// token's own declaration; the bold weight below and the wording itself are what carry severity to
+// a reader the hue does not reach.
 //
 // The shared component's answer wins because it is the one nearly every screen already uses:
 // this class has exactly one consumer, the module settings screen, whose bespoke field markup
@@ -672,7 +677,7 @@ textarea[aria-invalid='true'] {
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-bold);
   line-height: var(--line-height-tight);
-  color: var(--color-danger-text);
+  color: var(--color-danger);
 
   // A validation message is generated text of unpredictable length — a field
   // name, a pattern description, a server message — so it wraps rather than

@@ -50,6 +50,7 @@ import type { TestRequest } from '@angular/common/http/testing';
 import type { ActivatedRouteSnapshot, Route } from '@angular/router';
 
 import { ModuleVisibility } from '../../../core/models/module.model';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
 import { ModuleStore } from '../../../core/state/module.store';
@@ -1752,6 +1753,14 @@ describe('ModuleImportComponent', () => {
       // Two concurrent attempts would each read the document and each dispatch, so the server would receive
       // the same import twice and the second success would navigate away from a screen whose first request
       // was still outstanding.
+      //
+      // ⚠ AND THIS IS THIS COMPONENT'S OWN RE-ENTRY GUARD, NOT THE SHARED DIRECTIVE'S. `submit()` refuses
+      // re-entry from its own busy state, which is what this case measures and what it must keep measuring:
+      // it passes with `SubmitGuardDirective` deleted, so it is NOT coverage of that directive and must not
+      // be counted as such. The directive is asserted against itself, on a host with no guard of its own, in
+      // `src/app/shared/directives/submit-guard.directive.spec.ts`. The two protections close different
+      // windows — this one covers every route into the handler, the directive covers two presses with no
+      // rendering frame between them — and neither is redundant.
       arrive([listRow({ moduleId: 0, moduleTitle: 'Announcements' })]);
 
       chooseModule('Announcements');
@@ -2146,6 +2155,37 @@ describe('ModuleImportComponent', () => {
   // ---------------------------------------------------------------------------------------------------
 
   describe('abandoning the screen', () => {
+    it('registers an unsaved-entry probe, so a chosen document is not discarded in silence', () => {
+      /*
+       * ⚠ THIS SCREEN'S ROUTE DECLARES `unsavedChangesGuard`, AND THE DECLARATION USED TO BE
+       * ANSWERED BY REFLECTION over the component's fields. That sweep is gone - it made
+       * `@angular/forms` reachable from the eager import graph of an application whose every form
+       * screen is lazily loaded - so this screen registers a probe of its own. A screen declaring the
+       * gate without one is not merely unprotected: it LOOKS protected in the route table, and the
+       * guard reads it as clean.
+       *
+       * ⚠ WHAT IS AT STAKE HERE IS LARGER THAN A FEW TYPED CHARACTERS. The chosen document is held in
+       * memory as a `File` and the server knows nothing about it, so an exit discards a selection the
+       * operator must make again from their own file system - a second search and, on a large export,
+       * a second read.
+       *
+       * The probe is read through `isDirty()`, which is the guard's own public surface, so this
+       * asserts through the very call the guard makes rather than through an internal.
+       */
+      const tracker = TestBed.inject(UnsavedChangesTracker);
+
+      arrive();
+
+      // THE CONTROL: an untouched form must not warn, or a later `true` proves nothing.
+      expect(tracker.isDirty()).withContext('nothing chosen yet is not unsaved entry').toBeFalse();
+
+      chooseModule('Announcements');
+
+      expect(tracker.isDirty())
+        .withContext('a chosen module with no transfer in flight is unsaved entry')
+        .toBeTrue();
+    });
+
     it('leaves without validating anything and without sending anything', () => {
       arrive();
 

@@ -824,16 +824,25 @@ public sealed class ModuleService : IModuleService
             // is the same misdirection this report raised against reading an unknown module as forbidden, and
             // it is corrected here for the same reason.
             //
-            // The destination must be a page this portal actually shows content on. Reading it from the same
-            // content-page set the propagation paths use is deliberate: it excludes the administration page
-            // and its children, which is the set the legacy picker was built from, so a caller cannot reach
-            // a page through this member that the picker would never have offered.
+            // The destination must be a page this portal actually shows content on, and it is classified by
+            // exactly the rules the propagation paths classify by: it must belong to this portal, must not
+            // be sitting in the recycle bin, and must not be the administration page or one of its
+            // immediate children - which is the set the legacy picker was built from, so a caller cannot
+            // reach a page through this member that the picker would never have offered.
+            //
+            // ⚠ ONE PAGE IS READ, NOT EVERY PAGE THE PORTAL OWNS. This used to call ReadContentTabsAsync
+            // and then take a single row out of the result with FirstOrDefault, so validating one
+            // client-supplied identifier read and materialised the whole tenant's page tree - work
+            // proportional to the size of the portal on a request that acts on one row, and on a large
+            // installation the most expensive thing this member did. ReadContentTabAsync answers the same
+            // question with a single-row seek and applies the identical classification, so the accepted
+            // set is unchanged.
             //
             // Nothing is disclosed by answering in this order. A relocation has already passed the portal
             // administrator gate above, so by this line the caller administers the very portal whose pages
-            // are being named, and the set is scoped to that portal alone.
-            destinationTab = (await ReadContentTabsAsync(portalId, cancellationToken).ConfigureAwait(false))
-                .FirstOrDefault(candidate => candidate.TabId == destinationTabId);
+            // are being named, and the read is scoped to that portal alone.
+            destinationTab = await ReadContentTabAsync(portalId, destinationTabId, cancellationToken)
+                .ConfigureAwait(false);
 
             if (destinationTab is null)
             {
@@ -861,6 +870,14 @@ public sealed class ModuleService : IModuleService
                         + "Clear the all-pages setting first, or save the move on its own.");
             }
         }
+
+        // MIGRATION: CAPTURED BEFORE THE MAPPER RUNS, because the mapper assigns IsDeleted from the request
+        // and the former value is unrecoverable afterwards. That assignment makes this member the committed
+        // boundary at which a module is recycled and at which a recycled one is restored, and the legacy
+        // vocabulary has a distinct name for the restoration - MODULE_RESTORED, raised by
+        // RecycleBin.ascx.vb:L392. Both transitions were previously recorded as a plain update, and one of
+        // them was often not recorded at all; see the audit block below for why that mattered.
+        bool previouslyDeleted = module.IsDeleted;
 
         ModuleMappings.ApplyUpdate(module, placement, request);
 
@@ -1003,6 +1020,40 @@ public sealed class ModuleService : IModuleService
                 });
         }
 
+        // MIGRATION: A RECYCLING AND A RESTORATION ARE RECORDED INDEPENDENTLY OF THE EFFECTS GATE ABOVE, AND
+        // THAT INDEPENDENCE IS THE FIX. The gate exists for a good reason - a trail that logs every field
+        // edit becomes a change log rather than a record of consequential change - but a module leaving or
+        // returning to a live page is not a field edit, and it does not register as an "effect": nothing is
+        // relocated, no portal default is written and no sibling placement is rewritten, so the effect list is
+        // empty and the gate closed. A module could therefore be taken off every page it appeared on, or
+        // brought back onto them, with NOTHING in the trail at all.
+        //
+        // The names are the legacy ones and the asymmetry between them is the legacy behaviour, measured
+        // rather than assumed. A restoration is MODULE_RESTORED (RecycleBin.ascx.vb:L392). A recycling is
+        // MODULE_DELETED, which is what the legacy recycle bin itself raised for a soft-deletion
+        // (RecycleBin.ascx.vb:L156) - MODULE_SENT_TO_RECYCLE_BIN is declared in the enumeration but no
+        // in-scope legacy site raises it, so inventing a producer would be adding an event rather than porting
+        // one. The Operation fact distinguishes this recycling from a real removal, which carries the same
+        // name from the delete path.
+        //
+        // A no-op stays silent. A request repeating the flag a module already carries changes no state, so it
+        // must not claim a recycling or a restoration; the comparison is a transition test rather than a read
+        // of the new value, which is why the former value is captured before the mapper runs.
+        if (previouslyDeleted != module.IsDeleted)
+        {
+            RecordModuleAudit(
+                module.IsDeleted ? AuditEventNames.ModuleDeleted : AuditEventNames.ModuleRestored,
+                portalId,
+                module.ModuleId,
+                new Dictionary<string, string?>(StringComparer.Ordinal)
+                {
+                    ["Operation"] = module.IsDeleted ? "Recycle" : "Restore",
+                    ["IsDeleted"] = module.IsDeleted.ToString(),
+                    ["TabModuleId"] = responsePlacement.TabModuleId.ToString(CultureInfo.InvariantCulture),
+                    ["TabId"] = responsePlacement.TabId.ToString(CultureInfo.InvariantCulture),
+                });
+        }
+
         IReadOnlyDictionary<int, ModuleCatalogueFacts> catalogue =
             await ReadCatalogueFactsAsync(portalId, wantedDefinitionIds: null, cancellationToken).ConfigureAwait(false);
 
@@ -1078,8 +1129,25 @@ public sealed class ModuleService : IModuleService
         // Emitted after the commit, so no record can describe a removal that was rolled back, and the facts
         // are the blast radius: whether one placement or the whole module went, which placement was
         // addressed when one was, and how many pages were affected. No caller free-text is carried.
+        //
+        // MIGRATION: THE TWO ARMS OF THIS MEMBER NOW CARRY DIFFERENT EVENT NAMES, BECAUSE THEY DO DIFFERENT
+        // THINGS. Both were recorded as MODULE_DELETED, distinguished only by an Operation fact - and for the
+        // placement arm that name was simply untrue. Removing a named placement hard-deletes ONE TabModules
+        // row: the module still exists, its content still exists, its settings still exist and every other
+        // placement of it still renders. A trail asserting the module was deleted sent anyone investigating to
+        // look for something that is still there, and - worse in the other direction - made a genuine module
+        // removal indistinguishable from the far more common act of taking a module off one page, so neither
+        // could be counted or found. The placement arm is now MODULE_PLACEMENT_DELETED.
+        //
+        // The whole-module arm KEEPS MODULE_DELETED, and that is a measured decision rather than an
+        // inconsistency. It is a recycling - dbo.Modules.IsDeleted is set and the row survives - and
+        // MODULE_DELETED is precisely what the legacy recycle bin raised for a soft-deletion
+        // (RecycleBin.ascx.vb:L156). MODULE_SENT_TO_RECYCLE_BIN exists in the legacy enumeration but no
+        // in-scope legacy site raises it, so using it here would invent an event rather than port one. The
+        // Operation fact is kept on both arms, so a reader filtering on either the name or the fact sees the
+        // same distinction.
         RecordModuleAudit(
-            AuditEventNames.ModuleDeleted,
+            tabModuleId is null ? AuditEventNames.ModuleDeleted : AuditEventNames.ModulePlacementDeleted,
             portalId,
             moduleId,
             new Dictionary<string, string?>(StringComparer.Ordinal)
@@ -1861,24 +1929,30 @@ public sealed class ModuleService : IModuleService
 
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        IReadOnlyList<TabModule> placements =
-            await _modules.GetTabModulesByModuleIdAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
-
-        foreach (TabModule placement in placements)
-        {
-            _cache.InvalidateModules(placement.TabId);
-        }
-
-            // The bounded operational facts this contract records: which module received content, which
-            // version the document declared, how much arrived and how many placements were invalidated. The
-            // caller-authored folder, filename and PAYLOAD are not recorded, because each can carry tenant
-            // or user data and belongs under the module content's own access and deletion policy.
-            //
-            // MIGRATION: DIVERGENCE, and a correction. SourceFolder and SourceFileName were copied verbatim
-            // from the request, and ModuleImportRequest documents both as accepted-and-deliberately-unused
-            // parity metadata with NO LENGTH BOUND and no interpretation as a path - so nothing validated
-            // them, nothing read them, and a caller could put a secret, a personal identifier, control text
-            // or an unbounded high-cardinality value into the audit trail simply by naming a file that way.
+        // The bounded operational facts this contract records: which module received content, which version
+        // the document declared and how much arrived. The caller-authored folder, filename and PAYLOAD are
+        // not recorded, because each can carry tenant or user data and belongs under the module content's own
+        // access and deletion policy.
+        //
+        // MIGRATION: DIVERGENCE, and a correction. SourceFolder and SourceFileName were copied verbatim
+        // from the request, and ModuleImportRequest documents both as accepted-and-deliberately-unused
+        // parity metadata with NO LENGTH BOUND and no interpretation as a path - so nothing validated
+        // them, nothing read them, and a caller could put a secret, a personal identifier, control text
+        // or an unbounded high-cardinality value into the audit trail simply by naming a file that way.
+        //
+        // MIGRATION: RECORDED IMMEDIATELY AFTER THE FLUSH, AHEAD OF THE PLACEMENT READ. It used to follow a
+        // read of the module's placements, which is an awaited query that OBSERVES THE CANCELLATION TOKEN -
+        // so a caller who disconnected in the moment after the flush had third-party content written into a
+        // module durably and irreversibly, with no record that an import had occurred. An import is the one
+        // module operation that admits externally supplied content into a tenant, which makes its record the
+        // last one that may depend on the caller still being connected.
+        //
+        // PLACEMENTCOUNT IS DELIBERATELY GONE, AND ITS LOSS IS THE PRICE OF THE ORDER. It reported how many
+        // placements were cache-invalidated, which is a consequence of the import rather than a fact about
+        // it, and it could not be known without performing the very read that made the record cancellable.
+        // Deriving it from anything already in memory was not possible: the module's placements are not
+        // loaded on this path. The remaining three facts are the ones an auditor asks about - which module,
+        // which declared version, how much content - and none of them can go missing now.
         RecordModuleAudit(
             AuditEventNames.ModuleUpdated,
             portalId,
@@ -1888,8 +1962,15 @@ public sealed class ModuleService : IModuleService
                 ["Operation"] = "Import",
                 ["Version"] = DescribeDeclaredVersion(version),
                 ["PayloadLength"] = payload.Length.ToString(CultureInfo.InvariantCulture),
-                ["PlacementCount"] = placements.Count.ToString(CultureInfo.InvariantCulture),
             });
+
+        IReadOnlyList<TabModule> placements =
+            await _modules.GetTabModulesByModuleIdAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
+
+        foreach (TabModule placement in placements)
+        {
+            _cache.InvalidateModules(placement.TabId);
+        }
 
         // A bare success, with no advisory to forward. The factory's four "nothing was restored" states are
         // failures, so reaching this line means the module was asked and answered, and there is nothing left
@@ -2531,6 +2612,60 @@ public sealed class ModuleService : IModuleService
         return tabs
             .Where(tab => !tab.IsDeleted && !IsAdministrative(tab, adminTabId))
             .ToList();
+    }
+
+    /// <summary>
+    /// Reads ONE of the portal's content pages, that is the named page when it is not administrative.
+    /// </summary>
+    /// <param name="portalId">The portal the page must belong to.</param>
+    /// <param name="tabId">The page wanted.</param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns>
+    /// The page, or <see langword="null"/> when it does not exist, belongs to another portal, is recycled,
+    /// or falls in the administrative band.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// The single-page counterpart of <see cref="ReadContentTabsAsync"/>, applying the identical three
+    /// exclusions so that "is this a content page of this portal" has ONE answer however it is asked. It
+    /// exists because a caller validating one client-supplied identifier does not need the tenant's whole
+    /// page tree, and reading it was work proportional to the portal rather than to the question.
+    /// </para>
+    /// <para>
+    /// TWO READS RATHER THAN ONE, AND THE SECOND IS NOT AVOIDABLE. The administrative band is defined by
+    /// the portal's own <c>AdminTabId</c>, so classifying any page at all requires that column; there is no
+    /// flag on the page itself to read instead. What has gone is the page-tree read, not the portal read -
+    /// the set-based helper made the very same portal read for the very same reason.
+    /// </para>
+    /// <para>
+    /// THE PORTAL IS READ SECOND, AND ONLY WHEN THE PAGE EXISTS. An identifier naming no page in this
+    /// portal is refused without the portal read, which is the common shape of a bad request and the one
+    /// worth answering cheaply.
+    /// </para>
+    /// </remarks>
+    private async Task<Tab?> ReadContentTabAsync(
+        int portalId,
+        int tabId,
+        CancellationToken cancellationToken)
+    {
+        Tab? tab = await _tabs
+            .GetPortalTabAsync(portalId, tabId, cancellationToken)
+            .ConfigureAwait(false);
+
+        // The repository returns recycled pages, because the legacy read applied no predicate to IsDeleted
+        // and projected the column instead. A content page offered as a placement target must not be one
+        // sitting in the recycle bin, so that exclusion is applied here exactly as the set-based helper
+        // applies it.
+        if (tab is null || tab.IsDeleted)
+        {
+            return null;
+        }
+
+        Portal? portal = await _portals
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
+            .ConfigureAwait(false);
+
+        return IsAdministrative(tab, portal?.AdminTabId) ? null : tab;
     }
 
     /// <summary>Classifies a page as administrative.</summary>

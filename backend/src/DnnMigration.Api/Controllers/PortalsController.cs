@@ -537,6 +537,14 @@ public sealed class PortalsController : ControllerBase
     /// conflicts with current state rather than being malformed, so re-sending it unchanged cannot
     /// succeed while that state holds.
     /// </response>
+    /// <response code="503">
+    /// A store this removal depends on could not be reached, and the removal was abandoned with the portal
+    /// intact. Removing a portal also ends the sessions of the accounts it is the only tenant for and
+    /// removes their credentials from the external membership store; neither the token store nor that
+    /// membership store can enlist in a relational transaction, so a refusal from either abandons the whole
+    /// removal rather than leaving an account separated from its credential. Nothing was removed and the
+    /// identical request may be retried.
+    /// </response>
     /// <remarks>
     /// <para>
     /// MIGRATION: replaces <c>PortalController.DeletePortal</c>
@@ -579,6 +587,13 @@ public sealed class PortalsController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    // MIGRATION: the unavailability branch is DECLARED, not new. The service already abandons this removal
+    // and reports a store-unavailability code when the token store or the external membership store refuses,
+    // and the shared translator already answers 503 for it - so the branch was reachable while being absent
+    // from the published contract, which is the one place a generated client learns of it. A caller told only
+    // about 409 reads a 503 as an unknown fault and has no reason to retry the identical request, which is
+    // exactly what it should do.
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status503ServiceUnavailable)]
     public async Task<ActionResult> DeleteAsync(int portalId, CancellationToken cancellationToken)
     {
         Result outcome = await _portalService

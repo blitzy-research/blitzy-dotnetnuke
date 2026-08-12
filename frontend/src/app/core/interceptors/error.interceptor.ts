@@ -80,6 +80,10 @@ import type { HttpInterceptorFn } from '@angular/common/http';
 import { inject } from '@angular/core';
 import { catchError, throwError } from 'rxjs';
 
+import {
+  CORRELATION_ID_HEADER,
+  isCanonicalCorrelationId,
+} from './correlation-id.interceptor';
 import { isProblemDetails } from '../models/problem-details.model';
 import type { ProblemDetails } from '../models/problem-details.model';
 import { NotificationService, PRESENTED_IN_CONTEXT } from '../services/notification.service';
@@ -369,21 +373,69 @@ function announce(notifications: NotificationService, error: HttpErrorResponse):
   }
 
   // The reference is handed over as its OWN argument rather than concatenated into the
-  // sentence. See `resolveReference` for why that matters.
+  // sentence. See `resolveReference` for why that matters, and `headerCorrelationId` for
+  // why the document is not the only place it is looked for.
   notifications.notify(
     severity,
     summary.message,
-    resolveReference(summary.supportReference, status),
+    resolveReference(summary.supportReference ?? headerCorrelationId(error), status),
   );
 
-  // ⚠ EXEMPTED FROM THE NAVIGATION SWEEP, because a failure announced here is frequently the
-  // reason a navigation is about to happen. An expired session, a refused destination and a
-  // read that fails during a route resolution all land on this line and are then followed by a
-  // redirect, and the shell discards stale notifications on a completed navigation — so without
-  // the exemption the operator would be moved with the explanation already swept away. It lasts
-  // for exactly one navigation, so a failure announced while the caller stays put is still
-  // retired the next time they genuinely go somewhere.
-  notifications.retainAcrossNavigation();
+  // MIGRATION: THE UNCONDITIONAL NAVIGATION EXEMPTION THAT USED TO CLOSE THIS FUNCTION IS GONE.
+  // Its stated reason was sound for the cases it named - an expired session, a refused
+  // destination, a read that fails during a route resolution - each of which is followed by a
+  // redirect that would otherwise sweep the explanation away before the operator saw it. But it
+  // was applied to EVERY failure this interceptor announces, and most of them are not followed by
+  // a navigation at all: a validation refusal, a conflict, a rate limit, a failed save on a screen
+  // the operator stays on. For those, the exemption did not preserve an explanation the operator
+  // was about to lose - it made a stale one outlive the operator's NEXT deliberate change of
+  // screen, so a message about the form they have finished with follows them to the one they have
+  // moved to. Worse, the exemption is a single one-navigation grant on the queue, so spending it
+  // here on a failure that needed nothing consumed it for whatever genuinely did.
+  //
+  // RETENTION IS ALREADY CALLER-OWNED, WHICH IS WHY REMOVING IT LOSES NOTHING. Every path that
+  // actually redirects or ejects asks for it explicitly and at the point it knows a departure is
+  // coming: the permission guard in three places, the authentication store, the session-teardown
+  // service, and the module-import, portal-settings, role-form and membership-settings screens.
+  // The 401 lifecycle, the one case this function could not see the redirect for, returns above
+  // before reaching here and is owned by `auth.interceptor.ts`. So the exemption is now claimed by
+  // whoever knows a navigation is imminent, rather than guessed at by whoever knows only that
+  // something failed.
+}
+
+/**
+ * Reads a canonical correlation identifier from the response headers, or null when there is none.
+ *
+ * ⚠ THE GATEWAY IS WHY THIS EXISTS. The correlation identifier normally reaches an operator through the
+ * problem document's own `correlationId` member, which the API populates - but not every failure response
+ * is written by the API. A `502` or `503` produced by the reverse proxy because the API could not be
+ * reached carries a problem document the PROXY composed, and a `504` may carry no document at all. Those
+ * are precisely the failures an operator is most likely to report, and until this fallback existed they
+ * were the ones with nothing to report them BY: the interceptor found no reference in the body, quoted
+ * none, and the operator was left describing a gateway failure with no join key to the request.
+ *
+ * The header is present on those responses because the proxy sets it: it validates the inbound identifier
+ * against the same canonical shape this client generates and, failing that, generates one of its own, then
+ * returns it on the response and embeds the identical value in the document it composes. So the header is
+ * the one place the identifier is available regardless of who wrote the body.
+ *
+ * ⚠ ONLY A CANONICAL VALUE IS ACCEPTED, and the check is the same predicate the correlation interceptor
+ * applies on the way out. A response header is server-supplied text, and an intermediary that echoed
+ * something arbitrary into it would otherwise put that arbitrary text in front of an operator - the exact
+ * class of defect the canonical shape was introduced to close on the request path. Anything that is not a
+ * plain 32-character or hyphenated-UUID hexadecimal identifier is treated as absent.
+ *
+ * @param error The failed response.
+ * @returns The identifier, or null when the header is absent or not canonical.
+ */
+function headerCorrelationId(error: HttpErrorResponse): string | null {
+  const header: string | null = error.headers.get(CORRELATION_ID_HEADER);
+
+  if (header === null) {
+    return null;
+  }
+
+  return isCanonicalCorrelationId(header) ? header : null;
 }
 
 // ---------------------------------------------------------------------------

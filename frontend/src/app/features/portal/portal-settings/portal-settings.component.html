@@ -239,32 +239,30 @@
 
             @if (isSectionOpen('siteDetails')) {
               <div class="portal-settings__grid" [id]="sectionBodyId('siteDetails')">
+                <!--
+                  ⚠ NOT MARKED REQUIRED, AND NOTHING HERE REFUSES A BLANK TITLE. This field
+                  briefly carried a `[required]` marker, an `aria-required` announcement and a
+                  `Validators.required` rule, mirroring a `NotEmpty()` the update contract
+                  carried; all four are withdrawn together as a parity break. The legacy screen
+                  declares no `RequiredFieldValidator` on its 568 lines, and its write path
+                  stored a blank title as the empty string — `SqlDataProvider.vb:L632` passes
+                  `PortalName` raw while wrapping fourteen sibling arguments in `GetNull`, and
+                  `[PortalName] [nvarchar] (128) NOT NULL` accepts the empty string. Marking it
+                  required here refused an input both legacy tiers took. See the control's own
+                  note in the component for the full citation set.
+                -->
                 <app-form-field
                   [label]="fieldLabel['portalName']"
                   [for]="controlId('portalName')"
-                  [required]="true"
                   [help]="fieldHelp['portalName']"
                   [error]="messagesFor('portalName')"
                 >
                   <div class="portal-settings__control">
-                    <!--
-                      ⚠ #24 — REQUIREDNESS IS DECLARED IN THREE PLACES, ON PURPOSE, BECAUSE
-                      THEY REACH THREE DIFFERENT READERS: the field's `[required]` marker is
-                      SEEN, `aria-required` is ANNOUNCED, and the component's own
-                      `Validators.required` is what actually REFUSES the submit. Only the third
-                      changes behaviour; the first two are the disclosure that was missing.
-
-                      `aria-required` rather than the native `required` attribute: the native
-                      one engages the browser's own constraint bubble, which would appear
-                      alongside the field's message region and give the operator two
-                      differently-worded complaints about one field.
-                    -->
                     <input
                       type="text"
                       formControlName="portalName"
                       [id]="controlId('portalName')"
                       [maxlength]="maxLength.portalName"
-                      [attr.aria-required]="true"
                       autocomplete="off"
                     />
                   </div>

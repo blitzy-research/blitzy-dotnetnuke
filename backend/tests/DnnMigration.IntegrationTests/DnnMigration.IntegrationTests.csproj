@@ -5,6 +5,17 @@
     partial in the global namespace. Every test class here must carry [Trait("Category", "Integration")],
     because that is what the "Category=Integration" filter selects.
 
+    ⚠ NOT EVERY SUITE HERE STARTS A HOST, AND THAT IS DELIBERATE RATHER THAN UNTIDY. Security/,
+    Infrastructure/, Services/ and Validation/ hold suites whose subject is a single internal
+    Infrastructure component driven with SUBSTITUTED collaborators - a recording logger, a mutable clock,
+    a fabricated provider fault - which is a fact no resolved instance can express, because the
+    substitution IS the fact. They live in this project because AAP 0.5.2.2 gives DnnMigration.UnitTests
+    a single edge to Application, so a suite there cannot name an Infrastructure type at all; the
+    Infrastructure assembly is reachable from here through this project's own single edge to the API, and
+    that assembly's InternalsVisibleTo grant names THIS assembly. They carry the Integration trait like
+    every other class here, which is correct: they run against production types rather than against
+    contracts, and the filter that selects them is the one that selects everything in this project.
+
     Test-database strategy: every run uses a real SQL Server, and TestDatabaseFactory needs NO PREPARATION
     to find one, because the acceptance gates are run verbatim. Order: a truthy DNN_TESTS_USE_MSSQL starts
     a throwaway container; otherwise DNN_TEST_SQLSERVER names an existing server; otherwise a falsey
@@ -84,6 +95,13 @@
     <EmbeddedResource Include="Schema\DnnSchema.sql" />
     <EmbeddedResource Include="Schema\MembershipSchema.sql" />
     <EmbeddedResource Include="Schema\HostSettingsSchema.sql" />
+    <!--
+      TerminalSchema.manifest is not provisioning DDL: it is the INDEPENDENT ORACLE the three
+      scripts above are measured against, derived from the legacy upgrade chain rather than from
+      anything this solution emits. It is embedded so that the comparison cannot silently degrade
+      into "no manifest, no assertion" - TerminalSchema refuses to load without it.
+    -->
+    <EmbeddedResource Include="Schema\TerminalSchema.manifest" />
   </ItemGroup>
 
   <!--

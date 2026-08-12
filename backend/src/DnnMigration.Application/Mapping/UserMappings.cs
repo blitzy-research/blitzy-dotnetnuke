@@ -1,4 +1,5 @@
 using DnnMigration.Application.Dtos.User;
+using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
 using RoleEntity = DnnMigration.Domain.Entities.Role;
 using UserEntity = DnnMigration.Domain.Entities.User;
@@ -188,6 +189,36 @@ public static class UserMappings
     /// domain, the repository or the service layer may compare a portal identifier against it.
     /// </remarks>
     private const int LegacyHostPortalId = -1;
+
+    /// <summary>
+    /// Projects one account picker row onto its wire contract.
+    /// </summary>
+    /// <param name="choice">The projected choice, as the repository read it.</param>
+    /// <returns>The wire contract for one selectable account.</returns>
+    /// <remarks>
+    /// <para>
+    /// A THREE-MEMBER MAPPER THAT COULD HAVE BEEN AN INLINE INITIALISER, AND IS NOT, FOR ONE REASON: the
+    /// narrowness of this projection is a privacy decision, and a decision is easier to keep when it has
+    /// one location. Every account picker in this solution maps through here, so widening the payload takes
+    /// an edit to this method and to <see cref="UserChoiceDto"/> rather than an edit at whichever call site
+    /// happened to want one more field.
+    /// </para>
+    /// <para>
+    /// Nothing is defaulted, coerced or substituted. The domain projection and the contract carry the same
+    /// three values with the same nullability, so an empty display name arrives as an empty display name -
+    /// the legacy absent-string sentinel is <c>""</c> literally, and a client captions such an option with
+    /// the login name rather than treating the row as unusable.
+    /// </para>
+    /// </remarks>
+    public static UserChoiceDto ToChoice(AccountChoice choice)
+    {
+        return new UserChoiceDto
+        {
+            UserId = choice.UserId,
+            Username = choice.Username,
+            DisplayName = choice.DisplayName,
+        };
+    }
 
     /// <summary>
     /// Projects an account onto the row shape the account list renders.
@@ -611,7 +642,24 @@ public static class UserMappings
 
         return new UserEntity
         {
-            Username = request.Username,
+            // MIGRATION: THE ACCOUNT NAME IS CANONICALISED HERE, AT THE ONE PLACE THAT BUILDS THE ROW, and
+            // storing it verbatim was a defect that produced an account nobody could reach. Every read of
+            // this column normalises the value it is GIVEN - UserRepository.GetByUsernameAsync and
+            // UsernameExistsAsync both compute Trim().ToLowerInvariant() before comparing - but nothing
+            // normalised the value being WRITTEN. SQL Server ignores trailing spaces when comparing strings
+            // and does NOT ignore leading ones, so a submitted " alice" was stored as " alice" and every
+            // subsequent lookup for "alice" missed it: the account existed, occupied the name, and could
+            // neither sign in nor be found by the administration screens. The credential store made it worse
+            // rather than better, because MembershipStore writes LoweredUserName from Trim().ToLowerInvariant()
+            // while writing UserName verbatim, so the credential WAS reachable by the canonical name while
+            // the account row was not - the two stores disagreed about the identity of one account.
+            //
+            // Trim only, and deliberately not lower-casing: dbo.Users.Username is the value the screens
+            // display and the legacy stored the operator's own casing, so folding case here would rewrite
+            // what every existing installation shows. Case-insensitive MATCHING is already provided by the
+            // reads and by the database collation; canonical case is not required for it and is not imposed.
+            // Recorded in MIGRATION_NOTES.md.
+            Username = request.Username.Trim(),
             FirstName = firstName,
             LastName = lastName,
             DisplayName = displayName,
@@ -795,7 +843,24 @@ public static class UserMappings
         definition.IsRequired = request.Required;
         definition.ValidationExpression = request.ValidationExpression;
         definition.ViewOrder = request.ViewOrder;
-        definition.IsVisible = request.Visible;
+
+        // MIGRATION: A REQUIRED PROPERTY IS ALWAYS VISIBLE, and this coercion is the legacy rule rather
+        // than a convenience. Both legacy write members open with the identical two lines - 
+        // ProfileController.vb AddPropertyDefinition:
+        //     If definition.Required Then
+        //         definition.Visible = True
+        //     End If
+        // and UpdatePropertyDefinition, verbatim the same - so the combination "required and not visible"
+        // could not be stored by either verb. Honouring the submitted flag instead admitted exactly that
+        // combination, and it is not merely untidy: the profile form renders the visible properties, so a
+        // required-but-invisible property is one the account is obliged to answer and is never shown, and
+        // the completeness rule then refuses every sign-in that account attempts with no field to correct.
+        // Coerced rather than refused, because refusing would be a NEW rule: the legacy screen accepted the
+        // request and silently promoted the flag, and the caller's stated intent - that the answer is
+        // mandatory - is honoured either way. Recorded in MIGRATION_NOTES.md.
+        //
+        // Applied in the shared core so BOTH verbs carry it, which is the same reason the core exists.
+        definition.IsVisible = request.Required || request.Visible;
     }
 
     /// <summary>

@@ -323,8 +323,15 @@
             <!--
               The NAME control, labelled "Title:". See annotation 1 - this is the
               control the legacy `txtTitle` box was, and on the sibling settings screen
-              the same column is edited through `txtPortalName`. Not required; see
-              annotation 11.
+              the same column is edited through `txtPortalName`.
+
+              NOT REQUIRED, and on this mode the authority is `sitesettings.ascx` rather
+              than annotation 11's `signup.ascx`: it declares two validators on 568 lines,
+              both comparison checks, and none of them a presence check. An earlier
+              revision required it here alone, mirroring a `NotEmpty()` the update
+              contract carried; that rule is withdrawn as a parity break, because the
+              legacy write path stored a blank title as the empty string rather than
+              refusing it. The component's own note carries the citations.
             -->
             <app-form-field
               label="Title:"

@@ -79,35 +79,37 @@ internal sealed class RoleConfiguration : IEntityTypeConfiguration<Role>
             .ValueGeneratedOnAdd()
             .UseIdentityColumn(0, 1);
 
-        // MIGRATION: THIS COLUMN IS NULLABLE, and it must not be pinned with IsRequired(): doing so
-        // would put this mapping in disagreement with the domain property, and the two must never
-        // disagree - either the property tightens to int or this line stays relaxed. It is settled in
-        // favour of nullable on three grounds.
+        // MIGRATION: THE TERMINAL COLUMN IS NOT NULL, AND THIS MAPPING IS DELIBERATELY MORE PERMISSIVE
+        // THAN IT. This comment previously argued that the column itself is nullable, and it was wrong:
+        // it read 01.00.04:L1323 as if it came after 01.00.05:L2749, and it cited
+        // Schema/DnnSchema.sql:L259 as corroboration when that script had been emitted FROM this model
+        // and so could not be evidence about it. Both halves are corrected here rather than deleted,
+        // because the wrong reasoning is what let the test schema drift and would let it drift again.
         //
-        // First, the schema this mapping actually binds to declares it nullable:
-        // backend/tests/DnnMigration.IntegrationTests/Schema/DnnSchema.sql:L259 is "[PortalID] int
-        // NULL", and the baseline DDL agrees at 01.00.00.SqlDataProvider:L116. Under Rule T4 the
-        // schema is the immutable ground truth, so the mapping follows it rather than overrules it.
-        // The NOT NULL at 01.00.05:L2749 is the shape of a temporary table inside a rebuild, and
-        // 01.00.04:L1323 - which is later than the birth of the column and earlier than that rebuild -
-        // restates it as nullable; a shape adopted inside a rebuild is not the shape the chain
-        // terminates in.
+        // The measured terminal state: 01.00.05 rebuilds the table through Tmp_Roles declaring
+        // "PortalID int NOT NULL" (L2749), drops dbo.Roles (L2779) and renames Tmp_Roles over it
+        // (L2781), unguarded and LATER than the 01.00.04 rebuild that had declared it NULL. Nothing
+        // alters the column afterwards, and the independent fresh-install snapshot agrees
+        // (DotNetNuke.Schema.SqlDataProvider:L6209). Recorded with citations in
+        // backend/tests/DnnMigration.IntegrationTests/Schema/TerminalSchema.manifest.
         //
-        // Second, the domain entity reaches the same conclusion independently and at length, and
-        // states that the key MUST NOT BE TIGHTENED, because a role with no owning portal is a
-        // host-level role rather than a defective row.
+        // WHY IsRequired() IS STILL NOT APPLIED. Not because the column admits nulls - it does not -
+        // but because the terminal listing procedure filters on "( R.PortalId = @PortalId OR
+        // R.PortalId is null )" [04.08.00:L40] and RoleRepository.GetByPortalIdAsync reproduces that
+        // predicate under the Minimal Change Clause, which requires a nullable property to express.
+        // Marking the property required would also make EF Core read the column into a non-nullable
+        // buffer, so any installation later upgraded to a DotNetNuke version that relaxed the column
+        // would throw SqlNullValueException on every role read. The permissive direction costs
+        // nothing: reads cannot fail, and a write of null is refused by the database - proved by
+        // LegacySchemaFidelityTests Roles_RefusesARoleThatBelongsToNoPortal, with the clean rollback
+        // proved by RoleRepositoryTests
+        // GetByPortalIdAsync_IsUnaffectedByARefusedRoleThatBelongsToNoTenant.
         //
-        // Third, and decisively, IsRequired() was not merely inaccurate but actively harmful: EF Core
-        // reads a required property with a non-nullable buffer, so materialising a legitimately stored
-        // host role threw SqlNullValueException and made such a row unreadable through every member of
-        // IRoleRepository. That is exactly the case the terminal GetPortalRoles admits, filtering on
-        // "( R.PortalId = @PortalId OR R.PortalId is null )" [04.08.00:L40], so the mapping had made a
-        // documented legacy behaviour impossible to reproduce. RoleRepositoryTests
-        // GetByPortalIdAsync_ReturnsTheTenantsRolesByName now covers it with a real host role.
-        //
-        // Nullability is per table and must not be generalised from this one: RoleGroups.PortalID is
-        // genuinely NOT NULL, and the same key on Tabs, on Modules and on ProfilePropertyDefinition is
-        // genuinely nullable.
+        // This is the ONLY column where the mapping and the terminal schema differ on nullability, and
+        // the fidelity suite names it explicitly rather than exempting a class of columns, so a second
+        // such divergence cannot appear unnoticed. Nullability is per table in any case and must not be
+        // generalised from this one: RoleGroups.PortalID is also NOT NULL, while the same key on Tabs,
+        // on Modules and on ProfilePropertyDefinition is genuinely nullable.
         builder.Property(x => x.PortalId)
             .HasColumnName("PortalID")
             .HasColumnType("int");

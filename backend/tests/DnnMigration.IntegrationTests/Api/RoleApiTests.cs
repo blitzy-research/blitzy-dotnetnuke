@@ -2577,12 +2577,13 @@ public sealed class RoleApiTests
     /// application could perform were unreachable over HTTP.
     /// </para>
     /// <para>
-    /// The asymmetry with the account listing is legitimate and is asserted from the other side in
-    /// <c>RequestValidationContractTests</c>: the account listing pages in the STORE and cannot order by
-    /// values the external <c>aspnet_*</c> membership objects fill after the page has been cut, whereas this
-    /// listing composes each assignment with its account and pages IN MEMORY, so the values are present on
-    /// every row beforehand. Both verdicts are correct for their own listing, which is why each collection
-    /// binds its own request type rather than sharing or borrowing one.
+    /// ⚠ SEC-F11. THIS ASSERTED AN ASYMMETRY THAT DID NOT EXIST. It claimed the membership listing composes
+    /// each assignment with its account and pages IN MEMORY, so that the three values the external
+    /// <c>aspnet_*</c> membership objects supply are present before a page is cut. The repository pages in
+    /// the STORE exactly as the account listing does, and its ordering arm for these three names fell
+    /// through to the assignment key - so the endpoint answered 200 with rows ordered by something else,
+    /// undetectably, since the membership projection publishes none of the three. Both listings now refuse
+    /// them, which is the honest answer for an ordering neither can perform.
     /// </para>
     /// </remarks>
     [Theory]
@@ -2590,7 +2591,7 @@ public sealed class RoleApiTests
     [InlineData("LastLoginDate")]
     [InlineData("IsApproved")]
     [Trait("Category", "Integration")]
-    public async Task RoleMembers_AreOrderableByTheAccountFieldsTheAccountListingCannotOrder(string sortBy)
+    public async Task RoleMembers_RefuseTheMembershipStoreFieldsNeitherListingCanOrder(string sortBy)
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
@@ -2601,21 +2602,13 @@ public sealed class RoleApiTests
                 UriKind.Relative));
 
         membership.StatusCode.Should().Be(
-            HttpStatusCode.OK,
-            "the membership listing composes the account and pages in memory, so it genuinely orders by "
-            + "this field and must not refuse it at the boundary");
+            HttpStatusCode.BadRequest,
+            "the membership listing pages in the store, so it cannot order by a value the external "
+            + "membership objects hold and its projection does not publish - and accepting the name would "
+            + "return a page ordered by something else");
 
-        // The page must actually come back, so a permissive validator paired with a service that then
-        // refused the same name would still fail here rather than passing on the status code alone.
-        PagedEnvelope<RoleMembershipDto>? page = await membership.Content
-            .ReadFromJsonAsync<PagedEnvelope<RoleMembershipDto>>(ApiTestFixture.Json);
-
-        page.Should().NotBeNull();
-        page!.Items.Should().NotBeNull();
-
-        // The mirror image: the ACCOUNT listing refuses the very same name, and that refusal is correct
-        // because it pages in the store. Asserting both here is what makes the difference deliberate
-        // rather than an accident of two validators drifting apart.
+        // The SAME verdict from the account listing, asserted alongside so the two vocabularies cannot
+        // drift apart again in either direction.
         using HttpResponseMessage accounts = await client.GetAsync(
             new Uri(
                 $"/api/v1/users?pageIndex=0&pageSize=50&sortBy={sortBy}",
@@ -3828,7 +3821,7 @@ public sealed class RoleApiTests
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
-        string supplied = "role-suite-" + Suffix();
+        string supplied = ApiTestFixture.NewCorrelationId();
 
         using var successRequest = new HttpRequestMessage(
             HttpMethod.Get,
@@ -3843,7 +3836,7 @@ public sealed class RoleApiTests
             1,
             "the header is assigned rather than appended, so a supplied value is not duplicated");
 
-        string onFailure = "role-suite-failure-" + Suffix();
+        string onFailure = ApiTestFixture.NewCorrelationId();
 
         using var failureRequest = new HttpRequestMessage(
             HttpMethod.Get,

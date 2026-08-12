@@ -146,7 +146,6 @@ import {
 import { RouterLink } from '@angular/router';
 
 import {
-  DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
   toPagedResult,
   type ApiMeta,
@@ -156,11 +155,13 @@ import {
 } from '../../../core/models/paged-result.model';
 import { isProblemDetails, type ProblemDetails } from '../../../core/models/problem-details.model';
 import type { Role, RoleAssignmentRequest, UserRole } from '../../../core/models/role.model';
-import type { UserListItem, UserListQuery } from '../../../core/models/user.model';
+import type { UserChoice } from '../../../core/models/user.model';
+import type { PagedRequestParams } from '../../../core/utils/http-params.util';
 import {
   NotificationService,
   type NotificationSeverity,
 } from '../../../core/services/notification.service';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { UserService } from '../../../core/services/user.service';
 import { AuthStore } from '../../../core/state/auth.store';
 import { PortalStore } from '../../../core/state/portal.store';
@@ -923,17 +924,6 @@ const USER_LOOKUP_DISPLAY_LIMIT = MAX_PAGE_SIZE;
 const MAX_USER_LOOKUP_PAGES = 20;
 
 /**
- * The hard ceiling on how many pages the complete-account-list walk will request.
- *
- * Unlike {@link MAX_USER_LOOKUP_PAGES}, reaching this one is a REFUSAL — see
- * {@link RoleAssignmentComponent.walkAllAccounts} for why the two differ. At
- * {@link USER_LOOKUP_PAGE_SIZE} accounts a page it accommodates a hundred thousand accounts,
- * which is two orders of magnitude past the thousand-account threshold at which the legacy code
- * itself stopped offering this drop-down (`UserModuleBase.vb:L178-L186`).
- */
-const MAX_ACCOUNT_CHOICE_PAGES = 1000;
-
-/**
  * The account count above which the legacy defaulted to the NAME BOX rather than the drop-down,
  * when the tenant had never chosen either.
  *
@@ -952,6 +942,32 @@ const MAX_ACCOUNT_CHOICE_PAGES = 1000;
  * @see RoleAssignmentComponent.usersControlMode - applies it.
  */
 const LEGACY_ACCOUNT_LISTING_CEILING = 1000;
+
+/**
+ * The hard ceiling on how many pages the complete-account-list walk will request.
+ *
+ * ⚠ DERIVED FROM THE LEGACY THRESHOLD RATHER THAN CHOSEN, AND IT USED TO BE A HUNDRED TIMES
+ * LARGER. It was one thousand PAGES, which at {@link USER_LOOKUP_PAGE_SIZE} accounts a page
+ * accommodated a hundred thousand accounts — two orders of magnitude past the very threshold at
+ * which the legacy code stopped offering this drop-down at all (`UserModuleBase.vb:L178-L186`). A
+ * performance review measured what that permitted: a walk issuing up to a thousand sequential
+ * requests and retaining up to a hundred thousand rows, to fill a native `<select>` nobody could
+ * use. The ceiling is now exactly {@link LEGACY_ACCOUNT_LISTING_CEILING} accounts expressed in
+ * pages, so an eagerly materialised choice list can never exceed the size the legacy screen was
+ * itself willing to enumerate.
+ *
+ * Above that size the answer is the NAME BOX and its server-paged lookup, which is what
+ * {@link RoleAssignmentComponent.usersControlMode} decides and what the legacy did in the same
+ * situation. Reaching this ceiling is therefore a REFUSAL rather than a reported stop — see
+ * {@link RoleAssignmentComponent.walkAllAccounts} for why that asymmetry with the lookup walk is
+ * deliberate — and it is normally unreachable, because the count probe has already sent a tenant
+ * this large to the name box before any walk begins. It remains as the guarantee for the one case
+ * the count cannot cover: a tenant that GREW past the threshold between the probe and the walk.
+ *
+ * Declared after the threshold it is derived from, because a `const` initialiser that read a
+ * later `const` would be evaluating a binding still in its temporal dead zone.
+ */
+const MAX_ACCOUNT_CHOICE_PAGES = LEGACY_ACCOUNT_LISTING_CEILING / USER_LOOKUP_PAGE_SIZE;
 
 /**
  * The page size used for the count probe.
@@ -1000,7 +1016,7 @@ type UserLookupCompletion =
  */
 interface UserLookupOutcome {
   /** The accounts offered as choices — already limited to {@link USER_LOOKUP_DISPLAY_LIMIT}. */
-  readonly matches: readonly UserListItem[];
+  readonly matches: readonly UserChoice[];
 
   /** How many accounts the walk examined, which is at least `matches.length`. */
   readonly examined: number;
@@ -1014,7 +1030,7 @@ interface UserLookupOutcome {
 
 /** An account lookup that found nothing, for the cleared and failed states. */
 const NO_USER_LOOKUP: UserLookupOutcome = Object.freeze({
-  matches: Object.freeze([]) as readonly UserListItem[],
+  matches: Object.freeze([]) as readonly UserChoice[],
   examined: 0,
   reportedTotal: 0,
   completion: 'complete',
@@ -1034,9 +1050,9 @@ const NO_USER_LOOKUP: UserLookupOutcome = Object.freeze({
  * @returns The accounts to offer, never more than {@link USER_LOOKUP_DISPLAY_LIMIT}.
  */
 function offerableMatches(
-  collected: readonly UserListItem[],
-  isExact: (candidate: UserListItem) => boolean,
-): readonly UserListItem[] {
+  collected: readonly UserChoice[],
+  isExact: (candidate: UserChoice) => boolean,
+): readonly UserChoice[] {
   if (collected.length <= USER_LOOKUP_DISPLAY_LIMIT) {
     return collected;
   }
@@ -1432,7 +1448,6 @@ function resolveMembershipLifecycle(row: UserRole, now: Date): MembershipLifecyc
     PaginationComponent,
     ConfirmDialogComponent,
     DateDisplayPipe,
-    FocusFirstInvalidDirective,
   ],
   templateUrl: './role-assignment.component.html',
   styleUrl: './role-assignment.component.scss',
@@ -1650,8 +1665,8 @@ export class RoleAssignmentComponent {
   private readonly userLookupTermSignal: WritableSignal<string> = signal('');
 
   /** Every account in the tenant, for the drop-down the account policy can ask for. */
-  private readonly accountChoicesSignal: WritableSignal<readonly UserListItem[]> = signal<
-    readonly UserListItem[]
+  private readonly accountChoicesSignal: WritableSignal<readonly UserChoice[]> = signal<
+    readonly UserChoice[]
   >([]);
 
   private readonly accountChoicesLoadingSignal: WritableSignal<boolean> = signal(false);
@@ -1690,14 +1705,39 @@ export class RoleAssignmentComponent {
    * name, so the screen falls back to it and says so instead of failing outright.
    */
   private readonly accountChoicesFailedSignal: WritableSignal<boolean> = signal(false);
-  private readonly selectedUserSignal: WritableSignal<UserListItem | null> =
-    signal<UserListItem | null>(null);
+  private readonly selectedUserSignal: WritableSignal<UserChoice | null> =
+    signal<UserChoice | null>(null);
   private readonly pendingRemovalSignal: WritableSignal<UserRole | null> = signal<UserRole | null>(
     null,
   );
   private readonly protectedPairingsSignal: WritableSignal<ReadonlySet<string>> = signal<
     ReadonlySet<string>
   >(new Set<string>());
+
+  /**
+   * Reports this screen's unsaved entry to the tracker that guards both ways of leaving it.
+   *
+   * ⚠ THE ROUTE DECLARES `unsavedChangesGuard` AND THIS SCREEN USED TO REGISTER NOTHING, so the gate
+   * was answered by a reflective sweep over this component's fields. The sweep is gone — it pulled
+   * `@angular/forms` into the eagerly loaded bundle for an application whose every form is lazily
+   * loaded — and this registration replaces it. Without it the declaration on `roles/:roleId/users`
+   * would be inert: the guard would find no probe, read a part-completed enrolment as clean, and
+   * discard it silently.
+   *
+   * ⚠ THE ACCOUNT SELECTION IS PART OF WHAT IS AT STAKE HERE, and on a tenant above the enumeration
+   * ceiling that makes the loss larger than it looks. Above the ceiling the account is reached by
+   * typing a login name and waiting on a lookup, so an operator who has found the right account and
+   * set both bounds has performed three separate acts of work that the form is holding and the
+   * server knows nothing about.
+   *
+   * {@link saving} rather than the role store's flag: the store's flag is raised by EVERY role write
+   * in the application, so reading it here would let an unrelated write elsewhere suppress this
+   * screen's warning. It is `true` exactly while this screen's own enrolment is in flight, which is
+   * the entry that is no longer unsaved.
+   */
+  private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
+    () => this.form.dirty && this.saving() === false,
+  );
 
   /**
    * The screen's typed form.
@@ -1810,10 +1850,30 @@ export class RoleAssignmentComponent {
    * readable as a promise.
    */
   public readonly accountChoiceEntries: Signal<readonly AccountChoiceEntry[]> = computed(() => {
-    const members: readonly UserRole[] = this.assignments();
+    // ⚠ ONE SET, BUILT ONCE, RATHER THAN A SCAN PER CHOICE. The membership test used to be
+    // `members.some(...)` inside the map, which is O(choices × memberships): at the eagerly
+    // materialised ceiling of a thousand choices against a full page of a hundred memberships that
+    // is a hundred thousand comparisons, and it runs again on every recomputation of either input -
+    // every page turn, every assignment written, every notification. Indexing the memberships first
+    // makes it O(choices + memberships) for an identical answer.
+    //
+    // A `Set<number>` rather than an object or an array of keys: the values are account identifiers,
+    // and `Portals.PortalID` being `IDENTITY(-1, 1)` and `Roles.RoleID` `IDENTITY(0, 1)` is a
+    // standing reminder that identifiers here are plain integers with no reserved values - so a
+    // structure that stringifies its keys, or one that answers membership by scanning, is the wrong
+    // one. `Set` compares by value for numbers, which is exactly the comparison being replaced.
+    const memberIds = new Set<number>();
+    for (const row of this.assignments()) {
+      memberIds.add(row.userId);
+    }
 
-    return this.accountChoicesSignal().map((choice: UserListItem) => {
-      const already: boolean = members.some((row: UserRole) => row.userId === choice.userId);
+    return this.accountChoicesSignal().map((choice: UserChoice) => {
+      // POSITIVELY KNOWN MEMBERSHIP ONLY, and the set changes nothing about that. It is built from
+      // the rows IN HAND, so on a role whose membership exceeds one page an unmarked entry still
+      // means "not on the page you are looking at" rather than "not a member" - which is why the
+      // mark stays an ADDITIVE note and is never a disabled or withheld entry. Absence of the mark
+      // must not be readable as a promise, and it is not.
+      const already: boolean = memberIds.has(choice.userId);
       const base = `${choice.displayName} (${choice.username})`;
 
       return {
@@ -1994,7 +2054,7 @@ export class RoleAssignmentComponent {
    * Not every account it matched: see {@link USER_LOOKUP_DISPLAY_LIMIT}, and
    * {@link userLookupSummary} for the sentence that reports the difference whenever there is one.
    */
-  public readonly userMatches: Signal<readonly UserListItem[]> = computed(
+  public readonly userMatches: Signal<readonly UserChoice[]> = computed(
     () => this.userLookupSignal().matches,
   );
 
@@ -2072,7 +2132,24 @@ export class RoleAssignmentComponent {
 
     const settings = this.accounts.membershipSettings();
     if (settings !== null) {
-      return settings.securityUsersControl === USERS_CONTROL.combo ? 'combo' : 'lookup';
+      if (settings.securityUsersControl !== USERS_CONTROL.combo) {
+        return 'lookup';
+      }
+
+      // ⚠ A STORED PREFERENCE FOR THE DROP-DOWN DOES NOT OVERRIDE THE ENUMERATION THRESHOLD, and
+      // this test is what a performance review found missing. The threshold above is not a default
+      // that a setting replaces: it is the size at which enumerating a tenant to fill a select
+      // stops being a sensible thing to do, and the legacy framework applied it by WRITING the name
+      // box back as the tenant's setting the first time the count exceeded it
+      // (`UserModuleBase.vb:L178-L186`). A tenant whose stored preference predates its growth — or
+      // was set by hand — therefore keeps asking for the drop-down while holding far more accounts
+      // than the drop-down was ever meant to hold, and the walk that fills it was the one unbounded
+      // read on this screen. The count decides in that case, exactly as it decides for an unread
+      // policy.
+      //
+      // The stored preference still governs everything the threshold does not: a tenant at or below
+      // it that asked for the name box gets the name box.
+      return this.exceedsEnumerationThreshold() ? 'lookup' : 'combo';
     }
 
     // The policy is unreadable, so the legacy's own default rule decides. A count that is still
@@ -2084,6 +2161,27 @@ export class RoleAssignmentComponent {
     }
 
     return accountCount > LEGACY_ACCOUNT_LISTING_CEILING ? 'lookup' : 'combo';
+  });
+
+  /**
+   * Whether the tenant holds more accounts than the drop-down may enumerate.
+   *
+   * ⚠ AN UNREAD COUNT IS NOT AN EXCEEDED THRESHOLD, and the direction of that default is chosen
+   * rather than incidental. Answering `true` while the probe is outstanding would swap a stored
+   * drop-down preference for the name box on every visit and then swap it back, which is the
+   * control-exchanged-underneath-the-operator behaviour {@link accountPolicyPending} exists to
+   * prevent. Answering `false` keeps the tenant's own stored preference until there is evidence
+   * against it, and the walk that preference triggers is bounded by
+   * {@link MAX_ACCOUNT_CHOICE_PAGES} regardless — so the unknown case is safe in a way it was not
+   * before that ceiling was tied to this same threshold.
+   *
+   * A count that could not be read at all is treated the same way, for the same reason: a tenant is
+   * not sent to a different control because a probe failed.
+   */
+  private readonly exceedsEnumerationThreshold: Signal<boolean> = computed(() => {
+    const accountCount = this.accountCountSignal();
+
+    return accountCount !== null && accountCount > LEGACY_ACCOUNT_LISTING_CEILING;
   });
 
   /**
@@ -2099,8 +2197,16 @@ export class RoleAssignmentComponent {
    * other one underneath an operator who has already started typing into it.
    */
   public readonly accountPolicyPending: Signal<boolean> = computed(() => {
-    if (this.accounts.membershipSettings() !== null) {
-      return false;
+    const settings = this.accounts.membershipSettings();
+
+    if (settings !== null) {
+      // A STORED PREFERENCE FOR THE DROP-DOWN STILL WAITS FOR THE COUNT, because the enumeration
+      // threshold overrides it and the threshold cannot be applied without the count. Rendering the
+      // drop-down first and exchanging it for the name box when the probe lands is precisely the
+      // swap this state exists to prevent. A stored preference for the NAME BOX waits for nothing:
+      // the threshold can only move a tenant towards the name box, so its answer cannot change
+      // that one.
+      return settings.securityUsersControl === USERS_CONTROL.combo && this.accountCountOutstanding();
     }
 
     if (this.accounts.membershipSettingsLoading()) {
@@ -2109,8 +2215,19 @@ export class RoleAssignmentComponent {
 
     // The policy came back empty. The count decides, so it is pending until it either answers or
     // fails; a failure is an answer, and it resolves to the name box.
-    return this.accountCountSignal() === null && this.accountCountFailedSignal() === false;
+    return this.accountCountOutstanding();
   });
+
+  /**
+   * Whether the account-count probe has neither answered nor failed.
+   *
+   * A failure counts as answered, deliberately: a probe that cannot be completed is a decision the
+   * screen must still make, and holding the field for a fault that will not clear would leave an
+   * operator with no control at all.
+   */
+  private readonly accountCountOutstanding: Signal<boolean> = computed(
+    () => this.accountCountSignal() === null && this.accountCountFailedSignal() === false,
+  );
 
   /**
    * Whether the account policy could not be read AND the name box is what replaced it because the
@@ -2154,7 +2271,7 @@ export class RoleAssignmentComponent {
     );
 
   /** Every account in the tenant, for the drop-down. Empty in every other mode. */
-  public readonly accountChoices: Signal<readonly UserListItem[]> =
+  public readonly accountChoices: Signal<readonly UserChoice[]> =
     this.accountChoicesSignal.asReadonly();
 
   /** Whether the complete account list is being assembled. */
@@ -2174,7 +2291,7 @@ export class RoleAssignmentComponent {
   );
 
   /** The account chosen for the next write, or `null` when none has been chosen. */
-  public readonly selectedUser: Signal<UserListItem | null> = this.selectedUserSignal.asReadonly();
+  public readonly selectedUser: Signal<UserChoice | null> = this.selectedUserSignal.asReadonly();
 
   /**
    * The chosen account's existing membership of the addressed role, or `null` when none is
@@ -2711,11 +2828,23 @@ export class RoleAssignmentComponent {
     // slice is still shown at once, so the refresh costs the operator no wait.
     this.accounts.loadMembershipSettings();
 
-    // ACCOUNT COUNT, AND ONLY WHEN THE POLICY CAME BACK EMPTY. The legacy resolved an absent
-    // `Security_UsersControl` from the tenant's account count (`UserModuleBase.vb:L178-L183`), so
-    // reproducing that needs the count - and needs it only in that case. A tenant whose policy
-    // answered has already said which control it wants, and probing then would be a request whose
-    // answer changes nothing.
+    // ACCOUNT COUNT, WHENEVER THE COUNT DECIDES SOMETHING. There are two such cases and this effect
+    // used to serve only one of them.
+    //
+    // The first is an ABSENT policy: the legacy resolved an absent `Security_UsersControl` from the
+    // tenant's account count (`UserModuleBase.vb:L178-L183`), so reproducing that needs the count.
+    //
+    // The second is a STORED PREFERENCE FOR THE DROP-DOWN, and a performance review found it
+    // missing. The enumeration threshold is not a default a setting replaces - it is the size at
+    // which enumerating a tenant to fill a select stops being sensible, and the legacy framework
+    // enforced it by writing the name box back as the tenant's setting the first time the count
+    // exceeded it. Without the count here, a tenant whose stored preference predates its growth kept
+    // asking for the drop-down and the walk that fills it was the one unbounded read on this screen.
+    // One extra single-row request per visit buys that bound, and it is the cheapest request the API
+    // offers: `GET /api/v1/users/choices?pageSize=1` answers a total beside one key and two captions.
+    //
+    // A stored preference for the NAME BOX probes nothing, because the threshold can only move a
+    // tenant towards the name box and cannot change an answer that is already there.
     //
     // The guard set is the same shape as the walk's below and for the same reason: the probe must
     // fire ONCE. `accountCountSignal` stays null after a failure, so without the failure flag a
@@ -2724,8 +2853,13 @@ export class RoleAssignmentComponent {
       const settings = this.accounts.membershipSettings();
       const reading: boolean = this.accounts.membershipSettingsLoading();
 
+      const wanted: boolean =
+        settings === null
+          ? reading === false
+          : settings.securityUsersControl === USERS_CONTROL.combo;
+
       untracked(() => {
-        if (settings !== null || reading) {
+        if (!wanted) {
           return;
         }
 
@@ -2749,8 +2883,16 @@ export class RoleAssignmentComponent {
     effect(() => {
       const mode = this.usersControlMode();
 
+      // ⚠ THE WALK WAITS FOR THE POLICY TO SETTLE, INCLUDING THE COUNT IT NOW DEPENDS ON. Reading
+      // the pending state in the TRACKED half is deliberate: the mode reads `combo` while the count
+      // is still outstanding - that is the safe default, so that a stored preference is not
+      // momentarily contradicted - and a walk started on it would enumerate a tenant the count is
+      // about to disqualify. Waiting costs one round trip that was already in flight, and it is what
+      // keeps an oversized tenant from ever being walked at all.
+      const pending: boolean = this.accountPolicyPending();
+
       untracked(() => {
-        if (mode !== 'combo') {
+        if (mode !== 'combo' || pending) {
           return;
         }
 
@@ -3183,7 +3325,7 @@ export class RoleAssignmentComponent {
    *
    * @param user The account the operator chose from the lookup.
    */
-  public selectUser(user: UserListItem): void {
+  public selectUser(user: UserChoice): void {
     this.selectedUserSignal.set(user);
     this.form.controls.userId.setValue(user.userId);
     this.formStateSignal.set(this.readFormState());
@@ -3503,7 +3645,7 @@ export class RoleAssignmentComponent {
    */
   private walkUserLookup(term: string): Observable<UserLookupOutcome> {
     const wanted = term.toLocaleLowerCase();
-    const collected: UserListItem[] = [];
+    const collected: UserChoice[] = [];
     let examined = 0;
     let reportedTotal = 0;
     let completion: UserLookupCompletion = 'complete';
@@ -3512,14 +3654,19 @@ export class RoleAssignmentComponent {
     // resolved through a SQL Server lookup under the database's own collation, which for a default
     // installation does not distinguish case, so an operator who typed 'Admin' found 'admin'. A
     // case-sensitive test here would refuse a name the legacy screen accepted.
-    const isExact = (candidate: UserListItem): boolean =>
+    const isExact = (candidate: UserChoice): boolean =>
       candidate.username.toLocaleLowerCase() === wanted;
 
-    const requestPage = (pageIndex: number): Observable<PagedResponse<UserListItem>> => {
-      const request: UserListQuery = {
+    const requestPage = (pageIndex: number): Observable<PagedResponse<UserChoice>> => {
+      const request: PagedRequestParams = {
         pageIndex,
         pageSize: USER_LOOKUP_PAGE_SIZE,
-        userName: term,
+
+        // ⚠ THE PICKER'S OWN FILTER, WHICH MATCHES A PREFIX OF THE LOGIN NAME - the same value and
+        // the same semantics the account listing's `userName` filter carried, so the ordering
+        // guarantee below is unchanged. The endpoint matches the login name alone and deliberately
+        // not the display name, precisely so that this walk's first page still holds the exact match.
+        query: term,
         // ⚠ THE ORDER IS WHAT MAKES THE COMMON CASE ONE REQUEST, and it is a guarantee rather
         // than a heuristic. The filter is a literal PREFIX match, so every account this listing
         // returns has `term` at the start of its login name; ascending by that name therefore puts
@@ -3534,14 +3681,14 @@ export class RoleAssignmentComponent {
         sortDir: 'Ascending',
       };
 
-      return this.userService.list(request);
+      return this.userService.listChoices(request);
     };
 
     return requestPage(0).pipe(
-      expand((response: PagedResponse<UserListItem>, index: number) => {
-        // `UserService.list` already answers a decoded page; this re-reads its framing rather than
-        // unwrapping an envelope, which is what makes the same projector safe for every page.
-        const page: PagedResult<UserListItem> = toPagedResult<UserListItem>(response);
+      expand((response: PagedResponse<UserChoice>, index: number) => {
+        // `UserService.listChoices` already answers a decoded page; this re-reads its framing rather
+        // than unwrapping an envelope, which is what makes the same projector safe for every page.
+        const page: PagedResult<UserChoice> = toPagedResult<UserChoice>(response);
 
         collected.push(...page.items);
         examined += page.items.length;
@@ -3607,22 +3754,36 @@ export class RoleAssignmentComponent {
    * some of them hides the accounts it dropped. {@link accountChoicesFailedSignal} records the
    * refusal and the screen offers the name box instead.
    *
+   * ⚠ THE PAGES IT ASKS FOR ARE THE PICKER'S PROJECTION, NOT ACCOUNT ROWS, and that is what makes
+   * this walk affordable at all. It used to page the account LISTING, so each of up to a thousand
+   * accounts arrived with a postal address, a telephone number, an electronic-mail address, two
+   * audit instants and four status flags attached - every one of them transferred and retained so
+   * that a display name and a login name could be put in an option's caption. `listChoices` answers
+   * three members per account and nothing else.
+   *
+   * ⚠ AND IT IS BOUNDED BY THE LEGACY'S OWN ENUMERATION THRESHOLD. The ceiling was one thousand
+   * PAGES, a hundred thousand accounts; it is now {@link MAX_ACCOUNT_CHOICE_PAGES} pages, which is
+   * exactly {@link LEGACY_ACCOUNT_LISTING_CEILING} accounts. Above that size this walk is not
+   * reached: {@link usersControlMode} has already resolved to the name box on the strength of the
+   * count probe, whatever the tenant's stored preference says, because a tenant larger than the
+   * threshold is one the legacy framework itself refused to enumerate.
+   *
    * @returns Every account in the tenant, emitted once.
    */
-  private walkAllAccounts(): Observable<readonly UserListItem[]> {
-    const collected: UserListItem[] = [];
+  private walkAllAccounts(): Observable<readonly UserChoice[]> {
+    const collected: UserChoice[] = [];
     let gathered = 0;
 
-    // NO SORT IS ASKED FOR, and that is the right request rather than an omission. The listing's own
+    // NO SORT IS ASKED FOR, and that is the right request rather than an omission. The picker's own
     // default orders by DISPLAY name, which is what the drop-down's entries are captioned with, so
     // the entries read in the order they are shown. Asking for the login-name order the lookup uses
-    // would sort the list by a value the operator cannot see.
-    const requestPage = (pageIndex: number): Observable<PagedResponse<UserListItem>> =>
-      this.userService.list({ pageIndex, pageSize: USER_LOOKUP_PAGE_SIZE });
+    // would sort the list by the value in brackets rather than the one being read.
+    const requestPage = (pageIndex: number): Observable<PagedResponse<UserChoice>> =>
+      this.userService.listChoices({ pageIndex, pageSize: USER_LOOKUP_PAGE_SIZE });
 
     return requestPage(0).pipe(
-      expand((response: PagedResponse<UserListItem>, index: number) => {
-        const page: PagedResult<UserListItem> = toPagedResult<UserListItem>(response);
+      expand((response: PagedResponse<UserChoice>, index: number) => {
+        const page: PagedResult<UserChoice> = toPagedResult<UserChoice>(response);
 
         collected.push(...page.items);
         gathered += page.items.length;
@@ -3656,17 +3817,29 @@ export class RoleAssignmentComponent {
         return requestPage(index + 1);
       }),
       count(),
-      map((): readonly UserListItem[] => collected),
+      map((): readonly UserChoice[] => collected),
     );
   }
 
   /**
-   * Reads how many accounts the tenant holds, for the fallback rule alone.
+   * Reads how many accounts the tenant holds, for the enumeration threshold.
    *
    * One page of one record: the answer wanted is the server's own total, so nothing is gathered from
    * the response. That is what makes the probe affordable on precisely the site the threshold exists
    * to protect - a site with a hundred thousand accounts is measured by the same single request as a
    * site with two.
+   *
+   * ⚠ IT PROBES THE PICKER'S ADDRESS, NOT THE ACCOUNT LISTING, and the difference is why the one row
+   * it receives is no longer a disclosure. Probing the listing to read a number returned a complete
+   * account row - a postal address, a telephone number, an electronic-mail address, two audit
+   * instants and four status flags - for a request that reads none of them. This one carries a key
+   * and two captions beside the total. Nothing is read from the row either way; what changed is what
+   * the row contains if anything ever did read it.
+   *
+   * ⚠ IT ALSO SERVES A STORED DROP-DOWN PREFERENCE, not only an unread policy. The threshold is not a
+   * default a setting replaces - the legacy framework enforced it by writing the name box back as the
+   * tenant's setting the first time the count exceeded it - so a tenant whose preference predates its
+   * growth is measured against it too. See {@link usersControlMode}.
    *
    * A refusal is recorded and NOT announced. The screen still works: the name box needs no
    * tenant-wide read, and it is offered with a sentence of its own explaining why. Raising a banner
@@ -3680,12 +3853,12 @@ export class RoleAssignmentComponent {
     this.accountCountFailedSignal.set(false);
 
     this.accountCountRequest = this.userService
-      .list({ pageIndex: 0, pageSize: ACCOUNT_COUNT_PROBE_PAGE_SIZE })
+      .listChoices({ pageIndex: 0, pageSize: ACCOUNT_COUNT_PROBE_PAGE_SIZE })
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: (response: PagedResponse<UserListItem>): void => {
+        next: (response: PagedResponse<UserChoice>): void => {
           this.accountCountLoadingSignal.set(false);
-          this.accountCountSignal.set(toPagedResult<UserListItem>(response).meta.totalCount);
+          this.accountCountSignal.set(toPagedResult<UserChoice>(response).meta.totalCount);
         },
         error: (): void => {
           this.accountCountLoadingSignal.set(false);
@@ -3702,9 +3875,9 @@ export class RoleAssignmentComponent {
    * only the second would leave a server fault looking like a policy choice.
    *
    * ⚠ THE WALK IS RE-RUN ON EVERY ARRIVAL, AND THAT IS DELIBERATE — DO NOT HOIST IT INTO A STORE.
-   * Measured: arriving here costs three `GET /api/v1/users?pageSize=100` requests, because the
-   * server caps a page at a hundred (`PagedRequestValidator.MaximumPageSize`) and this tenant holds
-   * more than two hundred accounts. Caching the roster in one of the root-provided stores would
+   * Measured: arriving here costs three `GET /api/v1/users/choices?pageSize=100` requests, because
+   * the server caps a page at a hundred (`PagedRequestValidator.MaximumPageSize`) and this tenant
+   * holds more than two hundred accounts. Caching the roster in one of the root-provided stores would
    * remove those three requests on a second arrival — and would also mean that an account created
    * moments earlier on the account screens was ABSENT from this drop-down until the whole
    * application was reloaded, with nothing on screen to suggest why. An operator would conclude the
@@ -3725,7 +3898,7 @@ export class RoleAssignmentComponent {
     this.accountChoicesRequest = this.walkAllAccounts()
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: (accounts: readonly UserListItem[]): void => {
+        next: (accounts: readonly UserChoice[]): void => {
           this.accountChoicesLoadingSignal.set(false);
           this.accountChoicesSignal.set(accounts);
         },

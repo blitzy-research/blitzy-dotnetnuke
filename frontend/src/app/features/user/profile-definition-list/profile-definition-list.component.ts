@@ -15,6 +15,7 @@ import {
 import { toSignal } from '@angular/core/rxjs-interop';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { UserStore } from '../../../core/state/user.store';
 import { fieldErrorMessages, stripLegacyBreakTags } from '../../../core/utils/form-errors.util';
@@ -1031,7 +1032,6 @@ function refusalMessage(pending: AwaitedWrite, failure: UserFailure): string {
     ErrorBannerComponent,
     // Renders the two boolean columns as announced text in the read-only cells.
     YesNoPipe,
-    FocusFirstInvalidDirective,
   ],
   templateUrl: './profile-definition-list.component.html',
   styleUrl: './profile-definition-list.component.scss',
@@ -1417,6 +1417,30 @@ export class ProfileDefinitionListComponent implements OnInit {
   // THE INLINE FORM
 
   /**
+   * Reports this screen's unsaved entry to the tracker that guards both ways of leaving it.
+   *
+   * ⚠ THIS SCREEN DECLARES `unsavedChangesGuard` ON ITS ROUTE AND USED TO REGISTER NOTHING, so the
+   * gate it declared was answered by a reflective sweep over this component's fields instead. That
+   * sweep is gone — it dragged `@angular/forms` into the eagerly loaded bundle for an application
+   * whose every form is lazy — and the registration below is what replaces it. Without it the
+   * declaration on `settings/profile-definitions` would be inert: the guard would find no probe, read
+   * the screen as clean, and discard a half-typed property definition in silence.
+   *
+   * ⚠ THE EDITOR'S FORM AND NOT THE GRID, which is the distinction that keeps this from misfiring.
+   * One `FormGroup` serves creation and the editing of every row in turn, and {@link closeForm} and
+   * both open paths all `reset()` it — so a closed editor is pristine and a closed editor cannot
+   * warn. The bulk visibility affordances above are not a form at all, so reordering or toggling
+   * rows is untouched by this: those writes go to the server immediately and hold nothing back.
+   *
+   * A form whose entry is already on its way to the server is not unsaved in the sense that
+   * matters, hence the `saving()` term: prompting then would ask the operator to confirm discarding
+   * work they have already committed.
+   */
+  private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
+    () => this.form.dirty && this.saving() === false,
+  );
+
+  /**
    * The create-and-edit form, in the order `SortOrder` declared the members.
    *
    * Every control is `nonNullable`, which is what makes ONE group safe to reuse across creation and the
@@ -1737,19 +1761,6 @@ export class ProfileDefinitionListComponent implements OnInit {
   protected canDelete(definition: ProfilePropertyDefinition): boolean {
     return !UNDELETABLE_PROPERTY_NAMES.includes(definition.propertyName.toLowerCase());
   }
-
-  /**
-   * The mark painted in the data-type cell.
-   *
-   * Every row paints it, because no row's type can be named: see {@link UNNAMED_DATA_TYPE_MARK} for the
-   * three independent reasons the `Lists` vocabulary is unreachable, and for why a mark is painted rather
-   * than the blank a strictly literal reading of `Null.NullString` would give.
-   *
-   * MIGRATION: the legacy template cast `CType(Container.DataItem, ProfilePropertyDefinition)` under Option
-   * Strict OFF — a late-bound cast of an untyped data item. This is that cast made explicit: the row arrives
-   * typed, so there is nothing to coerce.
-   */
-  protected readonly unnamedDataTypeMark = UNNAMED_DATA_TYPE_MARK;
 
   /**
    * The text painted in the data-type cell for one row.

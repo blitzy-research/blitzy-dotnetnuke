@@ -35,7 +35,15 @@ import { unsavedChangesGuard } from '../../core/guards/unsaved-changes.guard';
  * import at `:626-627` carry `PortalAdministrator`; the update at `:337-338`, the settings
  * pair at `:419-420` and `:455-456`, and the content export at `:540-541` carry
  * `ModuleEdit`; and the create action at `:267-273` carries NO policy attribute at all.
- * That last one is the interesting case and is explained on the route itself.
+ * That last one is the interesting case and is explained on the route itself: the create
+ * route declares `PortalContentEditor`, which is the policy its own SUPPORTING READS carry
+ * (`ModuleDefinitionsController.cs:168` and `TabsController.cs:187`, each on the whole
+ * class) rather than one its primary endpoint carries. That is the one departure from the
+ * rule above, and it mirrors the API just as faithfully: the screen genuinely cannot be
+ * filled without those two reads, so the authority they demand is the authority reaching
+ * the screen demands. It resolves no scope and the client cannot plainly refuse it, so it
+ * admits exactly whom the session admits and defers the grant question to the API, as the
+ * create action intends.
  *
  * ⚠ A SCOPED POLICY WITHOUT A SCOPE REFUSES EVERY CALLER. `permission.guard.ts:322-337`
  * maps `ModuleView` and `ModuleEdit` onto the `moduleId` route parameter — one exact name,
@@ -117,7 +125,7 @@ export const MODULE_ROUTES: Routes = [
     /**
      * Module placement — the create screen.
      *
-     * ⚠ UNGATED DELIBERATELY, MIRRORING THE ENDPOINT EXACTLY. The create action at
+     * ⚠ GATED ON `PortalContentEditor`, WHICH NARROWS NOTHING. The create action at
      * `ModulesController.cs:267-273` is the one mutating action in the API carrying no
      * policy attribute, and its own commentary at `:319-327` gives the reason: the legacy
      * gate quoted in this file's header admitted the portal administrator OR an
@@ -131,18 +139,32 @@ export const MODULE_ROUTES: Routes = [
      * too, because it is a rule about one field of the request rather than about reaching
      * this address.
      *
-     * The omission is spelled out rather than left to be inferred because attaching
-     * `ModuleEdit` here would be wrong twice over: it would narrow exactly as the server's
-     * commentary forbids, AND it would fail closed regardless, since this route carries no
-     * `:moduleId` for the gate to resolve a scope from and every caller would be refused —
-     * making the create screen unreachable rather than merely over-restricted.
+     * `ModuleEdit` would still be wrong here twice over — it would narrow exactly as the
+     * server's commentary forbids, AND it would fail closed regardless, since this route
+     * carries no `:moduleId` for the gate to resolve a scope from, making the screen
+     * unreachable rather than merely over-restricted. This route previously declared NO
+     * policy for that reason, which was safe but silent: the screen cannot be filled without
+     * two supporting reads, and BOTH of them are gated —
+     * `ModuleDefinitionsController.cs:168` and `TabsController.cs:187` each apply
+     * `PortalContentEditor` to their whole class. The policy that actually governs reaching
+     * this screen was therefore absent from the route table and from the client's own
+     * vocabulary, so nothing named the authority a caller needs and no affordance could be
+     * offered to the callers who hold it.
      *
-     * The session gate inherited from the parent still applies, so this is an authenticated
-     * address with the grant question deferred to the API — the same posture the endpoint
-     * itself takes. `app.routes.spec.ts:264-271` asserts the corollary: a route declaring a
-     * policy carries the gate, and a route declaring none carries no gate.
+     * ⚠ DECLARING IT CHANGES WHO IS ADMITTED BY NOT AT ALL, WHICH IS THE POINT. The policy
+     * resolves no scope (`permission.guard.ts` `scopeParamName`) so it cannot fail closed for
+     * want of a route parameter, and the client cannot plainly refuse it
+     * (`permission.guard.ts` `isPlainlyRefused`, with the measured reason: the advisory
+     * permission list is built from grant rows alone and omits `EDIT` for a tenant
+     * administrator whose pages carry no explicit grants). Every caller the session admits is
+     * still admitted, and the grant question stays with the API exactly as the endpoint
+     * intends — while the route now NAMES the authority, which is what lets the navigation
+     * rail offer this screen to the page editors who were previously left to guess its
+     * address.
      */
     path: 'new',
+    canActivate: [permissionGuard],
+    data: { permission: 'PortalContentEditor' },
     // ⚠ LEAVING THIS SCREEN IS GUARDED, because it mounts an editing form. Measured before this
     // existed: Cancel, any in-application link and the browser's Back button all discarded a
     // dirty form in silence, with instrumented `confirm`, `alert` and `beforeunload` recording

@@ -263,6 +263,17 @@ public sealed class PermissionService : IPermissionService
     private const string ModuleDefinitionsCacheKeyFormat = "PermissionDefinitionsByModuleDefinition|{0}";
 
     /// <summary>
+    /// The invariant prefix of <see cref="ModuleDefinitionsCacheKeyFormat"/>, so the family can be evicted
+    /// without enumerating the definitions it is keyed by.
+    /// </summary>
+    /// <remarks>
+    /// SEC-F8. Derived from the format rather than restated, so the two cannot drift: an entry that can be
+    /// written under a key this prefix does not match would be an entry nothing could evict.
+    /// </remarks>
+    private static readonly string ModuleDefinitionsCacheKeyPrefix =
+        ModuleDefinitionsCacheKeyFormat[..ModuleDefinitionsCacheKeyFormat.IndexOf('{', StringComparison.Ordinal)];
+
+    /// <summary>
     /// Cache key for the page-scoped catalogue definitions, which are installation-wide.
     /// </summary>
     /// <remarks>
@@ -1066,7 +1077,7 @@ public sealed class PermissionService : IPermissionService
     /// THE SELF-CONTAINED FORM, for the caller whose whole operation is "revoke this account's own
     /// grants". It performs no removal reasoning of its own: it delegates to
     /// <see cref="StageUserPermissionRemovalAsync"/>, commits once, and then evicts through
-    /// <see cref="InvalidateUserPermissionCachesAsync"/>. Every rule about WHICH rows go therefore has
+    /// <see cref="InvalidateUserPermissionCaches"/>. Every rule about WHICH rows go therefore has
     /// exactly one home, and the two entry points cannot drift apart.
     /// </para>
     /// <para>
@@ -1087,36 +1098,68 @@ public sealed class PermissionService : IPermissionService
         // of deleting the account that holds the grants, and a suboperation that commits on its own turns
         // the enclosing operation into a sequence of independently durable parts: a later step failing
         // would leave the grants gone and the account intact, with no way back.
-        Result staged = await StageUserPermissionRemovalAsync(portalId, userId, cancellationToken)
-            .ConfigureAwait(false);
+        Result staged;
 
-        if (staged.IsFailure)
+        await using (ITransactionScope transaction = await _unitOfWork
+            .BeginTransactionAsync(TransactionIsolation.Default, cancellationToken)
+            .ConfigureAwait(false))
         {
-            return staged;
-        }
+            staged = await StageUserPermissionRemovalAsync(portalId, userId, cancellationToken)
+                .ConfigureAwait(false);
 
-        // BOTH TABLES OR NEITHER, IN ONE COMMIT AND WITHOUT AN EXPLICIT TRANSACTION. Both removals are
-        // STAGED against the one scoped change tracker - IPermissionRepository documents them as staging
-        // members, and neither issues a statement of its own - so a single SaveChangesAsync applies them
-        // indivisibly. That is exactly the guarantee IUnitOfWork.SaveChangesAsync makes ("an implementer
-        // must apply the whole batch or none of it"), which is why no scope is opened here: a transaction
-        // spanning one commit adds nothing, and opening one would make this member unusable inside a larger
-        // operation, since the unit of work refuses a nested scope rather than silently ignoring it.
+            if (staged.IsFailure)
+            {
+                // Both guards run ahead of both deletes, so a refusal has issued no statement at all and
+                // the scope is abandoned without having changed anything.
+                return staged;
+            }
+
+            // BOTH TABLES OR NEITHER, AND TWO SCOPES NOW SAY SO — this explicit one, and the one the
+            // staging member obtains through JoinOrBeginTransactionAsync and which joins this one as a
+            // no-op when it is reached from here.
+            //
+            // ⚠ THIS COMMENT USED TO CLAIM THE TWO REMOVALS WERE STAGED, AND THEY ARE NOT. Both
+            // repository members issue a SET-BASED DELETE - ExecuteDeleteAsync - which runs when it is
+            // called rather than when the change tracker is flushed, and both of those members' own
+            // remarks say so and say that the CALLER must supply the rollback boundary. Neither this
+            // member nor the staging member supplied one, so the first delete was already durable by the
+            // time the second was issued: a failure between them left the account's module grants removed
+            // and its page grants intact, which is precisely the half-cleaned state the legacy pair
+            // produced and that this migration set out to eliminate. A later account reusing the
+            // identifier inherits whatever was left behind.
+            //
+            // ⚠ THE TWO SCOPES ARE NOT REDUNDANT, THEY COVER DIFFERENT CALLERS. This one covers the
+            // self-contained form, which is the only path that reaches the flush and the commit below.
+            // The staging member's own scope covers the OTHER caller - the account-deletion cascade,
+            // which calls it directly and already holds a scope of its own - so the pair is atomic
+            // however it is entered. JoinOrBeginTransactionAsync rather than BeginTransactionAsync is
+            // what makes the nesting legal: it joins an ambient scope and commits it nowhere.
+            //
+            // THE FLUSH IS STILL CORRECT AND IS STILL CALLED. This member is the top-level form, so it
+            // owns the single commit point of its own unit of work; the guards above read through the
+            // tracked context, a future change to the removal rule may legitimately stage rather than
+            // delete, and a top-level operation that never flushed would be the odd one out among its
+            // siblings. It applies an empty batch today, which costs a round trip and nothing else.
+            //
+            // Nothing is evicted until the scope has committed.
         //
-        // MIGRATION: the legacy pair WAS a pair of independently durable statements. The provider declared
-        // transaction members at Library/Components/Providers/Data/DataProvider.vb:L70-L74 and the two
-        // cleanups - ModulePermissionController.vb:L218 and TabPermissionController.vb:L209 - never invoked
-        // them, so a failure between the two left the account's module grants removed and its page grants
-        // intact, the half-cleaned state in which a later account reusing the identifier inherits what was
-        // left behind. Making them atomic is a documented divergence rather than an opportunistic tidy-up:
-        // it is the unit-of-work boundary AAP section 0.4.3 requires of this layer. The legacy behaviour is
-        // annotated rather than reproduced, because reproducing it would mean writing a known half-failure
-        // into new code.
-        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            // MIGRATION: the legacy pair WAS a pair of independently durable statements. The provider declared
+            // transaction members at Library/Components/Providers/Data/DataProvider.vb:L70-L74 and the two
+            // cleanups - ModulePermissionController.vb:L218 and TabPermissionController.vb:L209 - never invoked
+            // them, so a failure between the two left the account's module grants removed and its page grants
+            // intact, the half-cleaned state in which a later account reusing the identifier inherits what was
+            // left behind. Making them atomic is a documented divergence rather than an opportunistic tidy-up:
+            // it is the unit-of-work boundary AAP section 0.4.3 requires of this layer. The legacy behaviour is
+            // annotated rather than reproduced, because reproducing it would mean writing a known half-failure
+            // into new code.
+            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         // Ordered after the commit, deliberately, and delegated to the member the enclosing-operation
         // caller also uses, so the two paths cannot evict different things.
-        await InvalidateUserPermissionCachesAsync(portalId, cancellationToken).ConfigureAwait(false);
+        InvalidateUserPermissionCaches();
 
         return Result.Success();
     }
@@ -1130,11 +1173,16 @@ public sealed class PermissionService : IPermissionService
     /// member above delegates to it rather than restating it.
     /// </para>
     /// <para>
-    /// NOTHING IS COMMITTED, FLUSHED OR EVICTED HERE. Both repository members stage against the scoped
-    /// change tracker, so the rows disappear only when the caller's own commit runs - which is what lets
-    /// this removal join a larger unit of work and be abandoned with it. No transaction is opened either:
-    /// the unit of work refuses a nested scope, so a scope taken here would fault the enclosing operation
-    /// outright.
+    /// NOTHING IS FLUSHED OR EVICTED HERE, and the removal can still be abandoned by an enclosing caller -
+    /// but the two removals are NOT staged, and the distinction matters to anyone reading this member. Each
+    /// repository call issues one set-based delete that reaches the store when it is called, which is why
+    /// this member wraps the pair in a transaction obtained through
+    /// <see cref="IUnitOfWork.JoinOrBeginTransactionAsync"/>. Called from inside a larger unit of work that
+    /// already holds a scope, that helper returns a no-op join: the statements enlist in the caller's
+    /// transaction, the commit here does nothing, and the caller alone decides when the removal becomes
+    /// durable. Called on its own, it opens and closes a real scope so the pair is atomic rather than two
+    /// independently durable statements. <c>BeginTransactionAsync</c> could not be used for this, because it
+    /// refuses to nest and would fault the enclosing operation.
     /// </para>
     /// <para>
     /// MIGRATION: the removal spans both grant tables and is therefore two repository calls, one per
@@ -1173,13 +1221,39 @@ public sealed class PermissionService : IPermissionService
                 FormattableString.Invariant($"Account {userId} does not exist in portal {portalId}."));
         }
 
-        // Both guards are ahead of both stagings, so a refusal leaves the change tracker exactly as it was
-        // and the caller's own unit of work is unaffected by having asked.
+        // Both guards are ahead of both removals, so a refusal leaves the store and the change tracker
+        // exactly as they were and the caller's own unit of work is unaffected by having asked.
+
+        // MIGRATION: BOTH TABLES OR NEITHER, AND IT TAKES A TRANSACTION TO SAY SO. The two repository
+        // members are NOT staging members: each issues one set-based ExecuteDeleteAsync that reaches the
+        // store when it is called rather than when changes are flushed, and IPermissionRepository's own
+        // remarks say exactly that and say the caller must open the boundary. This member did not, so
+        // outside an enclosing transaction the pair was two independently durable statements and a failure
+        // between them left the account's module grants gone and its page grants intact - the half-cleaned
+        // state in which a later account reusing the identifier inherits what was left behind. That is the
+        // legacy fault reproduced rather than repaired: the provider declared transaction members at
+        // Library/Components/Providers/Data/DataProvider.vb:L70-L74 and neither cleanup -
+        // ModulePermissionController.vb:L218 nor TabPermissionController.vb:L209 - ever invoked them.
+        //
+        // JOIN-OR-BEGIN RATHER THAN BEGIN, which is what makes one boundary serve both callers. When the
+        // account-deletion cascade calls this member it already holds a scope, so the helper hands back a
+        // no-op join: the two statements enlist in the cascade's transaction, the commit below does nothing,
+        // and the cascade keeps sole authority over when the removal becomes durable and can still abandon
+        // it. Called standalone, the helper opens a real scope and the commit below closes it, so the pair
+        // is atomic instead of two auto-commits. BeginTransactionAsync would have been wrong for exactly the
+        // reason an earlier revision discovered: it refuses to nest, so it made this member unusable inside
+        // the cascade. Recorded in MIGRATION_NOTES.md.
+        await using ITransactionScope grants = await _unitOfWork
+            .JoinOrBeginTransactionAsync(TransactionIsolation.Default, cancellationToken)
+            .ConfigureAwait(false);
+
         await _permissions.DeleteModulePermissionsByUserIdAsync(portalId, userId, cancellationToken)
             .ConfigureAwait(false);
 
         await _permissions.DeleteTabPermissionsByUserIdAsync(portalId, userId, cancellationToken)
             .ConfigureAwait(false);
+
+        await grants.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         return Result.Success();
     }
@@ -1215,7 +1289,7 @@ public sealed class PermissionService : IPermissionService
     /// That is not a suggestion: without one, a sweep followed by a failing role removal would leave the
     /// role in place with every grant gone - a strictly worse state than the fault this member exists to
     /// repair, because the grants cannot be reconstructed. The caller opens the scope and commits it, and
-    /// evicts afterwards through <see cref="InvalidateUserPermissionCachesAsync"/>.
+    /// evicts afterwards through <see cref="InvalidateUserPermissionCaches"/>.
     /// </para>
     /// <para>
     /// Both guards run ahead of every removal, so a refusal leaves the store exactly as it was. The role is
@@ -1289,20 +1363,24 @@ public sealed class PermissionService : IPermissionService
     /// abandoned.
     /// </para>
     /// </remarks>
-    public async Task InvalidateUserPermissionCachesAsync(
-        int portalId,
-        CancellationToken cancellationToken = default)
+    public void InvalidateUserPermissionCaches()
     {
-        _cache.InvalidateTabPermissions(portalId);
-
-        IReadOnlyList<Tab> portalTabs = await _tabs
-            .GetByPortalIdAsync(portalId, cancellationToken)
-            .ConfigureAwait(false);
-
-        foreach (Tab tab in portalTabs)
-        {
-            _cache.InvalidateModulePermissions(tab.TabId);
-        }
+        // ⚠ SEC-F8. THIS USED TO EVICT TWO KEY FAMILIES THAT NOTHING IN THIS APPLICATION EVER POPULATES,
+        // AND IT PAID FOR THEM WITH A FALLIBLE READ AFTER THE COMMIT.
+        //
+        // The evicted names were the LEGACY grant keys - TabPermissions{portalId} and
+        // ModulePermissions{tabId} - and reaching the second of them meant enumerating every page of the
+        // tenant, so a durable, completed deletion issued one more database read and could answer 500 on the
+        // strength of it. The read was not merely risky, it was pointless: this service holds no grant-row
+        // cache at all. The only entries it writes are the CATALOGUE projections below, keyed by module
+        // definition and by the single installation-wide page key, and neither of those was being evicted -
+        // so the operation invalidated nothing useful and could fail after succeeding.
+        //
+        // What it evicts now is exactly what it writes. Both members are synchronous, in-memory and
+        // infallible, which is why this method no longer takes a cancellation token or returns a task: a
+        // post-commit step must not be able to fail.
+        _cache.Remove(TabDefinitionsCacheKey);
+        _cache.RemoveByPrefix(ModuleDefinitionsCacheKeyPrefix);
     }
 
     /// <summary>

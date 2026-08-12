@@ -23,10 +23,9 @@ namespace DnnMigration.Application.Validation;
 /// implemented, and three orderings were unreachable.
 /// </para>
 /// <para>
-/// All ten names are honoured. The listing composes each assignment row with its account and pages in
-/// memory, so the three values the external <c>aspnet_*</c> membership objects supply are present before
-/// any page is cut - which is precisely why this set is WIDER than the account listing's, where those same
-/// three columns are filled after the store has paged and so cannot order the collection.
+/// Every name in the set is honoured by an ordering clause the store can actually perform, which is the
+/// property SEC-F11 restored: a name is admitted here only when the repository orders by it and the
+/// projection publishes it.
 /// </para>
 /// <para>
 /// The set is also narrower than the projection in one respect: the two assignment dates the membership

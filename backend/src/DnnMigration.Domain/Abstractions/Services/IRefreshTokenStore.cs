@@ -21,6 +21,25 @@ namespace DnnMigration.Domain.Abstractions.Services;
 /// </remarks>
 public interface IRefreshTokenStore
 {
+    /// <summary>
+    /// Reports whether this store sees every replica's refresh-token families, so that "no such family
+    /// here" is the same statement as "no such family anywhere".
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the one fact a caller cannot deduce and must not assume. A revocation that finds nothing is
+    /// a COMPLETED retirement when the store is authoritative and an UNCONFIRMED one when it is not: a
+    /// process-local store asked to end a session established on another instance recognises nothing, and
+    /// reporting that as a successful sign-out leaves the session live somewhere else while the caller
+    /// discards the only credential that could have retried.
+    /// </para>
+    /// <para>
+    /// An implementation returns <see langword="true"/> only when its state is genuinely shared and
+    /// durable - a store every replica reads and writes, surviving a restart.
+    /// </para>
+    /// </remarks>
+    bool IsAuthoritativeAcrossReplicas { get; }
+
     /// <summary>Issues the first token in a new refresh family.</summary>
     /// <param name="subject">The minimal identity the family represents.</param>
     /// <param name="cancellationToken">Cancellation token.</param>

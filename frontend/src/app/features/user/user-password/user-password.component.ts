@@ -109,6 +109,7 @@ import type {
   ChangePasswordRequest,
   UserDetail,
 } from '../../../core/models/user.model';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
 import { UserStore } from '../../../core/state/user.store';
@@ -587,7 +588,6 @@ function parseRouteUserId(value: unknown): number {
     LoadingSpinnerComponent,
     ConfirmDialogComponent,
     DateDisplayPipe,
-    FocusFirstInvalidDirective,
   ],
   templateUrl: './user-password.component.html',
   // Singular, which is the current spelling. The plural form is the legacy one and is
@@ -967,6 +967,29 @@ export class UserPasswordComponent {
    * attached and detached by that same effect.
    */
   private currentCredentialRuleApplies = false;
+
+  /**
+   * Reports this screen's unsaved entry to the tracker that guards both ways of leaving it.
+   *
+   * ⚠ THE ROUTE DECLARES `unsavedChangesGuard` AND THIS SCREEN USED TO REGISTER NOTHING, so the gate
+   * was answered by a reflective sweep over this component's fields. The sweep is gone — it pulled
+   * `@angular/forms` into the eagerly loaded bundle for an application whose every form is lazily
+   * loaded — and this registration replaces it. Without it the declaration on `users/:userId/password`
+   * would be inert.
+   *
+   * ⚠ THIS SCREEN'S ENTRY IS THE ONE KIND NO BROWSER WILL OFFER BACK. Every control here is a
+   * credential field, so it is excluded from form restoration and from any password manager's
+   * autofill of a previous value: entry lost on this screen is lost outright, with not even a partial
+   * recovery available, and the operator has to re-type all three boxes. That makes the warning worth
+   * more here than on a screen whose fields a reload would repopulate.
+   *
+   * ⚠ NO CREDENTIAL IS READ, ONLY WHETHER ONE WAS TYPED. `dirty` is a flag the framework raises on
+   * interaction; the probe touches no control value, so nothing secret is reachable through the
+   * tracker, and the browser's own unload prompt carries no author-supplied text at all.
+   */
+  private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
+    () => this.form.dirty && this.saving() === false,
+  );
 
   /**
    * The credential form.

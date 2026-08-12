@@ -104,9 +104,13 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 // it fill the column was the departure.
 //
 // ⚠ SOURCE ORDER IS LOAD-BEARING. `.role-form__control--narrow` carries the same specificity and
-// must come AFTER the rule this is used in, or the 96px short-control step would be overridden by
-// this wider one. It does; do not reorder them.
-$control-measure: 20.3125rem;
+// must come AFTER the rule this cap is used in, or the 96px short-control step would be overridden
+// by this wider one. It does; do not reorder them.
+//
+// ⚠ IT IS A TOKEN AND NO LONGER A SASS VARIABLE. It was `$control-measure: 20.3125rem`, declared
+// here, which put a design measurement outside the vocabulary the whole workspace resolves against.
+// It now lives in `_tokens.scss` as `--control-inline-size-lg`; the value, the provenance and every
+// consequence recorded above and below are unchanged.
 
 // -----------------------------------------------------------------------------
 //  ROOT
@@ -170,7 +174,7 @@ $control-measure: 20.3125rem;
 // tuned for a border or an icon and does not clear the contrast threshold as body text.
 .role-form__warning {
   max-inline-size: mx.breakpoint('md');
-  color: var(--color-danger-text);
+  color: var(--color-danger);
 }
 
 // The recovery block for a refused save. Grouped so the sentence and the command that acts on it
@@ -320,7 +324,7 @@ $control-measure: 20.3125rem;
 // At `xl` the three no longer coincide. Between 768 and 1279 the fields are a single column, so each
 // one has the whole content measure and the shared field's 150px label track costs it nothing it
 // cannot afford; at 1280 and above there is room for two label tracks and two controls at the
-// measured legacy width. Paired with `$control-measure`, the control width curve across
+// measured legacy width. Paired with `--control-inline-size-lg`, the control width curve across
 // 320/375/767/768/1024/1280/1920 becomes flat-or-rising instead of collapsing.
 //
 // It is NOT enough to move this switch alone: without the cap, the single-column band merely
@@ -339,7 +343,7 @@ $control-measure: 20.3125rem;
 // Three ways to close it were considered and all three are worse:
 //   * moving the SHARED field's own `md` switch would change the label-and-control arrangement on
 //     every admin screen in the workspace, which is an enormous blast radius for 14.87px;
-//   * lowering `$control-measure` below 310.125px would trade a MEASURED legacy width for a number
+//   * lowering `--control-inline-size-lg` below 310.125px would trade a MEASURED legacy width for a number
 //     chosen only to flatten a curve;
 //   * letting the select size to its content - which is faithful, since `cboRoleGroups`
 //     (`editroles.ascx:L47`) declares no `Width` at all, unlike the four text controls that declare
@@ -406,10 +410,10 @@ $control-measure: 20.3125rem;
   gap: var(--space-1);
   min-inline-size: 0;
 
-  // R-M16: see `$control-measure`. The measured legacy control width, restored as a cap so a
+  // R-M16: see `--control-inline-size-lg`. The measured legacy control width, restored as a cap so a
   // single-column field cannot stretch a text box across a desktop viewport and so the width curve
   // stays flat across the field-grid switch instead of falling.
-  max-inline-size: $control-measure;
+  max-inline-size: var(--control-inline-size-lg);
 }
 
 // A money amount, a period count and a short code are short values. A control sized for a
@@ -592,7 +596,7 @@ $control-measure: 20.3125rem;
 // same kind of control being hovered.
 .role-form__command--danger,
 .role-form__command--danger:hover {
-  color: var(--color-danger-text);
+  color: var(--color-danger);
 }
 
 // =============================================================================

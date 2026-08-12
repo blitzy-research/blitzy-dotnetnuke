@@ -12,12 +12,30 @@
 --   because they are not mapped entity types.
 --
 -- HOW IT IS KEPT HONEST
---   The statements below were emitted from the live model with:
---     dotnet ef dbcontext script --project src/DnnMigration.Infrastructure \
---                               --startup-project src/DnnMigration.Api
---   If an entity configuration later gains a column that this script lacks, the very
---   first repository query naming that column fails with an object-name error, so the
---   snapshot cannot drift silently: it fails loudly on the next test run.
+--   By comparison against Schema/TerminalSchema.manifest, which is an INDEPENDENT
+--   oracle: it was derived by replaying the 83 versioned legacy upgrade scripts in
+--   Website/Providers/DataProviders/SqlDataProvider and corroborated against the Red
+--   Gate fresh-install snapshot that ships beside them, and nothing this solution emits
+--   contributed to it. LegacySchemaFidelityTests compares the manifest against BOTH the
+--   composed entity model and the catalogue of the database this script provisions, so
+--   the three artefacts are held to an authority none of them produced.
+--
+--   THIS SCRIPT USED TO CLAIM ITS HONESTY FROM THE WRONG PLACE, and the claim is
+--   recorded here rather than quietly replaced. It stated that the statements below were
+--   emitted from the live model with "dotnet ef dbcontext script", and offered as the
+--   safeguard that a column the model gained and this script lacked would fail the first
+--   query naming it. That safeguard is real but narrow, and the provenance was the
+--   defect: a database built from a model-emitted script cannot be evidence about the
+--   model, so the two agreed with each other by construction while both could be wrong
+--   about the schema they exist to reproduce. Measuring against the manifest found two
+--   such disagreements immediately, both marked MIGRATION below - Roles.PortalID
+--   declared NULL where the terminal schema declares it NOT NULL, and seven primary keys
+--   provisioned CLUSTERED where the terminal schema and the entity configurations both
+--   declare them NONCLUSTERED.
+--
+--   Consequently this file is now AUTHORED to reproduce the terminal legacy schema, and
+--   an edit here that the manifest does not support fails the fidelity suite rather than
+--   passing unnoticed.
 --
 --   Table and column names are the legacy names, upper/lower case included, because
 --   that binding is exactly what the Fluent configurations exist to pin.
@@ -79,7 +97,17 @@ CREATE TABLE [dbo].[Portals] (
     [SplashTabId] int NULL,
     [PageQuota] int NOT NULL DEFAULT 0,
     [UserQuota] int NOT NULL DEFAULT 0,
-    CONSTRAINT [PK_Portals] PRIMARY KEY ([PortalID])
+    -- MIGRATION: this key is NONCLUSTERED in the terminal schema, and seven of the twenty-one keys
+    --   here are. The chain declares "PK_Portals PRIMARY KEY NONCLUSTERED" at
+    --   01.00.05.SqlDataProvider:1456, and the entity configuration says the same with
+    --   IsClustered(false). This script declared every key without a topology, which SQL Server reads
+    --   as CLUSTERED, so the provisioned tables carried a physical layout the production tables do not
+    --   have and the model does not claim - a disagreement invisible to every CRUD assertion, and
+    --   another thing a model-emitted fixture could not have caught because the model already said
+    --   NONCLUSTERED. Under the terminal schema these seven tables are heaps: no non-primary index on
+    --   any mapped table is clustered either.
+    --   The other six are marked with a short note and their own provenance.
+    CONSTRAINT [PK_Portals] PRIMARY KEY NONCLUSTERED ([PortalID])
 );
 GO
 
@@ -104,7 +132,8 @@ CREATE TABLE [dbo].[ModuleDefinitions] (
     [FriendlyName] nvarchar(128) NOT NULL,
     [DesktopModuleID] int NOT NULL,
     [DefaultCacheTime] int NOT NULL DEFAULT 0,
-    CONSTRAINT [PK_ModuleDefinitions] PRIMARY KEY ([ModuleDefID]),
+    -- MIGRATION: NONCLUSTERED in the terminal schema (01.00.00:462); see PK_Portals above.
+    CONSTRAINT [PK_ModuleDefinitions] PRIMARY KEY NONCLUSTERED ([ModuleDefID]),
     CONSTRAINT [FK_ModuleDefinitions_DesktopModules] FOREIGN KEY ([DesktopModuleID]) REFERENCES [dbo].[DesktopModules] ([DesktopModuleID]) ON DELETE CASCADE
 );
 GO
@@ -144,7 +173,8 @@ CREATE TABLE [dbo].[RoleGroups] (
     [PortalID] int NOT NULL,
     [RoleGroupName] nvarchar(50) NOT NULL,
     [Description] nvarchar(1000) NULL,
-    CONSTRAINT [PK_RoleGroups] PRIMARY KEY ([RoleGroupID]),
+    -- MIGRATION: NONCLUSTERED in the terminal schema (04.00.04:57); see PK_Portals above.
+    CONSTRAINT [PK_RoleGroups] PRIMARY KEY NONCLUSTERED ([RoleGroupID]),
     CONSTRAINT [FK_RoleGroups_Portals] FOREIGN KEY ([PortalID]) REFERENCES [dbo].[Portals] ([PortalID]) ON DELETE CASCADE
 );
 GO
@@ -173,7 +203,8 @@ CREATE TABLE [dbo].[Tabs] (
     [RefreshInterval] int NULL,
     [PageHeadText] nvarchar(500) NULL,
     [IsSecure] bit NOT NULL DEFAULT CAST(0 AS bit),
-    CONSTRAINT [PK_Tabs] PRIMARY KEY ([TabID]),
+    -- MIGRATION: NONCLUSTERED in the terminal schema (01.00.00:496); see PK_Portals above.
+    CONSTRAINT [PK_Tabs] PRIMARY KEY NONCLUSTERED ([TabID]),
     CONSTRAINT [FK_Tabs_Portals] FOREIGN KEY ([PortalID]) REFERENCES [dbo].[Portals] ([PortalID]) ON DELETE CASCADE,
     CONSTRAINT [FK_Tabs_Tabs] FOREIGN KEY ([ParentId]) REFERENCES [dbo].[Tabs] ([TabID])
 );
@@ -229,7 +260,8 @@ CREATE TABLE [dbo].[Modules] (
     [Footer] ntext NULL,
     [StartDate] datetime NULL,
     [EndDate] datetime NULL,
-    CONSTRAINT [PK_Modules] PRIMARY KEY ([ModuleID]),
+    -- MIGRATION: NONCLUSTERED in the terminal schema (01.00.00:514); see PK_Portals above.
+    CONSTRAINT [PK_Modules] PRIMARY KEY NONCLUSTERED ([ModuleID]),
     CONSTRAINT [FK_Modules_ModuleDefinitions] FOREIGN KEY ([ModuleDefID]) REFERENCES [dbo].[ModuleDefinitions] ([ModuleDefID]) ON DELETE CASCADE,
     CONSTRAINT [FK_Modules_Portals] FOREIGN KEY ([PortalID]) REFERENCES [dbo].[Portals] ([PortalID])
 );
@@ -279,7 +311,30 @@ GO
 
 CREATE TABLE [dbo].[Roles] (
     [RoleID] int NOT NULL IDENTITY(0, 1),
-    [PortalID] int NULL,
+    -- MIGRATION: PortalID is NOT NULL in the terminal schema, and this declaration said NULL.
+    --   Found by measuring against Schema/TerminalSchema.manifest, and it is the exact defect an
+    --   oracle emitted from the model cannot find. The chain rebuilds this table TWICE and the two
+    --   rebuilds disagree: 01.00.04.SqlDataProvider:1323 builds Tmp_Roles with "PortalID int NULL"
+    --   and renames it over Roles, then 01.00.05.SqlDataProvider:2749 rebuilds again with
+    --   "PortalID int NOT NULL", drops dbo.Roles at :2779 and renames Tmp_Roles over it at :2781.
+    --   That second rebuild is unguarded, nothing narrows or relaxes the column afterwards - a
+    --   case-insensitive sweep of all four object-naming forms finds only two ALTER COLUMN
+    --   statements naming a PortalID anywhere in the chain, both on ProfilePropertyDefinition - and
+    --   the independent Red Gate fresh-install snapshot agrees, declaring "[PortalID] [int] NOT
+    --   NULL" at DotNetNuke.Schema.SqlDataProvider:6209. The baseline at 01.00.00:116 and the first
+    --   rebuild are therefore superseded states, not the terminal one.
+    --
+    --   WHAT THE WRONG DECLARATION COST: the fixture accepted a role with no owning portal, which
+    --   no installation can hold, and two persistence tests asserted the listing behaviour of
+    --   exactly such a row. Those tests now assert that the store REFUSES it, which is what the
+    --   terminal column actually guarantees.
+    --
+    --   The entity property stays int? deliberately, and that is a divergence rather than an
+    --   oversight: the terminal GetPortalRoles filters on "( R.PortalId = @PortalId OR R.PortalId
+    --   is null )" (04.08.00.SqlDataProvider:40) and the repository reproduces that predicate, which
+    --   requires a nullable property to express. Against a faithful installation the null branch is
+    --   unsatisfiable. Recorded in MIGRATION_NOTES.md and asserted by name in the fidelity suite.
+    [PortalID] int NOT NULL,
     [RoleName] nvarchar(50) NOT NULL,
     [Description] nvarchar(1000) NULL,
     [ServiceFee] money NULL,
@@ -293,7 +348,8 @@ CREATE TABLE [dbo].[Roles] (
     [RoleGroupID] int NULL,
     [RSVPCode] nvarchar(50) NULL,
     [IconFile] nvarchar(100) NULL,
-    CONSTRAINT [PK_Roles] PRIMARY KEY ([RoleID]),
+    -- MIGRATION: NONCLUSTERED in the terminal schema (01.00.05:2783); see PK_Portals above.
+    CONSTRAINT [PK_Roles] PRIMARY KEY NONCLUSTERED ([RoleID]),
     CONSTRAINT [FK_Roles_Portals] FOREIGN KEY ([PortalID]) REFERENCES [dbo].[Portals] ([PortalID]) ON DELETE CASCADE,
     CONSTRAINT [FK_Roles_RoleGroups] FOREIGN KEY ([RoleGroupID]) REFERENCES [dbo].[RoleGroups] ([RoleGroupID])
 );
@@ -347,7 +403,8 @@ CREATE TABLE [dbo].[UserProfile] (
     [PropertyText] ntext NULL,
     [Visibility] int NOT NULL DEFAULT 0,
     [LastUpdatedDate] datetime NOT NULL,
-    CONSTRAINT [PK_UserProfile] PRIMARY KEY ([ProfileID]),
+    -- MIGRATION: NONCLUSTERED in the terminal schema (04.00.04:1422); see PK_Portals above.
+    CONSTRAINT [PK_UserProfile] PRIMARY KEY NONCLUSTERED ([ProfileID]),
     CONSTRAINT [FK_UserProfile_ProfilePropertyDefinition] FOREIGN KEY ([PropertyDefinitionID]) REFERENCES [dbo].[ProfilePropertyDefinition] ([PropertyDefinitionID]) ON DELETE CASCADE,
     CONSTRAINT [FK_UserProfile_Users] FOREIGN KEY ([UserID]) REFERENCES [dbo].[Users] ([UserID]) ON DELETE CASCADE
 );

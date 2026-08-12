@@ -92,6 +92,22 @@ import type { AuthSession } from './core/models/auth.model';
 // protocol-relative prefix — which is the property that actually has to hold.
 
 /**
+ * An expiry comfortably ahead of whenever this suite runs, derived from the clock rather than written
+ * down.
+ *
+ * ⚠ AN ABSOLUTE DATE IS A TEST THAT EXPIRES. This fixture used to carry `2030-01-01T00:00:00Z`,
+ * which holds a session valid by the calendar rather than by anything the specification controls: on the
+ * first of January 2030 every case depending on it begins asserting the opposite of what it was written
+ * to assert, and it does so SILENTLY, because a session read as already expired is a state this
+ * application handles rather than an error it reports.
+ *
+ * One hour is longer than any run of this suite and shorter than any window the application treats as
+ * unusual, and it is computed ONCE per module load so every case in the file shares one instant rather
+ * than racing the clock between them.
+ */
+const FUTURE_SESSION_EXPIRY_UTC: string = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+/**
  * A held session, in the shape the token custodian stores.
  *
  * The token values are obvious placeholders rather than anything resembling a real
@@ -106,7 +122,7 @@ import type { AuthSession } from './core/models/auth.model';
 const SESSION_BODY: AuthSession = {
   accessToken: 'operator-access-token',
   refreshToken: 'operator-refresh-token',
-  expiresAtUtc: '2030-01-01T00:00:00Z',
+  expiresAtUtc: FUTURE_SESSION_EXPIRY_UTC,
   mustChangePassword: false,
   mustUpdateProfile: false,
   passwordExpiring: false,
@@ -412,11 +428,11 @@ describe('AppComponent', () => {
     /**
      * The account-scoped link carrying a given caption.
      *
-     * ⚠ SELECTED BY CAPTION, NEVER BY POSITION. There are now THREE of these links and an earlier
+     * ⚠ SELECTED BY CAPTION, NEVER BY POSITION. There is more than one of these links and an earlier
      * revision of these cases took the first match, which silently became a different affordance
-     * the moment one was added ahead of it — the failure was an assertion about "Manage Services"
-     * reading "Manage Profile", with nothing wrong in the application at all. Selecting by the
-     * wording each case is actually about makes the order of the band a free choice again.
+     * the moment one was added ahead of it — the failure was an assertion about one caption reading
+     * another, with nothing wrong in the application at all. Selecting by the wording each case is
+     * actually about makes the order of the band a free choice again.
      *
      * @param caption The exact rendered caption.
      * @returns The anchor, or null.
@@ -429,21 +445,6 @@ describe('AppComponent', () => {
       return links.find((link) => link.textContent?.trim() === caption) ?? null;
     }
 
-    it("composes the signed-in account's own subscriptions address once a session is held", () => {
-      // MIGRATION: `Website/admin/Users/MemberServices.ascx` was a tab an administrator never saw
-      // (`ManageUsers.ascx.vb` L61-L66), reached by the signed-in account from the portal's own
-      // user affordance — a skin object, and skinning is out of scope — so this band is the
-      // target's equivalent surface.
-      //
-      // ⚠ THE FIXTURE'S ACCOUNT KEY IS ZERO, WHICH MAKES THIS A SENTINEL PROOF AS WELL AS A
-      // COMPOSITION ONE. A truthiness test or a `> 0` guard anywhere on the path from the
-      // session to the rendered `href` would drop this affordance entirely, and the address
-      // below is what proves none exists.
-      holdSession();
-
-      expect(accountLink('Manage Services')?.getAttribute('href')).toBe('/users/0/services');
-    });
-
     it("composes the signed-in account's own profile and password addresses", () => {
       // MIGRATION: both affordances were MISSING, and their absence stranded every
       // non-administrative account: the two screens are permitted to the account owner, but every
@@ -453,37 +454,44 @@ describe('AppComponent', () => {
       // itself — `cmdPassword` is hidden only when the viewer is neither an administrator nor the
       // holder, and `cmdProfile` is never hidden at all.
       //
-      // The zero account key matters here for the same reason as above: these addresses are
-      // composed from it, so a truthiness guard anywhere on the path would drop both links.
+      // ⚠ THE FIXTURE'S ACCOUNT KEY IS ZERO, WHICH MAKES THIS A SENTINEL PROOF AS WELL AS A
+      // COMPOSITION ONE. A truthiness test or a `> 0` guard anywhere on the path from the session
+      // to a rendered `href` would drop both affordances entirely, and the addresses below are
+      // what prove none exists.
       holdSession();
 
       expect(accountLink('Manage Profile')?.getAttribute('href')).toBe('/users/0/profile');
       expect(accountLink('Manage Password')?.getAttribute('href')).toBe('/users/0/password');
     });
 
-    it('offers all three account affordances in the legacy command order', () => {
+    it('offers both account affordances in the legacy command order, and no third', () => {
       holdSession();
 
-      // Order follows the legacy command bar in `ManageUsers.ascx.resx`: profile, password, then
-      // services. Asserted as a sequence rather than three independent lookups, because the point
-      // is the arrangement an operator reads left to right.
+      // Order follows the legacy command bar in `ManageUsers.ascx.resx`: profile, then password.
+      // Asserted as a sequence rather than two independent lookups, because the point is the
+      // arrangement an operator reads left to right — and because the sequence is also what proves
+      // there is no third link. A member-services affordance was rendered here and is withdrawn
+      // with the route it pointed at: the migration plan freezes the console at twenty-five screens
+      // and declares no such address.
       const captions = Array.from(
         host().querySelectorAll<HTMLAnchorElement>('a.app-header__account-link'),
       ).map((link) => link.textContent?.trim());
 
-      expect(captions).toEqual(['Manage Profile', 'Manage Password', 'Manage Services']);
+      expect(captions).toEqual(['Manage Profile', 'Manage Password']);
     });
 
-    it('captions the account affordance with the measured legacy tab wording', () => {
+    it('captions each account affordance with the measured legacy command wording', () => {
       holdSession();
 
-      // `cmdServices.Text` in `ManageUsers.ascx.resx`. The root composes the address and the
-      // banner owns the wording, so this asserts the seam rather than restating the label.
-      expect(accountLink('Manage Services')?.textContent?.trim()).toBe('Manage Services');
+      // `cmdProfile.Text` and `cmdPassword.Text` in `ManageUsers.ascx.resx`. The root composes the
+      // addresses and the banner owns the wording, so this asserts the seam rather than restating
+      // the labels.
+      expect(accountLink('Manage Profile')?.textContent?.trim()).toBe('Manage Profile');
+      expect(accountLink('Manage Password')?.textContent?.trim()).toBe('Manage Password');
     });
 
     it('offers no account affordance at all while no session is held', () => {
-      // The complement of the three cases above. Each link is gated on a session as well as on an
+      // The complement of the cases above. Each link is gated on a session as well as on an
       // address, so an address left over from a previous identity cannot render a link naming an
       // account nobody is signed in as.
       expect(host().querySelectorAll('a.app-header__account-link').length).toBe(0);
@@ -645,9 +653,9 @@ describe('AppComponent', () => {
       expect(railAddresses()).toContain('/portals');
     });
 
-    it('offers no entry point to a signed-in caller holding no administration', () => {
-      // Truthful rather than unhelpful: every declared entry requires one of the two
-      // administration authorities, so all of them would refuse this caller. The rail is still
+    it('offers no entry point to a signed-in caller holding no authority at all', () => {
+      // Truthful rather than unhelpful: every declared entry requires an administration authority
+      // or a content-edit grant, and this caller holds none of the three. The rail is still
       // COMPOSED — a session IS held and the shell renders it either way — and it simply has
       // nothing to offer, so it withholds its landmark along with its entries rather than
       // announcing a region a reader can navigate to and find nothing in.
@@ -656,13 +664,58 @@ describe('AppComponent', () => {
       // role named 'Subscribers' and the server reports it as administering nothing; a rail that
       // inferred authority from a role name rather than from the server's own flags could not tell
       // this caller from an administrator whose tenant renamed its administrator role.
-      holdSession({ isSuperUser: false, isPortalAdministrator: false, roles: ['Subscribers'] });
+      //
+      // ⚠ THE EMPTY PERMISSION LIST IS STATED AND NOT INHERITED. The shared fixture above carries
+      // `permissions: ['EDIT']`, which is a real authority: it admits the caller to module
+      // placement through `PortalContentEditor`, whose grant arm needs no administration at all.
+      // Leaving it inherited would describe a caller who holds a capability while asserting that
+      // it is offered nothing, so the list is emptied here to make this the no-authority caller
+      // the case is about. The page-editor caller is the case below.
+      holdSession({
+        isSuperUser: false,
+        isPortalAdministrator: false,
+        roles: ['Subscribers'],
+        permissions: [],
+      });
 
       expect(railElement()).not.toBeNull();
       expect(rail())
         .withContext('no landmark stands over a rail with nothing in it')
         .toBeNull();
       expect(railAddresses()).toEqual([]);
+    });
+
+    it('offers module placement to a page editor who administers nothing', () => {
+      // ⚠ THE END-TO-END PROOF OF THE DISCOVERABILITY FIX, asserted through the assembled
+      // application rather than against the rail in isolation: the session store publishes the
+      // permission list, the shell derives the content-edit fact from it, and the rail offers the
+      // entry. Every link in that chain has to hold for this to pass.
+      //
+      // The caller administers NOTHING — no host account, no tenant administration, and an
+      // ordinary role name — and holds `EDIT` somewhere in the tenant, which is exactly whom
+      // `PortalContentEditor` admits (`PolicyNames.cs:198-231`). Previously the only link to the
+      // create screen sat inside the module listing, which is administration-gated, so this
+      // caller was offered nothing anywhere and had to guess the address.
+      holdSession({
+        isSuperUser: false,
+        isPortalAdministrator: false,
+        roles: ['Subscribers'],
+        permissions: ['EDIT'],
+      });
+
+      const addresses = railAddresses();
+
+      expect(rail())
+        .withContext('one entry survives, so the landmark stands')
+        .not.toBeNull();
+      expect(addresses).toEqual(['/modules/new']);
+
+      // Nothing administration-gated leaks in alongside it. The listing in particular is the
+      // screen that USED to be the only way to reach the create form, and it stays withheld.
+      expect(addresses).not.toContain('/modules');
+      expect(addresses).not.toContain('/portals');
+      expect(addresses).not.toContain('/users');
+      expect(addresses).not.toContain('/roles');
     });
   });
 

@@ -1619,12 +1619,20 @@ public sealed class AuthApiTests
     }
 
     /// <summary>
-    /// Signing out is idempotent and silent about whether anything was revoked, so a blank value, an
-    /// unrecognised value and a repeat all succeed.
+    /// Signing out succeeds with nothing to do for a blank value, and reports an UNCONFIRMED retirement -
+    /// repeatably - for a value this instance does not hold.
     /// </summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// SEC-F2. A blank value asks for nothing, so it is still a completed sign-out. An unrecognised value is
+    /// no longer answered <c>204</c>: with families held per process, "I do not hold this" and "this belongs
+    /// to another replica" are the same answer, and reporting the second as a completed sign-out left the
+    /// session live there while the client discarded the only credential able to end it. It is answered
+    /// <c>503</c> - retry - and the answer is identical on repetition, so the endpoint still says nothing
+    /// about whether the value was ever live.
+    /// </remarks>
     [Fact]
-    public async Task Logout_IsIdempotentAndSilent()
+    public async Task Logout_CompletesForABlankValueAndReportsAnUnconfirmedRetirement()
     {
         using HttpClient client = _fixture.CreateAnonymousClient();
 
@@ -1642,7 +1650,7 @@ public sealed class AuthApiTests
             new RefreshTokenRequest { RefreshToken = neverIssued },
             ApiTestFixture.Json);
 
-        unknown.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        unknown.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
 
         // The SAME value again, so this arm asserts repetition rather than a second unknown value.
         using HttpResponseMessage repeated = await client.PostAsJsonAsync(
@@ -1650,7 +1658,7 @@ public sealed class AuthApiTests
             new RefreshTokenRequest { RefreshToken = neverIssued },
             ApiTestFixture.Json);
 
-        repeated.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        repeated.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
     }
 
     /// <summary>The caller's own snapshot requires credentials.</summary>
@@ -1802,7 +1810,7 @@ public sealed class AuthApiTests
     {
         using HttpClient client = _fixture.CreateAnonymousClient();
 
-        string supplied = "auth-accepted-" + Suffix();
+        string supplied = ApiTestFixture.NewCorrelationId();
 
         using HttpRequestMessage accepted = new(HttpMethod.Post, LoginRoute(_fixture.Seed.PortalId))
         {
@@ -1840,7 +1848,7 @@ public sealed class AuthApiTests
             "every response carries an identifier, whether or not the caller brought one");
         generated.Should().NotBe(supplied, "the minted value belongs to this request alone");
 
-        string refusedCorrelationId = "auth-refused-" + Suffix();
+        string refusedCorrelationId = ApiTestFixture.NewCorrelationId();
 
         using HttpRequestMessage refused = new(HttpMethod.Post, LoginRoute(_fixture.Seed.PortalId))
         {

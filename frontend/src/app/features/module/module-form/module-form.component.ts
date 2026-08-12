@@ -641,11 +641,12 @@ export interface ModuleFormModel {
   moduleDefId: FormControl<number | null>;
 
   /**
-   * The page the placement sits on.
+   * The page the placement should sit on: where it is going, not where it is.
    *
-   * The legacy caption was a move affordance. The value now SELECTS the placement the update
-   * addresses as well, because the update body carries exactly one page identifier - a move would
-   * need two - and the server refuses when the module is not placed on the page named.
+   * The legacy caption was a move affordance and it still is one. The update body carries TWO page
+   * identifiers - `tabId` selects the placement being replaced, `moveToTabId` names the destination -
+   * so this control feeds the destination and the page the module was loaded from feeds the selector.
+   * Creating a module the two are the same value, because a new placement's destination IS its page.
    */
   tabId: FormControl<number | null>;
 
@@ -1016,7 +1017,6 @@ const SUCCESS_MESSAGES: Readonly<Record<ModuleFormOperation, string>> = Object.f
     LoadingSpinnerComponent,
     ErrorBannerComponent,
     ConfirmDialogComponent,
-    FocusFirstInvalidDirective,
   ],
   templateUrl: './module-form.component.html',
   styleUrl: './module-form.component.scss',

@@ -95,6 +95,7 @@ import {
   decodeMembershipSettings,
   decodeMembershipSettingsUpdateResult,
   decodeRedeemServiceCodeResult,
+  decodeUserChoice,
   decodeUserDetail,
   decodeUserListItem,
 } from '../models/user.model';
@@ -102,6 +103,7 @@ import { arrayOf, decodeResponse, envelopeOf, pageOf } from '../utils/decode.uti
 import { presentedInContext } from './notification.service';
 
 import type { Decoder } from '../utils/decode.util';
+import type { PagedRequestParams } from '../utils/http-params.util';
 import type {
   CreateProfilePropertyDefinitionRequest,
   ProfilePropertyDefinition,
@@ -115,6 +117,7 @@ import type {
   MemberService,
   MembershipSettings,
   MembershipSettingsUpdateResult,
+  PagedUserChoiceList,
   PagedUserList,
   RedeemServiceCodeRequest,
   RedeemServiceCodeResult,
@@ -124,6 +127,7 @@ import type {
 } from '../models/user.model';
 import {
   identifiesAPerson,
+  pagedRequestParams,
   userApprovalParams,
   userListParams,
   userSearchBody,
@@ -148,6 +152,7 @@ import {
  *   drifted body becomes one located failure rather than an apparently successful nothing.
  */
 const USER_PAGE: Decoder<PagedUserList> = pageOf(decodeUserListItem);
+const USER_CHOICE_PAGE: Decoder<PagedUserChoiceList> = pageOf(decodeUserChoice);
 const USER_DETAIL_RESPONSE: Decoder<UserDetail> = envelopeOf(decodeUserDetail);
 const USER_PROFILE_RESPONSE: Decoder<UserProfile> = envelopeOf(decodeUserProfile);
 const MEMBERSHIP_SETTINGS_RESPONSE: Decoder<MembershipSettings> = envelopeOf(
@@ -386,6 +391,57 @@ export class UserService {
         context: presentedInContext(),
       })
       .pipe(map((body) => decodeResponse(USER_PAGE, body)));
+  }
+
+  /**
+   * Reads one page of the tenant's accounts as an account PICKER needs them.
+   *
+   * ⚠ NOT A THINNER MODE OF {@link UserService.list} — A DIFFERENT ENDPOINT, AND THE
+   * DISTINCTION IS THE WHOLE POINT. A performance and privacy review measured the
+   * role-assignment screen building its account drop-down, and its account-count probe,
+   * from the account LISTING. Every candidate row carried a postal address, a telephone
+   * number, an electronic-mail address, a creation instant, a last-login instant and four
+   * status flags across the wire so that three values could be rendered — and that screen
+   * may enumerate a tenant of up to a thousand accounts before it decides to offer a name
+   * box instead. `GET /api/v1/users/choices` answers a key and two captions and nothing
+   * else, so no field arrives that the screen cannot use.
+   *
+   * It is also the CHEAPEST COUNT AVAILABLE. Asking for a single row and reading
+   * `meta.totalCount` answers "how many accounts does this tenant hold" while disclosing
+   * one key and two captions; the same probe against the listing disclosed a complete
+   * account row to read a number.
+   *
+   * ⚠ THE ANSWER IS NOT CACHED HERE AND MUST NOT BE HOISTED INTO A ROOT STORE. A roster
+   * held across a session would mean an account created moments earlier on the account
+   * screens was ABSENT from this drop-down until the whole application was reloaded, with
+   * nothing on screen to suggest why — an operator would conclude the account had not been
+   * created. Retention is the caller's decision and belongs at the caller's own scope.
+   *
+   * MIGRATION: this is `cboUsers` on `Website/admin/Security/securityroles.ascx`, filled by
+   * `UserModuleBase.vb:L178-L186`. That code read the tenant's account count first and
+   * offered the drop-down only at or below one thousand accounts, so both halves of the
+   * legacy behaviour — the count and the enumeration — are served from this one address.
+   *
+   * @param query The page to return, its size, the ordering and the caption prefix to match.
+   * The prefix matches the START of either caption; the server composes the pattern, so no
+   * wildcard is appended here and any wildcard the operator typed matches itself.
+   * @returns The page: the choices plus the envelope carrying the total, the zero-based
+   * index and the size the server applied.
+   */
+  listChoices(query: PagedRequestParams): Observable<PagedUserChoiceList> {
+    // A plain `GET`, unlike the listing's identifying-search branch. The only filter this
+    // address takes is a prefix of a caption the drop-down already displays, and every value
+    // it can match is a value the response returns — so a request target recording it
+    // discloses nothing the response body did not already carry. The listing's four named
+    // filters and its free-text member reach an electronic-mail address and arbitrary
+    // tenant-defined profile values, which is why those move into a body (CWE-598) and this
+    // does not.
+    return this.http
+      .get<unknown>(API_ENDPOINTS.users.choices(), {
+        params: pagedRequestParams(query),
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(USER_CHOICE_PAGE, body)));
   }
 
   /**
@@ -716,8 +772,17 @@ export class UserService {
    * module setting all along, as the listing's own reader at
    * `Website/admin/Users/Users.ascx.vb` L114-L119 shows.
    *
-   * @returns The policy. A tenant the server cannot resolve is a `404` failure rather than
-   * a successful empty answer; every member of the contract is populated on a `200`.
+   * ⚠ A TENANT THAT STORES NOTHING IS STILL A `200`. The read answers a portal with no
+   * "User Accounts" module instance with the measured legacy defaults and marks them
+   * `isStored: false`, so absence of a STORE travels inside the document and never on the
+   * status line. A consumer must therefore read provenance from that member and must not
+   * infer it from a status: the write for the same address answers `409`
+   * `user.membership-settings.storage-conflict` for that tenant, which is a state an
+   * operator can repair rather than a resource that is missing.
+   *
+   * @returns The policy. Every member of the contract is populated on a `200`, whether the
+   * values are stored decisions or the platform defaults. Any non-success status is a
+   * failure like any other read's.
    */
   getMembershipSettings(): Observable<MembershipSettings> {
     return this.http

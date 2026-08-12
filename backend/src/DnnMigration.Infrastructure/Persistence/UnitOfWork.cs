@@ -74,9 +74,10 @@ internal sealed class UnitOfWork : IUnitOfWork
     /// </summary>
     /// <param name="cancellationToken">Token observed for cancellation.</param>
     /// <returns>The number of rows affected.</returns>
-    /// <exception cref="DbUpdateConcurrencyException">
+    /// <exception cref="ConcurrencyConflictException">
     /// Thrown when a tracked row was changed or removed by another caller between the read and the
-    /// flush.
+    /// flush, whether the mapper reported it as an affected-row count of zero or the engine reported it
+    /// as a serialisation failure.
     /// </exception>
     /// <exception cref="DbUpdateException">
     /// Thrown when the store rejects the write, for example on a unique index violation that a
@@ -118,20 +119,41 @@ internal sealed class UnitOfWork : IUnitOfWork
     // nothing else is: a foreign-key violation, a check violation or a deadlock is a different failure with
     // a different correct answer and continues to travel as it did.
     //
-    // DbUpdateConcurrencyException is excluded EXPLICITLY even though the number test would exclude it
-    // anyway. It derives from DbUpdateException, so a future edit that loosened the inner test would
-    // silently start reporting a lost update as a duplicate - and the two demand opposite things of a
-    // caller, one to re-read and retry, the other to choose a different value.
+    // DbUpdateConcurrencyException is excluded EXPLICITLY from the duplicate arm even though the number test
+    // would exclude it anyway. It derives from DbUpdateException, so a future edit that loosened the inner
+    // test would silently start reporting a lost update as a duplicate - and the two demand opposite things
+    // of a caller, one to re-read and retry, the other to choose a different value.
+    //
+    // A LOST UPDATE IS TRANSLATED HERE TOO, AND FOR THE SAME LAYERING REASON. Every whole-record write path
+    // performs its read, its token comparison and its flush inside one serialisable scope, because the token
+    // comparison is a pre-check and two callers can both pass one. Having made that section serialisable, the
+    // store reports the losing half in one of two ways, and NEITHER of them could be classified above this
+    // assembly: the mapper's own DbUpdateConcurrencyException (an affected-row count of zero, which is what a
+    // conditional write reports when its condition no longer holds) and the engine's serialisation failure,
+    // whose error numbers only a file that may name the database client can read. Both become one Domain
+    // signal, so the application service can answer 409 and tell the caller to re-read - which is the whole
+    // point of not letting a provider type escape this project. Before this arm existed the second form
+    // reached the transport as an unrecognised fault and was published as a server error, reporting a defect
+    // for a store that had behaved correctly and had preserved somebody's committed edit.
     public async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
         try
         {
             return await _dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch (DbUpdateException exception) when (exception is not DbUpdateConcurrencyException
-            && DuplicateKeyTranslator.Describes(exception, out string? constraintName))
+        catch (DbUpdateConcurrencyException exception)
+        {
+            throw ConcurrencyConflictException.ForLostUpdate(exception);
+        }
+        catch (DbUpdateException exception) when (DuplicateKeyTranslator.Describes(
+            exception,
+            out string? constraintName))
         {
             throw DuplicateKeyException.ForConstraint(constraintName, exception);
+        }
+        catch (DbUpdateException exception) when (LostUpdateTranslator.Describes(exception))
+        {
+            throw ConcurrencyConflictException.ForLostUpdate(exception);
         }
     }
 

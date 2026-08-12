@@ -324,7 +324,11 @@ internal sealed class PortalContextHolder : IPortalContextHolder
     /// <param name="address">
     /// The address as the caller supplied it: a host name, optionally followed by the request's path.
     /// </param>
-    /// <returns>The candidate addresses, longest first, and never empty for a non-blank input.</returns>
+    /// <returns>
+    /// The candidate addresses, longest first. Empty when the input carries no segment at all, and also
+    /// when every candidate it could produce - the bare authority included - exceeds the width the alias
+    /// column can hold, since such a value could never have been stored and so can match nothing.
+    /// </returns>
     /// <remarks>
     /// <para>
     /// The chain for <c>host/child/api/v1</c> is <c>host/child/api/v1</c>, <c>host/child/api</c>,
@@ -341,6 +345,15 @@ internal sealed class PortalContextHolder : IPortalContextHolder
     /// the legacy product could produce: its signup screen composed exactly ONE path segment beneath the
     /// authority (<c>Signup.ascx.vb</c> L232-L236), and a host account typing a deeper value by hand is the
     /// only way more than one arises.
+    /// </para>
+    /// <para>
+    /// THE LENGTH BOUND APPLIES TO THE BARE AUTHORITY AS WELL, and that is a correction rather than a
+    /// refinement. The authority used to be appended unconditionally, so a caller presenting an
+    /// oversized host header reached the store with a candidate the column could not hold - a value
+    /// guaranteed to match nothing, sent as a parameter on a lookup that any anonymous caller can
+    /// provoke. It is now subject to the same bound as every other candidate, which can leave the chain
+    /// EMPTY; an empty chain is already the contract for an unusable address and the caller treats it as
+    /// an unresolved tenant.
     /// </para>
     /// </remarks>
     private static IReadOnlyList<string> BuildAddressChain(string address)
@@ -370,7 +383,10 @@ internal sealed class PortalContextHolder : IPortalContextHolder
             }
         }
 
-        chain.Add(authority);
+        if (authority.Length <= MaximumAliasLength)
+        {
+            chain.Add(authority);
+        }
 
         return chain;
     }

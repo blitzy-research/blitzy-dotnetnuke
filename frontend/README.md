@@ -17,7 +17,10 @@ nginx behind the same origin as the API.
 | Angular CLI | **19.2.27** | A local dev dependency — drive it with `npx ng`. A global install is optional |
 | Chrome / Chromium | any recent stable | Drives the Karma run. Set `CHROME_BIN` if the browser is not on the default path |
 
-`nvm use` reads `.nvmrc`; the full cross-stack prerequisite matrix is in [`../README.md`](../README.md).
+Install Node 20.20.2 by whatever means this machine already uses — `.nvmrc` is a plain version
+file, so a direct install, a distribution package or a container image is as valid as a version
+manager. **If you use nvm**, `nvm use` reads it for you. The full cross-stack prerequisite matrix
+is in [`../README.md`](../README.md).
 
 ## Commands
 
@@ -55,7 +58,7 @@ src/
     ├── core/         models, services, interceptors, guards, state, config, utils
     ├── shared/       presentational components, directives, pipes
     ├── layout/       shell, header, sidebar, footer, notifications
-    └── features/     portal, module, user, role, auth  (lazy-loaded)
+    └── features/     portal, module, user, role, auth, not-found  (lazy-loaded)
 public/               static assets served by nginx
 ```
 
@@ -72,15 +75,31 @@ public/               static assets served by nginx
   for genuine side effects. No third-party store library, no subject-backed stores.
 - **Typed reactive forms only** — each form declares a model interface used as
   `FormGroup<TModel>`, every control `new FormControl<T>(init, { nonNullable: true })`.
-- **Providers wired once** in `app.config.ts`. Interceptor order is significant:
-  correlation-id, then auth, then error.
+- **Application-wide providers are wired once** in `app.config.ts` — the router, the HTTP
+  client and its three interceptors, and anything else the whole application shares. Interceptor
+  order is significant: correlation-id, then auth, then error. Narrower scopes use Angular's
+  ordinary mechanisms rather than being hoisted there: singletons declare
+  `providedIn: 'root'` on themselves (every service and store under `core/` does), and a
+  directive that participates in forms provides its own token locally — as
+  `shared/directives/native-date-validity.directive.ts` does with `NG_VALIDATORS`. What
+  `app.config.ts` must not become is a registry of things only one feature uses.
 - **Strict TypeScript and strict Angular templates** — `tsconfig.json` sets
   `strict: true` and `strictTemplates: true`. Never relax a flag; fix the code instead.
 - **No third-party UI component library or CSS framework** is installed; the shared
   component set under `src/app/shared/` is the design system.
-- **Zero hardcoded CSS values** — every property value resolves to a token in
-  `src/styles/_tokens.scss`. The only permitted literals are `0`, `none`, `auto`,
-  `inherit`, `currentColor` and `transparent`. Breakpoints live once in `_mixins.scss`.
+- **No hardcoded design values** — every colour, type step, space, radius, elevation, duration
+  and dimension resolves to a token in `src/styles/_tokens.scss`. If a value describes how the
+  application *looks*, it is a token or it is a bug; duplicating a token's value as a literal
+  counts as hardcoding it. The keyword literals `0`, `none`, `auto`, `inherit`, `currentColor`
+  and `transparent` are permitted anywhere, and breakpoints live once in `_mixins.scss`.
+- **A bounded set of structural literals is permitted**, because these name layout mechanics
+  rather than appearance and a token for them would name nothing: CSS-grid line indices and
+  track counts (`grid-column: 1 / -1`, `repeat(2, …)`), the `fr` unit and `minmax(0, 1fr)`,
+  flex factors (`flex: 1 1 …`), line-clamp counts, the `-1` multiplier in
+  `calc(-1 * var(--token))`, viewport and percentage bounds inside `min()`/`calc()` (`100vw`,
+  `100vh`, `100%`), `1em` where a box is deliberately sized to the current type step, and
+  keyframe rotation angles (`0deg`, `360deg`). That list is exhaustive — 24 declarations across
+  the workspace — and adding a category to it is a review decision, not a local one.
 - **One `.spec.ts` per component, service, interceptor, guard and store**, using
   `TestBed`, `provideHttpClientTesting` and `HttpTestingController`. Karma with Jasmine.
 
@@ -89,10 +108,12 @@ public/               static assets served by nginx
 `src/environments/environment.ts` is the **production** configuration and sets
 `apiBaseUrl` to the **relative** path `/api/v1`.
 
-> ⚠️ **It must stay relative.** `docker/nginx.conf` proxies `/api/` to
-> `http://api:8080/api/`, so the browser reaches the API through the same origin that
-> served the application. An absolute `http://api:8080` resolves only inside the
-> container network and fails from the browser — and **no build step detects it.**
+> ⚠️ **It must stay relative.** `docker/api-proxy.conf` — the shared snippet included by
+> both the plain-HTTP server in `docker/nginx.conf` and the TLS server in
+> `docker/nginx.tls.conf.template` — proxies `/api/` to the `api` service on port 8080, so
+> the browser reaches the API through the same origin that served the application. An
+> absolute `http://api:8080` resolves only inside the container network and fails from the
+> browser — and **no build step detects it.**
 
 `src/environments/environment.development.ts` overrides it with
 `http://localhost:8080/api/v1` for `npm start`; `angular.json` performs that swap

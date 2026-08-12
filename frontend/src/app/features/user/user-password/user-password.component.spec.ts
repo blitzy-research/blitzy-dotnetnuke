@@ -89,6 +89,7 @@ import { Router, provideRouter } from '@angular/router';
 
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { ChangePasswordRequest, UserDetail } from '../../../core/models/user.model';
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { TokenStorageService } from '../../../core/services/token-storage.service';
 import {
@@ -728,6 +729,43 @@ describe('UserPasswordComponent', () => {
   // =========================================================================
   // A. THE CREDENTIAL POLICY: LENGTH >= 7, AND NOTHING ELSE
   // =========================================================================
+
+  describe('the unsaved-entry probe this screen registers', () => {
+    it('reports a typed credential, so a reload cannot discard it in silence', () => {
+      /*
+       * ⚠ THIS SCREEN'S ROUTE DECLARES `unsavedChangesGuard`, AND THE DECLARATION USED TO BE
+       * ANSWERED BY REFLECTION over the component's fields. That sweep is gone - it made
+       * `@angular/forms` reachable from the eager import graph of an application whose every form
+       * screen is lazily loaded - so this screen registers a probe of its own. A screen declaring
+       * the gate without one is not merely unprotected: it LOOKS protected in the route table, and
+       * the guard reads it as clean.
+       *
+       * ⚠ THIS IS THE SCREEN WHERE LOST ENTRY IS LEAST RECOVERABLE. Every control here is a
+       * credential field, so it is excluded from browser form restoration and from any password
+       * manager's autofill of a previous value: what is lost is lost outright, and all three boxes
+       * have to be re-typed. That makes the warning worth more here than on a screen a reload would
+       * repopulate.
+       *
+       * ⚠ NO CREDENTIAL IS READ BY THE PROBE, ONLY WHETHER ONE WAS TYPED, which is asserted by
+       * driving a real value through and then checking a boolean rather than a value. `isDirty()` is
+       * the guard's own public surface, so this asserts through the very call the guard makes.
+       */
+      const tracker = TestBed.inject(UnsavedChangesTracker);
+
+      arriveAsSelf();
+
+      // THE CONTROL: an untouched form must not warn, or a later `true` proves nothing at all.
+      expect(tracker.isDirty())
+        .withContext('an untouched credential form is not unsaved entry')
+        .toBeFalse();
+
+      enter(CONTROL_ID.newPassword, REPLACEMENT);
+
+      expect(tracker.isDirty())
+        .withContext('a typed credential with no write in flight is what the guard exists to catch')
+        .toBeTrue();
+    });
+  });
 
   describe('the credential policy', () => {
     it('refuses a replacement one character short of the boundary', () => {

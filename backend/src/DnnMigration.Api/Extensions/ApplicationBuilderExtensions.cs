@@ -530,7 +530,7 @@ public static class ApplicationBuilderExtensions
             app.Logger.LogWarning(
                 "Transport security is not enforced by this process: '{Setting}' is not set outside "
                 + "development. This is correct only when a reverse proxy terminates TLS in front of it "
-                + "(see docker/nginx.tls.conf and docker/docker-compose.tls.yml, which also set "
+                + "(see docker/nginx.tls.conf.template and docker/docker-compose.tls.yml, which also set "
                 + "'{ProxySetting}' so that the forwarded scheme is honoured). Without one, credentials and "
                 + "bearer tokens traverse the network in clear text.",
                 HttpsRedirectionSectionName,

@@ -82,31 +82,28 @@
   <div class="app-header__actions">
     @if (hasSignedInUser) {
       <span class="app-header__user">{{ userName }}</span>
-      <!-- MIGRATION: the ONE account-scoped affordance in the console's chrome, and the only
-           navigational route an ordinary account holder has to a screen it operates on its own
-           behalf. `Website/admin/Users/MemberServices.ascx` was a tab in the account container
-           that an administrator never saw (`ManageUsers.ascx.vb` L61-L66) and that the signed-in
-           account reached from the portal's own user affordance — a skin object, and skinning is
-           out of scope — so this band is the target's equivalent surface. The caption is the
-           measured legacy tab caption rather than invented wording, and the address is supplied
-           whole by the container: this band holds a caption rather than an account, so it could
-           not compose one.
+      <!-- MIGRATION: TWO account-scoped destinations, and two is the whole set the console's route
+           table can offer. The legacy account command bar declared five commands
+           (`ManageUsers.ascx.resx`) and this band had ported none of them, which left a signed-in
+           member with no link to either screen they are entitled to operate on their own behalf -
+           the navigation rail is administrator-only, so their own profile and their own password
+           were reachable only by typing a URL containing their numeric account key.
+           `ManageUsers.ascx.vb:L439-L456` shows the legacy offered both to an account viewing
+           itself: `cmdPassword` is hidden only when the viewer is neither an administrator nor the
+           holder, and `cmdProfile` is never hidden at all. Order follows that command bar: profile,
+           then password.
 
-           A LINK where the sign-out beside it is a button, because this is a destination and
-           that is a command. It is rendered only when an address was supplied AND a session is
-           present, so it can never navigate to the current page or name an account that is not
-           signed in. -->
-      <!-- MIGRATION: three account-scoped destinations, not one. The legacy account command bar
-           declared five commands (`ManageUsers.ascx.resx`) and this band had ported only "Manage
-           Services", which left a signed-in member with no link to either screen they are
-           entitled to operate on their own behalf - the navigation rail is administrator-only, so
-           their own profile and their own password were reachable only by typing a URL containing
-           their numeric account key. `ManageUsers.ascx.vb:L439-L456` shows the legacy offered
-           both to an account viewing itself: `cmdPassword` is hidden only when the viewer is
-           neither an administrator nor the holder, and `cmdProfile` is never hidden at all. Order
-           follows that command bar: profile, password, then services. Each is rendered only when
-           its address was supplied AND a session is present, so none can name an account that is
-           not signed in. -->
+           A third link, to the legacy `cmdServices` panel, was briefly rendered here and is
+           WITHDRAWN with the address it pointed at: the migration plan freezes the console at
+           twenty-five screens and declares no member-services route, so the band had a link to an
+           address the route table does not publish. The five self-service endpoints and their typed
+           client wrappers remain, so restoring the link is a route declaration away.
+
+           LINKS where the sign-out beside them is a button, because these are destinations and that
+           is a command. Each is rendered only when its address was supplied AND a session is
+           present, so neither can navigate to the current page or name an account that is not
+           signed in, and the addresses are supplied whole by the container: this band holds a
+           caption rather than an account, so it could not compose one. -->
       @if (hasAccountProfileLink) {
         <a class="app-header__account-link" [routerLink]="accountProfileLink">{{
           accountProfileLabel
@@ -115,11 +112,6 @@
       @if (hasAccountPasswordLink) {
         <a class="app-header__account-link" [routerLink]="accountPasswordLink">{{
           accountPasswordLabel
-        }}</a>
-      }
-      @if (hasAccountServicesLink) {
-        <a class="app-header__account-link" [routerLink]="accountServicesLink">{{
-          accountServicesLabel
         }}</a>
       }
       <!-- MIGRATION: signing out is a COMMAND rather than a destination, so this is a button where

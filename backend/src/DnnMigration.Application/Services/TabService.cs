@@ -490,6 +490,16 @@ public sealed class TabService : ITabService
         // actually changed, so a record never asserts a rename that did not happen.
         int? previousParentId = tab.ParentId;
 
+        // MIGRATION: THE FORMER DELETE FLAG IS CAPTURED FOR THE SAME REASON AND FOR A LARGER PURPOSE. The
+        // mapper assigns IsDeleted from the request, so this member is the boundary at which a page is
+        // recycled and at which a recycled page is restored - and the legacy vocabulary has a distinct event
+        // name for each of those, TAB_SENT_TO_RECYCLE_BIN and TAB_RESTORED. Recording all three transitions
+        // as TAB_UPDATED made a recycling and a restoration indistinguishable from a title change, which is
+        // exactly the distinction an operator asking "who took this page down" needs. The former value is the
+        // only way to tell a transition from a no-op: a request carrying IsDeleted = true against a page that
+        // is already recycled changes nothing and must stay a revision.
+        bool previouslyDeleted = tab.IsDeleted;
+
         TabMappings.ApplyUpdate(tab, request);
 
         if (tab.PortalId is int portalId)
@@ -595,7 +605,36 @@ public sealed class TabService : ITabService
             pageFacts["PreviousParentId"] = previousParentId?.ToString(CultureInfo.InvariantCulture);
         }
 
-        AuditEvent record = new(AuditEventNames.TabUpdated)
+        // MIGRATION: THE EVENT NAME NOW FOLLOWS THE TRANSITION, WHICH IS WHAT THE LEGACY VOCABULARY DID AND
+        // THIS SERVICE PREVIOUSLY DID NOT. Every page change was recorded as TAB_UPDATED, so recycling a page
+        // and restoring one were indistinguishable from renaming one - and the two events an operator most
+        // wants to find, "who took this page down" and "who put it back", could not be found at all. The
+        // legacy enumeration has a member for each (EventLogController.vb:L38-L77): TAB_SENT_TO_RECYCLE_BIN,
+        // raised by TabController.vb at L840 and L952, and TAB_RESTORED, raised by RecycleBin.ascx.vb:L280.
+        //
+        // Both are reachable HERE, which corrects a claim this solution previously made about them. The
+        // narrow page surface AAP 0.5.1.4 specifies - GET the tenant's pages, GET and PUT one page - carries
+        // IsDeleted on its update request, so the PUT that reaches this member IS the committed boundary at
+        // which a page is recycled and restored. What genuinely has no boundary is CREATION and PERMANENT
+        // PURGE, because the surface has no POST and no DELETE; those two names stay unpublished.
+        //
+        // A no-op is still a revision. A request repeating the flag a page already carries changes nothing,
+        // so it must not claim a recycling or a restoration that did not occur - which is why the former value
+        // is captured before the mapper runs and why the comparison is a transition test rather than a read of
+        // the new value.
+        (string eventName, string operation) = (previouslyDeleted, tab.IsDeleted) switch
+        {
+            (false, true) => (AuditEventNames.TabSentToRecycleBin, "Recycle"),
+            (true, false) => (AuditEventNames.TabRestored, "Restore"),
+            _ => (AuditEventNames.TabUpdated, "Revise"),
+        };
+
+        // Narrows the record without needing a second name, and is one of the facts the sink's metadata
+        // allow-list already carries. It is redundant with the event name by design: a reader filtering on
+        // either one alone still sees the whole picture.
+        pageFacts["Operation"] = operation;
+
+        AuditEvent record = new(eventName)
         {
             PortalId = tab.PortalId,
             ActorUserId = _currentUser.IsAuthenticated ? _currentUser.UserId : null,

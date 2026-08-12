@@ -125,6 +125,22 @@ import type { AuthSession } from '../../core/models/auth.model';
  */
 
 /**
+ * An expiry comfortably ahead of whenever this suite runs, derived from the clock rather than written
+ * down.
+ *
+ * ⚠ AN ABSOLUTE DATE IS A TEST THAT EXPIRES. This fixture used to carry `2030-01-01T00:00:00Z`,
+ * which holds a session valid by the calendar rather than by anything the specification controls: on the
+ * first of January 2030 every case depending on it begins asserting the opposite of what it was written
+ * to assert, and it does so SILENTLY, because a session read as already expired is a state this
+ * application handles rather than an error it reports.
+ *
+ * One hour is longer than any run of this suite and shorter than any window the application treats as
+ * unusual, and it is computed ONCE per module load so every case in the file shares one instant rather
+ * than racing the clock between them.
+ */
+const FUTURE_SESSION_EXPIRY_UTC: string = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+/**
  * A held session, exactly as the sign-in endpoint answers one.
  *
  * Written through the token custodian rather than by posting credentials, because every
@@ -138,7 +154,7 @@ import type { AuthSession } from '../../core/models/auth.model';
 const SESSION_BODY: AuthSession = {
   accessToken: 'operator-access-token',
   refreshToken: 'operator-refresh-token',
-  expiresAtUtc: '2030-01-01T00:00:00Z',
+  expiresAtUtc: FUTURE_SESSION_EXPIRY_UTC,
   mustChangePassword: false,
   mustUpdateProfile: false,
   passwordExpiring: false,
@@ -775,18 +791,25 @@ describe('ShellComponent', () => {
     });
 
     it('offers no account address while no session is held', () => {
-      expect(banner().accountServicesLink).toBeUndefined();
+      expect(banner().accountProfileLink).toBeUndefined();
+      expect(banner().accountPasswordLink).toBeUndefined();
     });
 
-    it("composes the signed-in account's own subscriptions address", () => {
-      // MIGRATION: this is the one account-scoped affordance in the console's chrome, and the only
-      // route an ordinary account holder has to a screen it operates on its own behalf.
-      // `Website/admin/Users/MemberServices.ascx` was a tab an administrator never saw
-      // (`ManageUsers.ascx.vb` L61-L66), reached by the signed-in account from the portal's own user
-      // affordance - a skin object, and skinning is out of scope - so this band is the equivalent.
+    it("composes the signed-in account's own profile and password addresses", () => {
+      // MIGRATION: these two are the WHOLE of the console's account-scoped chrome, and they are the
+      // only routes an ordinary account holder has to a screen it operates on its own behalf: every
+      // navigation-rail entry requires a portal or host administrator.
+      // `ManageUsers.ascx.vb:L439-L456` records that the legacy command bar offered both to an
+      // account viewing itself, so this reproduces measured behaviour rather than inventing it.
+      //
+      // A third address, to the legacy `cmdServices` panel, was composed here and is withdrawn with
+      // the route it named: the migration plan freezes the console at twenty-five screens and
+      // declares no member-services address, so this component was handing the banner a link to a
+      // screen the route table does not publish.
       holdSession({ userId: 7 });
 
-      expect(banner().accountServicesLink).toBe('/users/7/services');
+      expect(banner().accountProfileLink).toBe('/users/7/profile');
+      expect(banner().accountPasswordLink).toBe('/users/7/password');
     });
 
     it('composes an address naming account zero unchanged', () => {
@@ -797,7 +820,8 @@ describe('ShellComponent', () => {
       // schema, so that is a defect class rather than a preference.
       holdSession({ userId: 0 });
 
-      expect(banner().accountServicesLink).toBe('/users/0/services');
+      expect(banner().accountProfileLink).toBe('/users/0/profile');
+      expect(banner().accountPasswordLink).toBe('/users/0/password');
     });
 
     it('revokes the session server-side when the operator asks to sign out', () => {

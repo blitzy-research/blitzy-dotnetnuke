@@ -195,8 +195,7 @@ import { RoleService } from '../services/role.service';
 import { failureCode, isConflictCode, summarizeProblem } from '../utils/form-errors.util';
 
 import type { OnDestroy } from '@angular/core';
-import type { Observable, Subscription } from 'rxjs';
-import type { PagedResponse } from '../models/paged-result.model';
+import type { Subscription } from 'rxjs';
 import type { ApiMeta, PagedResult, SortDirection } from '../models/paged-result.model';
 import type { ProblemDetails } from '../models/problem-details.model';
 import type {

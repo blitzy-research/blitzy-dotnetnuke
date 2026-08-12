@@ -1708,6 +1708,17 @@ public class PortalServiceTests
     /// audit record is kept, with the same three diagnostic properties, so the gap is searchable and the
     /// operator can repair the catalogue.
     /// </para>
+    /// <para>
+    /// THE RECORD'S EVENT NAME AND ITS TIMING BOTH CHANGED, AND THIS TEST NOW PINS BOTH. It used to be raised
+    /// as PORTAL_CREATED with a Failed outcome, FROM INSIDE THE OPEN TRANSACTION. Two things were wrong with
+    /// that. The name read as "creating the portal failed", which is the opposite of what happens here - the
+    /// portal IS created and only a grant is missing - so a search for failed provisionings returned a
+    /// successful one and a count of successful ones missed it. And a record written before the commit
+    /// described work that a later stage could still abandon, leaving an entry naming a tenant that does not
+    /// exist. It is now HOST_ALERT, which is the legacy type for an installation condition the host operator
+    /// must repair (EventLogController.vb), raised after the commit from a condition the page stage returns as
+    /// data. The failure code and the three properties are unchanged, so nothing an operator needs was lost.
+    /// </para>
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1741,10 +1752,67 @@ public class PortalServiceTests
         // the repair is an upgrade-script one and nothing in the response mentions it.
         AuditEvent gap = harness.AuditRecords.Should().ContainSingle(record =>
             record.Outcome == AuditOutcome.Failed).Subject;
+        gap.EventName.Should().Be(
+            AuditEventNames.HostAlert,
+            "an incomplete catalogue is an installation defect for the host operator to repair, and naming it "
+            + "PORTAL_CREATED asserted the opposite of what happened");
         gap.FailureCode.Should().Be("portal.permission_catalogue_incomplete");
         gap.Properties["PermissionCode"].Should().Be(TabScopeCode);
         gap.Properties["MissingViewDefinition"].Should().Be(bool.FalseString);
         gap.Properties["MissingEditDefinition"].Should().Be(bool.TrueString);
+
+        // No record of the creation itself may carry a failed outcome, because the creation succeeded.
+        harness.AuditRecords
+            .Where(record => record.EventName == AuditEventNames.PortalCreated)
+            .Should().OnlyContain(record => record.Outcome == AuditOutcome.Succeeded);
+
+        // The successful pair is still emitted alongside the alert, so the trail records BOTH that the tenant
+        // came into being and that its grants are incomplete.
+        harness.AuditRecords.Select(record => record.EventName).Should().Contain(
+            [AuditEventNames.PortalCreated, AuditEventNames.HostAlert]);
+    }
+
+    /// <summary>
+    /// The permission-catalogue alert is not raised at all when the provisioning is abandoned, so no record
+    /// can name a tenant that does not exist.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// THIS IS THE REGRESSION PIN FOR THE PRE-COMMIT WRITE. The catalogue gap is discovered part-way through
+    /// the sequence, several staged writes before the commit, and the record used to be emitted at the moment
+    /// of discovery. Here the credential stage refuses AFTER that discovery, which disposes the transaction
+    /// scope without committing and makes the portal, its alias, its roles, its administrator and its page all
+    /// disappear - and the trail must be empty, because nothing happened. Before the fix this left behind an
+    /// entry asserting that the permission catalogue was incomplete for a tenant identifier that no row bears.
+    /// </remarks>
+    [Fact]
+    public async Task CreatePortal_RecordsNoCatalogueAlertWhenTheProvisioningIsRolledBack()
+    {
+        Harness harness = Harness.Ready();
+
+        // Discovered first: the catalogue is missing its edit definition.
+        harness.PageScopeCatalogue =
+        [
+            new Permission
+            {
+                PermissionId = 3,
+                PermissionCode = TabScopeCode,
+                PermissionKey = PermissionKey.VIEW,
+                PermissionName = "View Tab",
+            },
+        ];
+
+        // Refused afterwards, so the whole sequence is abandoned.
+        harness.CredentialCreated = false;
+
+        Result<PortalDetailDto> outcome = await harness.Service
+            .CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        harness.OpenedTransactions.Should().ContainSingle().Which.RolledBack.Should().BeTrue();
+
+        harness.AuditRecords.Should().BeEmpty(
+            "the tenant does not exist, so no record may describe its catalogue, its grants or its creation");
     }
 
     /// <summary>
@@ -1944,6 +2012,48 @@ public class PortalServiceTests
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(CreationFailedCode);
         outcome.Reason!.Message.Should().Be("The portal was created but could not be read back.");
+    }
+
+    /// <summary>
+    /// A tenant that cannot be read back is still recorded as created, because the tenant exists whether or
+    /// not the response could be composed.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE FAILURE THIS PINS IS AN ABSENCE, WHICH IS WHY IT NEEDED ITS OWN TEST. The two records used to be
+    /// the LAST thing in the member, behind the read-back that the sibling assertion above exercises - and
+    /// that read-back returns early. So a portal that had been committed, was reachable through its alias, and
+    /// whose administrator could sign in, produced NO audit record of any kind whenever the read-back came back
+    /// empty. Nothing failed loudly; the trail simply had a gap that is indistinguishable from the tenant never
+    /// having been provisioned, which is the reading an investigation would take.
+    /// </para>
+    /// <para>
+    /// The response is still a failure, and deliberately so: the caller asked for the tenant's representation
+    /// and did not get one. What changed is that the failure is now about the RESPONSE alone. Both facts the
+    /// records need - the tenant's key and the administrator's key - are in memory before the read-back is
+    /// attempted, so waiting for it bought nothing.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreatePortal_RecordsTheCreationEvenWhenTheTenantCannotBeReadBack()
+    {
+        Harness harness = Harness.Ready();
+        harness.EchoCreatedPortal = false;
+        harness.PortalRow = null;
+
+        Result<PortalDetailDto> outcome = await harness.Service
+            .CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue("the caller asked for a representation and did not receive one");
+        harness.OpenedTransactions.Should().ContainSingle().Which.RolledBack.Should().BeFalse(
+            "the tenant was committed before the read-back was attempted");
+
+        harness.AuditRecords.Select(record => record.EventName).Should().BeEquivalentTo(
+            [AuditEventNames.PortalCreated, AuditEventNames.HostAlert],
+            "the tenant exists, so the trail must say so; a failed response is not a failed provisioning");
+
+        harness.AuditRecords.Should().OnlyContain(record => record.Outcome == AuditOutcome.Succeeded);
     }
 
     /// <summary>
@@ -2339,6 +2449,35 @@ public class PortalServiceTests
         harness.UnitOfWork.Verify(
             unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    /// <summary>
+    /// A write the store refuses as a lost update is reported on the general update path as the same
+    /// conflict a stale concurrency token reports.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Asserted on both write paths rather than only one, because the whole point of sharing
+    /// <c>DescribeConcurrencyConflict</c> is that an operator meets the same sentence on whichever screen
+    /// they were using.
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortal_ReportsAStoreRefusedLostUpdateAsAConcurrencyConflict()
+    {
+        Harness harness = Harness.Ready();
+        harness.UnitOfWork
+            .Setup(unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(ConcurrencyConflictException.ForLostUpdate(null));
+
+        Result<PortalDetailDto?> outcome = await harness.Service.UpdatePortalAsync(
+            PortalId,
+            ValidUpdateRequest(),
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be("portal.concurrency_conflict");
+        harness.OpenedTransactions.Should().ContainSingle().Which.RolledBack.Should().BeTrue();
+        harness.InvalidatedPortalIds.Should().BeEmpty();
     }
 
     /// <summary>
@@ -3062,6 +3201,128 @@ public class PortalServiceTests
 
         harness.PortalRow!.PortalName.Should().Be(PortalName);
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// The settings route cannot be used to designate an account that belongs to another tenant.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The general update path has always refused this. This route did not, because the rule was typed on the
+    /// other route's concrete request and could not be called from here - so the same foreign identifier that
+    /// <c>PUT /portals/{id}</c> rejected was stored by <c>PUT /portals/{id}/settings</c>. The two must agree,
+    /// and the failure code must be the same one, or a caller could distinguish the routes by their refusals.
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortalSettings_RefusesAnAdministratorFromAnotherTenant()
+    {
+        Harness harness = Harness.Ready();
+        harness.ExistingMembership = null;
+        UpdatePortalSettingsRequest request = ValidSettingsUpdateRequest();
+        request.AdministratorId = 9_999;
+
+        Result<PortalSettingsDto?> outcome = await harness.Service.UpdatePortalSettingsAsync(
+            PortalId,
+            request,
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be("portal.administrator_invalid");
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+        harness.OpenedTransactions.Should().ContainSingle().Which.RolledBack.Should().BeTrue();
+        harness.InvalidatedPortalIds.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The settings route cannot be used to point a tenant's navigation at another tenant's page.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The page columns carry no foreign key in every supported schema, so nothing downstream would have
+    /// refused this: the identifier would simply have been stored, and the tenant's splash, home, login or
+    /// user page would resolve into another tenant's content.
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortalSettings_RefusesAReferencedPageOwnedByAnotherPortal()
+    {
+        Harness harness = Harness.Ready();
+        UpdatePortalSettingsRequest request = ValidSettingsUpdateRequest();
+        request.HomeTabId = 9_999;
+        harness.Portals
+            .Setup(portals => portals.TabBelongsToPortalAsync(
+                PortalId,
+                9_999,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        Result<PortalSettingsDto?> outcome = await harness.Service.UpdatePortalSettingsAsync(
+            PortalId,
+            request,
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be("portal.tab_reference_invalid");
+        outcome.Error.Message.Should().Contain(
+            nameof(UpdatePortalSettingsRequest.HomeTabId),
+            "the refused field is named from the shared interface, whose member names both requests share");
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+        harness.InvalidatedPortalIds.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Ownership is judged and the row is written inside one serialisable transaction, so a membership
+    /// cannot be withdrawn or a page removed between the check and the write.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the isolation the general update path already asks for. The two must match: a weaker level
+    /// here would make the settings route the cheaper way to win the same time-of-check/time-of-use race.
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortalSettings_JudgesOwnershipAndWritesInOneSerialisableTransaction()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<PortalSettingsDto?> outcome = await harness.Service.UpdatePortalSettingsAsync(
+            PortalId,
+            ValidSettingsUpdateRequest(),
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        RecordingTransactionScope scope = harness.OpenedTransactions.Should().ContainSingle().Subject;
+        scope.Isolation.Should().Be(TransactionIsolation.Serializable);
+        scope.Committed.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A write the store itself refuses as a lost update is reported as the same conflict a stale
+    /// concurrency token reports, and nothing is invalidated.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The token comparison closes the window a caller can OBSERVE; it cannot close the window between that
+    /// comparison and the write. Both outcomes are the same event from the caller's position - the record
+    /// moved, nothing was written - so reporting the store's refusal as an unexpected fault would tell the
+    /// caller the service failed when it had in fact protected them.
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortalSettings_ReportsAStoreRefusedLostUpdateAsAConcurrencyConflict()
+    {
+        Harness harness = Harness.Ready();
+        harness.UnitOfWork
+            .Setup(unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(ConcurrencyConflictException.ForLostUpdate(null));
+
+        Result<PortalSettingsDto?> outcome = await harness.Service.UpdatePortalSettingsAsync(
+            PortalId,
+            ValidSettingsUpdateRequest(),
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be("portal.concurrency_conflict");
+        harness.OpenedTransactions.Should().ContainSingle().Which.RolledBack.Should().BeTrue();
+        harness.InvalidatedPortalIds.Should().BeEmpty(
+            "nothing was stored, so no reader is holding a value this operation replaced");
     }
 
     /// <summary>

@@ -542,15 +542,27 @@ public static class AuthenticationExtensions
             ClockSkew = PermittedClockSkew,
 
             // The claim names are pinned to the ones the issuing service actually writes, because inbound
-            // claim mapping is switched off above and so nothing rewrites them on arrival. Roles are minted
-            // under the framework's own role claim, which is what makes a role requirement or IsInRole
-            // resolve. The caller's display name arrives as the registered unique-name claim, NOT under the
-            // framework's name claim - leaving this at its default would therefore leave the identity's Name
-            // permanently null, which is invisible in every test that only inspects claims directly.
+            // claim mapping is switched off above and so nothing rewrites them on arrival.
             //
-            // Neither value may be changed without changing the issuer to match. A disagreement here is not
-            // a compile error and not an exception; it silently turns every role test negative, which
-            // presents as a caller who plainly holds a role being refused.
+            // THE ISSUER MINTS NO ROLE CLAIM AND NO PERMISSION CLAIM. JwtTokenService writes exactly four:
+            // the account identifier, the token identifier, the tenant identifier and the issued-at instant.
+            // That is deliberate rather than an omission - a role or permission copied into a token is a
+            // snapshot that keeps asserting authority the store has since withdrawn, for as long as the token
+            // lives - so every authorisation decision in this application resolves the caller's authority from
+            // the store at the time of the request, through the permission evaluator and the tenant policies.
+            // An earlier revision of this comment stated the opposite, that roles were minted under the
+            // framework's role claim and that a disagreement here would "turn every role test negative"; no
+            // token this issuer produces carries a role, so that consequence cannot arise.
+            //
+            // RoleClaimType is nevertheless set, and is not decoration. It fixes the name a role requirement or
+            // IsInRole would read IF a role claim were ever present, so the framework's default mapping cannot
+            // quietly become the answer to that question later; and it documents, next to the claim set, that
+            // the role vocabulary is a deliberate blank rather than an unconsidered default.
+            //
+            // NameClaimType is load-bearing. The caller's identity arrives as the subject claim, NOT under the
+            // framework's name claim, so leaving this at its default would leave the identity's Name
+            // permanently null - which is invisible in every test that only inspects claims directly. It may
+            // not be changed without changing the issuer to match.
             NameClaimType = DnnClaimTypes.Subject,
             RoleClaimType = ClaimTypes.Role,
         };

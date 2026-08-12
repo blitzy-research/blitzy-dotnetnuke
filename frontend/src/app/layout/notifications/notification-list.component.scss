@@ -147,8 +147,19 @@
   //  Bounded on both axes. The inline bound keeps a long remote sentence from spanning a wide
   //  screen, and the block bound with scrolling keeps the stack inside the viewport however many
   //  entries the display ceiling admits.
-  inline-size: min(28rem, calc(100vw - var(--space-8)));
-  max-block-size: calc(100vh - var(--space-8));
+  //
+  //  ⚠ EVERY VALUE HERE RESOLVES TO A TOKEN, AND TWO OF THEM DID NOT. The inline bound repeated
+  //  `28rem` as a literal while `--notification-max-inline-size` already carried exactly that value
+  //  and the sibling rule below already consumed it, so one measurement had two spellings and only
+  //  one of them was in the vocabulary; and both viewport extents were spelled inline, where the
+  //  block extent already had `--size-viewport-block`. The inline counterpart is now declared beside
+  //  it. This region is positioned against the VIEWPORT rather than laid out in flow, which is why
+  //  it bounds itself against the window instead of against a parent's percentage.
+  inline-size: min(
+    var(--notification-max-inline-size),
+    calc(var(--size-viewport-inline) - var(--space-8))
+  );
+  max-block-size: calc(var(--size-viewport-block) - var(--space-8));
   overflow-y: auto;
 
   //  ⚠ THE REGION IS PRESENT AT ALL TIMES, so it must not intercept the pointer while it is empty
@@ -196,7 +207,7 @@
 // receives instead.
 .notification-list__item[data-severity='error'] {
   border-color: var(--color-danger);
-  color: var(--color-danger-text);
+  color: var(--color-danger);
 }
 
 // The refusal band: brand accent, secondary surface, inherited ink.

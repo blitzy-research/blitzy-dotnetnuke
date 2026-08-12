@@ -1,6 +1,9 @@
+using System.Data.Common;
 using System.Net.Sockets;
 using DnnMigration.Domain.Abstractions.Services;
 using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace DnnMigration.Infrastructure.Persistence;
 
@@ -101,24 +104,54 @@ internal sealed class SqlStoreFailureClassifier : IStoreFailureClassifier
     /// any of them.
     /// </para>
     /// </remarks>
-    public bool IsStoreUnavailable(Exception? exception)
+    public bool IsStoreUnavailable(Exception? exception) => Walk(exception, inStoreContext: false, depth: 0);
+
+    /// <summary>
+    /// Walks one exception chain, carrying whether a data-access frame has been seen above the current link.
+    /// </summary>
+    /// <param name="candidate">The link to examine, or <see langword="null"/> at the end of a chain.</param>
+    /// <param name="inStoreContext">
+    /// Whether a frame identifying this chain as a data-access failure has already been seen. Set by a
+    /// provider or mapper frame and never cleared, because a chain that passed through one IS a data-access
+    /// chain however deep the eventual cause sits.
+    /// </param>
+    /// <param name="depth">How many links have been followed, for the bound described on the interface.</param>
+    /// <returns><see langword="true"/> when the chain establishes an availability failure of the store.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE CONTEXT FLAG IS THE FIX FOR AN OVERBROAD CLASSIFICATION, and the defect it closes was reported
+    /// with its consequence measured. Bare <see cref="SocketException"/> and
+    /// <see cref="TimeoutException"/> links used to answer <see langword="true"/> on their own, with no
+    /// requirement that the chain have anything to do with the database - and both types are raised by
+    /// components that are not the database and not the path to it. The in-process cache raises a plain
+    /// <see cref="TimeoutException"/> when a value factory outruns its budget, so a CACHE defect was
+    /// reported to the caller as <c>503 Service Unavailable</c> with <c>Retry-After</c>, which invites a
+    /// retry of a request that will fail identically and hides the defect behind the retry.
+    /// </para>
+    /// <para>
+    /// What the flag requires is STRUCTURAL evidence rather than a type match: a frame from the database
+    /// client or from the object-relational mapper somewhere at or above the generic failure. A socket
+    /// failure inside a provider frame is the path to the store failing, which is exactly what this type
+    /// exists to recognise; the same socket failure with no such frame is somebody else's outbound call.
+    /// </para>
+    /// <para>
+    /// The flag is carried DOWN the chain and not up, which matches how these chains are actually built: the
+    /// mapper or the retry strategy wraps the provider failure, so the identifying frame is nearer the
+    /// surface than the cause. Aggregates are recursed into with the flag as it stands at that point, so one
+    /// branch's provider frame cannot lend context to a sibling branch.
+    /// </para>
+    /// </remarks>
+    private static bool Walk(Exception? candidate, bool inStoreContext, int depth)
     {
         const int maximumDepth = 32;
 
-        if (exception is null)
-        {
-            return false;
-        }
-
-        Exception? candidate = exception;
-
-        for (int depth = 0; candidate is not null && depth < maximumDepth; depth++)
+        while (candidate is not null && depth < maximumDepth)
         {
             if (candidate is AggregateException aggregate)
             {
                 foreach (Exception inner in aggregate.Flatten().InnerExceptions)
                 {
-                    if (IsStoreUnavailable(inner))
+                    if (Walk(inner, inStoreContext, depth + 1))
                     {
                         return true;
                     }
@@ -127,20 +160,51 @@ internal sealed class SqlStoreFailureClassifier : IStoreFailureClassifier
                 return false;
             }
 
-            if (DescribesUnavailability(candidate))
+            if (DescribesUnavailability(candidate, inStoreContext))
             {
                 return true;
             }
 
+            inStoreContext = inStoreContext || IdentifiesADataAccessFailure(candidate);
+
             candidate = candidate.InnerException;
+            depth++;
         }
 
         return false;
     }
 
+    /// <summary>
+    /// Reports whether one link identifies its chain as a data-access failure, without itself being an
+    /// availability condition.
+    /// </summary>
+    /// <param name="candidate">The link to test.</param>
+    /// <returns><see langword="true"/> when the link comes from the database client or the mapper.</returns>
+    /// <remarks>
+    /// <para>
+    /// <see cref="DbException"/> is the base of every provider fault, including
+    /// <see cref="SqlException"/>, so one test covers the client. <see cref="DbUpdateException"/> and
+    /// <see cref="RetryLimitExceededException"/> are the mapper's own wrappers around a failed flush and an
+    /// exhausted retry strategy, and both are routinely the outermost link of a genuine outage.
+    /// </para>
+    /// <para>
+    /// NONE OF THESE IS TREATED AS AN OUTAGE BY ITSELF, and that distinction is the whole point of a
+    /// separate method. A failed flush is not an availability condition by virtue of having failed - it is
+    /// just as likely to be a constraint violation, which has its own translation and its own status - so
+    /// these types only ADMIT the generic arms below for the chain they identify. The type this file
+    /// documents as never matched, the mapper, is still never matched.
+    /// </para>
+    /// </remarks>
+    private static bool IdentifiesADataAccessFailure(Exception candidate) =>
+        candidate is DbException or DbUpdateException or RetryLimitExceededException;
+
     /// <summary>Tests one link of an exception chain, without following it further.</summary>
     /// <param name="candidate">The link to test.</param>
-    /// <returns><see langword="true"/> when this link alone establishes an availability failure.</returns>
+    /// <param name="inStoreContext">
+    /// Whether a data-access frame has been seen at or above this link. The two generic arms below are
+    /// admitted only when it is <see langword="true"/>; see <see cref="Walk"/> for why.
+    /// </param>
+    /// <returns><see langword="true"/> when this link establishes an availability failure.</returns>
     /// <remarks>
     /// <para>
     /// The arms are ordered from the most specific to the most general, and each is here for a measured or
@@ -157,19 +221,25 @@ internal sealed class SqlStoreFailureClassifier : IStoreFailureClassifier
     /// <para>
     /// <see cref="SocketException"/> covers the path rather than the store: name resolution failing, a
     /// refused connection, a reset or an unreachable host. It appears as the cause of a client failure on
-    /// some platforms and standalone when a connection is torn down mid-stream.
+    /// some platforms and standalone when a connection is torn down mid-stream. IT QUALIFIES ONLY INSIDE A
+    /// DATA-ACCESS CHAIN, because a socket failure says nothing about which socket: without that condition
+    /// any outbound call's failure would be reported to a caller as a database outage.
     /// </para>
     /// <para>
-    /// <see cref="TimeoutException"/> is the framework-level timeout the client raises when it gives up
-    /// obtaining a connection from the pool, which is a saturation condition and not a defect.
+    /// <see cref="TimeoutException"/> is the framework-level timeout raised when a data-access operation
+    /// gives up, and it carries the SAME condition for the same reason - more sharply, in fact, because a
+    /// bare timeout is the least specific failure in the base class library. The in-process cache raises one
+    /// when a value factory outruns its budget, and classifying that as an outage answered a cache defect
+    /// with <c>503</c> and a retry hint.
     /// </para>
     /// <para>
     /// Nothing else qualifies. In particular no arm matches on a mapper type: a failed flush is not an
     /// availability condition by virtue of having failed, and if a store fault caused it, the fault is in
-    /// the chain and is found there.
+    /// the chain and is found there. A mapper frame supplies CONTEXT for the two generic arms and never an
+    /// answer of its own - see <see cref="IdentifiesADataAccessFailure"/>.
     /// </para>
     /// </remarks>
-    private static bool DescribesUnavailability(Exception candidate)
+    private static bool DescribesUnavailability(Exception candidate, bool inStoreContext)
     {
         switch (candidate)
         {
@@ -193,7 +263,7 @@ internal sealed class SqlStoreFailureClassifier : IStoreFailureClassifier
 
             case SocketException:
             case TimeoutException:
-                return true;
+                return inStoreContext;
 
             default:
                 return false;

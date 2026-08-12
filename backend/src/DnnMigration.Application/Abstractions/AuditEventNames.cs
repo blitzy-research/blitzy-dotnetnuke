@@ -28,18 +28,36 @@
 // is squarely in scope and is implemented by PortalService.CreatePortalAsync. The claim is corrected
 // rather than softened, and HostAlert is published below.
 //
-// MIGRATION: five further members of the enumeration are legacy events this migration CANNOT raise, and
-// they are named here so that their absence is a recorded decision rather than an oversight. TAB_CREATED
-// (ManageTabs.ascx.vb:L315), TAB_DELETED (RecycleBin.ascx.vb:L205), TAB_SENT_TO_RECYCLE_BIN
-// (TabController.vb:L840 and L952), TAB_RESTORED (RecycleBin.ascx.vb:L280) and MODULE_RESTORED
-// (RecycleBin.ascx.vb:L392) each describe an operation that has NO committed boundary in this solution to
-// raise it from: AAP 0.5.1.4 makes the page surface "deliberately narrow - GET /api/v1/portals/{id}/tabs
-// and GET/PUT /api/v1/tabs/{id} only", so a page can be read and updated but never created or removed,
-// and the recycle-bin surface those four events belong to is excluded by AAP 0.2.2.2 along with the rest
-// of the Web Forms administration pages. Publishing a name that nothing can raise would be a placeholder
-// - the same reason the paragraph above gives for the other omissions - so none of the five is published,
-// and each becomes raisable in the same change that adds the operation it describes. The decision is
-// recorded in MIGRATION_NOTES.md as well as here.
+// MIGRATION: CORRECTION, AND A LARGER ONE. An earlier revision listed FIVE members as unraisable by this
+// migration - TAB_CREATED, TAB_DELETED, TAB_SENT_TO_RECYCLE_BIN, TAB_RESTORED and MODULE_RESTORED -
+// reasoning that none had a committed boundary because AAP 0.5.1.4 makes the page surface "deliberately
+// narrow - GET /api/v1/portals/{id}/tabs and GET/PUT /api/v1/tabs/{id} only" and AAP 0.2.2.2 excludes the
+// recycle-bin pages the events were observed on. THREE OF THE FIVE WERE WRONG, and the error cost the
+// migration three legacy events.
+//
+// The mistake was to locate an operation by the legacy PAGE that performed it rather than by the state
+// TRANSITION it made. Recycling and restoring are not separate operations in this solution: both are
+// carried on the update request as the IsDeleted flag, which TabMappings.ApplyUpdate assigns and
+// ModuleMappings.ApplyUpdate assigns, so the narrow PUT surface IS the committed boundary for all three.
+// TAB_SENT_TO_RECYCLE_BIN (TabController.vb:L840 and L952), TAB_RESTORED (RecycleBin.ascx.vb:L280) and
+// MODULE_RESTORED (RecycleBin.ascx.vb:L392) are therefore published below and raised on the transition.
+// Until they were, a recycling and a restoration were both recorded as a plain update - so the two
+// questions an operator most often brings to a page trail, "who took this down" and "who put it back",
+// could not be answered from it at all.
+//
+// TWO OF THE FIVE WERE RIGHT and stay unpublished, for the reason originally given rather than a softened
+// one: TAB_CREATED (ManageTabs.ascx.vb:L315) and TAB_DELETED (RecycleBin.ascx.vb:L205) describe CREATION
+// and PERMANENT PURGE, and the narrow surface AAP 0.5.1.4 specifies has no POST and no DELETE for a page,
+// so neither transition can occur. Publishing a name nothing can raise would be a placeholder - the same
+// reason the paragraph above gives for the other omissions - and each becomes raisable in the same change
+// that adds the operation it describes. Both decisions are recorded in MIGRATION_NOTES.md as well as here.
+//
+// MIGRATION: MODULE_SENT_TO_RECYCLE_BIN is a member of the legacy enumeration and is deliberately NOT
+// published, on the strength of a measurement rather than an assumption: no legacy site in scope raises it.
+// The legacy recycle bin audited a module's soft-deletion as MODULE_DELETED (RecycleBin.ascx.vb:L156) and
+// reserved MODULE_SENT_TO_RECYCLE_BIN for a producer that does not appear in the surveyed trees. Recycling
+// a whole module therefore keeps MODULE_DELETED, exactly as the legacy code did, narrowed by its Operation
+// fact - and the asymmetry with the page vocabulary above is the legacy behaviour rather than an oversight.
 
 namespace DnnMigration.Application.Abstractions;
 
@@ -98,10 +116,65 @@ public static class AuditEventNames
     public const string PortalDeleted = "PORTAL_DELETED";
 
     /// <summary>A page was revised. Legacy <c>TAB_UPDATED</c>.</summary>
+    /// <remarks>
+    /// MIGRATION: NARROWED. This name once covered every page change, including a recycling and a
+    /// restoration; those now have <see cref="TabSentToRecycleBin"/> and <see cref="TabRestored"/>, so this
+    /// one means a REVISION - a change to the page's own properties or its place in the tree. A request that
+    /// repeats the delete flag a page already carries changes no state and is still a revision.
+    /// </remarks>
     public const string TabUpdated = "TAB_UPDATED";
 
+    /// <summary>A page was recycled. Legacy <c>TAB_SENT_TO_RECYCLE_BIN</c>.</summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: a verbatim member of the legacy enumeration, raised by <c>TabController.vb</c> at
+    /// <c>L840</c> and <c>L952</c>. It is raised here on the TRANSITION from present to recycled, which the
+    /// page update carries as its delete flag - so the committed boundary is the narrow <c>PUT</c> the page
+    /// surface exposes, not the excluded recycle-bin page the legacy call site happened to sit behind.
+    /// </para>
+    /// <para>
+    /// It exists because the alternative was a false economy. Recording a recycling as
+    /// <see cref="TabUpdated"/> is not untrue, but it is useless: the one question a page trail is asked
+    /// most - who took this page down, and when - cannot be answered by filtering a stream in which every
+    /// title change looks the same as a removal.
+    /// </para>
+    /// </remarks>
+    public const string TabSentToRecycleBin = "TAB_SENT_TO_RECYCLE_BIN";
+
+    /// <summary>A recycled page was restored. Legacy <c>TAB_RESTORED</c>.</summary>
+    /// <remarks>
+    /// MIGRATION: a verbatim member of the legacy enumeration, raised by <c>RecycleBin.ascx.vb:L280</c>, and
+    /// the counterpart of <see cref="TabSentToRecycleBin"/>. Raised on the transition from recycled to
+    /// present. Restoring a page makes it reachable again, which is a visibility change worth its own name
+    /// for the same reason the recycling is.
+    /// </remarks>
+    public const string TabRestored = "TAB_RESTORED";
+
     /// <summary>An account was granted a role. Legacy <c>USER_ROLE_CREATED</c>.</summary>
+    /// <remarks>
+    /// MIGRATION: NARROWED to an actual GRANT - a membership row that did not exist and now does. It once
+    /// also covered a renewal or a date revision of an existing membership, which
+    /// <see cref="UserRoleUpdated"/> now carries.
+    /// </remarks>
     public const string UserRoleCreated = "USER_ROLE_CREATED";
+
+    /// <summary>An existing role membership was renewed or its dates revised.</summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: NET-NEW, and the enumeration has no member to cite: the legacy enumeration declares
+    /// USER_ROLE_CREATED and USER_ROLE_DELETED and nothing between them, because the legacy assignment
+    /// screen recorded a renewal under the creation name (<c>RoleController.vb</c>). The name follows the
+    /// legacy register so it reads alongside its two siblings.
+    /// </para>
+    /// <para>
+    /// It exists because the shared name asserted something false. A renewal is not a grant: the member
+    /// already held the role, and recording it as a creation makes a trail in which the same account appears
+    /// to have been granted the same role repeatedly - so counting grants over-counts them, and finding when
+    /// access was FIRST given becomes impossible. The <c>Renewed</c> fact remains on the record, so a reader
+    /// filtering on either the name or the fact sees the same thing.
+    /// </para>
+    /// </remarks>
+    public const string UserRoleUpdated = "USER_ROLE_UPDATED";
 
     /// <summary>An account's role was withdrawn. Legacy <c>USER_ROLE_DELETED</c>.</summary>
     public const string UserRoleDeleted = "USER_ROLE_DELETED";
@@ -215,13 +288,49 @@ public static class AuditEventNames
 
     /// <summary>A module instance was removed. Legacy <c>MODULE_DELETED</c>.</summary>
     /// <remarks>
+    /// <para>
     /// MIGRATION: a verbatim member of the legacy enumeration, raised by the legacy recycle bin at
     /// <c>RecycleBin.ascx.vb:L156</c>. The recycle-bin surface itself is excluded, but the DELETION it
     /// audited is not: this solution removes a module through its own committed boundary, so the event has
-    /// a real producer and is published. The legacy soft-delete-then-purge distinction is not reproduced -
-    /// there is one removal operation, and one event for it.
+    /// a real producer and is published.
+    /// </para>
+    /// <para>
+    /// MIGRATION: NARROWED TO THE MODULE. It once also covered the removal of one PLACEMENT from one page,
+    /// after which the module itself still exists and is still placed elsewhere -
+    /// <see cref="ModulePlacementDeleted"/> now carries that. It covers a whole-module recycling, which
+    /// keeps this name because no legacy site in scope raises MODULE_SENT_TO_RECYCLE_BIN; the
+    /// <c>Operation</c> fact narrows it.
+    /// </para>
     /// </remarks>
     public const string ModuleDeleted = "MODULE_DELETED";
+
+    /// <summary>One placement of a module was removed from one page, leaving the module itself in place.</summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: NET-NEW, because the distinction is net-new. The legacy recycle bin removed modules, not
+    /// placements, so the enumeration has no member for a placement and none can be cited. The name follows
+    /// the legacy register so it reads alongside the other <c>MODULE_*</c> members.
+    /// </para>
+    /// <para>
+    /// It exists because <see cref="ModuleDeleted"/> asserted something false. Removing a named placement
+    /// hard-deletes one <c>TabModules</c> row; the module survives, its content survives, and every other
+    /// placement of it survives - so a trail claiming the module was deleted sent anyone investigating to
+    /// look for a module that is still there, and made a genuine module deletion indistinguishable from the
+    /// far more common act of taking a module off one page.
+    /// </para>
+    /// </remarks>
+    public const string ModulePlacementDeleted = "MODULE_PLACEMENT_DELETED";
+
+    /// <summary>A recycled module was restored. Legacy <c>MODULE_RESTORED</c>.</summary>
+    /// <remarks>
+    /// MIGRATION: a verbatim member of the legacy enumeration, raised by <c>RecycleBin.ascx.vb:L392</c>, and
+    /// the counterpart of a recycling recorded as <see cref="ModuleDeleted"/>. Raised on the TRANSITION from
+    /// recycled to present, which the module update carries as its delete flag - so the committed boundary is
+    /// the module <c>PUT</c>, not the excluded recycle-bin page the legacy call site sat behind. Without it, a
+    /// restoration was recorded as a plain update and a module reappearing on a live page left no trace of who
+    /// had brought it back.
+    /// </remarks>
+    public const string ModuleRestored = "MODULE_RESTORED";
 
     /// <summary>A module's content was exported.</summary>
     /// <remarks>

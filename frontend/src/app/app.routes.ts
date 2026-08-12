@@ -129,11 +129,14 @@ export function profileRemediationRoute(userId: number): string {
  *     redirect has always had.
  *   * A tenant administrator: {@link TENANT_LANDING_ROUTE}, the first rail entry their
  *     authority admits.
- *   * Any other signed-in account: their own account services, the same address
- *     `layout/shell/shell.component.ts` computes for the header's account affordance. The
- *     route declares `AccountOwner`, which the caller satisfies by construction because
- *     the identifier comes from their own identity, so this can never resolve to a screen
- *     they will be refused.
+ *   * Any other signed-in account: their own profile, the same address
+ *     `layout/shell/shell.component.ts` computes for the header's profile affordance. The
+ *     route declares `AccountOwnerOrPortalAdministrator`, whose first arm the caller
+ *     satisfies by construction because the identifier comes from their own identity, so
+ *     this can never resolve to a screen they will be refused. It used to be the account's
+ *     own SERVICES screen; that address is withdrawn with the twenty-sixth route it
+ *     belonged to, and the profile is the remaining screen a non-administrative account is
+ *     entitled to operate on its own behalf.
  *   * A held session whose identity has not resolved yet: {@link HOST_LANDING_ROUTE},
  *     which preserves the previous behaviour for the one window in which nothing better is
  *     knowable. The policy gate admits while the identity is unresolved — refusing there
@@ -211,7 +214,11 @@ export const rootLandingRedirect: RedirectFunction = () => {
     return TENANT_LANDING_ROUTE;
   }
 
-  return caller === null ? HOST_LANDING_ROUTE : `/users/${String(caller.userId)}/services`;
+  // The ordinary member's landing, and the ONE address in the closed route table a caller with no
+  // administrative authority is entitled to. `profileRemediationRoute` composes the same address
+  // for an outstanding profile advisory, and it is reused here rather than spelled a second time so
+  // the two cannot drift: an advisory-driven arrival and an ordinary one land on the same screen.
+  return caller === null ? HOST_LANDING_ROUTE : profileRemediationRoute(caller.userId);
 };
 
 /**
@@ -611,22 +618,22 @@ export const APP_ROUTES: Routes = [
      * situation: the component's default describes an empty result set, which is a
      * different thing from an address that resolves to no screen.
      *
-     * TWO KEYS, AND BOTH MATCH A DECLARED INPUT. That constraint is real - the binder
+     * ONE KEY, AND IT MATCHES A DECLARED INPUT. That constraint is real - the binder
      * "reports an unknown property" for a data key matching no input and then does
      * nothing, so a misspelled key buys a console error and no behaviour - which is
-     * why each key here must stay spelled exactly as its input is.
+     * why this key must stay spelled exactly as its input is.
      *
-     * MIGRATION: this note previously recorded `message` as the ONLY possible key, and
-     * concluded that the view had to keep the shared component's own heading because
-     * changing it "would mean editing a shared component that eight other screens rely
-     * on". The premise was right and the conclusion was avoidable. A review then
-     * measured the consequence precisely: this screen rendered NO level-one heading at
-     * all, because the shared component's heading is a level two - correct for the eight
-     * screens that pair it with a page header, and a broken outline for the one screen
-     * that is nothing else. The component now takes `standalone` to say which of those
-     * two it is, so the eight are untouched and this one is correct.
+     * MIGRATION: a second key, `standalone`, was declared here and is REMOVED. It was
+     * meant to raise the heading level of the shared empty state for the one screen that
+     * is nothing else, but `NotFoundComponent` - the component this route resolves to, and
+     * therefore the only one the binder can reach - declares no such input, so the key
+     * bought a development-mode console warning and no behaviour whatsoever. The outline
+     * it was written to fix is already correct without it: this screen composes
+     * `app-page-header`, which contributes the level-one heading a routed view owes the
+     * document, and the shared empty state's level two sits correctly beneath it. One
+     * page-level heading, and nothing dead in the route table.
      */
-    data: { message: NO_ROUTED_VIEW_MESSAGE, standalone: true },
+    data: { message: NO_ROUTED_VIEW_MESSAGE },
 
     /**
      * Rendered in the browser tab and announced by screen readers on navigation.

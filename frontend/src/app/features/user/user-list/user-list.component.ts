@@ -679,19 +679,6 @@ function searchParameters(search: UserSearch, axis: string): Params {
 }
 
 /**
- * Whether an address states a search at all, as opposed to leaving the choice to the tenant's policy.
- *
- * Either parameter is enough: `?searchby=all` carries no filter and `?filter=A` carries no axis, and both are
- * searches the operator asked for.
- *
- * @param address The route's query parameters.
- * @returns True when the address expresses a search of its own.
- */
-function addressStatesSearch(address: ParamMap): boolean {
-  return address.get(SEARCH_BY_PARAM) !== null || address.get(FILTER_PARAM) !== null;
-}
-
-/**
  * Writes a listing query back out as address parameters.
  *
  * @param query The query in force.
@@ -946,18 +933,94 @@ function isProfileValueAbsent(value: string | null): boolean {
 }
 
 /**
+ * Whether a stored value is a mailbox this screen is willing to build a `mailto:` target from.
+ *
+ * ⚠ MAJOR (CWE-20 improper input validation) — THIS GATE DID NOT EXIST, AND ITS ABSENCE WAS AN
+ * INJECTION. `dbo.Users.Email` is `[nvarchar] (256) NOT NULL` with no format constraint of any kind,
+ * and the legacy application applied none either: `AddUser` stored whatever the caller supplied, so
+ * the column holds arbitrary operator-supplied text on any installation with a history. The previous
+ * rule was "contains an `@`", and everything after that character went into the address verbatim.
+ *
+ * A `mailto:` address is not opaque text to a mail client. Everything after a `?` is a QUERY, and its
+ * `to`, `cc`, `bcc`, `subject` and `body` fields are honoured, so a stored value of
+ * `a@b.example?bcc=harvester@elsewhere.example&body=…` composed a message that silently copied a
+ * third party and pre-filled its own content. A `%0A` or a literal newline injects a HEADER. Two
+ * separators — `a@b.example,victim@elsewhere.example` — address two mailboxes from one link. In every
+ * case the operator sees the stored address in the cell and a different message in their mail client.
+ *
+ * The gate is deliberately CONSERVATIVE and structural rather than a full RFC 5322 grammar. It admits
+ * exactly one separator with a non-empty local part and a non-empty domain, refuses every character
+ * that carries meaning in a `mailto:` address or in a URL, and refuses whitespace and control
+ * characters outright. A stricter-than-the-column rule is the correct direction here: a refused value
+ * is still SHOWN, exactly as stored, so nothing is hidden from the operator — only the link is
+ * withheld, and a link a mail client would misread is worth less than no link.
+ *
+ * @param value The stored value, already known to be non-blank.
+ * @returns True when a `mailto:` target may be built from it.
+ */
+function isLinkableMailbox(value: string): boolean {
+  // One separator, and exactly one. Two mailboxes in one stored value is a real legacy shape and is
+  // precisely the case a lenient rule turns into a second recipient.
+  const separator: number = value.indexOf(MAILBOX_SEPARATOR);
+
+  if (separator <= 0 || separator !== value.lastIndexOf(MAILBOX_SEPARATOR)) {
+    return false;
+  }
+
+  if (separator === value.length - 1) {
+    return false;
+  }
+
+  // Everything that either carries meaning in a mailto address or terminates one. `?` opens the
+  // query; `&` and `=` are its field syntax; `,` and `;` separate recipients; `#` opens a fragment;
+  // `/` and `\` and `:` can restate a scheme; the quote and bracket family delimit display names and
+  // domain literals; `%` is percent-encoding, which is how a control character is smuggled in as
+  // text. Refused as a SET rather than escaped one by one, because escaping leaves the question of
+  // whether the escape was correct and refusing does not.
+  if (/[?&=,;#/\\:<>()[\]"'%\s]/.test(value)) {
+    return false;
+  }
+
+  // C0 controls and DEL. A newline or a carriage return in a mailto address injects a header, and the
+  // pattern above already refuses whitespace, but a control such as NUL or DEL is not whitespace.
+  for (const character of value) {
+    const code: number = character.codePointAt(0) ?? 0;
+
+    if (code <= 0x1f || code === 0x7f) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
  * Decides the electronic-mail cell for one address.
  *
- * Reproduces `HtmlUtils.FormatEmail` (`HtmlUtils.vb` L89-L102) branch for branch: a blank or
- * whitespace-only value yields nothing at all; a value carrying the mailbox separator yields
- * a linked address; anything else yields the value unchanged and unlinked. The blank test is
- * made on a TRIMMED COPY while the value displayed and linked is the original, exactly as the
- * legacy helper did — it tested `String.IsNullOrEmpty(Email.Trim)` and then concatenated the
- * untrimmed `Email`.
+ * Reproduces `HtmlUtils.FormatEmail` (`HtmlUtils.vb` L89-L102) branch for branch, with ONE deliberate
+ * narrowing: a blank or whitespace-only value yields nothing at all; a value that is a linkable
+ * mailbox yields a linked address; anything else yields the value unchanged and unlinked. The blank
+ * test is made on a TRIMMED COPY while the value displayed is the original, exactly as the legacy
+ * helper did — it tested `String.IsNullOrEmpty(Email.Trim)` and then concatenated the untrimmed
+ * `Email`.
  *
- * The target is assembled here rather than in the template so that no binding concatenates a
- * URL, and it is left UNENCODED because the legacy helper did not encode either; the
- * framework's URL sanitiser inspects it at the binding site.
+ * ⚠ MAJOR (CWE-20) — THE NARROWING IS THE FIX, AND IT MOVES NOTHING OUT OF SIGHT. The legacy test was
+ * "contains an `@`", which linked any stored value carrying one and passed everything after it into
+ * the target unexamined; see {@link isLinkableMailbox} for what that admitted. A value that fails the
+ * gate now takes the SAME arm a value with no separator always took: shown exactly as stored, with
+ * nothing to follow. So the set of values this screen DISPLAYS is unchanged and only the set it links
+ * is narrowed — which is the one behaviour a `mailto:` target can get wrong.
+ *
+ * The target is assembled here rather than in the template, so that no binding concatenates a URL, and
+ * it is then CHECKED rather than escaped. `encodeURIComponent` was tried and rejected: the gate already
+ * refuses every character it would escape except one — `+`, which is legal in a local part and carries
+ * meaning there, so escaping it would emit `grace%2Badmin@…` for a stored `grace+admin@…` and would
+ * change the address for any client that does not decode the escape. Percent-escaping a value that
+ * needs none is not a safety measure; it is a silent rewrite of what the operator stored.
+ *
+ * What replaces it is {@link isSafeMailtoTarget}, applied to the assembled target. That is a check on
+ * the OUTPUT rather than a second copy of the input rule, which is what makes it worth having: it holds
+ * whatever the gate above is later relaxed to admit, and whatever the assembly is later changed to do.
  *
  * @param value The stored address. Non-nullable on the row contract, because the column is
  * declared not-null with an empty-string default.
@@ -968,11 +1031,52 @@ function toEmailCell(value: string): UserEmailCell {
     return { text: '', mailto: null };
   }
 
-  if (value.includes(MAILBOX_SEPARATOR)) {
-    return { text: value, mailto: `${MAILTO_SCHEME}${value}` };
+  if (!isLinkableMailbox(value)) {
+    return { text: value, mailto: null };
   }
 
-  return { text: value, mailto: null };
+  const target = `${MAILTO_SCHEME}${value}`;
+
+  // The output check. Unreachable through the gate above, and deliberately not written as an assertion
+  // or an exception: a stored value can never be allowed to break the listing, so a target that cannot
+  // be shown to be safe simply is not offered and the value renders as text like any other.
+  if (!isSafeMailtoTarget(target)) {
+    return { text: value, mailto: null };
+  }
+
+  return { text: value, mailto: target };
+}
+
+/**
+ * Whether an assembled `mailto:` target addresses exactly one mailbox and states nothing else.
+ *
+ * ⚠ MAJOR (CWE-20) — THE OUTPUT CHECK, AND IT IS NOT A DUPLICATE OF THE INPUT GATE. The gate answers
+ * "may this stored value be linked at all"; this answers "does what I am about to emit say only what I
+ * meant". The two can diverge — a relaxed gate, an assembly that gains a parameter, a scheme constant
+ * that changes — and the whole class of defect this finding names is a target saying more than the
+ * characters on the screen. Checking the emitted string is what holds through any of those changes.
+ *
+ * @param target The assembled target.
+ * @returns True when the target is a single-mailbox `mailto:` address.
+ */
+function isSafeMailtoTarget(target: string): boolean {
+  if (!target.startsWith(MAILTO_SCHEME)) {
+    return false;
+  }
+
+  const mailbox: string = target.slice(MAILTO_SCHEME.length);
+
+  // Exactly one mailbox: one separator, with something on each side of it.
+  const parts: readonly string[] = mailbox.split(MAILBOX_SEPARATOR);
+
+  if (parts.length !== 2 || parts[0].length === 0 || parts[1].length === 0) {
+    return false;
+  }
+
+  // Nothing that opens a query, a fragment, a second recipient or an escape, and no whitespace or
+  // control character. Stated positively where it can be: only these characters may appear.
+  return /^[A-Za-z0-9!#$&'*+\-/=^_`{|}~.@]+$/.test(mailbox) === true
+    && /[?#,;%\s]/.test(mailbox) === false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1876,23 +1980,23 @@ export class UserListComponent implements OnInit {
    * and a policy that arrived on an earlier visit is still in the store and still being applied, so
    * a later failure of a REFRESH has degraded nothing and must say nothing.
    *
-   * ⚠ AN ABSENT POLICY COUNTS AS WELL AS A FAILED ONE, AND ONLY THIS SURFACE SAYS SO. The store
-   * deliberately sorts absence from failure: a tenant that has stored no policy is answered 404, which
-   * is a defined answer rather than a fault, so the store records it as UNCONFIGURED and publishes no
-   * failure - which is what stopped three working screens from carrying a "Not Found" banner, a support
-   * reference and a "Try again" button over a perfectly healthy listing. None of that is undone here.
-   * What this notice reports is narrower and is true in both cases: the columns and the page size on
-   * screen are this file's documented fallbacks rather than the tenant's choices. Reading only the
-   * failure slot made the quieter half - by far the more common one - silent again, which is the
-   * original defect in a quieter voice.
+   * ⚠ A TENANT THAT STORES NO POLICY IS NOT DEGRADED, and the distinction is the point of the first
+   * test below. The server answers such a tenant `200` with ITS OWN legacy defaults and marks the
+   * document `isStored: false`, so the columns and the page size on screen came from the server and
+   * are the values the legacy screens applied for the same tenant. Nothing was lost, so there is
+   * nothing to disclose here - the store publishes the provenance through
+   * `membershipSettingsUnconfigured` and the POLICY screen is where that is explained, because it is
+   * the only screen on which the distinction changes what an operator may do. Reporting it here as
+   * degradation would put a notice on a healthy listing, which is the defect this notice was added to
+   * fix, wearing the opposite sign.
+   *
+   * What remains, and is genuinely degradation, is a policy the client does not hold at all: a read
+   * that was REFUSED. Then these fallbacks are this file's own rather than the server's, and an
+   * operator whose tenant asked for fifty rows is looking at ten with no other indication.
    */
   protected readonly policyDegraded: Signal<boolean> = computed(() => {
     if (this.store.membershipSettings() !== null) {
       return false;
-    }
-
-    if (this.store.membershipSettingsUnconfigured()) {
-      return true;
     }
 
     const held: UserFailure | null = this.store.failure();

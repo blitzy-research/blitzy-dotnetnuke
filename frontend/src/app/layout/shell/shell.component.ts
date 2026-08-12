@@ -7,17 +7,12 @@ import {
   computed,
   inject,
   signal,
-  viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { NavigationEnd, Router, RouterOutlet } from '@angular/router';
 
 import { environment } from '../../../environments/environment';
 import { SIGN_IN_ROUTE as SHARED_SIGN_IN_ROUTE } from '../../core/config/app-routes.config';
-import {
-  activeRouteGuardsUnsavedChanges,
-  holdsUnsavedEdits,
-} from '../../core/guards/unsaved-changes.guard';
 import { AuthStore } from '../../core/state/auth.store';
 import { SessionLifecycleService } from '../../core/state/session-lifecycle.service';
 import { FooterComponent } from '../footer/footer.component';
@@ -36,6 +31,16 @@ import type { Signal } from '@angular/core';
  * element is worse than no skip link: it is announced, it is reachable, and
  * activating it does nothing.
  */
+/**
+ * The permission key that answers "may this caller edit content anywhere in the tenant".
+ *
+ * The server's own spelling, from the `PermissionKey` enumeration the API publishes as plain
+ * strings (`CurrentUserDto.Permissions`). Compared with exact equality by `Array.includes`, because
+ * the server compares keys exactly too - a case-folding client would report a capability the API
+ * does not recognise.
+ */
+const CONTENT_EDIT_PERMISSION_KEY = 'EDIT';
+
 const MAIN_REGION_ID = 'main-content';
 
 /**
@@ -424,86 +429,38 @@ export class ShellComponent {
       }
     });
 
-  /**
-   * The outlet every routed screen is mounted into.
+  /*
+   * ⚠ THE BROWSER'S OWN EXITS ARE STILL COVERED, AND THIS COMPONENT NO LONGER COVERS THEM. A
+   * reload, a tab close or a navigation to another address bypasses the router completely, so a
+   * route guard cannot see them and only the browser's own unload prompt can — runtime testing
+   * measured four edits across two tabs of the site-settings screen destroyed by exactly that,
+   * with `window.onbeforeunload` reading `null`, so the browser had not even been asked to help.
+   * That channel is now installed once by `UnsavedChangesTracker`, which is root-provided and
+   * therefore lives at least as long as this component did, and which every protected screen
+   * registers a dirty-state probe with.
    *
-   * Read for ONE purpose: to ask the screen currently on display whether it is holding edits
-   * nobody has saved, when the browser — not the router — is about to leave. Declared here
-   * because this component owns the outlet, and because it is the only part of the application
-   * guaranteed to be mounted for the whole of a session.
+   * ⚠ THIS COMPONENT USED TO INSTALL A SECOND `beforeunload` LISTENER OF ITS OWN, and removing it
+   * is a correction rather than a simplification. Two listeners answered one question from two
+   * different sources of truth — the tracker's registered probes, and a reflective sweep over
+   * whichever component the outlet had activated — so they could disagree, and the disagreement
+   * would surface as a screen that warns on a reload but not on a link click, or the reverse.
+   * The reflective half also carried a cost this component had no way to contain: it made
+   * `@angular/forms` reachable from the eager import graph, because this component and the guard
+   * it imported are both eager while every screen holding a form is lazily loaded.
    *
-   * `viewChild` rather than a constructor injection: the outlet is a child in this component's
-   * own template, so it does not exist until the view is created.
+   * ⚠ THE MISFIRE THE ROUTE-TABLE TEST USED TO PREVENT CANNOT ARISE UNDER REGISTRATION, which is
+   * why nothing replaces that test here. A listing's search box is a `FormGroup` as much as an
+   * edit form is, so a reflective sweep saw a typed filter term as unsaved work and had to be
+   * held back by reading `canDeactivate` off the active route. A probe is registered only by the
+   * fourteen components the eighteen protected routes name, and the four listings register none,
+   * so a typed filter term reaches no probe at all. `activeRouteGuardsUnsavedChanges` remains
+   * exported for the specification that walks the route table and proves that correspondence.
+   *
+   * ⚠ THE RELOAD CASE IS WORTH MORE ON THIS APPLICATION THAN ON MOST, which is why it is stated
+   * rather than assumed. The access token is held in memory only, so a reload does not merely
+   * discard the form — it ends the session outright and returns the operator to the sign-in
+   * screen. Two losses, one keystroke.
    */
-  private readonly outlet = viewChild(RouterOutlet);
-
-  constructor() {
-    /*
-     * ⚠ THE BROWSER'S OWN EXITS DO NOT REACH THE ROUTER, AND THEY ACCOUNTED FOR HALF THE
-     * MEASURED DATA LOSS. `core/guards/unsaved-changes.guard.ts` closes the in-application half —
-     * a link, a Cancel, the Back button — but a RELOAD, a tab close, or a navigation to another
-     * address entirely bypasses Angular completely. Runtime testing measured four edits across
-     * two tabs of the site-settings screen destroyed by exactly that, and recorded that
-     * `window.onbeforeunload` was `null`, so the browser had not even been asked to help.
-     *
-     * Registered here rather than in each screen because this component is mounted for the
-     * entire life of the application, so the listener is added once and removed once. The
-     * predicate is IMPORTED rather than restated: two definitions of "holding unsaved edits"
-     * would eventually disagree, and the disagreement would appear as a screen that warns when
-     * you click away but not when you reload.
-     *
-     * ⚠ THE RELOAD CASE IS ESPECIALLY WORTH GUARDING ON THIS APPLICATION, more so than on most.
-     * The access token is held in memory only, so a reload does not merely discard the form —
-     * it ends the session outright and returns the operator to the sign-in screen. Two losses,
-     * one keystroke, and previously no warning before either.
-     */
-    const warnBeforeUnload = (event: BeforeUnloadEvent): void => {
-      const outlet = this.outlet();
-
-      // `component` THROWS on an un-activated outlet, so `isActivated` is a precondition and not
-      // a tidiness check. During the first navigation, and while the shell is mounted over the
-      // sign-in screen, there may be nothing routed at all.
-      if (outlet === undefined || outlet.isActivated === false) {
-        return;
-      }
-
-      /*
-       * ⚠ ONLY THE SCREENS THE ROUTE TABLE PROTECTS, and asking the route table is what keeps
-       * this channel from misfiring. A listing's search box is a `FormGroup` as much as an edit
-       * form is, so typing a filter term marks it dirty — and without this test a reload of the
-       * portals list would warn about "unsaved changes" for a search the operator had typed and
-       * already seen applied. The route gate is declared on the nineteen form routes and on none
-       * of the four listings, so reading that declaration back gives both channels one answer.
-       */
-      if (activeRouteGuardsUnsavedChanges(this.router) === false) {
-        return;
-      }
-
-      if (holdsUnsavedEdits(outlet.component) === false) {
-        return;
-      }
-
-      /*
-       * `preventDefault()` is the standardised way to request the prompt; assigning to
-       * `returnValue` is the legacy form that browsers still honour, and both are performed
-       * because the specification and the shipped implementations do not fully agree on which is
-       * required. NO WORDING IS SUPPLIED: browsers have ignored author-supplied text for this
-       * prompt for years and substitute their own, so offering a sentence here would suggest a
-       * control the application does not have.
-       */
-      event.preventDefault();
-      event.returnValue = '';
-    };
-
-    window.addEventListener('beforeunload', warnBeforeUnload);
-
-    // A listener outliving the application would keep this closure — and through it the whole
-    // component — reachable. The shell is destroyed only when the application is, so this is a
-    // correctness statement rather than a practical leak.
-    this.destroyRef.onDestroy(() => {
-      window.removeEventListener('beforeunload', warnBeforeUnload);
-    });
-  }
 
   /**
    * The name the banner renders for the signed-in account, or `undefined` when no
@@ -564,20 +521,6 @@ export class ShellComponent {
   protected readonly signingOut: Signal<boolean> = this.authStore.isSigningOut;
 
   /**
-   * The address of the signed-in account's own member-services screen, or `undefined`.
-   *
-   * Handed to the banner so the operator can reach the subscriptions the account holds. Derived
-   * here rather than taken as an input because this component owns the session boundary and is the
-   * only place that knows which account is signed in; `undefined` when no identity has resolved,
-   * which is what the banner tests for before it renders the link at all.
-   */
-  protected readonly accountServicesLink: Signal<string | undefined> = computed(() => {
-    const user = this.authStore.currentUser();
-
-    return user === null ? undefined : `/users/${String(user.userId)}/services`;
-  });
-
-  /**
    * The address of the signed-in account's own profile screen, or `undefined`.
    *
    * MIGRATION: added with {@link accountPasswordLink} to close a navigational dead end. Both
@@ -587,9 +530,14 @@ export class ShellComponent {
    * `ManageUsers.ascx.vb:L439-L456` records that the legacy command bar offered both to an account
    * viewing itself, so this restores measured behaviour rather than inventing an affordance.
    *
-   * Derived here for the same reason the services address is: this component owns the session
-   * boundary and is the only place that knows which account is signed in. `undefined` until an
-   * identity resolves, which is what the band tests before rendering the link at all.
+   * Derived here rather than taken as an input because this component owns the session boundary and
+   * is the only place that knows which account is signed in. `undefined` until an identity
+   * resolves, which is what the band tests before rendering the link at all.
+   *
+   * ⚠ THERE IS NO THIRD ACCOUNT-SCOPED ADDRESS. A member-services address was composed here and is
+   * withdrawn with the route it named: the migration plan freezes the console at twenty-five
+   * screens and declares no such address, so this component was handing the banner a link to a
+   * screen the route table does not publish.
    */
   protected readonly accountProfileLink: Signal<string | undefined> = computed(() => {
     const user = this.authStore.currentUser();
@@ -627,6 +575,27 @@ export class ShellComponent {
    * `CurrentUserDto.IsPortalAdministrator`.
    */
   protected readonly administersTenant: Signal<boolean> = this.authStore.holdsPortalAdministration;
+
+  /**
+   * Whether the caller holds the `EDIT` permission key anywhere in the resolved tenant.
+   *
+   * The rail's third required authority fact, and the only ADVISORY one - the two above are the
+   * server's own verdicts, while this is derived from `CurrentUserDto.Permissions`, which the API
+   * publishes expressly so a console can hide affordances the caller cannot exercise and which
+   * unlocks nothing. It is what lets the rail offer module placement to a caller who administers
+   * nothing but holds `EDIT` on one of the tenant's pages: `PortalContentEditor` admits exactly
+   * that caller, and before this fact reached the chrome the only link to that screen sat inside a
+   * listing gated on tenant administration.
+   *
+   * ⚠ NOT THE WHOLE OF THAT POLICY'S QUESTION, WHICH IS WHY THE RAIL READS ALL THREE.
+   * `PermissionEvaluator.ListEffectivePortalPermissionKeysAsync` builds the key list from grant
+   * rows alone and has no administrator arm, so a tenant administrator whose pages carry no
+   * explicit grants holds the policy while this reports `false`. The rail combines the three
+   * rather than substituting this one for them.
+   */
+  protected readonly editsContent: Signal<boolean> = computed(() =>
+    this.authStore.permissions().includes(CONTENT_EDIT_PERMISSION_KEY),
+  );
 
   /**
    * The identifier the main region carries, and the target the skip link names.

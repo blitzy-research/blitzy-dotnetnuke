@@ -1957,6 +1957,61 @@ describe('RoleService', () => {
       }
     }
 
+    // ⚠ MINOR (client/API contract) — THE REVISION MARKER, REFUSED IN BOTH OF ITS MALFORMED SHAPES.
+    //
+    // `RoleDetailDto.ConcurrencyToken` is declared `public string ... = string.Empty` and is populated by
+    // `RoleMappings.ConcurrencyTokenFor`, so this read cannot legitimately omit the member or serve a null
+    // for it. The decoder widened it to `string | null` anyway, and the consequence was silent: the null
+    // decoded, flowed into the update contract - whose member IS nullable, because the server treats a
+    // marker-less write as an opt-out and applies it - and the optimistic check the marker exists to perform
+    // was skipped with nothing anywhere reporting that it had been. On this contract that overwrites the
+    // WHOLE role from a stale snapshot, so an edit to any of its thirteen members is lost silently.
+
+    it('refuses a role whose revision marker is absent', () => {
+      const malformed: Record<string, unknown> = { ...ROLE };
+
+      delete malformed['concurrencyToken'];
+
+      expectViolationAt(
+        service.getRole(ROLE_ID_ZERO),
+        ROLE_ZERO_URL,
+        envelope(malformed),
+        'response.data.concurrencyToken',
+      );
+    });
+
+    it('refuses a role whose revision marker arrived as null', () => {
+      // Asserted separately from absence, because tolerating THIS shape was the defect itself:
+      // `nullable(decodeString)` admitted exactly it, and nothing downstream could distinguish "no revision
+      // to check against" from "a role at an unknown revision".
+      expectViolationAt(
+        service.getRole(ROLE_ID_ZERO),
+        ROLE_ZERO_URL,
+        envelope({ ...ROLE, concurrencyToken: null }),
+        'response.data.concurrencyToken',
+      );
+    });
+
+    it('accepts the empty string as a revision marker, because that is the server unset spelling', () => {
+      // The counterpart, and it matters: the member is non-nullable on the server and its declared default
+      // IS the empty string, so an installation that has never derived a marker serves one. Refusing it
+      // would make a legitimate response undecodable, and substituting anything for it would fabricate a
+      // marker which, were it ever to match, would defeat the check it appears to satisfy.
+      const values: unknown[] = [];
+      const failures: unknown[] = [];
+
+      service.getRole(ROLE_ID_ZERO).subscribe({
+        next: (value: unknown) => values.push(value),
+        error: (failure: unknown) => failures.push(failure),
+      });
+
+      httpMock.expectOne(ROLE_ZERO_URL).flush(envelope({ ...ROLE, concurrencyToken: '' }));
+
+      expect(failures).toEqual([]);
+      // The service answers the single-payload ENVELOPE, so the role is read off its `data` member.
+      expect(values).toEqual([envelope({ ...ROLE, concurrencyToken: '' })]);
+    });
+
     it('refuses a billing frequency spelled as a word', () => {
       expectViolationAt(
         service.getRole(ROLE_ID_ZERO),

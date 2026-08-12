@@ -393,9 +393,11 @@ const RESET_PASSWORD_REQUEST: ChangePasswordRequest = {
  * collision they illustrate - zero and minus one carrying different meanings, never
  * coalesced - is asserted through the numeric members that do exist.
  */
-const ACCOUNT_POLICY_BODY: MembershipSettings = {
+const STORED_ACCOUNT_POLICY_BODY: MembershipSettings = {
   // ⚠ #5/#6 — the flag that distinguishes a stored policy from the defaults that stand in for
-  // one. True here because this fixture stands for a policy a tenant really saved.
+  // one. True here because this fixture stands for a policy a tenant really saved. The unstored
+  // counterpart is {@link UNSTORED_ACCOUNT_POLICY_BODY}, and BOTH exist because a single fixture
+  // hard-coding one value structurally prevents the other branch from ever being covered.
   isStored: true,
   columnFirstName: false,
   columnLastName: false,
@@ -423,13 +425,57 @@ const ACCOUNT_POLICY_BODY: MembershipSettings = {
 };
 
 /**
+ * The policy a tenant with NO SETTINGS SOURCE is answered with: the platform defaults, marked as
+ * defaults.
+ *
+ * ⚠ #5/#6 — THE BRANCH A SINGLE `isStored: true` FIXTURE MADE UNTESTABLE. The server answers a
+ * tenant that holds no "User Accounts" module instance `200` with the measured legacy defaults and
+ * `isStored: false`; it does NOT answer `404`, and it has not since the read stopped reporting
+ * absence on the status line. The backend authority for the pair is
+ * `backend/tests/DnnMigration.IntegrationTests/Api/UserApiTests.cs`
+ * `MembershipSettings_WithoutAUserAccountsModule_ReadsDefaultsAndRefusesTheWrite`, which asserts the
+ * `200` with `isStored == false` on the read and the `409` on the write for the same address.
+ *
+ * The values are the ones `Library/Components/Users/UserModuleBase.vb` L98-L190 applied for an absent
+ * key, so this fixture is what a real unstored tenant receives rather than a convenient stand-in: the
+ * display-name column shown, the electronic-mail column hidden, ten records a page, and no landing
+ * page selected for any of the three outcomes.
+ */
+const UNSTORED_ACCOUNT_POLICY_BODY: MembershipSettings = {
+  isStored: false,
+  columnFirstName: false,
+  columnLastName: false,
+  columnDisplayName: true,
+  columnAddress: true,
+  columnTelephone: true,
+  columnEmail: false,
+  columnCreatedDate: true,
+  columnLastLogin: false,
+  columnAuthorized: true,
+  displayMode: 2,
+  displaySuppressPager: false,
+  recordsPerPage: 10,
+  profileDefaultVisibility: 2,
+  profileDisplayVisibility: true,
+  profileManageServices: true,
+  redirectAfterLogin: null,
+  redirectAfterRegistration: null,
+  redirectAfterLogout: null,
+  securityEmailValidation: '\\b[a-zA-Z0-9._%\\-+\']+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,4}\\b',
+  securityRequireValidProfile: false,
+  securityRequireValidProfileAtLogin: true,
+  securityUsersControl: 1,
+  securityDisplayNameFormat: '',
+};
+
+/**
  * The same policy with the two collision values EXCHANGED.
  *
  * Sending zero where the first fixture sent minus one, and minus one where it sent zero,
  * is what distinguishes "both values survive" from "one value happens to survive twice".
  */
-const ACCOUNT_POLICY_BODY_EXCHANGED: MembershipSettings = {
-  ...ACCOUNT_POLICY_BODY,
+const STORED_ACCOUNT_POLICY_BODY_EXCHANGED: MembershipSettings = {
+  ...STORED_ACCOUNT_POLICY_BODY,
   recordsPerPage: -1,
   redirectAfterLogin: 0,
   redirectAfterLogout: -1,
@@ -1398,19 +1444,58 @@ describe('UserService', () => {
       expectNoInterceptorHeaders(request);
 
       request.flush({
-        data: ACCOUNT_POLICY_BODY,
+        data: STORED_ACCOUNT_POLICY_BODY,
         meta: null,
       } satisfies ApiResponse<MembershipSettings>);
 
-      expect(observed.values).toEqual([ACCOUNT_POLICY_BODY]);
+      expect(observed.values).toEqual([STORED_ACCOUNT_POLICY_BODY]);
       expect(observed.completions.length).toBe(1);
     });
 
-    it('reports an unresolvable tenant policy as a 404, not as a null payload', () => {
-      // The policy read is a single-resource read like any other, so `ApiResults.Complete<T>`
-      // turns a value-free success into a `404`. The distinction matters to the screen: a
-      // policy whose members are all at their defaults is a legitimate `200`, and a `404` means
-      // there is no tenant to read a policy for at all.
+    it('delivers the defaults a tenant with no settings source is answered with, as a 200', () => {
+      /*
+       * ⚠ #5/#6 — THE ABSENCE OF A STORE ARRIVES INSIDE A SUCCESSFUL DOCUMENT, NOT ON THE STATUS
+       * LINE, and this is the fact the frontend fixtures used to contradict. The backend authority is
+       * `UserApiTests.MembershipSettings_WithoutAUserAccountsModule_ReadsDefaultsAndRefusesTheWrite`:
+       * the read answers `200` carrying the measured legacy defaults with `isStored: false`, and the
+       * write for the same address answers `409`. Nothing about this outcome is a failure, so the
+       * observable emits a value and completes.
+       *
+       * MIGRATION: defaults are the behaviour-preserving answer.
+       * `Library/Components/Users/UserModuleBase.vb` L94-L194 applied a measured default for every
+       * key it could not read, so a tenant without the account module still saw values; and
+       * `Library/Components/Users/UserController.vb` L656-L671 assigned its result only inside a
+       * not-nothing guard, so such a tenant received `Nothing` with no error whatsoever.
+       */
+      const observed = observe(service.getMembershipSettings());
+
+      const request = expectRequest('GET', ACCOUNT_POLICY);
+
+      request.flush({
+        data: UNSTORED_ACCOUNT_POLICY_BODY,
+        meta: null,
+      } satisfies ApiResponse<MembershipSettings>);
+
+      expect(observed.failures).withContext('an unstored policy is not a failure').toEqual([]);
+      expect(observed.values).toEqual([UNSTORED_ACCOUNT_POLICY_BODY]);
+      expect(observed.completions.length).toBe(1);
+      // Decoded rather than defaulted: the member has to survive as `false` and not be coalesced
+      // into the `true` every other fixture in this file carries.
+      expect(observed.values[0].isStored).toBeFalse();
+      expect(observed.values[0].recordsPerPage)
+        .withContext('the measured legacy default for an absent key')
+        .toBe(10);
+    });
+
+    it('reports a refused policy read as the failure it is', () => {
+      /*
+       * ⚠ RETAINED FOR A GENUINELY UNRESOLVED RESOURCE ONLY. A `404` on this address no longer means
+       * "this tenant stores no policy" - that answer is the `200` above - so nothing about this status
+       * is an ordinary outcome any more and it reaches the caller as a failure like any other read's.
+       * The status is exercised here rather than dropped because an intermediary, a withdrawn route or
+       * a mis-versioned prefix can all still produce one, and a client that treated it as an absence
+       * would present a fault as a configuration state.
+       */
       const observed = observe(service.getMembershipSettings());
 
       const request = expectRequest('GET', ACCOUNT_POLICY);
@@ -1431,21 +1516,21 @@ describe('UserService', () => {
 
   describe('updateMembershipSettings', () => {
     it('replaces the whole multi-member policy with nothing omitted for reading as empty', () => {
-      const observed = observe(service.updateMembershipSettings(ACCOUNT_POLICY_BODY));
+      const observed = observe(service.updateMembershipSettings(STORED_ACCOUNT_POLICY_BODY));
 
       const request = expectRequest('PUT', ACCOUNT_POLICY);
       const body: unknown = request.request.body;
 
       expect(body)
         .withContext('nineteen of the twenty-four members are falsy and all must survive')
-        .toEqual(ACCOUNT_POLICY_BODY);
+        .toEqual(STORED_ACCOUNT_POLICY_BODY);
       // ⚠ #5/#6 — TWENTY-FOUR, not twenty-three. `isStored` joined the contract so a tenant with
       // no stored policy can be answered 200 with the legacy defaults instead of 404, and it is
       // ACCEPTED BACK on the write because the API binds request bodies with unmapped-member
       // handling set to disallow - a member present on the read and absent from the write would
       // make every save 400. The count is asserted rather than left implicit precisely so that a
       // member joining or leaving the contract has to be acknowledged here.
-      expect(Object.keys(ACCOUNT_POLICY_BODY).length).toBe(24);
+      expect(Object.keys(STORED_ACCOUNT_POLICY_BODY).length).toBe(24);
       expectNoInterceptorHeaders(request);
 
       request.flush(ACCOUNT_POLICY_UPDATE_ENVELOPE);
@@ -1468,7 +1553,7 @@ describe('UserService', () => {
       // be coalesced: `Null.vb` L41-L45 makes minus one the marker for a missing integer,
       // yet minus one and zero are both real values on this contract. Sending each in
       // turn, and then exchanging them, is what proves nothing is being defaulted.
-      observe(service.updateMembershipSettings(ACCOUNT_POLICY_BODY));
+      observe(service.updateMembershipSettings(STORED_ACCOUNT_POLICY_BODY));
 
       const first = expectRequest('PUT', ACCOUNT_POLICY);
       expect(first.request.body).toEqual(
@@ -1480,7 +1565,7 @@ describe('UserService', () => {
       );
       first.flush(ACCOUNT_POLICY_UPDATE_ENVELOPE);
 
-      observe(service.updateMembershipSettings(ACCOUNT_POLICY_BODY_EXCHANGED));
+      observe(service.updateMembershipSettings(STORED_ACCOUNT_POLICY_BODY_EXCHANGED));
 
       const second = expectRequest('PUT', ACCOUNT_POLICY);
       expect(second.request.body).toEqual(
@@ -1496,7 +1581,7 @@ describe('UserService', () => {
     it('keeps a null landing page distinct from a zero one', () => {
       // A null means "use the default" and a zero names a page. Coalescing either into
       // the other changes the instruction the server receives.
-      observe(service.updateMembershipSettings(ACCOUNT_POLICY_BODY));
+      observe(service.updateMembershipSettings(STORED_ACCOUNT_POLICY_BODY));
 
       const request = expectRequest('PUT', ACCOUNT_POLICY);
       expect(request.request.body).toEqual(
@@ -1514,7 +1599,7 @@ describe('UserService', () => {
       // initialises its query string from that marker. An empty string is therefore what
       // the legacy application produced when it had nothing to say, and converting it to
       // a null on the way out would change the value the server stores.
-      observe(service.updateMembershipSettings(ACCOUNT_POLICY_BODY));
+      observe(service.updateMembershipSettings(STORED_ACCOUNT_POLICY_BODY));
 
       const request = expectRequest('PUT', ACCOUNT_POLICY);
       expect(request.request.body).toEqual(
@@ -2556,7 +2641,7 @@ describe('UserService', () => {
         method: 'GET',
         path: ACCOUNT_POLICY,
         status: 200,
-        body: { data: ACCOUNT_POLICY_BODY, meta: null },
+        body: { data: STORED_ACCOUNT_POLICY_BODY, meta: null },
         invoke: () => service.getMembershipSettings(),
       },
       {
@@ -2658,7 +2743,7 @@ describe('UserService', () => {
         path: ACCOUNT_POLICY,
         status: 200,
         body: ACCOUNT_POLICY_UPDATE_ENVELOPE,
-        invoke: () => service.updateMembershipSettings(ACCOUNT_POLICY_BODY),
+        invoke: () => service.updateMembershipSettings(STORED_ACCOUNT_POLICY_BODY),
       },
       {
         method: 'DELETE',
@@ -2826,6 +2911,7 @@ describe('UserService', () => {
       'getProfile',
       'getProfileDefinition',
       'list',
+      'listChoices',
       'listMemberServices',
       'listProfileDefinitions',
       'passwordReset',
@@ -2841,13 +2927,34 @@ describe('UserService', () => {
       'updateProfileDefinition',
     ];
 
-    it('exposes exactly twenty-four methods and not one more', () => {
+    it('exposes exactly twenty-five methods and not one more', () => {
       const actual: readonly string[] = Object.getOwnPropertyNames(UserService.prototype).sort();
 
       expect(actual)
         .withContext('a method added without a specification fails here first')
         .toEqual([...PROTOTYPE_MEMBERS]);
-      expect(actual.filter((name) => name !== 'constructor').length).toBe(24);
+      expect(actual.filter((name) => name !== 'constructor').length).toBe(25);
+    });
+
+    it('reads an account picker through its own method, not through a mode of the listing', () => {
+      // ⚠ TWENTY-FOUR BECAME TWENTY-FIVE FOR A REASON WORTH STATING AT THE SURFACE. A performance
+      // and privacy review measured the role-assignment screen filling its account drop-down — and
+      // its account-count probe — from `list`, whose row carries a postal address, a telephone
+      // number, an electronic-mail address, a creation instant, a last-login instant and four status
+      // flags. All of it crossed the wire so that a key and two captions could be rendered, on a
+      // screen permitted to enumerate a tenant of up to a thousand accounts.
+      //
+      // The remedy is a METHOD rather than an argument, and that is the load-bearing part. A `slim`
+      // flag on `list` would let one call site widen the payload for every other, and the widening
+      // would compile. Two methods, two return types, and a caller that needs a grid row has to say
+      // so.
+      expect(PROTOTYPE_MEMBERS).toContain('listChoices');
+
+      for (const forbidden of ['listSlim', 'listMinimal', 'listNames', 'listForPicker']) {
+        expect(PROTOTYPE_MEMBERS)
+          .withContext(`${forbidden} must not exist; the picker's method is listChoices`)
+          .not.toContain(forbidden);
+      }
     });
 
     it('exposes no reordering helper, because a position is a field on a replacement', () => {
@@ -3103,7 +3210,7 @@ describe('UserService', () => {
       expectViolationAt(
         service.getMembershipSettings(),
         ACCOUNT_POLICY,
-        { data: { ...ACCOUNT_POLICY_BODY, redirectAfterLogin: '5' }, meta: null },
+        { data: { ...STORED_ACCOUNT_POLICY_BODY, redirectAfterLogin: '5' }, meta: null },
         'response.data.redirectAfterLogin',
       );
     });
@@ -3114,7 +3221,7 @@ describe('UserService', () => {
       // `undefined`, and the screen would then report "no accounts were rewritten" when what
       // actually happened is that it cannot tell. Refusing the shape says so.
       expectViolationAt(
-        service.updateMembershipSettings(ACCOUNT_POLICY_BODY),
+        service.updateMembershipSettings(STORED_ACCOUNT_POLICY_BODY),
         ACCOUNT_POLICY,
         { data: { displayNameFormatChanged: true }, meta: null },
         'response.data.displayNamesRewritten',
@@ -3123,7 +3230,7 @@ describe('UserService', () => {
 
     it('refuses a policy-write report whose rewrite count arrived as text', () => {
       expectViolationAt(
-        service.updateMembershipSettings(ACCOUNT_POLICY_BODY),
+        service.updateMembershipSettings(STORED_ACCOUNT_POLICY_BODY),
         ACCOUNT_POLICY,
         { data: { displayNameFormatChanged: false, displayNamesRewritten: '3' }, meta: null },
         'response.data.displayNamesRewritten',
@@ -3159,7 +3266,7 @@ describe('UserService', () => {
 
       httpMock
         .expectOne(ACCOUNT_POLICY)
-        .flush({ data: { ...ACCOUNT_POLICY_BODY, redirectAfterLogin: 0 }, meta: null });
+        .flush({ data: { ...STORED_ACCOUNT_POLICY_BODY, redirectAfterLogin: 0 }, meta: null });
 
       expect(values.length).toBe(1);
     });
@@ -3276,7 +3383,7 @@ describe('UserService', () => {
       service.unlock(1).subscribe(swallow);
       service.requirePasswordChange(1).subscribe(swallow);
       service.getMembershipSettings().subscribe(swallow);
-      service.updateMembershipSettings(ACCOUNT_POLICY_BODY).subscribe(swallow);
+      service.updateMembershipSettings(STORED_ACCOUNT_POLICY_BODY).subscribe(swallow);
       service.listProfileDefinitions().subscribe(swallow);
       service.getProfileDefinition(0).subscribe(swallow);
       service.deleteProfileDefinition(0).subscribe(swallow);

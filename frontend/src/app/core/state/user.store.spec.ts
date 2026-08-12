@@ -423,10 +423,11 @@ const detailFixture = (overrides: Partial<UserDetail> = {}): UserDetail => ({
  * to a value that is NOT the shared fallback, so a specification that forgot to
  * override it would still not accidentally agree with a hard-coded constant.
  */
-const settingsFixture = (overrides: Partial<MembershipSettings> = {}): MembershipSettings => ({
+const storedSettingsFixture = (overrides: Partial<MembershipSettings> = {}): MembershipSettings => ({
   // ⚠ #5/#6 — stated rather than left to the override, so a specification that says nothing about
-  // provenance still receives a policy that claims to be stored. A specification that cares tests
-  // both values explicitly.
+  // provenance still receives a policy that claims to be stored. The unstored counterpart is
+  // {@link unstoredSettingsFixture}, and both exist as NAMED builders because a single fixture that
+  // hard-coded one value structurally prevented the other branch from ever being covered.
   isStored: true,
   columnFirstName: true,
   columnLastName: true,
@@ -453,6 +454,52 @@ const settingsFixture = (overrides: Partial<MembershipSettings> = {}): Membershi
   securityDisplayNameFormat: '[FIRSTNAME] [LASTNAME]',
   ...overrides,
 });
+
+/**
+ * The policy a tenant with NO SETTINGS SOURCE is answered with.
+ *
+ * ⚠ #5/#6 — A SUCCESSFUL DOCUMENT THAT REPORTS THE ABSENCE OF A STORE, which is the shape the store
+ * under test has to read provenance from. The server answers a portal holding no "User Accounts"
+ * module instance `200` with the measured legacy defaults and `isStored: false`; the write for the
+ * same address answers `409`. The backend authority for the pair is
+ * `backend/tests/DnnMigration.IntegrationTests/Api/UserApiTests.cs`
+ * `MembershipSettings_WithoutAUserAccountsModule_ReadsDefaultsAndRefusesTheWrite`.
+ *
+ * The values are the legacy defaults from `Library/Components/Users/UserModuleBase.vb` L98-L190
+ * rather than the sibling builder's deliberately-distinctive ones, because that is what an unstored
+ * tenant really receives - ten records a page in particular, which is the value the listing then
+ * opens at.
+ */
+const unstoredSettingsFixture = (
+  overrides: Partial<MembershipSettings> = {},
+): MembershipSettings =>
+  storedSettingsFixture({
+    isStored: false,
+    columnFirstName: false,
+    columnLastName: false,
+    columnDisplayName: true,
+    columnAddress: true,
+    columnTelephone: true,
+    columnEmail: false,
+    columnCreatedDate: true,
+    columnLastLogin: false,
+    columnAuthorized: true,
+    // The legacy default for `Display_Mode` (`UserModuleBase.vb` L126-L130) is the NO-QUERY mode,
+    // which is the store's `DISPLAY_MODE_NONE`. Written as the literal the wire carries rather than
+    // borrowed from the profile-visibility vocabulary, which happens to share the number and means
+    // something entirely unrelated.
+    displayMode: 2,
+    recordsPerPage: 10,
+    profileDefaultVisibility: PROFILE_VISIBILITY.adminOnly,
+    profileDisplayVisibility: true,
+    profileManageServices: true,
+    redirectAfterLogin: null,
+    redirectAfterRegistration: null,
+    redirectAfterLogout: null,
+    securityRequireValidProfileAtLogin: true,
+    securityDisplayNameFormat: '',
+    ...overrides,
+  });
 
 /**
  * One profile declaration.
@@ -860,7 +907,7 @@ describe('UserStore', () => {
    */
   const openListingAtPageSize = (recordsPerPage: number): void => {
     store.initialise();
-    expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ recordsPerPage })));
+    expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ recordsPerPage })));
     expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture()]));
   };
 
@@ -1049,11 +1096,11 @@ describe('UserStore', () => {
       openListingAtPageSize(25);
 
       store.saveMembershipSettings(
-        settingsFixture({ recordsPerPage: 25, displaySuppressPager: true }),
+        storedSettingsFixture({ recordsPerPage: 25, displaySuppressPager: true }),
       );
       expectRequest('PUT', SETTINGS_URL).flush(settingsWriteEnvelope());
       expectRequest('GET', SETTINGS_URL).flush(
-        envelope(settingsFixture({ recordsPerPage: 25, displaySuppressPager: true })),
+        envelope(storedSettingsFixture({ recordsPerPage: 25, displaySuppressPager: true })),
       );
       expectRequest('GET', USERS_URL).flush(
         pageFixture([listItemFixture()], { pageSize: 25, totalCount: 4 }),
@@ -1084,7 +1131,7 @@ describe('UserStore', () => {
 
       httpMock.expectNone((request) => request.url === USERS_URL);
 
-      settings.flush(envelope(settingsFixture({ recordsPerPage: 25 })));
+      settings.flush(envelope(storedSettingsFixture({ recordsPerPage: 25 })));
 
       const listing = expectRequest('GET', USERS_URL);
 
@@ -1099,7 +1146,7 @@ describe('UserStore', () => {
 
     it('requests the page size the account policy declared, not a hard-coded 10', () => {
       store.initialise();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ recordsPerPage: 25 })));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ recordsPerPage: 25 })));
 
       const request = expectRequest('GET', USERS_URL);
 
@@ -1119,7 +1166,7 @@ describe('UserStore', () => {
       // The second size is what separates reading the value from pattern-matching one
       // particular number.
       store.initialise();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ recordsPerPage: 50 })));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ recordsPerPage: 50 })));
 
       const request = expectRequest('GET', USERS_URL);
 
@@ -1173,7 +1220,7 @@ describe('UserStore', () => {
       // Substituting a different size here would hide a misconfiguration; the legacy
       // screen passed its setting on unchecked in exactly the same way.
       store.initialise();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ recordsPerPage: 500 })));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ recordsPerPage: 500 })));
 
       const request = expectRequest('GET', USERS_URL);
 
@@ -1184,7 +1231,7 @@ describe('UserStore', () => {
 
     it('reports the size the server applied separately from the size it asked for', () => {
       store.initialise();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ recordsPerPage: 25 })));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ recordsPerPage: 25 })));
       expectRequest('GET', USERS_URL).flush(
         pageFixture([listItemFixture()], { pageSize: 20, totalCount: 40 }),
       );
@@ -1200,13 +1247,13 @@ describe('UserStore', () => {
     it('re-requests the listing after the policy is written, at the new size', () => {
       openListingAtPageSize(25);
 
-      store.saveMembershipSettings(settingsFixture({ recordsPerPage: 50 }));
+      store.saveMembershipSettings(storedSettingsFixture({ recordsPerPage: 50 }));
 
       const write = expectRequest('PUT', SETTINGS_URL);
-      expect(write.request.body).toEqual(settingsFixture({ recordsPerPage: 50 }));
+      expect(write.request.body).toEqual(storedSettingsFixture({ recordsPerPage: 50 }));
       write.flush(settingsWriteEnvelope());
 
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ recordsPerPage: 50 })));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ recordsPerPage: 50 })));
 
       const request = expectRequest('GET', USERS_URL);
 
@@ -1233,13 +1280,13 @@ describe('UserStore', () => {
         .withContext('nothing has been written yet')
         .toBeNull();
 
-      store.saveMembershipSettings(settingsFixture({ securityDisplayNameFormat: '[LASTNAME]' }));
+      store.saveMembershipSettings(storedSettingsFixture({ securityDisplayNameFormat: '[LASTNAME]' }));
 
       expectRequest('PUT', SETTINGS_URL).flush(
         settingsWriteEnvelope({ displayNameFormatChanged: true, displayNamesRewritten: 12 }),
       );
       expectRequest('GET', SETTINGS_URL).flush(
-        envelope(settingsFixture({ securityDisplayNameFormat: '[LASTNAME]' })),
+        envelope(storedSettingsFixture({ securityDisplayNameFormat: '[LASTNAME]' })),
       );
       expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture()], { pageSize: 25 }));
 
@@ -1261,11 +1308,11 @@ describe('UserStore', () => {
       // needed to happen" indistinguishable.
       openListingAtPageSize(25);
 
-      store.saveMembershipSettings(settingsFixture({ securityDisplayNameFormat: '[LASTNAME]' }));
+      store.saveMembershipSettings(storedSettingsFixture({ securityDisplayNameFormat: '[LASTNAME]' }));
       expectRequest('PUT', SETTINGS_URL).flush(
         settingsWriteEnvelope({ displayNameFormatChanged: true, displayNamesRewritten: 0 }),
       );
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture()));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture()));
       expectRequest('GET', USERS_URL).flush(pageFixture([], { pageSize: 25 }));
 
       expect(store.lastSettingsWrite()).toEqual({
@@ -1273,9 +1320,9 @@ describe('UserStore', () => {
         displayNamesRewritten: 0,
       });
 
-      store.saveMembershipSettings(settingsFixture());
+      store.saveMembershipSettings(storedSettingsFixture());
       expectRequest('PUT', SETTINGS_URL).flush(settingsWriteEnvelope());
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture()));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture()));
       expectRequest('GET', USERS_URL).flush(pageFixture([], { pageSize: 25 }));
 
       expect(store.lastSettingsWrite()).toEqual({
@@ -1287,11 +1334,11 @@ describe('UserStore', () => {
     it('discards the report on request and on reset, and never publishes one for a refusal', () => {
       openListingAtPageSize(25);
 
-      store.saveMembershipSettings(settingsFixture({ securityDisplayNameFormat: '[LASTNAME]' }));
+      store.saveMembershipSettings(storedSettingsFixture({ securityDisplayNameFormat: '[LASTNAME]' }));
       expectRequest('PUT', SETTINGS_URL).flush(
         settingsWriteEnvelope({ displayNameFormatChanged: true, displayNamesRewritten: 4 }),
       );
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture()));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture()));
       expectRequest('GET', USERS_URL).flush(pageFixture([], { pageSize: 25 }));
 
       store.clearSettingsWriteReport();
@@ -1304,7 +1351,7 @@ describe('UserStore', () => {
       // policy when the format would overflow the stored column for any one account, so there is
       // no partial sweep to report - and reporting a zero would read as "it ran and changed
       // nothing", which is not what happened.
-      store.saveMembershipSettings(settingsFixture({ securityDisplayNameFormat: '[USERNAME]' }));
+      store.saveMembershipSettings(storedSettingsFixture({ securityDisplayNameFormat: '[USERNAME]' }));
       expectRequest('PUT', SETTINGS_URL).flush(
         { title: 'Bad Request', status: 400, type: 'urn:dnnmigration:error:user.display-name.too-long' },
         { status: 400, statusText: 'Bad Request' },
@@ -1323,7 +1370,7 @@ describe('UserStore', () => {
       // would lock out every account satisfying the old rule and not the new one. This
       // asserts the ABSENCE, which is the only client-side claim that is safe to make.
       store.initialise();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture()));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture()));
       expectRequest('GET', USERS_URL).flush(pageFixture([]));
 
       const policy = store.membershipSettings();
@@ -1365,7 +1412,7 @@ describe('UserStore', () => {
 
     it('opens on every account when the tenant chose the unfiltered view', () => {
       store.initialise();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 0 })));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 0 })));
 
       const listing = expectRequest('GET', USERS_URL);
 
@@ -1387,7 +1434,7 @@ describe('UserStore', () => {
       // account-name filter, so it travels in a request body like every other name search rather
       // than putting the axis and its value in a request target that four separate recorders keep.
       store.initialise();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 1 })));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 1 })));
 
       const listing = expectSearch();
 
@@ -1411,7 +1458,7 @@ describe('UserStore', () => {
        * on, so nothing is unreachable.
        */
       store.initialise();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 2 })));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 2 })));
 
       httpMock.expectNone(() => true);
 
@@ -1440,7 +1487,7 @@ describe('UserStore', () => {
        * a page. The result set is identical; only the way of asking differs.
        */
       store.initialise();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 99 })));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 99 })));
 
       const unrecognised = expectRequest('GET', USERS_URL);
 
@@ -1482,26 +1529,91 @@ describe('UserStore', () => {
         .toBeFalse();
     });
 
-    it('reports an absent policy without recording a failure, and still lists the accounts', () => {
+    it('publishes an unstored policy from a SUCCESSFUL read, without recording a failure', () => {
       /*
-       * ⚠ THE ANSWER THAT LOOKS LIKE AN ERROR AND IS NOT ONE. The Application layer returns a
-       * SUCCESSFUL outcome carrying no value for a tenant with no settings source, and the shared
-       * response helper maps that onto `404` by a documented convention. So the wire cannot tell
-       * "absent" from "missing" on the status line, and this store is where the distinction is
-       * recovered.
+       * ⚠ #5/#6 — THE ANSWER ARRIVES AS A SUCCESS AND THE ABSENCE IS INSIDE IT. A tenant with no
+       * "User Accounts" module instance is answered `200` carrying the measured legacy defaults with
+       * `isStored: false`; it is NOT answered `404`, and it has not been since the read stopped
+       * reporting absence on the status line. The backend authority is
+       * `backend/tests/DnnMigration.IntegrationTests/Api/UserApiTests.cs`
+       * `MembershipSettings_WithoutAUserAccountsModule_ReadsDefaultsAndRefusesTheWrite`.
        *
-       * MIGRATION: absence is legitimate rather than exceptional, and the legacy reader proves it.
-       * `Library/Components/Users/UserController.vb:L656-L671` located the "User Accounts" module by
-       * definition name and assigned its result ONLY inside a not-nothing guard, so a tenant without
-       * that module received `Nothing` - no error, no exception - and the screens that consumed it
-       * fell back to their own defaults. The server's own remarks on the replacement member say
-       * exactly that, and say reporting a failure instead "would change behaviour those screens
-       * depended upon".
+       * ⚠ THE DEFECT THIS PINS. This store used to derive the flag from that `404`, so once the
+       * server changed the derivation could only ever answer `false`: an unstored tenant looked
+       * stored, the settings screen opened an editable form over a policy it has nowhere to keep, and
+       * the save it invited was refused `409`. Reading the flag off the DOCUMENT is what keeps the two
+       * sides of the contract in agreement, and a test that flushed a `404` here could not detect the
+       * difference.
        *
-       * ⚠ WHAT THIS PREVENTS is a user-facing one: recording a failure here put "Not Found / The
-       * requested resource does not exist. / Reference: <correlation guid>" and a retry affordance on
-       * a fully loaded account listing, because that screen surfaces this operation's failure beside
-       * its own. Nothing was wrong and nothing could be retried into existence.
+       * MIGRATION: defaults rather than an absence is behaviour-preserving.
+       * `Library/Components/Users/UserModuleBase.vb` L94-L194 applied a measured default for every key
+       * it could not read, and `Library/Components/Users/UserController.vb` L656-L671 assigned its
+       * result ONLY inside a not-nothing guard, so a tenant without that module received `Nothing` -
+       * no error, no exception - and the screens above it rendered those same defaults.
+       *
+       * ⚠ AND NO LISTING FOLLOWS, WHICH IS THE POLICY BEING HONOURED RATHER THAN IGNORED. The legacy
+       * default for `Display_Mode` is the no-query mode (`UserModuleBase.vb` L126-L130), so an
+       * unstored tenant opens with no rows until an operator presses a letter or searches. That is
+       * `Users.ascx.vb` L494-L506 followed by the `BindData` switch at L248-L290, in which the bare
+       * "None" marker matched no branch. `httpMock.verify()` in the teardown is what proves no
+       * listing was requested.
+       */
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(unstoredSettingsFixture()));
+
+      expect(store.membershipSettingsUnconfigured())
+        .withContext('the provenance is published, so a screen can explain it')
+        .toBeTrue();
+      expect(store.failure())
+        .withContext('and it is NOT a failure, so no screen raises an error over it')
+        .toBeNull();
+      // ⚠ THE POLICY IS IN HAND, which is the other half of the change. It used to stay null, so every
+      // consumer applied its OWN copy of the defaults; the server now supplies them, so the values on
+      // screen are the server's and a consumer needs no fallback for this state.
+      const policy = store.membershipSettings();
+
+      expect(policy).not.toBeNull();
+      expect(policy!.isStored).toBeFalse();
+      expect(policy!.recordsPerPage)
+        .withContext('the measured legacy default for an absent key')
+        .toBe(10);
+      expect(store.users().items.length)
+        .withContext('the no-query opening view issues no listing request at all')
+        .toBe(0);
+      expect(store.search()).toEqual({ mode: 'none' });
+    });
+
+    it('clears the unstored state once a later read carries a stored policy', () => {
+      // A tenant can GAIN an account module, so the flag must not latch. Asserted because the reset
+      // path alone would leave it standing for the life of a mounted session.
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(unstoredSettingsFixture()));
+
+      expect(store.membershipSettingsUnconfigured()).toBeTrue();
+
+      store.loadMembershipSettings();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({})));
+
+      expect(store.membershipSettingsUnconfigured()).toBeFalse();
+      expect(store.membershipSettings()).not.toBeNull();
+      expect(store.membershipSettings()!.isStored).toBeTrue();
+      // A standalone policy re-read does not chain the listing - only arrival does - so the opening
+      // view the first read settled on is left exactly as it was. `httpMock.verify()` in the teardown
+      // proves no listing was requested by either read.
+      expect(store.search()).toEqual({ mode: 'none' });
+    });
+
+    it('reports a refused policy read as a failure, and never as an unstored policy', () => {
+      /*
+       * ⚠ A `404` ON THIS READ IS NOW A FAILURE LIKE ANY OTHER, and the assertion exists because it
+       * used to be filtered out as a legitimate absence. Absence is reported inside a `200` document
+       * (see above), so nothing arriving on the error arm is an ordinary answer any more: a status the
+       * transport could not serve is recorded, and the flag stays false because a read that produced
+       * no document said nothing about provenance.
+       *
+       * The listing still follows at the shared fallback size, which is the behaviour a failed policy
+       * read has always had: a tenant whose policy is unavailable still has accounts, and a listing
+       * beside a recorded failure is a better answer than no listing at all.
        */
       store.initialise();
       expectRequest('GET', SETTINGS_URL).flush(
@@ -1509,41 +1621,22 @@ describe('UserStore', () => {
         { status: 404, statusText: 'Not Found' },
       );
 
-      const listing = expectRequest('GET', USERS_URL);
-
-      listing.flush(pageFixture([listItemFixture()]));
-
-      expect(store.membershipSettingsUnconfigured())
-        .withContext('the absence is published, so a screen can explain it')
-        .toBeTrue();
-      expect(store.failure())
-        .withContext('and it is NOT a failure, so no screen raises an error over it')
-        .toBeNull();
-      // The policy slice stays empty, which is what keeps every consumer's own legacy defaults in
-      // force - the fallback the server's remarks expect this client to apply.
-      expect(store.membershipSettings()).toBeNull();
-      // A tenant with no policy still has accounts, and they are still listed.
-      expect(store.users().items.length).toBe(1);
-      expect(store.search()).toEqual({ mode: 'all' });
-    });
-
-    it('clears an absence once a later read succeeds', () => {
-      // A tenant can GAIN an account module, so the flag must not latch. Asserted because the reset
-      // path alone would leave it standing for the life of a mounted session.
-      store.initialise();
-      expectRequest('GET', SETTINGS_URL).flush(
-        { title: 'Not Found', status: 404, type: 'urn:dnnmigration:error:resource.not_found' },
-        { status: 404, statusText: 'Not Found' },
-      );
       expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture()]));
 
-      expect(store.membershipSettingsUnconfigured()).toBeTrue();
+      expect(store.membershipSettingsUnconfigured())
+        .withContext('a refused read is not an unstored policy')
+        .toBeFalse();
 
-      store.loadMembershipSettings();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({})));
+      const failure = store.failure();
 
-      expect(store.membershipSettingsUnconfigured()).toBeFalse();
-      expect(store.membershipSettings()).not.toBeNull();
+      expect(failure).not.toBeNull();
+      expect(failure!.operation).toBe('loadMembershipSettings');
+      expect(failure!.problem?.status).toBe(404);
+      expect(store.membershipSettings())
+        .withContext('nothing is invented for a policy that could not be read')
+        .toBeNull();
+      expect(store.users().items.length).toBe(1);
+      expect(store.search()).toEqual({ mode: 'all' });
     });
 
     it('leaves a search already chosen alone when the policy arrives', () => {
@@ -1553,7 +1646,7 @@ describe('UserStore', () => {
       expectSearch().flush(pageFixture([listItemFixture()]));
 
       store.initialise();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 0 })));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 0 })));
 
       const listing = expectSearch();
 
@@ -3835,7 +3928,7 @@ describe('UserStore', () => {
   describe('the opening listing follows the tenant policy', () => {
     it('lists everything when the policy says All', () => {
       store.initialise();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 0 })));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 0 })));
 
       const request = expectRequest('GET', USERS_URL);
 
@@ -3858,7 +3951,7 @@ describe('UserStore', () => {
       // account-name filter, so it travels in a request body like every other name search rather
       // than putting the axis and its value in a request target that four separate recorders keep.
       store.initialise();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 1 })));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 1 })));
 
       const request = expectSearch();
 
@@ -3874,7 +3967,7 @@ describe('UserStore', () => {
       // ⚠ THE POLICY OVERRIDE, ASSERTED DIRECTLY. Absence of a request is the assertion: a tenant
       // that has chosen not to publish its roster must not have it published by the screen opening.
       store.initialise();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 2 })));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 2 })));
 
       httpMock.expectNone((request) => request.url === USERS_URL);
 
@@ -3888,7 +3981,7 @@ describe('UserStore', () => {
       // Withholding the opening listing is not withholding the screen. The policy governs what
       // appears unbidden, and an explicit command is bidden.
       store.initialise();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 2 })));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 2 })));
       httpMock.expectNone((request) => request.url === USERS_URL);
 
       store.showAllAccounts();
@@ -3900,12 +3993,17 @@ describe('UserStore', () => {
       request.flush(pageFixture([listItemFixture()]));
     });
 
-    it('LISTS THE ACCOUNTS when the policy cannot be read, and does not read absence as None', () => {
-      // ⚠ THE CONTRACT THAT MUST NOT REGRESS, AND THE DISTINCTION THAT MATTERS MOST HERE. The
-      // server answers `404` for a tenant that stores no membership settings, so an absent policy is
-      // an ORDINARY case rather than an exceptional one. Withholding the roster is a choice a tenant
-      // makes; a failed read is not that choice, so absence falls back to the listing rather than to
-      // silence — otherwise one unreadable settings row would make a tenant's accounts unreachable.
+    it('LISTS THE ACCOUNTS when the policy cannot be read, and does not read a refusal as None', () => {
+      // ⚠ THE CONTRACT THAT MUST NOT REGRESS. Withholding the roster is a CHOICE a tenant makes,
+      // expressed as the no-query display mode; a read that failed is not that choice, so an
+      // unreadable policy falls back to the listing rather than to silence — otherwise one refused
+      // request would make a tenant's accounts unreachable.
+      //
+      // ⚠ THE STATUS HERE IS A GENUINE REFUSAL, NOT AN UNSTORED TENANT. A tenant that stores no
+      // settings is answered `200` with the platform defaults and `isStored: false`, and its default
+      // display mode IS the no-query one — so that case legitimately withholds the listing and is
+      // asserted in the policy suite above. The two must not be conflated: this fact is about a
+      // status the transport could not serve, which leaves the store with no policy at all.
       store.initialise();
 
       expectRequest('GET', SETTINGS_URL).flush(problemFixture({ status: 404, title: 'Not Found' }), {
@@ -3928,7 +4026,7 @@ describe('UserStore', () => {
       // unknown value is reachable. Treating one as "withhold everything" would let a single
       // unrecognised integer make a tenant's accounts unreachable; the listing is recoverable.
       store.initialise();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 99 })));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 99 })));
 
       const request = expectRequest('GET', USERS_URL);
 
@@ -3944,7 +4042,7 @@ describe('UserStore', () => {
       expectSearch().flush(pageFixture([listItemFixture()]));
 
       store.initialise();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ displayMode: 1 })));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 1 })));
 
       // An address search is body-bound for the same reason a name search is, so the re-read the
       // policy triggers is the search endpoint on both sides of the policy arriving.
@@ -4937,7 +5035,7 @@ describe('UserStore', () => {
         .toBeFalse();
 
       // And they still settle normally afterwards, which is the point of not cancelling them.
-      settings.flush(envelope(settingsFixture()));
+      settings.flush(envelope(storedSettingsFixture()));
       definitions.flush(envelope([definitionFixture()]));
 
       expect(store.membershipSettings()).not.toBeNull();
@@ -5065,7 +5163,7 @@ describe('UserStore', () => {
 
     it('discards every account-scoped slice on reset', () => {
       store.loadMembershipSettings();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture({ recordsPerPage: 25 })));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ recordsPerPage: 25 })));
 
       store.loadProfileDefinitions();
       expectRequest('GET', DEFINITIONS_URL).flush(envelope([definitionFixture()]));
@@ -5304,7 +5402,7 @@ describe('UserStore', () => {
       // from the slot would now conclude the REFUSED removal succeeded, purely because of what the
       // application happened to do next. The published result is unaffected, which is the point.
       store.loadMembershipSettings();
-      expectRequest('GET', SETTINGS_URL).flush(envelope(settingsFixture()));
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture()));
 
       expect(store.failure())
         .withContext('the shared slot cannot be relied on to still hold the refusal')

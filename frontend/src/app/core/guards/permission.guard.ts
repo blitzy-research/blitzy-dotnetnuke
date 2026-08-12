@@ -83,10 +83,10 @@ import { AuthStore } from '../state/auth.store';
  * The authorisation policy names the API registers, and the complete set of values a
  * route may declare.
  *
- * ⚠ CLOSED AT EIGHT, AND EIGHT IS THE WHOLE REGISTERED SET — not a convenient subset.
- * `Api/Authorization/PolicyNames.cs` declares exactly these eight names (L54, L61, L73,
- * L80, L115, L139, L153, L164) and `Api/Extensions/AuthenticationExtensions.cs:L300-L354`
- * registers exactly these eight and no others. Listing fewer would be worse than it
+ * ⚠ CLOSED AT NINE, AND NINE IS THE WHOLE REGISTERED SET — not a convenient subset.
+ * `Api/Authorization/PolicyNames.cs` declares exactly these nine names (L54, L61, L73,
+ * L80, L115, L139, L153, L164, L231) and `Api/Extensions/AuthenticationExtensions.cs`
+ * registers exactly these nine and no others. Listing fewer would be worse than it
  * looks in BOTH directions: a route declaring a real policy this list omitted would be
  * refused here for no reason a person could see, while the omission would also hide the
  * scope that policy needs, so nothing would demand the identifier the server is about to
@@ -130,6 +130,14 @@ import { AuthStore } from '../state/auth.store';
  * - `AccountOwnerOrPortalAdministrator` — the account the route names, or an
  *   administrator of that account's portal. For the account resources both legitimately
  *   reach: the account's own representation and its profile.
+ * - `PortalContentEditor` — an administrator of the resolved tenant, OR a caller holding
+ *   `EDIT` on at least one of its pages. Requires NO item identifier. For the supporting
+ *   reads of an operation whose target does not exist yet, which is a category none of the
+ *   others can express: `ModuleEdit` and `TabEdit` resolve their scope from an item
+ *   identifier in the route, and module CREATION names no page at all, because the target
+ *   page arrives in the request BODY. `PolicyNames.cs:L198-L231` records the reasoning and
+ *   the legacy gate it reproduces — `ModuleSettings.ascx.vb:L191`, the tenant's
+ *   administrators or the roles holding EDIT on the page being administered from.
  */
 const PERMISSION_POLICIES = [
   'ModuleView',
@@ -140,6 +148,7 @@ const PERMISSION_POLICIES = [
   'HostAdministrator',
   'AccountOwner',
   'AccountOwnerOrPortalAdministrator',
+  'PortalContentEditor',
 ] as const;
 
 /** The closed set of ASP.NET Core authorisation policy names registered by the API. */
@@ -319,18 +328,23 @@ function isPermissionPolicy(value: string): value is PermissionPolicy {
 /**
  * The route parameter a policy's scope is resolved from, or null when it needs none.
  *
- * Two of the eight policies resolve no scope, and for two different reasons that are
+ * Three of the nine policies resolve no scope, and for three different reasons that are
  * worth keeping distinct. Portal administration is a question about the caller WITHIN a
  * tenant, and the API resolves that tenant from the route's portal when it names one and
  * from the arrival tenant otherwise, so the route is free not to name it. Host
  * administration has no portal binding of any kind by design — it exists precisely for
  * the operations that address no single portal — so there is nothing for it to scope to.
+ * Content editing is the third and the least obvious: it IS tenant-scoped, like portal
+ * administration, but the operations it supports name no ITEM because the item does not
+ * exist yet — module creation carries its target page in the request body — so there is no
+ * identifier in the route for it to read even in principle.
  *
  * The remaining six each identify one specific record: a module, a page, or an account.
  *
  * Written as an exhaustive switch over the narrowed union rather than a lookup object, so
- * adding a ninth policy to {@link PERMISSION_POLICIES} fails to compile here until its
- * scope requirement is stated. That is the intended behaviour, and it is what the
+ * adding a TENTH policy to {@link PERMISSION_POLICIES} fails to compile here until its
+ * scope requirement is stated. The ninth, `PortalContentEditor`, was added exactly that
+ * way. That is the intended behaviour, and it is what the
  * previous five-name revision of this file could not offer: an unhandled policy silently
  * defaulting to "needs no scope" would quietly stop requiring the very identifier the API
  * is about to demand, and nothing would report it.
@@ -349,8 +363,17 @@ function scopeParamName(policy: PermissionPolicy): string | null {
     case 'AccountOwner':
     case 'AccountOwnerOrPortalAdministrator':
       return ACCOUNT_SCOPE_PARAM;
+    /*
+     * ⚠ NO SCOPE, AND THAT IS THE WHOLE POINT OF THE THIRD ENTRY HERE. `PortalContentEditor`
+     * supports operations whose target does not exist yet, so there is no item identifier in
+     * the route to resolve — the tenant is resolved by the server from the request, exactly as
+     * it is for the two above. Giving it a scope param would make it fail closed on every route
+     * that declares it, which is the failure mode the create screen previously avoided by
+     * declaring no policy at all.
+     */
     case 'PortalAdministrator':
     case 'HostAdministrator':
+    case 'PortalContentEditor':
       return null;
   }
 }
@@ -540,9 +563,11 @@ function isTheNamedAccount(authStore: AuthStore, scopeId: string | null): boolea
  * prefix strip all occur zero times, and so does any mention of denial. This generation of
  * the product grants and never revokes, so a role either appears in a grant or does not.
  *
- * Written as an exhaustive switch for the same reason {@link scopeParamName} is: a ninth
+ * Written as an exhaustive switch for the same reason {@link scopeParamName} is: a TENTH
  * policy must not silently inherit "the client cannot tell", because that is indeed the
- * safe default but it is also the answer that hides an omission.
+ * safe default but it is also the answer that hides an omission. The ninth,
+ * `PortalContentEditor`, does inherit that answer - but it is STATED below, with the measured
+ * reason, rather than fallen into.
  *
  * @param policy A registered policy name.
  * @param scopeId The resolved scope identifier, or null when the policy needs none.
@@ -593,6 +618,27 @@ function isPlainlyRefused(
         isTheNamedAccount(authStore, scopeId) === false &&
         holdsPortalAdministration(authStore) === false
       );
+
+    /*
+     * ⚠ NEVER REFUSED HERE, AND NOT FOR WANT OF A FACT THAT LOOKS USABLE. The session
+     * projection carries an advisory `permissions` list, so `EDIT` being absent from it looks
+     * like grounds for a plain refusal. It is not, and the reason is measured rather than
+     * cautious: `PermissionEvaluator.ListEffectivePortalPermissionKeysAsync` builds that list
+     * from GRANT ROWS ALONE and has no administrator arm, while the policy's server-side
+     * handler asks its administration question FIRST
+     * (`PermissionService.HasAnyTabPermissionInPortalAsync`). A tenant administrator whose
+     * pages carry no explicit grants therefore holds the policy and does NOT carry the key,
+     * so refusing on the key would lock the tenant's own administrator out of the create
+     * screen. The list is also a superset in the other direction — it aggregates MODULE grants
+     * as well as page grants, where the policy asks only about pages — so it is wrong in both
+     * directions at once and is not the question this policy asks.
+     *
+     * Grouped with the four item-scoped grant policies for that reason: the honest client
+     * answer is "cannot tell", the server re-evaluates against stored state on every request,
+     * and the screen reports the refusal if one comes.
+     */
+    case 'PortalContentEditor':
+      return false;
   }
 }
 

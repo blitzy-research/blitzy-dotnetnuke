@@ -533,14 +533,20 @@ public interface IPermissionService
     /// </returns>
     /// <remarks>
     /// <para>
-    /// This is the TOP-LEVEL form: it stages the removals, commits them, and then evicts the affected
-    /// cache entries. It is therefore the member to call when revoking a user's own grants is the whole
-    /// of the operation, and the WRONG member to call from inside a larger business operation - use
+    /// This is the TOP-LEVEL form: it performs the removals, commits, and then evicts the affected cache
+    /// entries. It is therefore the member to call when revoking a user's own grants is the whole of the
+    /// operation, and the WRONG member to call from inside a larger business operation - use
     /// <see cref="StageUserPermissionRemovalAsync"/> for that, because a suboperation that commits on
     /// its own creates a partial-commit boundary inside the operation that encloses it.
     /// </para>
     /// <para>
-    /// Both grant tables land together. This member consolidates the legacy cascade that
+    /// Both grant tables land together because the removals share ONE TRANSACTION, not because they share
+    /// one flush. Each is a set-based delete that reaches the store when it is issued, so the atomicity comes
+    /// from the scope <see cref="StageUserPermissionRemovalAsync"/> obtains and commits. An implementer must
+    /// not conclude from this member's single commit that flushing alone would serve.
+    /// </para>
+    /// <para>
+    /// This member consolidates the legacy cascade that
     /// <c>ModulePermissionController.vb:L218</c> and <c>TabPermissionController.vb:L209</c> performed
     /// separately, and it takes the portal identifier deliberately: those legacy members read it off the
     /// user object they were handed, so a user-only contract would widen the deletion to every portal the
@@ -575,11 +581,22 @@ public interface IPermissionService
     /// decides WHEN that becomes durable.
     /// </para>
     /// <para>
-    /// AN IMPLEMENTER MUST NOT COMMIT, FLUSH OR OPEN A TRANSACTION HERE, and must not evict a cache entry
-    /// either. Eviction belongs after the commit - evicting before it opens a window in which a concurrent
-    /// reader repopulates the entry from rows that are about to disappear, and discards a valid entry for
-    /// nothing if the enclosing operation is abandoned. The caller performs it by calling
-    /// <see cref="InvalidateUserPermissionCachesAsync"/> once its own commit has succeeded.
+    /// AN IMPLEMENTER MUST NOT COMMIT OR FLUSH HERE, MUST NOT EVICT A CACHE ENTRY, AND MUST NOT TAKE A SCOPE THAT AN
+    /// ENCLOSING CALLER CANNOT ABANDON. Eviction belongs after the commit - evicting before it opens a window
+    /// in which a concurrent reader repopulates the entry from rows that are about to disappear, and discards
+    /// a valid entry for nothing if the enclosing operation is abandoned. The caller performs it by calling
+    /// <see cref="InvalidateUserPermissionCaches"/> once its own commit has succeeded.
+    /// </para>
+    /// <para>
+    /// A TRANSACTION IS PERMITTED, AND IS REQUIRED, BUT ONLY THROUGH
+    /// <c>IUnitOfWork.JoinOrBeginTransactionAsync</c>. The two grant removals are set-based deletes
+    /// that reach the store when they are issued rather than when changes are flushed, so an implementation
+    /// that took no boundary at all would leave the pair independently durable when this member is called on
+    /// its own - the account's module grants gone and its page grants intact, which is precisely the
+    /// half-cleaned state the legacy pair produced. The joining helper is what reconciles that with the
+    /// paragraph above: inside an enclosing scope it is a no-op join, so the caller retains sole authority
+    /// over durability and can still abandon the removal; standalone it opens and closes a real scope.
+    /// <c>BeginTransactionAsync</c> must NOT be used, because it refuses to nest and would fault the cascade.
     /// </para>
     /// <para>
     /// The removal rule itself is unchanged and is defined in one place only: grants made DIRECTLY to the
@@ -629,7 +646,7 @@ public interface IPermissionService
     /// TRANSACTION OPEN: without one the grants become durable on their own, and a role removal that then
     /// failed would leave the role intact but stripped of every grant, while reporting that it had left the
     /// role alone. Eviction belongs after the caller's commit, through
-    /// <see cref="InvalidateUserPermissionCachesAsync"/>.
+    /// <see cref="InvalidateUserPermissionCaches"/>.
     /// </para>
     /// <para>
     /// The tenant is taken as an argument so that a role identifier belonging to another portal is refused
@@ -646,9 +663,6 @@ public interface IPermissionService
     /// Evicts the cache entries invalidated by removing a user's direct grants, once the removal has been
     /// committed.
     /// </summary>
-    /// <param name="portalId">The portal whose permission entries are evicted.</param>
-    /// <param name="cancellationToken">Token that cancels the read of the portal's pages.</param>
-    /// <returns>A task that completes once every affected entry has been evicted.</returns>
     /// <remarks>
     /// <para>
     /// The companion to <see cref="StageUserPermissionRemovalAsync"/>, for the caller that owned the
@@ -677,9 +691,16 @@ public interface IPermissionService
     /// second eviction member would be a second definition of the same set, free to drift from this one.
     /// </para>
     /// </remarks>
-    Task InvalidateUserPermissionCachesAsync(
-        int portalId,
-        CancellationToken cancellationToken = default);
+    /// <remarks>
+    /// SEC-F8. SYNCHRONOUS, INFALLIBLE AND ARGUMENT-FREE, because a post-commit step must not be able to
+    /// fail and this one no longer needs to ask the database anything. It used to take a tenant and a
+    /// cancellation token so that it could read every page of the tenant purely to compose legacy grant-cache
+    /// keys - keys this application never writes - which made a completed, durable deletion able to answer
+    /// 500 afterwards while invalidating nothing that existed. It now evicts exactly the catalogue entries
+    /// the read members populate, which are keyed by module definition and by one installation-wide page key
+    /// and need no tenant to address.
+    /// </remarks>
+    void InvalidateUserPermissionCaches();
 
     /// <summary>
     /// Reads one catalogue definition by its identifier.

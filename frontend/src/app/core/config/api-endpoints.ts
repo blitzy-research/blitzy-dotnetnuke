@@ -201,6 +201,9 @@ const SEGMENT = {
 
   /** Account collection. */
   users: 'users',
+
+  /** The account picker's projection: a key and the two captions an option shows. */
+  choices: 'choices',
 } as const;
 
 /**
@@ -738,6 +741,35 @@ export const API_ENDPOINTS = {
      * changes where data travels and nothing else.
      */
     search: (): string => apiUrl(`${SEGMENT.users}/${SEGMENT.search}`),
+
+    /**
+     * `GET` the resolved tenant's accounts as an account PICKER needs them.
+     *
+     * ⚠ A SEPARATE ADDRESS FROM {@link API_ENDPOINTS.users.collection}, AND IT MUST NOT BE
+     * COLLAPSED INTO IT. This answers a key and the two captions an option renders — `userId`,
+     * `username` and `displayName` — and nothing else. The listing answers a GRID row: a postal
+     * address, a telephone number, an electronic-mail address, a creation instant, a last-login
+     * instant and four status flags besides. A picker built on the listing therefore transferred
+     * every one of those so that three could be shown, and the role-assignment screen may
+     * enumerate a tenant of up to a thousand accounts before it decides to offer a name box
+     * instead. Being permitted to read the grid is not a reason to receive fields the screen
+     * cannot use.
+     *
+     * It is also the CHEAPEST WAY TO COUNT. A caller that needs only how many accounts a tenant
+     * holds asks for one row and reads `meta.totalCount`; the single row it receives carries no
+     * personal detail, whereas the same probe against the listing disclosed a complete account row
+     * to read a number.
+     *
+     * A `GET` rather than a `POST`, unlike {@link API_ENDPOINTS.users.search}, and the distinction
+     * is the same one that governs the listing: the only filter this address takes is a prefix of
+     * a caption the drop-down already displays, and every value it can match is a value the
+     * response returns. There is nothing here that a request target would record and the body did
+     * not already contain.
+     *
+     * The server gates it on the same tenant-administration policy as the listing, applies the
+     * same page-size and filter-length bounds, and scopes it to the resolved tenant.
+     */
+    choices: (): string => apiUrl(`${SEGMENT.users}/${SEGMENT.choices}`),
 
     /** `GET`, `PUT` or `DELETE` one account. */
     byId: (userId: number): string => apiUrl(`${SEGMENT.users}/${userId}`),

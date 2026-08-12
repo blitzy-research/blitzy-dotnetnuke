@@ -1,5 +1,5 @@
 import { HttpContext, HttpContextToken } from '@angular/common/http';
-import { Injectable, inject, signal, type Signal } from '@angular/core';
+import { Injectable, signal, type Signal } from '@angular/core';
 
 /**
  * Closed severity vocabulary for a queued notification.
@@ -457,20 +457,30 @@ export class NotificationService {
     };
 
     this._notifications.update((queue) => {
-      // The newest entry, and whether this one repeats it. Compared on all three stored members, so a
-      // second occurrence carrying a different support reference is a genuinely different report and
-      // survives as its own row.
+      // The newest entry, and whether this one repeats it. Compared on EVERY stored member other than the
+      // identifier, so a second occurrence differing in any respect an operator could observe is a
+      // genuinely different report and survives as its own row.
       //
       // ⚠ THE LIFETIME OPINION IS PART OF THE COMPARISON. Two entries wording the same sentence at the same
       // severity are still different reports when one of them expires and the other does not, and collapsing
       // them would silently impose the FIRST one's lifetime on the second - so a refusal raised where it is
       // meant to retire itself could be held permanently by an identical earlier entry that was not.
+      //
+      // ⚠ AND SO IS THE NAVIGATION OPINION, WHICH WAS MISSING. `survivesNavigation` was excluded from this
+      // test even though it is stored on the entry and governs whether the sweep discards it - so an entry
+      // raised to be READ AFTER A REDIRECT could be collapsed into an identical earlier one that had not
+      // claimed the exemption, and then swept away by the very navigation it existed to survive. The
+      // operator was redirected and the explanation was gone: the same class of defect the lifetime
+      // comparison beside it exists to prevent, on the member that decides survival rather than duration.
+      // It is not hypothetical - a session ending un-asked-for raises its sentence with the exemption while
+      // ordinary refusals raise the same wording without it, so the two shapes genuinely meet in one queue.
       const newest = queue.at(-1);
       const repeats =
         newest !== undefined &&
         newest.severity === entry.severity &&
         newest.message === entry.message &&
         newest.reference === entry.reference &&
+        newest.survivesNavigation === entry.survivesNavigation &&
         newest.selfDismisses === entry.selfDismisses;
       const retained = repeats ? queue.slice(0, -1) : queue;
 

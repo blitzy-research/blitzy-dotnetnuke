@@ -836,7 +836,6 @@ function resolveUserId(raw: string | number | undefined): number | null {
     EmptyStateComponent,
     ErrorBannerComponent,
     FormFieldComponent,
-    FocusFirstInvalidDirective,
   ],
   templateUrl: './user-profile.component.html',
   styleUrl: './user-profile.component.scss',

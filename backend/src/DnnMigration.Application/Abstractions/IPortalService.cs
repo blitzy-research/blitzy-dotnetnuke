@@ -449,6 +449,24 @@ public interface IPortalService
     /// <c>Website/admin/Portal/SiteSettings.ascx.vb</c>. Host-only fields and the designated
     /// administrator are guarded exactly as they are on the general portal update path.
     /// </para>
+    /// <para>
+    /// EVERY IDENTIFIER THE BODY CARRIES IS TENANT-SCOPED, on the same terms as
+    /// <see cref="UpdatePortalAsync(int, UpdatePortalRequest, CancellationToken)"/>: the designated
+    /// administrator must hold a membership row in the addressed portal, and each of the splash, home,
+    /// login and user pages must belong to it. A reference belonging to another tenant, or to nothing, is
+    /// refused with <c>portal.administrator_invalid</c> or <c>portal.tab_reference_invalid</c>, and a
+    /// legacy processor credential that is neither cleared nor expressed as a managed-secret reference is
+    /// refused with <c>portal.processor_reference_invalid</c>. An implementer must not relax this: the page
+    /// columns carry no foreign key in every supported schema, so the store will not refuse a foreign page
+    /// on its behalf.
+    /// </para>
+    /// <para>
+    /// The guards, the reference validation and the write are ONE SERIALISABLE OPERATION. Judging ownership
+    /// in one statement and writing in a later one would let a membership be withdrawn or a page removed in
+    /// between, storing the very reference the validation refuses. A write refused by the store as a lost
+    /// update is reported as <c>portal.concurrency_conflict</c>, indistinguishably from a stale
+    /// concurrency token, because from the caller's position they are the same event.
+    /// </para>
     /// </remarks>
     Task<Result<PortalSettingsDto?>> UpdatePortalSettingsAsync(
         int portalId,

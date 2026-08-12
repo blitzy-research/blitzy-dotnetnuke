@@ -234,6 +234,100 @@ public class TabServiceTests
         record.Properties.Should().NotContainKey("Description");
         record.Properties.Should().NotContainKey("Keywords");
         record.Properties.Should().NotContainKey("PageHeadText");
+
+        record.Properties["Operation"].Should().Be(
+            "Revise",
+            "the page's delete flag did not change, so this is a revision rather than a recycling");
+    }
+
+    /// <summary>
+    /// Recycling a page and restoring one are recorded under the two legacy lifecycle event names, not as
+    /// plain updates.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// THIS PINS A CORRECTION OF THIS SOLUTION'S OWN STATED POSITION, NOT JUST OF ITS CODE. Every page change
+    /// was recorded as TAB_UPDATED, and the audit catalogue asserted in a comment that
+    /// TAB_SENT_TO_RECYCLE_BIN and TAB_RESTORED could never be raised here because they had no committed
+    /// boundary - the page surface being narrow, and the legacy recycle-bin page being out of scope. That
+    /// reasoning located the operation by the legacy PAGE that performed it rather than by the state
+    /// TRANSITION it made. Recycling and restoring are not separate operations in this solution: both are
+    /// carried on the update request as its delete flag, which the mapper assigns, so the narrow PUT IS the
+    /// boundary and both events have a real producer.
+    /// </para>
+    /// <para>
+    /// The cost of the mislabel was that the two questions a page trail is asked most often - who took this
+    /// page down, and who put it back - could not be answered from it, because a removal and a title change
+    /// looked identical. Both names are verbatim legacy members: TAB_SENT_TO_RECYCLE_BIN
+    /// (TabController.vb:L840 and L952) and TAB_RESTORED (RecycleBin.ascx.vb:L280).
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateTab_RecordsTheRecycleAndRestoreTransitionsUnderTheirOwnNames()
+    {
+        Harness recycling = Harness.Ready();
+        recycling.StoredTab!.IsDeleted = false;
+
+        UpdateTabRequest recycle = ValidRequest();
+        recycle.IsDeleted = true;
+
+        Result<TabDetailDto> recycled = await recycling.Service
+            .UpdateTabAsync(TabId, recycle, CancellationToken.None);
+
+        recycled.IsSuccess.Should().BeTrue();
+
+        AuditEvent recycleRecord = recycling.AuditRecords.Should().ContainSingle().Subject;
+        recycleRecord.EventName.Should().Be(AuditEventNames.TabSentToRecycleBin);
+        recycleRecord.EventName.Should().Be("TAB_SENT_TO_RECYCLE_BIN");
+        recycleRecord.Properties["Operation"].Should().Be("Recycle");
+        recycleRecord.Properties["IsDeleted"].Should().Be(bool.TrueString);
+
+        Harness restoring = Harness.Ready();
+        restoring.StoredTab!.IsDeleted = true;
+
+        UpdateTabRequest restore = ValidRequest();
+        restore.IsDeleted = false;
+
+        Result<TabDetailDto> restored = await restoring.Service
+            .UpdateTabAsync(TabId, restore, CancellationToken.None);
+
+        restored.IsSuccess.Should().BeTrue();
+
+        AuditEvent restoreRecord = restoring.AuditRecords.Should().ContainSingle().Subject;
+        restoreRecord.EventName.Should().Be(AuditEventNames.TabRestored);
+        restoreRecord.EventName.Should().Be("TAB_RESTORED");
+        restoreRecord.Properties["Operation"].Should().Be("Restore");
+        restoreRecord.Properties["IsDeleted"].Should().Be(bool.FalseString);
+    }
+
+    /// <summary>
+    /// Repeating the delete flag a page already carries is recorded as a revision, because no state changed.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The narrowing matters as much as the two records above. Keying the event name on the NEW value rather
+    /// than on a transition would make every ordinary save of an already-recycled page read as a fresh
+    /// recycling, which trades one false reading for another and inflates any count taken from the trail. This
+    /// is the assertion that forbids it.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateTab_RecordsARevisionWhenTheDeleteFlagIsUnchanged()
+    {
+        Harness harness = Harness.Ready();
+        harness.StoredTab!.IsDeleted = true;
+
+        UpdateTabRequest request = ValidRequest();
+        request.IsDeleted = true;
+
+        Result<TabDetailDto> outcome = await harness.Service
+            .UpdateTabAsync(TabId, request, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be(AuditEventNames.TabUpdated);
+        record.Properties["Operation"].Should().Be("Revise");
     }
 
     /// <summary>

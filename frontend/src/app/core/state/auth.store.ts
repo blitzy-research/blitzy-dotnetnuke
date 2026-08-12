@@ -79,7 +79,7 @@
 
 import { Injectable, computed, inject, signal } from '@angular/core';
 import type { Signal } from '@angular/core';
-import { catchError, defer, finalize, map, of, shareReplay, switchMap, tap, throwError } from 'rxjs';
+import { catchError, defer, finalize, map, of, retry, shareReplay, switchMap, tap, throwError, timer } from 'rxjs';
 import type { Observable } from 'rxjs';
 
 import { sessionFromLoginResponse } from '../models/auth.model';
@@ -156,6 +156,118 @@ export const REVOCATION_FAILED_MESSAGE =
   'was ended. It will expire on its own; if you are concerned that it may be used, change your ' +
   'password.';
 
+/**
+ * How many times a sign-out revocation is retried before the residue is reported.
+ *
+ * SEC-F14. Three attempts, because the failures worth retrying are short-lived — a rate-limit
+ * window, a restarting API, a dropped connection — and a longer ladder would hold the sign-out
+ * command open while the operator waits at the sign-in screen.
+ */
+const REVOCATION_RETRY_ATTEMPTS = 3;
+
+/**
+ * Base backoff between revocation attempts, in milliseconds.
+ */
+const REVOCATION_RETRY_BASE_DELAY_MS = 1_000;
+
+/**
+ * Longest backoff honoured from a `Retry-After` header, in milliseconds.
+ *
+ * A server is trusted to name its own window, but not to name an unbounded one: a hostile or
+ * misconfigured value would otherwise park the sign-out indefinitely.
+ */
+const REVOCATION_RETRY_MAX_DELAY_MS = 10_000;
+
+/**
+ * Whether a refusal means the presented credential can never name a session.
+ *
+ * SEC-F14. `400` is a malformed value, `404` is one the server does not recognise, and `422` is
+ * one it cannot process — none of them will become revocable by being sent again, and each means
+ * there is no residue to report. Everything else, including a status of `0` for an unreachable
+ * server, may still be pending and is retried.
+ *
+ * @param cause The value the error callback received.
+ * @returns `true` when retrying cannot help and no residue remains.
+ */
+function isTerminalRevocationRefusal(cause: unknown): boolean {
+  const status: unknown = readStatus(cause);
+
+  return status === 400 || status === 404 || status === 422;
+}
+
+/**
+ * The delay before the next revocation attempt.
+ *
+ * @param cause The refusal that prompted the retry.
+ * @param attempt The one-based attempt number just completed.
+ * @returns The delay in milliseconds.
+ */
+function retryDelayMs(cause: unknown, attempt: number): number {
+  const advertised: number | null = readRetryAfterMs(cause);
+
+  if (advertised !== null) {
+    return Math.min(advertised, REVOCATION_RETRY_MAX_DELAY_MS);
+  }
+
+  return Math.min(
+    REVOCATION_RETRY_BASE_DELAY_MS * 2 ** Math.max(attempt - 1, 0),
+    REVOCATION_RETRY_MAX_DELAY_MS,
+  );
+}
+
+/**
+ * Reads the numeric status from an error the transport produced.
+ *
+ * @param cause The value the error callback received.
+ * @returns The status, or `null` when the value carries none.
+ */
+function readStatus(cause: unknown): number | null {
+  if (typeof cause !== 'object' || cause === null) {
+    return null;
+  }
+
+  const status: unknown = (cause as { status?: unknown }).status;
+
+  return typeof status === 'number' ? status : null;
+}
+
+/**
+ * Reads a `Retry-After` header expressed in seconds, in milliseconds.
+ *
+ * Only the delta-seconds form is honoured. The HTTP-date form is legal and is deliberately not
+ * parsed here: it would make the delay depend on agreement between two clocks, and the fallback
+ * ladder is a safe answer when it is absent.
+ *
+ * @param cause The value the error callback received.
+ * @returns The advertised delay in milliseconds, or `null`.
+ */
+function readRetryAfterMs(cause: unknown): number | null {
+  if (typeof cause !== 'object' || cause === null) {
+    return null;
+  }
+
+  const headers: unknown = (cause as { headers?: unknown }).headers;
+
+  if (typeof headers !== 'object' || headers === null) {
+    return null;
+  }
+
+  const get: unknown = (headers as { get?: unknown }).get;
+
+  if (typeof get !== 'function') {
+    return null;
+  }
+
+  const raw: unknown = (get as (name: string) => string | null).call(headers, 'Retry-After');
+
+  if (typeof raw !== 'string') {
+    return null;
+  }
+
+  const seconds = Number.parseInt(raw.trim(), 10);
+
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1_000 : null;
+}
 /**
  * Confirms a sign-out the operator asked for.
  *
@@ -1573,6 +1685,82 @@ export class AuthStore {
    * @returns Completion of the revocation attempt. Must be subscribed for the request
    * to be issued.
    */
+  /**
+   * Retries an outstanding sign-out revocation with the credential held aside for it.
+   *
+   * SEC-F14. Signing out discards the session at once, so a revocation the server never
+   * acknowledged used to be unrecoverable. The credential is now retained by
+   * {@link TokenStorageService.retainForRevocation} until the server either acknowledges the
+   * revocation or says the value can never name a session, and this method is how a later
+   * attempt is made — from application start-up, or from the sign-in screen that renders
+   * {@link AuthStore.revocationOutstanding}.
+   *
+   * Completes immediately, and does nothing, when nothing is outstanding.
+   *
+   * @returns Completion. Never errors: the outcome is reported through
+   * {@link AuthStore.revocationOutstanding}.
+   */
+  retryOutstandingRevocation(): Observable<void> {
+    return defer(() => {
+      const pending: string | null = this.tokenStorage.pendingRevocation();
+
+      if (pending === null || pending.length === 0) {
+        return of(undefined);
+      }
+
+      return this.revokeWithRetry(pending).pipe(
+        map(() => {
+          this.tokenStorage.clearPendingRevocation();
+          this._revocationOutstanding.set(false);
+
+          return undefined;
+        }),
+        catchError((cause: unknown) => {
+          if (isTerminalRevocationRefusal(cause)) {
+            this.tokenStorage.clearPendingRevocation();
+            this._revocationOutstanding.set(false);
+
+            return of(undefined);
+          }
+
+          this._revocationOutstanding.set(true);
+
+          return of(undefined);
+        }),
+      );
+    });
+  }
+
+  /**
+   * Posts one revocation, retrying only outcomes that can plausibly succeed later.
+   *
+   * SEC-F14. The bound is deliberate on both sides. WITHOUT a bound a sign-out could hold the
+   * command phase open indefinitely against an unreachable server; WITHOUT any retry a single
+   * rate-limited or briefly unavailable attempt left a live session behind. The delay honours a
+   * `Retry-After` header when the server sends one — a rate limiter that names its own window is
+   * the only party that knows it — and otherwise doubles from one second, so three attempts span
+   * a few seconds rather than a minute.
+   *
+   * @param refreshToken The credential to withdraw.
+   * @returns Completion, or the last error when every permitted attempt failed.
+   */
+  private revokeWithRetry(refreshToken: string): Observable<void> {
+    return this.auth.logout({ refreshToken }).pipe(
+      retry({
+        count: REVOCATION_RETRY_ATTEMPTS,
+        delay: (cause: unknown, attempt: number) => {
+          // A terminal refusal is rethrown rather than retried: repeating a request the server
+          // has already judged unanswerable only delays the honest report of it.
+          if (isTerminalRevocationRefusal(cause)) {
+            return throwError(() => cause);
+          }
+
+          return timer(retryDelayMs(cause, attempt));
+        },
+      }),
+    );
+  }
+
   logout(): Observable<void> {
     return defer(() => {
       const ticket = this.claimPhase('signingOut');
@@ -1603,6 +1791,20 @@ export class AuthStore {
        *   it has moved, and asking it here is what makes the ordering legible.
        */
       const refreshToken = this.tokenStorage.refreshToken();
+
+      /*
+       * ⚠ SEC-F14. THE CREDENTIAL IS PUT ASIDE BEFORE THE SESSION IS DISCARDED.
+       *
+       * `discardSession` below clears the held session, and the refresh token lives inside
+       * it — so until this line existed, the value needed to end the session ON THE SERVER
+       * was destroyed a few statements before the request carrying it had been answered.
+       * Every transient refusal (429, 503, a dropped connection) therefore became permanent:
+       * the store reported an outstanding revocation and there was nothing left to retry it
+       * with. The slot survives the discard precisely so a retry remains possible.
+       */
+      if (refreshToken !== null && refreshToken.length !== 0) {
+        this.tokenStorage.retainForRevocation(refreshToken);
+      }
 
       /*
        * ⚠ THE SHARED RENEWAL SLOT IS RELEASED AS PART OF SIGNING OUT.
@@ -1648,15 +1850,37 @@ export class AuthStore {
 
       // No envelope here, and none is expected. Sign-out answers 204, which HTTP forbids from
       // carrying a body, so there is nothing to unwrap.
+      /*
+       * ⚠ ONE ATTEMPT HERE, THE BOUNDED LADDER LATER. Signing out must not hold the operator on a
+       * spinner while a backoff ladder plays out against an unreachable server - the local sign-out
+       * has already happened and the redirect is waiting on this. The credential is retained above,
+       * so the retry is a separate, bounded operation driven by
+       * {@link AuthStore.retryOutstandingRevocation} from the screen the operator lands on.
+       */
       return this.auth.logout({ refreshToken }).pipe(
         map(() => {
           // Cleared only by a withdrawal that actually succeeded, so a screen that reported an
           // unconfirmed sign-out stops reporting it once a later one is confirmed.
           this._revocationOutstanding.set(false);
+          this.tokenStorage.clearPendingRevocation();
 
           return undefined;
         }),
-        catchError(() => {
+        catchError((cause: unknown) => {
+          /*
+           * SEC-F14. A TERMINAL REFUSAL RELEASES THE CREDENTIAL; A TRANSIENT ONE KEEPS IT.
+           * A 400 or a 404 is the server saying this value can never name a session, so
+           * retaining it would leave a notice nothing could ever clear. Anything else - an
+           * outage, a rate limit, an unreachable server - leaves the session possibly live,
+           * so the credential stays and {@link AuthStore.retryOutstandingRevocation} can be
+           * driven again.
+           */
+          const terminal: boolean = isTerminalRevocationRefusal(cause);
+
+          if (terminal) {
+            this.tokenStorage.clearPendingRevocation();
+          }
+
           /*
            * The refusal is deliberately NOT recorded through `recordFailure`. That record is
            * read by the sign-in screen to explain why a caller is back at it, and a failed
@@ -1664,7 +1888,10 @@ export class AuthStore {
            * as its own boolean and announced once, in words that name the action that genuinely
            * exists for the residue.
            */
-          this._revocationOutstanding.set(true);
+          // A terminal refusal leaves NO residue - the server has said the value cannot name a
+          // session - so the flag stays down and no notice is raised for it. Everything else may
+          // have left a live session behind and is reported.
+          this._revocationOutstanding.set(!terminal);
 
           /*
            * The residue is RECORDED here and ANNOUNCED elsewhere, for the reason set out beside the

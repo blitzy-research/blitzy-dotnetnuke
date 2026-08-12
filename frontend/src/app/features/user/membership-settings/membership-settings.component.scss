@@ -92,7 +92,12 @@
   //  `app-form-field` is reached into and the track keeps its zero minimum - a short label still takes only
   //  the room it needs, the column still yields entirely when the viewport cannot afford it, and the stacked
   //  layout below the `md` step is untouched.
-  --field-label-inline-size: 18.75rem;
+  //
+  //  ⚠ THE OVERRIDE RESOLVES TO A TOKEN RATHER THAN TO A NUMBER. It read `18.75rem` here, which is a design
+  //  measurement declared outside the vocabulary even though the property it sets is a token: the override is
+  //  itself a design decision and belongs in `_tokens.scss` beside the base measure and the module-settings
+  //  cap, so all three label measures are read in one place and none can drift from the others.
+  --field-label-inline-size: var(--field-label-inline-size-wider);
 }
 
 // MIGRATION: the legacy screen was four nested layout tables - `Website/admin/Users/
@@ -126,7 +131,7 @@
 .membership-settings__transport-failure {
   margin: 0;
   max-inline-size: mx.breakpoint('md');
-  color: var(--color-danger-text);
+  color: var(--color-danger);
 }
 
 // The provenance disclosure - #6. Whether the values on this screen are a stored policy or the

@@ -1021,6 +1021,145 @@ describe('PortalFormComponent', () => {
 
   // Tidying the alias before judging it
 
+  // ⚠ MAJOR (CWE-316 cleartext storage) — WHAT HAPPENS TO THE CREDENTIAL AFTER THE WRITE SUCCEEDS.
+  //
+  // The administrator password and its confirmation are the only secrets this screen ever holds. On a
+  // successful creation the write has stored them server-side and this copy has no further purpose, yet
+  // settling the form does not remove it: the controls keep their values and the two password inputs keep
+  // those values in the live document.
+  //
+  // Leaving the navigation to take them away was the defect, because the navigation CAN NOT COMPLETE - a
+  // guard may refuse it, it may resolve `false`, a lazy chunk may fail - and in every one of those cases the
+  // screen stays mounted with a stored credential still readable in the DOM. The cases below pin the clearing
+  // in the outcome where it matters, which is precisely the outcome the previous coverage never exercised.
+
+  describe('discarding the credential after a successful creation', () => {
+    it('empties both credential controls and both boxes before navigating away', () => {
+      createMode();
+      fillMinimalCreation('contoso.example.test');
+
+      // The credential is on the screen before the write, which is what makes the assertion after it mean
+      // something.
+      expect(field<HTMLInputElement>('portal-form-password').value).toBe('Passw0rd!');
+      expect(field<HTMLInputElement>('portal-form-confirm').value).toBe('Passw0rd!');
+
+      press(CREATE_SUBMIT_LABEL);
+
+      expectRequest('POST', PORTALS_URL, 'the creation').flush(envelope(portalDetail(9)), {
+        status: 201,
+        statusText: 'Created',
+      });
+      fixture.detectChanges();
+      answerListingReread();
+
+      // The controls, and the boxes bound to them. Both, because a cleared control with a stale input is
+      // still a credential on the screen.
+      expect(field<HTMLInputElement>('portal-form-password').value)
+        .withContext('the box no longer shows it')
+        .toBe('');
+      expect(field<HTMLInputElement>('portal-form-confirm').value)
+        .withContext('nor does the confirmation')
+        .toBe('');
+
+      // Nowhere else in the rendered document either - not in a value attribute, not in a title, not in a
+      // hidden field somebody added.
+      expect(host().outerHTML)
+        .withContext('the credential appears nowhere in the document')
+        .not.toContain('Passw0rd!');
+    });
+
+    it('empties them even when the navigation is REFUSED, which is the case that matters', () => {
+      // A guard answering false is the ordinary way this happens. The write has already succeeded, so the
+      // credential is stored and useless here - and the screen stays mounted, which is exactly why relying
+      // on the navigation to dispose of it was not enough.
+      navigateSpy.and.resolveTo(false);
+
+      createMode();
+      fillMinimalCreation('contoso.example.test');
+      press(CREATE_SUBMIT_LABEL);
+
+      expectRequest('POST', PORTALS_URL, 'the creation').flush(envelope(portalDetail(9)), {
+        status: 201,
+        statusText: 'Created',
+      });
+      fixture.detectChanges();
+      answerListingReread();
+
+      // The screen is still here.
+      expect(field<HTMLInputElement>('portal-form-alias')).not.toBeNull();
+
+      expect(field<HTMLInputElement>('portal-form-password').value).toBe('');
+      expect(field<HTMLInputElement>('portal-form-confirm').value).toBe('');
+      expect(host().outerHTML).not.toContain('Passw0rd!');
+    });
+
+    it('empties them even when the navigation REJECTS, and reports nothing further', () => {
+      // The other way a navigation fails to complete: a rejected promise, which a failed lazy chunk
+      // produces. The clearing happens before the call, so the rejection cannot affect it.
+      navigateSpy.and.rejectWith(new Error('a chunk failed to load'));
+
+      createMode();
+      fillMinimalCreation('contoso.example.test');
+      press(CREATE_SUBMIT_LABEL);
+
+      expectRequest('POST', PORTALS_URL, 'the creation').flush(envelope(portalDetail(9)), {
+        status: 201,
+        statusText: 'Created',
+      });
+      fixture.detectChanges();
+      answerListingReread();
+
+      expect(field<HTMLInputElement>('portal-form-password').value).toBe('');
+      expect(field<HTMLInputElement>('portal-form-confirm').value).toBe('');
+      expect(host().outerHTML).not.toContain('Passw0rd!');
+    });
+
+    it('leaves the entry an operator can re-read alone, so a refused trip is not a lost draft', () => {
+      // The counterpart, and the reason the whole form is not wiped. Only the two credential controls are
+      // secrets; clearing the alias, the name or the mail address would turn a refused navigation into
+      // lost work for no security gain, since every one of those values is on the screen to be read.
+      navigateSpy.and.resolveTo(false);
+
+      createMode();
+      fillMinimalCreation('contoso.example.test');
+      press(CREATE_SUBMIT_LABEL);
+
+      expectRequest('POST', PORTALS_URL, 'the creation').flush(envelope(portalDetail(9)), {
+        status: 201,
+        statusText: 'Created',
+      });
+      fixture.detectChanges();
+      answerListingReread();
+
+      expect(field<HTMLInputElement>('portal-form-alias').value).toBe('contoso.example.test');
+      expect(field<HTMLInputElement>('portal-form-first-name').value).toBe('Ada');
+      expect(field<HTMLInputElement>('portal-form-email').value).toBe('ada@example.test');
+    });
+
+    it('shows no complaint about the credential it has just discarded', () => {
+      // Cleared with `reset`, not with a value assignment, so the control goes back to pristine and
+      // untouched along with its value. Otherwise the required rule would fire against the very
+      // credential the screen deliberately removed and the operator would be told to supply a password
+      // for a portal that already exists.
+      navigateSpy.and.resolveTo(false);
+
+      createMode();
+      fillMinimalCreation('contoso.example.test');
+      press(CREATE_SUBMIT_LABEL);
+
+      expectRequest('POST', PORTALS_URL, 'the creation').flush(envelope(portalDetail(9)), {
+        status: 201,
+        statusText: 'Created',
+      });
+      fixture.detectChanges();
+      answerListingReread();
+
+      expect(fieldMessages())
+        .withContext('no message about a credential that is gone on purpose')
+        .toEqual([]);
+    });
+  });
+
   describe('tidying the alias before judging it', () => {
     /**
      * Submit a creation whose only interesting member is the alias, and read the body.
@@ -1701,31 +1840,43 @@ describe('PortalFormComponent', () => {
     });
 
     /**
-     * ⚠ AND ON THIS PATH A BLANK TITLE IS REFUSED LOCALLY, BECAUSE THE ENDPOINT REFUSES IT.
+     * ⚠ AND A BLANK TITLE IS ACCEPTED ON THIS PATH TOO, WHICH IS THE LEGACY BEHAVIOUR RESTORED.
      *
-     * `UpdatePortalRequestValidator:L385-L387` declares `NotEmpty()` on `PortalName`, and
-     * FluentValidation counts a whitespace-only string as empty — so without a matching rule here the
-     * form declared the value valid and the API refused it, which is a banner after a round trip
-     * instead of a message beside the field. The sentence shown is the SERVER'S OWN, restated verbatim
-     * so the two cannot disagree.
+     * This case used to require the opposite. It refused a whitespace-only title locally, mirroring a
+     * `NotEmpty()` the update contract carried on `PortalName` — and BOTH the rule and this case were
+     * wrong, so the server rule is withdrawn with them.
      *
-     * This is deliberately the OPPOSITE of the creation path, whose own case sits beside the alias
-     * tidying above: the creation endpoint declares no such rule, so requiring it there would refuse a
-     * submission the API accepts. The asymmetry is the server's and both halves are pinned.
+     * `Website/admin/Portal/sitesettings.ascx` declares two validators on 568 lines, both
+     * `CompareValidator`s, with no `RequiredFieldValidator` anywhere and `MaxLength="128"` the only
+     * attribute on `txtPortalName`. And the write path stored the blank rather than refusing it:
+     * `SqlDataProvider.vb:L632` passes `PortalName` RAW while wrapping fourteen of its twenty-seven
+     * sibling arguments in `GetNull`, `PortalController.vb:L1568-L1570` forwards the parameter
+     * untouched, and `SiteSettings.ascx.vb:L772` passes `txtPortalName.Text` as typed — so the empty
+     * string reached `[PortalName] [nvarchar] (128) NOT NULL`, which accepts it.
+     *
+     * Both write paths therefore accept a blank title, the two forms agree with each other again, and
+     * the request is ISSUED rather than withheld. The trimming above still applies, so what reaches the
+     * wire is the empty string and not three spaces.
      */
-    it('refuses a whitespace-only title on a replacement, sending nothing', () => {
-      arriveEditing(5, { portalName: 'Before' });
+    it('accepts a whitespace-only title on a replacement and sends the empty string', () => {
+      const detail: PortalDetail = arriveEditing(5, { portalName: 'Before' });
 
       type('portal-form-title', '   ');
       press(EDIT_SUBMIT_LABEL);
 
-      httpMock.expectNone(() => true);
-      expect(field<HTMLInputElement>('portal-form-title').value)
-        .withContext('trimmed to nothing, which is exactly what makes it invalid')
+      const call = expectRequest('PUT', portalUrl(5), 'the replacement');
+      const body = call.request.body as { readonly portalName: string };
+
+      expect(body.portalName)
+        .withContext('trimmed on the way out, exactly as a non-blank title is')
         .toBe('');
       expect(fieldMessages())
-        .withContext("the server's own sentence, beside the field that caused it")
-        .toContain('Site Title is required.');
+        .withContext('and no local refusal, because neither tier refuses one')
+        .not.toContain('Site Title is required.');
+
+      call.flush(envelope({ ...detail, portalName: '' }));
+      fixture.detectChanges();
+      answerListingReread();
     });
 
     /**
@@ -1758,8 +1909,50 @@ describe('PortalFormComponent', () => {
         answerListingReread();
       });
 
-      it('sends null when the read served no token', () => {
-        const detail: PortalDetail = arriveEditing(5, { concurrencyToken: null });
+      // ⚠ MINOR (client/API contract) — THIS SPECIFICATION WAS REWRITTEN, AND THE REWRITE IS THE FIX.
+      //
+      // It asserted that a read serving NO token produced a token-less replacement, and called that a
+      // last-writer-wins update. The premise was false: `PortalDetailDto.ConcurrencyToken` is declared
+      // `public string ... = string.Empty` and is always populated, so a read serving no token is a
+      // MALFORMED response rather than a supported mode. Tolerating it was the defect - the null decoded
+      // silently, reached a write the server does treat as last-writer-wins, and the optimistic check was
+      // skipped with nothing anywhere reporting it, so a lost update presented as a successful save.
+      //
+      // The decoder now refuses it, and this case pins the consequence at the screen: no record arrives,
+      // so no form is offered and no replacement can be composed against a revision nobody knows. The
+      // decoder-level refusal itself, in all four of its shapes, is asserted in the service's own
+      // specification.
+      it('offers no form and composes no replacement when the read served no token', () => {
+        editMode('5');
+
+        expectRequest('GET', portalUrl(5), 'the detail read').flush(
+          envelope({ ...portalDetail(5), concurrencyToken: null }),
+        );
+        fixture.detectChanges();
+
+        // Nothing to edit, because nothing decoded - and nothing left spinning either.
+        expect(query('#portal-form-title'))
+          .withContext('no form is offered against a record that did not decode')
+          .toBeNull();
+        expect(query('app-loading-spinner')).withContext('not left waiting forever').toBeNull();
+
+        // The operator is told, rather than left with a blank panel.
+        expect(notifications().length)
+          .withContext('the refusal is reported')
+          .toBeGreaterThan(0);
+
+        // And the thing this protects: no write of any kind is issued, so no replacement can carry a
+        // token that was never read.
+        expect(httpMock.match(() => true))
+          .withContext('no write is composed from a record that did not decode')
+          .toHaveSize(0);
+        expect(navigateSpy).not.toHaveBeenCalled();
+      });
+
+      it('always carries a token on a replacement, because a read that served none is refused', () => {
+        // The positive half of the pair, stated as a total: every replacement this screen can compose
+        // carries a marker, because the only path to composing one is a read that decoded.
+        const detail: PortalDetail = arriveEditing(5);
 
         type('portal-form-title', 'After');
         press(EDIT_SUBMIT_LABEL);
@@ -1767,10 +1960,10 @@ describe('PortalFormComponent', () => {
         const call = expectRequest('PUT', portalUrl(5), 'the replacement');
         const body = call.request.body as { readonly concurrencyToken: string | null };
 
-        // A last-writer-wins update, exactly as this screen behaved before the member existed. Nothing
-        // is invented to fill the gap: a fabricated token that happened to match would defeat the very
-        // check it appears to satisfy.
-        expect(body.concurrencyToken).toBeNull();
+        expect(typeof body.concurrencyToken)
+          .withContext('a marker, never a null this screen invented and never one it omitted')
+          .toBe('string');
+        expect(body.concurrencyToken).toBe(detail.concurrencyToken);
 
         call.flush(envelope({ ...detail, portalName: 'After' }));
         fixture.detectChanges();

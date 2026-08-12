@@ -628,28 +628,43 @@ public sealed class RoleService : IRoleService
                 RoleTermsRules.DuplicateRoleMessage);
         }
 
+        // MIGRATION: reproduces the legacy ROLE_CREATED audit entry (EventLogController.vb:L59), which the
+        // legacy screen wrote after a successful insert.
+        //
+        // MIGRATION: RECORDED IMMEDIATELY AFTER THE FLUSH, AND NO LONGER AFTER THE READ-BACK. The record used
+        // to sit behind a cache eviction and a re-read that returns early when it yields nothing - so a role
+        // that WAS inserted and committed, but that the read-back could not find, was created with no trace
+        // of its creation. A role is a permission grouping: an untraced one is exactly the kind of grant an
+        // audit trail exists to account for, and the read-back failing says nothing whatever about whether
+        // the insert happened.
+        //
+        // WAITING FOR THE READ-BACK BOUGHT NOTHING, WHICH IS WHY MOVING IT COSTS NOTHING. The stated reason
+        // was that the read-back's identifier is "the one the database actually assigned" - but the change
+        // tracker writes the store-generated identity back onto the tracked entity during SaveChanges, so
+        // role.RoleId already IS that identifier at this point. The previous code even proved it: it passed
+        // role.RoleId as the argument to the read-back it then took the identifier from. The two values are
+        // the same value.
+        RecordAudit(
+            AuditEventNames.RoleCreated,
+            portalId,
+            RoleResourceType,
+            role.RoleId,
+            properties: new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["AutoAssignment"] = request.AutoAssignment.ToString(CultureInfo.InvariantCulture),
+            });
+
         _cache.InvalidatePortal(portalId);
 
         Role? stored = await _roles.GetByIdAsync(role.RoleId, portalId, cancellationToken).ConfigureAwait(false);
         if (stored is null)
         {
+            // The role exists and the record above already says so. This refusal is about the RESPONSE
+            // rather than about the work, which is why the record no longer waits behind it.
             return Result<RoleDetailDto>.Failure(
                 RoleCreateFailedCode,
                 "The role was created but could not be read back.");
         }
-
-        // MIGRATION: reproduces the legacy ROLE_CREATED audit entry (EventLogController.vb:L59), which the
-        // legacy screen wrote after a successful insert. Recorded after the commit and after the read-back,
-        // so the identifier on the record is the one the database actually assigned.
-        RecordAudit(
-            AuditEventNames.RoleCreated,
-            portalId,
-            RoleResourceType,
-            stored.RoleId,
-            properties: new Dictionary<string, string?>(StringComparer.Ordinal)
-            {
-                ["AutoAssignment"] = request.AutoAssignment.ToString(CultureInfo.InvariantCulture),
-            });
 
         RoleDetailDto detail = RoleMappings.ToDetail(stored);
         return Result<RoleDetailDto>.Success(detail);
@@ -663,6 +678,31 @@ public sealed class RoleService : IRoleService
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        // MIGRATION: THE WHOLE READ-JUDGE-WRITE SEQUENCE IS ONE SERIALISABLE TRANSACTION, and it had none at
+        // all. Three separate reads decided this write - the tenant's role designations, the role row itself
+        // with its concurrency token, and the portal-scoped duplicate-name probe - and the row was replaced in
+        // a later statement, so every one of those three facts could change in between. The token comparison
+        // below is a PRE-CHECK and nothing more: two callers can both pass it and both write, because nothing
+        // held the row between the read and the flush, and the loser's committed edit disappears with no
+        // report to either party. This is the same enclosure the two portal write paths use, and the three
+        // whole-record write paths in this solution now agree.
+        //
+        // SERIALISABLE RATHER THAN THE DEFAULT, and the distinction from DeleteRoleAsync directly below is
+        // deliberate rather than inconsistent. That member reasons explicitly that nothing it read has to stay
+        // unchanged for the removal to be correct. This member is the opposite case: it is a read-modify-write
+        // of the very row it judged, and its rename guard asks a question about the tenant's other roles whose
+        // answer must still hold when the write lands. A range lock on that probe can make two concurrent role
+        // updates deadlock, which is exactly why the store's deadlock report is translated into the same
+        // conflict a stale token reports - the loser is told to reload and re-apply, which is what it must do.
+        //
+        // A USING DECLARATION RATHER THAN A BLOCK, so the existing body keeps its shape: every early return
+        // below disposes the scope without committing, which rolls back, and the eviction and audit record
+        // after the commit are non-transactional work whose scope disposal is a no-op once committed.
+        // Recorded in MIGRATION_NOTES.md.
+        await using ITransactionScope transaction = await _unitOfWork
+            .BeginTransactionAsync(TransactionIsolation.Serializable, cancellationToken)
+            .ConfigureAwait(false);
 
         // MIGRATION: SEC-F3. THE TENANT ROW IS READ RATHER THAN PROBED, because this member now needs two
         // facts from it - that the tenant exists, and which two roles it has designated - and one read
@@ -784,8 +824,28 @@ public sealed class RoleService : IRoleService
         // auto-assignment flag on during an edit therefore did not retrospectively enrol existing
         // members, and changing the billing or trial terms did not re-compute expiries already in
         // force; both are preserved deliberately, and the terms are re-read on the next assignment.
-        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (ConcurrencyConflictException)
+        {
+            // The token comparison closes the window a caller can OBSERVE; it cannot close the window between
+            // that comparison and the write. The store can still refuse the update as a lost update, and
+            // under serialisable isolation it can abort this participant as a deadlock victim. Both arrive as
+            // one translated signal and are answered with the refusal the stale token already produces, in the
+            // same words, because from the caller's position they are the same event: the record moved,
+            // nothing was written, reload and apply the change again. Reporting either as a server fault would
+            // tell a caller the service had failed when it had in fact protected another operator's edit.
+            return Result<RoleDetailDto>.Failure(
+                RoleConcurrencyConflictCode,
+                FormattableString.Invariant(
+                    $"Role {roleId} was changed by someone else after you read it, so nothing was written. Reload the role to see the current values, then apply your change again."));
+        }
 
+        // Everything below runs only once the write is durable, so no eviction and no audit record can
+        // describe an amendment that was rolled back.
         _cache.InvalidatePortal(portalId);
 
         // MIGRATION: reproduces the legacy ROLE_UPDATED audit entry (EventLogController.vb:L60). The name
@@ -901,6 +961,25 @@ public sealed class RoleService : IRoleService
 
         // Everything below runs only once the batch is durable, so no eviction and no audit record can
         // describe a removal that did not happen.
+
+        // MIGRATION: reproduces the legacy ROLE_DELETED audit entry (EventLogController.vb:L61). The name is
+        // captured BEFORE the removal, because after the commit the row it came from no longer exists and
+        // the record would be reduced to a bare identifier nothing can resolve.
+        //
+        // MIGRATION: RECORDED IMMEDIATELY AFTER THE COMMIT, AHEAD OF THE EVICTIONS. It used to follow the
+        // grant-cache eviction below, which was at the time an awaited call that OBSERVED THE CANCELLATION
+        // TOKEN (it is now the delegated, synchronous call the permission contract owns) - so a
+        // caller who disconnected in the moment after the commit had the role and every assignment to it
+        // removed, durably and irreversibly, with nothing in the trail to say so. Removing a role revokes
+        // whatever that role granted to everyone holding it; a silent revocation is precisely the event an
+        // audit trail exists to account for. The evictions follow and may now fail without erasing the
+        // history of a removal that has already happened.
+        RecordAudit(
+            AuditEventNames.RoleDeleted,
+            portalId,
+            RoleResourceType,
+            roleId);
+
         _cache.InvalidatePortal(portalId);
 
         // MIGRATION: SEC-F8. The grant-cache eviction is DELEGATED to the contract that owns it, in place of
@@ -912,18 +991,7 @@ public sealed class RoleService : IRoleService
         // definition rather than opening a second that can drift. It is reached after the commit for the
         // reason its own contract states: evicting earlier would discard warm entries for a batch that might
         // still roll back, and would let a concurrent reader repopulate them from rows about to disappear.
-        await _permissions
-            .InvalidateUserPermissionCachesAsync(portalId, cancellationToken)
-            .ConfigureAwait(false);
-
-        // MIGRATION: reproduces the legacy ROLE_DELETED audit entry (EventLogController.vb:L61). The name is
-        // captured BEFORE the removal, because after the commit the row it came from no longer exists and
-        // the record would be reduced to a bare identifier nothing can resolve.
-        RecordAudit(
-            AuditEventNames.RoleDeleted,
-            portalId,
-            RoleResourceType,
-            roleId);
+        _permissions.InvalidateUserPermissionCaches();
 
         return Result.Success();
     }
@@ -1217,14 +1285,29 @@ public sealed class RoleService : IRoleService
 
         _cache.InvalidateUser(portalId, member.Username);
 
-        // MIGRATION: reproduces the legacy USER_ROLE_CREATED audit entry (EventLogController.vb:L57). The
-        // legacy member was an upsert and raised the same key for both arms, so a renewal is recorded under
-        // it too; the Renewed property is what distinguishes the two without inventing a second event name
-        // the legacy vocabulary does not contain. The two dates are recorded because they are the whole
-        // substance of a renewal, and they are rendered round-trippably so a record can be compared
-        // textually across hosts.
+        // MIGRATION: reproduces the legacy USER_ROLE_CREATED audit entry (EventLogController.vb:L57), but no
+        // longer for BOTH arms of the upsert. The legacy member raised the same key whether it inserted or
+        // revised, and this service copied that - distinguishing the two only by a Renewed property.
+        //
+        // COPYING IT WAS THE MISTAKE, because for a renewal the name asserts something false: the member
+        // ALREADY HELD the role, so nothing was granted. The consequences are concrete. A trail in which the
+        // same account appears to have been granted the same role five times cannot be used to count grants,
+        // and - the question that actually gets asked after an incident - it cannot answer WHEN access was
+        // first given, because every renewal looks exactly like the original grant. Anyone reading the trail
+        // has to know that a Renewed property exists and remember to filter on it, and the reading they get
+        // by not knowing is wrong rather than merely incomplete.
+        //
+        // USER_ROLE_UPDATED is net-new, and deliberately so. The legacy enumeration declares
+        // USER_ROLE_CREATED and USER_ROLE_DELETED with nothing between them, which is why the legacy code had
+        // no better option; this migration does, and the name follows the legacy register so it reads
+        // alongside its two siblings. The Renewed property is KEPT rather than replaced, so an operator with
+        // an existing search on it keeps matching, and a reader filtering on either the name or the property
+        // sees the same distinction.
+        //
+        // The two dates are recorded because they are the whole substance of a renewal, and they are rendered
+        // round-trippably so a record can be compared textually across hosts.
         RecordAudit(
-            AuditEventNames.UserRoleCreated,
+            existing is null ? AuditEventNames.UserRoleCreated : AuditEventNames.UserRoleUpdated,
             portalId,
             UserRoleResourceType,
             roleId,

@@ -329,7 +329,7 @@
 //  fill shifts from the global button hover intact, so the control still answers a
 //  pointer without the error colour being animated away.
 .role-list__filter-action--danger {
-  color: var(--color-danger-text);
+  color: var(--color-danger);
 }
 
 //  MIGRATION: the legacy affordances were raster images — `~/images/edit.gif` and
@@ -412,13 +412,13 @@
 //  distinguish the hue loses nothing.
 .role-list__row-action--danger {
   padding: 0;
-  color: var(--color-danger-text);
+  color: var(--color-danger);
   background: none;
   border: 0;
   border-radius: 0;
 
   @include mx.hover {
-    color: var(--color-danger-text);
+    color: var(--color-danger);
   }
 }
 

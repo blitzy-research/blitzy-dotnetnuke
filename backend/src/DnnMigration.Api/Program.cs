@@ -1,3 +1,4 @@
+using DnnMigration.Api.ErrorHandling;
 using DnnMigration.Api.Extensions;
 using DnnMigration.Api.Logging;
 using DnnMigration.Application;
@@ -28,6 +29,50 @@ Log.Logger = new LoggerConfiguration()
 try
 {
     WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
+
+    // FILE-DELIVERED SECRETS, AS A REGISTERED CONFIGURATION SOURCE RATHER THAN AS A PROMISE.
+    //
+    // Every deployment value this API reads is an ordinary configuration key, so it does not care which
+    // provider supplies it - but a provider has to be REGISTERED before that statement is true of files.
+    // docker/.env.example told operators that Docker Swarm, Kubernetes or a managed secret store could
+    // deliver the connection string and the signing key as mounted files "without any code change", and no
+    // key-per-file source was registered anywhere: a /run/secrets mount was simply not read. The template
+    // described a capability the host did not have, and this is the half that was missing.
+    //
+    // ONE FILE PER KEY, AND THE FILE NAME IS THE KEY. The provider reads every file in the directory and
+    // uses its NAME as the configuration key, translating a double underscore into the section separator
+    // exactly as an environment variable does - so a file called `Jwt__Secret` supplies `Jwt:Secret` and
+    // `ConnectionStrings__Default` supplies the connection string. That is precisely the shape
+    // `docker compose` produces for `secrets:` (which mounts each secret at /run/secrets/<target>), the
+    // shape a Kubernetes secret volume produces, and the shape an entrypoint or a managed-secret agent can
+    // write into an emptyDir. The two names above are the only ones this API requires from a secret store.
+    //
+    // PRECEDENCE IS LAST, AND THEREFORE HIGHEST. The builder's own sources are appsettings.json, the
+    // environment overlay, user secrets in Development, environment variables and command-line arguments,
+    // in that order; adding this one after them means a mounted secret wins over an environment variable
+    // of the same name. That is the correct direction for this application: a deployment that has gone to
+    // the trouble of mounting a secret has done so precisely to stop the value appearing in an environment
+    // block that `docker inspect` can read, and an inherited environment variable must not silently defeat
+    // it. It also makes the migration path off environment delivery a one-step change - mount the file,
+    // remove the variable when convenient - rather than a cutover.
+    //
+    // OPTIONAL, AND SILENT WHEN ABSENT. `optional: true` is what lets the same image run in the base
+    // compose topology, in the test host and on a workstation, none of which mount anything: an absent
+    // directory contributes no keys and no error. The path is itself configurable - from a source that has
+    // already been read, i.e. an environment variable or an appsettings entry - because Kubernetes
+    // projected volumes are conventionally mounted elsewhere and a deployment must not have to rebuild the
+    // image to say so. A blank value is treated as "not configured" rather than as the filesystem root,
+    // which is the one reading of an empty path that could load something unintended.
+    //
+    // NO SECRET IS LOGGED BY THIS. The provider reports nothing; the keys it supplies are consumed by the
+    // same validated options as before, and those validators are written never to echo a value.
+    string secretsDirectory =
+        builder.Configuration[ServiceCollectionExtensions.SecretsDirectorySectionName]
+                is { Length: > 0 } configuredSecretsDirectory
+            ? configuredSecretsDirectory
+            : ServiceCollectionExtensions.DefaultSecretsDirectory;
+
+    builder.Configuration.AddKeyPerFile(secretsDirectory, optional: true);
 
     // Replaces the bootstrap logger. Sinks and levels come from configuration so a deployment can change
     // them without a rebuild; reading from the container as well is what allows a sink to resolve a
@@ -79,6 +124,34 @@ try
 
     WebApplication app = builder.Build();
 
+    // THE COMPOSED GRAPH IS INSPECTED BEFORE ANYTHING IS SERVED, for one question that only the built
+    // container can answer: does the refresh-token store this deployment DECLARES match the store the
+    // container actually resolves?
+    //
+    // The store this solution ships is process-local. AAP rule T4 forbids adding a table to the existing
+    // DotNetNuke schema, AAP 0.6 freezes a dependency inventory that contains no distributed-cache client, and
+    // AAP 0.9.3 reproduces a two-service container topology verbatim, so refresh state lives in this process:
+    // it is not shared between replicas and does not survive a restart. That is documented in
+    // MIGRATION_NOTES.md and in README.md, and IRefreshTokenStore is a public contract a deployment may
+    // replace - it registers its own implementation after AddInfrastructure, since the last registration of a
+    // service wins, and sets RefreshTokenStore:Provider to "External".
+    //
+    // The call below is what stops that arrangement failing silently in either direction: declaring an
+    // external store while registering none would scale out on top of the process-local store, and registering
+    // a replacement while still declaring "InProcess" would leave the configuration, the health report and the
+    // operators describing a store the process is not running. Both are start-up failures rather than
+    // discoveries made when a user loses a session.
+    //
+    // It is an explicit call here rather than a hosted service or an options validator, for the reasons argued
+    // at ValidateRefreshTokenStoreTopology: an options validator would re-enter the options creation it was
+    // triggered by, and this solution registers no hosted service that such an assertion could join. Placed
+    // before UseApiPipeline so that a refusal happens while the host is still starting, and it also forces the
+    // store's own settings to be validated eagerly rather than on the first sign-in.
+    //
+    // Fully qualified deliberately: the Application and Infrastructure layers each publish a static
+    // DependencyInjection class and both namespaces are imported above, so the short name is ambiguous.
+    DnnMigration.Infrastructure.DependencyInjection.ValidateRefreshTokenStoreTopology(app.Services);
+
     // The pipeline. Its order is fixed and non-negotiable, and it is mapped here as well as at its definition
     // so that a reordering shows up as a contradiction between two files rather than passing unnoticed in one:
     //
@@ -126,7 +199,29 @@ catch (Exception exception) when (exception is not HostAbortedException)
     // tool builds this application without running it - the design-time migration tooling and the
     // integration-test host both do exactly that - and reporting those as fatal would put a false error in
     // every test run.
-    Log.Fatal(exception, "The API terminated unexpectedly during startup or shutdown.");
+
+    // MIGRATION: DIVERGENCE, AND IT IS THE SAME ONE THE REQUEST PATH ALREADY MAKES. The exception OBJECT used
+    // to be handed to the logger, which records its message, the message of every inner exception and the
+    // stack trace. Startup is the worst place in the application for that: the failures that reach here are
+    // configuration and connection failures, and their messages are exactly where a rejected connection
+    // string, a key that was not found or a value that would not parse gets quoted verbatim - by framework
+    // and provider code whose wording this solution does not author and cannot vouch for. The entry then
+    // lands in the container's stdout, which is the most widely shipped and longest retained log a deployment
+    // has.
+    //
+    // What is recorded instead is the bounded projection the request path already uses:
+    // GlobalExceptionHandler.DescribeForDiagnostics walks the inner-exception chain to a fixed depth and
+    // emits, for each link, the type's full name and its stack trace - method, type and, where symbols are
+    // published, file and line. That is the part that identifies a defect and none of it is caller input. The
+    // MESSAGES are the part that cannot be vouched for, and they are dropped.
+    //
+    // The policy is SHARED rather than restated. That member is internal precisely so every site with this
+    // obligation implements it once - the request-logging middleware is the third - because a second
+    // hand-rolled projection would drift from the first and the drift would be invisible until something
+    // sensitive had already been written.
+    Log.Fatal(
+        "The API terminated unexpectedly during startup or shutdown. {Failure}",
+        GlobalExceptionHandler.DescribeForDiagnostics(exception));
 
     // Rethrown, not swallowed. Logging a startup failure must not turn a process that failed to start into
     // one that reports success: the container orchestrator decides whether to restart this service from the

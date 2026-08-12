@@ -226,6 +226,16 @@ public sealed class SuccessEnvelopeContractTests
                 // before it takes the page window. So it is a contract WITH behaviour behind it, which is why
                 // it belongs here rather than being treated as an unbacked arrival.
                 "RoleMembershipDtoPagedResponse",
+
+                // The account PICKER. Paged for a reason the others share and one they do not: a tenant may
+                // hold more accounts than a drop-down should ever materialise, and the legacy control acted
+                // on exactly that - UserModuleBase.vb:L178-L186 read the tenant's account count and offered
+                // a name box instead of the drop-down above one thousand accounts. It satisfies this list's
+                // condition: SortableFields.UserChoices declares a vocabulary of its own for it - the two
+                // captions an option shows - and the read orders by a name from that vocabulary before it
+                // projects and before it takes the page window.
+                "UserChoiceDtoPagedResponse",
+
                 "UserListItemDtoPagedResponse",
             },
             "these are the listings this API pages, and one arriving here without a covering sort vocabulary "

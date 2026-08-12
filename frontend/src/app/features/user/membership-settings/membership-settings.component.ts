@@ -108,9 +108,13 @@ import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guar
 //     would put per-account operations on a tenant-wide settings page.
 //   * `MemberServices.ascx` is seventy-seven lines of role subscription: a help
 //     paragraph, an invitation-code box with a subscribe command, and a
-//     seven-column services grid carrying a trial command. IT IS IMPLEMENTED - by
-//     `member-services.component.ts`, the sibling component in this folder, routed
-//     at `/users/{userId}/services`.
+//     seven-column services grid carrying a trial command. THE API SIDE OF IT IS
+//     IMPLEMENTED - the account resource publishes the catalogue, subscribe or
+//     renew, cancel, trial and invitation-code endpoints - but NO SCREEN IN THIS
+//     WORKSPACE PRESENTS IT. A sibling component reached at `/users/{userId}/services`
+//     did, and it is withdrawn: AAP 0.4.4 freezes the route table at twenty-five
+//     screens and names no member-services address among them. The divergence is
+//     recorded in `MIGRATION_NOTES.md`.
 //
 //     ⚠ AN EARLIER REVISION OF THIS NOTE RECORDED IT AS OMITTED, on the grounds
 //     that "role subscription, invitation codes, trials and billing transactions
@@ -527,34 +531,22 @@ export const MEMBERSHIP_SETTINGS_TEXT = Object.freeze({
     'User settings saved. No account names needed to change under the new display name format.',
 
   /**
-   * Shown while this tenant has NO STORED POLICY OF ITS OWN and the form is therefore seated from
-   * the platform defaults.
-   *
-   * ⚠ #6 — THIS SENTENCE IS THE WHOLE FIX, AND WITHOUT IT THE SCREEN LIES BY OMISSION. Every
-   * control below renders a value whether the tenant stored one or not, and a rendered value looks
-   * identical either way: an operator reading `Records Per Page 10` cannot tell whether somebody
-   * chose ten or whether ten is simply what this platform falls back to. The distinction is not
-   * cosmetic — it decides whether pressing Update CHANGES a policy or CREATES one, and it decides
-   * whether a value an operator disagrees with was somebody's decision or nobody's.
-   *
-   * AUTHORED, and reported as such. There is no legacy wording to recover because the legacy
-   * screen could not reach this state and therefore had nothing to say about it:
-   * `Website/admin/Users/UserSettings.ascx.vb` read every value through
-   * `UserModuleBase.GetSetting(PortalId, key)` (L98-L190), which returned the hard-coded default
-   * for an absent key WITHOUT reporting that it had done so, so the legacy screen was
-   * structurally incapable of distinguishing the two states. That silence is the defect this
-   * sentence closes, so it is a documented net addition rather than a port.
-   */
-  defaultsNotice:
-    'This site has no stored user settings, so the values below are this platform\u2019s defaults. Press Update to store them for this site.',
-
-  /**
    * Shown while the tenant DOES hold a stored policy, so the values are somebody's decision.
    *
-   * The counterpart of {@link defaultsNotice} and rendered on the same terms. Stating only the
-   * defaults case would leave the stored case reading as the absence of a notice, which is exactly
-   * the ambiguity being closed — a reader cannot distinguish "no notice because a policy is
-   * stored" from "no notice because this screen does not say".
+   * ⚠ #6 — THIS SENTENCE IS WHAT STOPS THE SCREEN LYING BY OMISSION. Every control below renders a
+   * value whether the tenant stored one or not, and a rendered value looks identical either way: an
+   * operator reading `Records Per Page 10` cannot otherwise tell whether somebody chose ten or
+   * whether ten is what this platform falls back to. The counterpart state — the tenant that stores
+   * nothing — is stated by the unconfigured branch of the template rather than by a second sentence
+   * here, because under the server's contract that state also means the policy CANNOT be stored, and
+   * the remedy matters more than the provenance. So this notice present means "somebody decided
+   * these", and this notice absent is never silence: the form is not on screen at all.
+   *
+   * AUTHORED, and reported as such. There is no legacy wording to recover:
+   * `Website/admin/Users/UserSettings.ascx.vb` read every value through
+   * `UserModuleBase.GetSetting(PortalId, key)` (L98-L190), which returned the hard-coded default for
+   * an absent key WITHOUT reporting that it had done so, so the legacy screen was structurally
+   * incapable of distinguishing the two states and had nothing to say about either.
    */
   storedNotice: 'These user settings are stored for this site.',
 } as const);
@@ -935,7 +927,6 @@ const REQUIRED_MESSAGE = 'This setting is required.';
     FormFieldComponent,
     LoadingSpinnerComponent,
     PageHeaderComponent,
-    FocusFirstInvalidDirective,
   ],
   templateUrl: './membership-settings.component.html',
   styleUrl: './membership-settings.component.scss',
@@ -1173,10 +1164,11 @@ export class MembershipSettingsComponent implements OnInit {
    * Which of the two provenances the values on screen have, or `null` while that is not yet known.
    *
    * ⚠ #6 — THE ONE FACT THAT MAKES THE VALUES ON THIS SCREEN READABLE. `'stored'` means the tenant
-   * holds a policy row of its own and every value below is somebody's decision. `'defaults'` means
-   * the tenant holds none and every value below is what this platform falls back to, in which case
-   * pressing Update CREATES the policy rather than changing it. The two are visually identical
-   * without this, because a control renders its value the same way whichever it is.
+   * holds a settings store of its own and every value below is somebody's decision. `'defaults'`
+   * means the tenant holds none, so every value is what this platform falls back to — and, under the
+   * server's contract, that the policy cannot be written at all, which is why that case is presented
+   * by {@link unconfigured} in place of the form rather than as a note above it. The two are
+   * visually identical without this, because a control renders its value the same way whichever it is.
    *
    * `null` covers the read still being in flight and the read having failed. Neither is a
    * provenance, and asserting one would be a guess: the disclosure is simply withheld, which is
@@ -1203,13 +1195,21 @@ export class MembershipSettingsComponent implements OnInit {
    *
    * Composed here rather than in the template so that the wording, like every other string on
    * this screen, has exactly one home.
+   *
+   * ⚠ ONLY THE STORED CASE IS DISCLOSED HERE, AND THE OTHER CASE IS NOT AN OMISSION. Under the
+   * server's contract `isStored: false` and "this tenant has nowhere to store a policy" are the SAME
+   * state, not two: the read answers the defaults exactly when it can find no "User Accounts" module
+   * instance, and the write for that same tenant answers `409`
+   * `user.membership-settings.storage-conflict`. So the defaults case is stated once, by
+   * {@link unconfigured}, which explains the state AND withholds the form AND names the remedy - and
+   * a second sentence here would have to sit above a branch that shows no values, describing the
+   * provenance of nothing. An earlier revision did exactly that and invited the operator to "press
+   * Update to store them", which is a save the API refuses.
    */
   protected readonly provenanceNotice: Signal<string | null> = computed(() => {
     switch (this.valueProvenance()) {
       case 'stored':
         return MEMBERSHIP_SETTINGS_TEXT.storedNotice;
-      case 'defaults':
-        return MEMBERSHIP_SETTINGS_TEXT.defaultsNotice;
       default:
         return null;
     }
@@ -1281,19 +1281,22 @@ export class MembershipSettingsComponent implements OnInit {
 
     // ⚠ WITHHELD FOR A SECOND, DIFFERENT REASON: this tenant has nowhere to store a policy.
     // The reasoning above is about not overwriting a live policy with seated defaults, and it does
-    // not apply here because there IS no stored policy to overwrite. What applies instead is that
-    // the WRITE cannot succeed - measured against the running API, `PUT /api/v1/users/settings`
-    // answers `404 user.membership_settings.source_missing`, "Portal -1 has no \"User Accounts\"
-    // module instance to store membership settings against." Opening the command would therefore
-    // invite the operator to fill in twenty-three settings and then fail at the last step.
+    // not apply here because there IS no store to overwrite. What applies instead is that the WRITE
+    // cannot succeed - measured against the running API, `PUT /api/v1/users/settings` answers
+    // `409 user.membership-settings.storage-conflict`, "Portal -1 has no \"User Accounts\" module
+    // instance, so there is nowhere to store membership settings." Opening the command would
+    // therefore invite the operator to fill in twenty-three settings and then fail at the last step.
     //
-    // ⚠ AND THIS IS WHY THE REFUSAL IS NOW EXPLAINED. Before the store learned to tell absence
-    // apart from failure, this screen refused for the branch below AND showed the read's problem
-    // document, so the operator at least saw something - the wrong thing, "The requested resource
-    // does not exist", but something. That failure is no longer recorded, so a bare refusal here
-    // would leave a form full of controls and a dead button with nothing saying why. The template
-    // renders {@link unconfigured} as an in-page explanation for exactly that reason; the two
-    // changes are one change and must not be separated.
+    // ⚠ A CONFLICT RATHER THAN A NOT-FOUND, AND THAT IS WHY THIS STATE IS REACHABLE AT ALL. The read
+    // for this same address answers `200` with the platform defaults and marks them `isStored: false`,
+    // so the resource demonstrably exists and only its store is absent; the server reports that as a
+    // state conflict an operator can repair. The store publishes the same fact as
+    // `membershipSettingsUnconfigured`, read from the document rather than from a status line.
+    //
+    // ⚠ AND THIS IS WHY THE REFUSAL IS EXPLAINED. The read succeeds, so there is no problem document
+    // to show and a bare refusal would leave a form full of controls and a dead button with nothing
+    // saying why. The template renders {@link unconfigured} in place of the form for exactly that
+    // reason; the two are one decision and must not be separated.
     if (this.unconfigured()) {
       return false;
     }

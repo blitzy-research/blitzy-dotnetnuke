@@ -54,8 +54,16 @@
       Tracked by the service's own identifier, which it documents as never reissued for the
       lifetime of the service — not even after a dismissal or a clear. Tracking by the message
       text instead would collapse two identical announcements into one rendered row and silently
-      drop a message the application deliberately raised twice; the service explicitly does not
-      de-duplicate, so identical pairs are ordinary input here rather than a theoretical case.
+      drop a message the application deliberately raised twice.
+
+      ⚠ THE PRECEDING SENTENCE USED TO CLAIM THE SERVICE "EXPLICITLY DOES NOT DE-DUPLICATE", AND IT
+      DOES. `notify` collapses an entry that repeats the newest one on every stored member — severity,
+      composed message, reference, navigation opinion and lifetime opinion — replacing it rather than
+      appending. What it does NOT collapse is a repeat that is not ADJACENT, or one differing in any of
+      those members, and either is reachable: two screens reporting the same refusal with a different
+      support reference, or one entry raised to survive a redirect beside one that is not. So identical
+      rendered text still reaches this loop as separate entries, the tracking argument above still holds
+      in full, and only the claim about the service was wrong.
 
       The severity is a data attribute rather than a class list because the band is a four-way
       state, not four independent booleans: one binding cannot leave two bands applied at once,
@@ -82,9 +90,18 @@
         The visible glyph is a multiplication sign — the typographic character rather than the
         letter x — and it is `aria-hidden`, because a screen reader announcing "multiplication
         sign" says nothing useful. The accessible name comes from the label attribute instead,
-        so the control is announced by what it DOES. There is deliberately no auto-dismiss
-        timer anywhere in this surface: a person reading slowly, or reading with a screen
-        reader, must not lose a message before finishing it.
+        so the control is announced by what it DOES.
+
+        ⚠ AND IT IS NOT THE ONLY WAY A MESSAGE LEAVES, WHICH THIS COMMENT USED TO DENY. It claimed
+        there is "deliberately no auto-dismiss timer anywhere in this surface", on the sound reasoning
+        that a person reading slowly, or reading with a screen reader, must not lose a message before
+        finishing it. This component arms exactly such timers — one eight-second countdown per
+        qualifying entry — and the reasoning above is what SHAPES them rather than forbidding them.
+        WHICH entries qualify is the whole of the protection: only a success or an advisory, or an
+        entry whose caller asked for a countdown, is ever retired on a timer, so an error or a warning
+        stays until it is dismissed; the countdown is suspended while a person is reading or operating
+        the region; and this button retires anything early. So the guarantee a reader needs holds, and
+        it holds for an operator who never reaches for the mouse.
       -->
       <button
         type="button"

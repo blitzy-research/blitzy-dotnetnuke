@@ -5,6 +5,7 @@ using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.User;
 using DnnMigration.Application.Options;
 using DnnMigration.Application.Services;
+using DnnMigration.Application.Validation;
 using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
@@ -235,8 +236,11 @@ public class UserServiceApplicationTests
                 CurrentUser.Object,
                 Audit.Object,
                 Tokens.Object,
+                StoreFailures.Object,
+                Diagnostics.Object,
                 PasswordPolicy,
-                Caching);
+                Caching,
+                PortalContext.Object);
         }
 
         /// <summary>Gets the service under test.</summary>
@@ -302,6 +306,25 @@ public class UserServiceApplicationTests
         /// <summary>Gets the token contract mock, which ends the sessions a deletion invalidates.</summary>
         public Mock<ITokenService> Tokens { get; } = new();
 
+        /// <summary>
+        /// Gets the store-failure classifier mock. Loose by default, so it answers <c>false</c> for every
+        /// exception and the account-creation guard absorbs nothing unless a test says the store failed.
+        /// </summary>
+        public Mock<IStoreFailureClassifier> StoreFailures { get; } = new();
+        /// <summary>
+        /// Gets the tenant-facts holder the detail read consults before falling back to a portal read.
+        /// </summary>
+        /// <remarks>
+        /// Left reporting itself unresolved, which is what a caller outside a request scope genuinely is, so
+        /// every case here exercises the persistence fall-back exactly as it did before the holder existed.
+        /// </remarks>
+        public Mock<IPortalContextHolder> PortalContext { get; } = new();
+        /// <summary>
+        /// Gets the private diagnostics mock, which receives the anomalies a caller is not told about -
+        /// among them the CLR type of a credential-store fault, which must never reach a failure message.
+        /// </summary>
+        public Mock<ISecurityDiagnostics> Diagnostics { get; } = new();
+
         /// <summary>Gets the bound credential policy, taken as a plain settings object by the service.</summary>
         public PasswordPolicyOptions PasswordPolicy { get; } = new();
 
@@ -341,6 +364,9 @@ public class UserServiceApplicationTests
         /// <summary>Gets or sets the page the account repository answers a listing with.</summary>
         public PagedResult<User> AccountPage { get; set; } = PagedResult<User>.Empty;
 
+        /// <summary>Gets or sets the page the account repository answers a picker read with.</summary>
+        public PagedResult<AccountChoice> ChoicePage { get; set; } = PagedResult<AccountChoice>.Empty;
+
         /// <summary>Gets or sets the profile declarations the tenant holds.</summary>
         public IReadOnlyList<ProfilePropertyDefinition> ProfileDeclarations { get; set; } = [];
 
@@ -355,6 +381,9 @@ public class UserServiceApplicationTests
 
         /// <summary>Gets the arguments the account listing forwarded to the store, once it did.</summary>
         public ListingArguments? Listing { get; private set; }
+
+        /// <summary>Gets the arguments the account picker forwarded to the store, once it did.</summary>
+        public ChoiceArguments? ChoiceListing { get; private set; }
 
         /// <summary>Gets the number of times the single commit point was reached.</summary>
         public int CommitCount { get; private set; }
@@ -388,6 +417,23 @@ public class UserServiceApplicationTests
             bool? IsApproved,
             bool IncludeUnauthorised,
             bool IncludeSuperUsers,
+            string? SortBy,
+            bool Descending);
+
+        /// <summary>
+        /// The arguments of <c>IUserRepository.ListAccountChoicesAsync</c>, captured verbatim.
+        /// </summary>
+        /// <param name="PortalId">The tenant the page was taken within.</param>
+        /// <param name="PageIndex">The zero-based page index.</param>
+        /// <param name="PageSize">The page size, zero meaning unpaged.</param>
+        /// <param name="NamePrefix">The caption prefix, or absent.</param>
+        /// <param name="SortBy">The ordering caption, or absent.</param>
+        /// <param name="Descending">Whether the ordering is reversed.</param>
+        public sealed record ChoiceArguments(
+            int PortalId,
+            int PageIndex,
+            int PageSize,
+            string? NamePrefix,
             string? SortBy,
             bool Descending);
 
@@ -528,6 +574,22 @@ public class UserServiceApplicationTests
                     (bool)invocation.Arguments[10]!,
                     (string?)invocation.Arguments[11],
                     (bool)invocation.Arguments[12]!)));
+            subject.Users.Setup(users => users.ListAccountChoicesAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => subject.ChoicePage)
+                .Callback(new InvocationAction(invocation => subject.ChoiceListing = new ChoiceArguments(
+                    (int)invocation.Arguments[0]!,
+                    (int)invocation.Arguments[1]!,
+                    (int)invocation.Arguments[2]!,
+                    (string?)invocation.Arguments[3],
+                    (string?)invocation.Arguments[4],
+                    (bool)invocation.Arguments[5]!)));
 
             subject.Roles.Setup(roles => roles.GetByPortalIdAsync(
                     It.IsAny<int>(),
@@ -556,10 +618,7 @@ public class UserServiceApplicationTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Result.Success())
                 .Callback(() => subject.CallLog.Add("grants.delete"));
-            subject.Permissions.Setup(permissions => permissions.InvalidateUserPermissionCachesAsync(
-                    It.IsAny<int>(),
-                    It.IsAny<CancellationToken>()))
-                .Returns(Task.CompletedTask)
+            subject.Permissions.Setup(permissions => permissions.InvalidateUserPermissionCaches())
                 .Callback(() => subject.CallLog.Add("grants.evict"));
 
             // Loose behaviour hands back a null scope, which the await-using would then dereference, so this
@@ -1818,6 +1877,181 @@ public class UserServiceApplicationTests
     }
 
     /// <summary>
+    /// Proves the account picker performs NONE of the four supporting reads the account listing performs,
+    /// which is the whole reason it is a separate member.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The listing reads the tenant's account-policy settings to decide which columns it may publish, reads
+    /// the tenant's profile-property declarations, issues a batched profile-value read to fill the address
+    /// and telephone columns, and reads the portal itself to learn which account it must not offer for
+    /// deletion. A picker renders a key and two captions, so it needs none of them - and this test is what
+    /// stops one being reintroduced by a later edit that reuses the listing's body.
+    /// </para>
+    /// <para>
+    /// The portal read is the sharpest of the four, because it is the one whose removal from the account
+    /// DETAIL read was a separate finding: a read that exists to decide an affordance the payload does not
+    /// carry is a round trip with no reader.
+    /// </para>
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListAccountChoices_PerformsNoSupportingReads()
+    {
+        Subject subject = Subject.Ready();
+        subject.ChoicePage = PagedResult<AccountChoice>.Create(
+            [new AccountChoice(7, "member_one", "Member One")],
+            totalCount: 1,
+            pageIndex: 0,
+            pageSize: 10);
+
+        Result<PagedResult<UserChoiceDto>> outcome = await subject.Service.ListAccountChoicesAsync(
+            SeedPortalId,
+            new PagedRequest { PageIndex = 0, PageSize = 10 },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        subject.Portals.Verify(
+            portals => portals.GetByIdAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "a picker publishes no affordance that depends on the tenant row");
+
+        subject.Profiles.Verify(
+            profiles => profiles.GetProfileValuesAsync(
+                It.IsAny<int>(),
+                It.IsAny<IReadOnlyCollection<int>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never,
+            "the address and telephone columns are not in this projection, so no profile value is read");
+
+        subject.Profiles.Verify(
+            profiles => profiles.GetDefinitionsByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "no profile declaration is needed to caption an option");
+
+        subject.Users.Verify(
+            users => users.ListAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<int?>(),
+                It.IsAny<string?>(),
+                It.IsAny<bool?>(),
+                It.IsAny<bool>(),
+                It.IsAny<bool>(),
+                It.IsAny<string?>(),
+                It.IsAny<bool>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never,
+            "the picker must not be served by the fat account listing, which is the defect it closes");
+    }
+
+    /// <summary>
+    /// Proves the picker's projection carries the key and the two captions and cannot carry anything else.
+    /// </summary>
+    /// <remarks>
+    /// Asserted against the CONTRACT TYPE rather than against one instance, because the exposure this
+    /// endpoint closes would return the moment a member were added to the transfer object - and every
+    /// existing caller would keep compiling. The three names are written out so that widening the type
+    /// fails this test rather than passing silently.
+    /// </remarks>
+    [Fact]
+    public void AccountChoiceContract_CarriesTheKeyAndTwoCaptionsOnly()
+    {
+        IReadOnlyList<string> members = typeof(UserChoiceDto)
+            .GetProperties()
+            .Select(property => property.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+        members.Should().BeEquivalentTo(
+            new[] { "DisplayName", "UserId", "Username" },
+            "an account picker needs a key to submit and two captions to render; every further member is "
+            + "personal data sent to a screen that cannot use it");
+    }
+
+    /// <summary>
+    /// Proves the picker refuses an ordering by a value it does not return, rather than accepting and
+    /// discarding it.
+    /// </summary>
+    /// <remarks>
+    /// The account listing admits <c>Email</c> as an ordering and this member does not, and the difference is
+    /// the projection: ordering a drop-down by a value none of its options shows is an ordering the operator
+    /// cannot verify. The refusal carries its own code so a client can tell which set it was measured
+    /// against.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListAccountChoices_OrderedByAFieldItDoesNotReturn_IsRefused()
+    {
+        Subject subject = Subject.Ready();
+
+        Result<PagedResult<UserChoiceDto>> outcome = await subject.Service.ListAccountChoicesAsync(
+            SeedPortalId,
+            new PagedRequest { PageIndex = 0, PageSize = 10, SortBy = "Email" },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeFalse();
+        outcome.Error.Should().NotBeNull();
+        outcome.Error!.Code.Should().Be("user.choices.sort-unsupported");
+
+        subject.ChoiceListing.Should().BeNull("a refused request reaches no store");
+    }
+
+    /// <summary>
+    /// Proves both captions ARE accepted as orderings and travel to the store, so the two names the
+    /// boundary admits are honoured rather than advertised.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListAccountChoices_OrderedByACaptionItReturns_ForwardsTheOrdering()
+    {
+        Subject subject = Subject.Ready();
+
+        Result<PagedResult<UserChoiceDto>> outcome = await subject.Service.ListAccountChoicesAsync(
+            SeedPortalId,
+            new PagedRequest
+            {
+                PageIndex = 0,
+                PageSize = 10,
+                SortBy = "Username",
+                SortDir = SortDirection.Descending,
+            },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        subject.ChoiceListing.Should().NotBeNull();
+        subject.ChoiceListing!.SortBy.Should().Be("Username");
+        subject.ChoiceListing.Descending.Should().BeTrue();
+        subject.ChoiceListing.PortalId.Should().Be(SeedPortalId);
+    }
+
+    /// <summary>
+    /// Proves the paging bounds are re-checked here, so a caller reaching the application layer without
+    /// passing through request validation cannot ask for an unbounded page.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListAccountChoices_AboveThePageSizeCeiling_IsRefused()
+    {
+        Subject subject = Subject.Ready();
+
+        Func<Task> beyondTheCeiling = () => subject.Service.ListAccountChoicesAsync(
+            SeedPortalId,
+            new PagedRequest { PageIndex = 0, PageSize = PagedRequestValidator.MaximumPageSize + 1 },
+            CancellationToken.None);
+
+        await beyondTheCeiling.Should().ThrowAsync<DomainException>();
+
+        subject.ChoiceListing.Should().BeNull("a refused request reaches no store");
+    }
+
+    /// <summary>
     /// Proves the legacy "return every row" request is forwarded as an unpaged request rather than
     /// silently becoming a first page.
     /// </summary>
@@ -2444,6 +2678,17 @@ public class UserServiceApplicationTests
                         It.IsAny<DateTime>(),
                         It.IsAny<CancellationToken>()))
                     .ThrowsAsync(new InvalidOperationException("the credential store is unreachable"));
+
+                // THE CLASSIFIER IS ARRANGED, and it has to be. This case stands for the store itself failing,
+                // and the service now absorbs only a failure the Domain classifier POSITIVELY attributes to the
+                // store - so simulating the outage means saying it is one, not merely throwing something. The
+                // service previously converted every non-cancellation exception into this refusal, which meant a
+                // programming fault inside the request was reported to the caller as an external store fault;
+                // this theory is about the reason-CODE mapping, so it states the premise the mapping needs and
+                // leaves the classification rule to be asserted where it belongs.
+                subject.StoreFailures
+                    .Setup(classifier => classifier.IsStoreUnavailable(It.IsAny<Exception>()))
+                    .Returns(true);
                 break;
 
             default:

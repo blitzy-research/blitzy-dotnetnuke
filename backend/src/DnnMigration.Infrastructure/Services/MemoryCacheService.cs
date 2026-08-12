@@ -32,6 +32,23 @@ namespace DnnMigration.Infrastructure.Services;
 /// behavioural difference recorded below.
 /// </para>
 /// <para>
+/// LOCALITY, STATED BECAUSE IT HAS AN OPERATIONAL COST. Both the entries and the invalidations live
+/// in THIS process. AAP section 0.2.2.2 excludes the legacy caching-provider family on the express
+/// grounds that its responsibilities "are met natively by <see cref="IMemoryCache"/>", and AAP
+/// section 0.5.1.3 maps the legacy cache to "<see cref="IMemoryCache"/> behind
+/// <see cref="ICacheService"/>", so this is the plan's specified design rather than a shortcut taken
+/// against it - but it means a SECOND API instance would keep serving its own cached projection of a
+/// row this instance had just changed, because an eviction performed here cannot reach a dictionary
+/// held there. The staleness window is bounded by the evicted entry's own lifetime, which is its
+/// declared base expiry multiplied by <c>Caching:PerformanceMultiplier</c>, and setting that
+/// multiplier to zero disables caching outright and removes the window entirely. Because
+/// <see cref="ICacheService"/> is a public Domain contract and the container resolves the last
+/// registration of a service, a deployment that needs cross-process invalidation registers its own
+/// implementation after <c>AddInfrastructure</c> without editing this file. The limitation and that
+/// escape are recorded in MIGRATION_NOTES.md and in README.md rather than left to be discovered by a
+/// deployment that has already scaled out.
+/// </para>
+/// <para>
 /// Threading. Reads go straight to the thread-safe cache. Every mutation - a write, an eviction
 /// or an invalidation - runs under one private monitor, which is what makes the paired
 /// register-then-write and unregister-then-evict operations indivisible with respect to each
@@ -220,7 +237,8 @@ internal sealed class MemoryCacheService : ICacheService
 
 
     /// <summary>
-    /// Greatest length of time a shared creation may run before it is abandoned.
+    /// Greatest length of time a caller waits on a shared creation before it is abandoned and the
+    /// documented timeout is reported.
     /// </summary>
     /// <remarks>
     /// A creation is shared by every caller that missed the same key, so it cannot be bound to any
@@ -233,6 +251,31 @@ internal sealed class MemoryCacheService : ICacheService
     /// target.
     /// </remarks>
     private static readonly TimeSpan SharedCreationBudget = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Greatest length of time the shared creation's own token stays uncancelled.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// DELIBERATELY LONGER THAN THE CALLER'S WAIT, and the difference is the whole point of the
+    /// member existing. The two budgets bound different things: the wait above bounds how long a
+    /// CALLER is made to hold on, and this one bounds how long the WORK is allowed to keep running
+    /// once no caller is holding on any more. Setting them to the same value made the two expire
+    /// together, so which of the two outcomes a caller saw was a race: the wait expiring produced
+    /// the documented timeout, while the work's own token expiring first faulted the shared task
+    /// with a cancellation that every waiter then observed instead - a cancellation none of them had
+    /// asked for and that the contract does not declare.
+    /// </para>
+    /// <para>
+    /// With a grace period the ordering is settled rather than raced: a waiting caller always times
+    /// out first, and its retirement cancels the work explicitly on the way out. This budget is
+    /// therefore reached only when NOBODY is waiting - the last waiter withdrew, or its own token
+    /// was cancelled - which is exactly the case it exists for, because a creation bound to nothing
+    /// at all is what let one stalled factory hold a key permanently. The grace is small relative to
+    /// the wait: it has to outlast the wait, not extend it materially.
+    /// </para>
+    /// </remarks>
+    private static readonly TimeSpan CreationWorkBudget = SharedCreationBudget + TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// Every declared category prefix, longest first.
@@ -719,14 +762,21 @@ internal sealed class MemoryCacheService : ICacheService
     /// when a live entry exists but cannot be delivered as <typeparamref name="T"/>, which means
     /// one key is being shared by two different value shapes.
     /// </exception>
-    /// <exception cref="TimeoutException">
-    /// The shared creation did not complete within its budget. The registration is retired first,
-    /// so a subsequent call starts a fresh attempt rather than joining the stalled one. No message
-    /// raised here names the key, only its category.
+    /// <exception cref="CacheProductionTimeoutException">
+    /// The shared creation did not complete within its budget. This is the ONE outcome for that
+    /// condition however it was detected - the wait on the shared creation expiring, or the
+    /// creation's own longer budget expiring and the factory observing it - so a caller has a single
+    /// case to handle rather than two that differ by which timer fired first. The registration is
+    /// retired first, so a subsequent call starts a fresh attempt rather than joining the stalled
+    /// one. No message raised here names the key, only its category. The type is CACHE-SPECIFIC
+    /// rather than the framework's own <see cref="TimeoutException"/>, so that a stalled value
+    /// factory cannot be mistaken by the transport for a database outage; see the type for the
+    /// defect that made the distinction necessary.
     /// </exception>
     /// <exception cref="OperationCanceledException">
-    /// <paramref name="cancellationToken"/> was cancelled. Another caller's cancellation is never
-    /// reported here; see the remarks.
+    /// <paramref name="cancellationToken"/> was cancelled. Raised ONLY for this caller's own
+    /// withdrawal: another caller's cancellation is never reported here, and neither is the shared
+    /// creation's own budget, which is reported as the timeout above. See the remarks.
     /// </exception>
     public async Task<T> GetOrCreateAsync<T>(
         string key,
@@ -814,12 +864,35 @@ internal sealed class MemoryCacheService : ICacheService
                 .WaitAsync(SharedCreationBudget, cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (TimeoutException)
+        catch (Exception exception) when (exception is TimeoutException
+            || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
         {
-            // The creation has outrun its budget, which means a factory that is not observing the
-            // token it was handed. Retiring the registration is the part that matters: left in
-            // place it would be joined by every later caller for this key, so one stalled load
-            // would become a permanent refusal to serve that key at all.
+            // ONE OUTCOME FOR ONE CONDITION, however the wait ended. Two things can end it without the
+            // caller having withdrawn: this caller's own wait outran SharedCreationBudget, which arrives as
+            // a TimeoutException, or the shared work's own token was cancelled and the factory observed it,
+            // which arrives as an OperationCanceledException raised inside somebody else's creation. Both
+            // mean "the creation did not finish in time", which is the single outcome this member documents,
+            // so both are answered with it. Before this arm the second form escaped as a bare cancellation
+            // that the contract does not declare and that a caller could not distinguish from its own
+            // withdrawal. CreationWorkBudget now exceeds the wait, so the second form is rare rather than a
+            // coin toss - but "rare" is not "impossible", and a caller must not depend on which of two
+            // timers fired first.
+            //
+            // The guard is what keeps THIS caller's own cancellation out. A caller that withdrew has asked
+            // for a cancellation and must receive one, so the arm declines when its token is the reason -
+            // the framework's own OperationCanceledException then travels on untouched.
+            //
+            // Retiring the registration is the part that matters: left in place it would be joined by every
+            // later caller for this key, so one stalled load would become a permanent refusal to serve that
+            // key at all.
+            //
+            // ⚠ THE TYPE THROWN BELOW IS CACHE-SPECIFIC, NOT THE FRAMEWORK'S OWN. This arm catches
+            // TimeoutException and re-throws CacheProductionTimeoutException deliberately: a stalled
+            // value factory is a defect in this application, and a bare framework timeout was being
+            // read by the transport as a DATABASE OUTAGE and published as 503 with a retry hint no
+            // retry could satisfy. Catching the general shape and translating it is the whole of the
+            // boundary - the budget is this service's own policy, so the condition is this service's
+            // to name.
             //
             // MIGRATION: net-new, and the three parts of this retirement are separable defects if any
             // one of them is dropped. RETIREMENT IS ANNOUNCED TO THE CREATION FIRST, which does two
@@ -838,12 +911,20 @@ internal sealed class MemoryCacheService : ICacheService
             _inFlightLoads.TryRemove(
                 new KeyValuePair<(string Key, Type ValueType), SharedCreation>(registration, creation));
 
-            throw new TimeoutException(
+            // MIGRATION: the type raised here is CACHE-SPECIFIC, and a review is why. This used to be a
+            // plain TimeoutException, which the SQL store-failure classifier read as evidence that the
+            // DATABASE was unreachable - so a value factory that ignored its token had this service report a
+            // cache defect to the caller as 503 Service Unavailable with a Retry-After hint. The narrowed
+            // classifier now requires structural data-access context before reading a generic timeout that
+            // way, and this type supplies none, so the two conditions can no longer be confused. The
+            // exception deliberately does not derive from TimeoutException; the reasoning is on the type.
+            throw new CacheProductionTimeoutException(
                 $"Producing a cache entry for the requested key ({DescribeKey(key)}) did not "
                 + $"complete within "
                 + $"{SharedCreationBudget}. The registration has been retired and the creation "
                 + "cancelled, so a subsequent call will start a fresh attempt rather than joining "
-                + "this one.");
+                + "this one.",
+                exception);
         }
 
         return FromCacheEntry<T>(key, produced);
@@ -861,6 +942,46 @@ internal sealed class MemoryCacheService : ICacheService
         lock (_registryGate)
         {
             Evict(key);
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// SEC-F8. Answered from the category index this service already maintains for its own named
+    /// invalidations, so the work is proportional to the family rather than to everything ever written -
+    /// and so a caller that owns a key family gets the same cost the built-in invalidations get. A prefix
+    /// with no members is not an error: the family simply held nothing.
+    /// </remarks>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="keyPrefix"/> is <see langword="null"/>, empty or white space.
+    /// </exception>
+    public void RemoveByPrefix(string keyPrefix)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(keyPrefix);
+
+        lock (_registryGate)
+        {
+            // A tracked category is answered from the index, which is what the built-in invalidations use
+            // and is proportional to the family. Any other prefix - a key family owned by an application
+            // service rather than by this type's own named invalidations - is answered by scanning the
+            // registered keys. That is proportional to what this service currently holds, which is bounded
+            // by the configured entry limit, and it is the only correct answer for a prefix the category
+            // index was never told about: silently evicting nothing would leave a stale entry serving reads
+            // after the mutation that invalidated it.
+            if (_keysByCategory.ContainsKey(keyPrefix))
+            {
+                EvictTrackedCategory(keyPrefix);
+
+                return;
+            }
+
+            foreach (string trackedKey in _trackedKeys.Keys.ToArray())
+            {
+                if (trackedKey.StartsWith(keyPrefix, StringComparison.Ordinal))
+                {
+                    Evict(trackedKey);
+                }
+            }
         }
     }
 
@@ -1456,12 +1577,19 @@ internal sealed class MemoryCacheService : ICacheService
             // permanently. A factory that observes the token it is handed is cancelled here; one
             // that ignores it is abandoned by the awaiting member instead.
             //
+            // The budget is the WORK budget, which deliberately exceeds the budget a caller waits for. The
+            // two bound different things and expiring together made the reported outcome a race: whichever
+            // timer fired first decided whether a waiter saw the documented timeout or an undeclared
+            // cancellation raised inside this method. Ordering them settles it - a waiter always times out
+            // first and cancels this work explicitly on its way out, so this timer is reached only when no
+            // caller is waiting at all, which is the case it exists for.
+            //
             // The budget is owned by the creation rather than by this scope, which is what lets the
             // retirement path cancel it. A source declared here with `using` could only be cancelled
             // by the timer inside it, so a waiter that gave up had no way to stop the work it had
             // given up on. Disposal moves with ownership: Complete in the finally below releases it,
             // under the same monitor the cancellation takes, so a cancel can never race a dispose.
-            T produced = await factory(creation.BeginWork(SharedCreationBudget)).ConfigureAwait(false);
+            T produced = await factory(creation.BeginWork(CreationWorkBudget)).ConfigureAwait(false);
 
             // MIGRATION: net-new, and the reason this publication is conditional. The legacy idiom
             // read, loaded and inserted as three separate statements at each of the measured call

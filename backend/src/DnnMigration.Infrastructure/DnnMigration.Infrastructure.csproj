@@ -184,27 +184,36 @@
     registration as well as the behaviour. Nothing here should be reached by `new` when the
     container can hand it over.
 
-    The grant below exists for the components whose behaviour is asserted WITHOUT a host, from
-    DnnMigration.UnitTests: LoggingAuditSink, LegacyCredentialVerifier, JwtTokenService and
-    DatabaseHealthCheck are each internal sealed and each is covered by a suite that substitutes
-    its collaborators and asserts what it does with them - the audit sink's structured-property
-    discipline, the legacy verifier's format handling, the token service's claim composition and
-    the health check's non-disclosure of connection detail. Those facts need no database, no
-    Kestrel and no policy pipeline, so a host would only slow them down; what they do need is the
-    type. AAP 0.5.1.5 places exactly these Security suites in the unit project, which is why the
-    edge and this grant are both declared rather than worked around.
+    The grant below exists for the components whose behaviour is asserted with SUBSTITUTED
+    COLLABORATORS rather than through the container: LoggingAuditSink, LegacyCredentialVerifier,
+    JwtTokenService, DatabaseHealthCheck, RefreshTokenStore, ModuleBusinessControllerFactory and the
+    persistence translators are each internal sealed, and each is covered by a suite that hands it a
+    recording logger, a mutable clock or a fabricated fault and asserts what it does with them - the
+    audit sink's structured-property discipline, the legacy verifier's format handling, the token
+    service's claim composition, the health check's non-disclosure of connection detail. Those facts
+    are not reachable from a resolved instance, because the substitution IS the fact; what they need
+    is the type.
+
+    ⚠ THE GRANT NAMES DnnMigration.IntegrationTests, AND IT USED TO NAME DnnMigration.UnitTests.
+    That is not a widening - it is a correction. AAP 0.5.2.2 draws the unit project with a single
+    edge to Application, so a suite there cannot name an Infrastructure type at all; the thirteen
+    suites that did were relocated to the integration project, which reaches this assembly through
+    its own single edge to the API. The grant moved with them, and the old one is gone rather than
+    kept beside it, so the unit project is now structurally incapable of naming an internal type
+    here even by accident.
 
     The production layering guarantee is untouched and is a property of the four PRODUCTION
     project files, not of this item: Domain declares zero project references, Application cannot
     see Infrastructure, and either violation remains a compile error. A test project is the
     outermost consumer of the graph rather than a layer within it.
 
-    The grant names ONE assembly. Do not add a second, do not grant it to a wildcard, and do not
-    widen a type from internal to public to make a test compile - including DnnDbContext, whose
-    internal declaration is what keeps Application away from the model.
+    The grant names ONE assembly. Do not add a second - in particular do not re-add
+    DnnMigration.UnitTests - do not grant it to a wildcard, and do not widen a type from internal to
+    public to make a test compile, including DnnDbContext, whose internal declaration is what keeps
+    Application away from the model.
   -->
   <ItemGroup>
-    <InternalsVisibleTo Include="DnnMigration.UnitTests" />
+    <InternalsVisibleTo Include="DnnMigration.IntegrationTests" />
   </ItemGroup>
 
 </Project>

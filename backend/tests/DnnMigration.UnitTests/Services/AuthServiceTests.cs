@@ -1015,12 +1015,20 @@ public class AuthServiceTests
     /// security event behind instead of nothing at all.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The finding this covers: the containment swallowed every non-cancellation exception in silence, so
     /// an installation could keep verifying credentials at a superseded work factor indefinitely with no
     /// operator signal. Silence is the worst possible outcome for this particular failure precisely because
-    /// the sign-in works perfectly either way, so nothing else would ever surface it. The event carries the
-    /// exception TYPE and never its message, because a store failure's message can quote the value it
-    /// failed to write.
+    /// the sign-in works perfectly either way, so nothing else would ever surface it.
+    /// </para>
+    /// <para>
+    /// Neither record carries the exception's MESSAGE, because a store failure's message can quote the value
+    /// it failed to write. The exception TYPE is carried, and where it is carried is asserted here: the audit
+    /// record's failure code is a stable code naming the CONDITION, and the type name travels the
+    /// security-diagnostics channel, whose <c>reasonCode</c> is documented to accept a type name and which has
+    /// no parameter a message could travel through. The audit column previously held the type name, which made
+    /// it change with a library version rather than with the condition it was documented to record.
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task SignIn_RecordsAFailedCredentialCostUpgradeWithoutFailingTheSignIn()
@@ -1045,10 +1053,20 @@ public class AuthServiceTests
 
         record.Outcome.Should().Be(AuditOutcome.Failed, "which the sink raises to warning level");
         record.SubjectUserId.Should().Be(UserId);
-        record.FailureCode.Should().Be(nameof(TimeoutException));
+        record.FailureCode.Should().Be(
+            "credential_replacement_store_failure",
+            "the audit column holds a stable code naming the condition, not the type the library happened to throw");
         record.Properties.Should().ContainSingle()
             .Which.Should().Be(
                 new KeyValuePair<string, string?>("ReplacementKind", "WorkFactorUpgrade"));
+
+        harness.Diagnostics.Verify(
+            diagnostics => diagnostics.Record(
+                SecurityDiagnosticEvent.CredentialWorkFactorUpgradeFailed,
+                PortalId,
+                UserId,
+                nameof(TimeoutException)),
+            Times.Once());
     }
 
     /// <summary>
@@ -1228,6 +1246,126 @@ public class AuthServiceTests
         record.EventName.Should().Be("SESSION_ENDED");
         record.ActorUserId.Should().Be(UserId);
         record.PortalId.Should().Be(PortalId);
+    }
+
+    /// <summary>
+    /// A sign-out the token store could not complete records nothing, because the session did not end.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// THIS ASSERTION IS THE INVERSE OF WHAT THE CODE USED TO DO, AND THE FALSE RECORD IT REPLACES WAS WORSE
+    /// THAN NO RECORD. The event was written before the revocation result was examined, so the ONE case in
+    /// which the sign-out did not happen was also the case that produced a record saying it had: the store was
+    /// unreachable, the caller correctly received a failure and kept its refresh token - still exchangeable for
+    /// fresh access tokens - and the trail asserted that the session had ended. An investigation asking whether
+    /// a session was terminated was told yes about a live one, indistinguishable from a genuine termination.
+    /// </para>
+    /// <para>
+    /// Withholding the record is the only reading that agrees with the response. The two now say the same
+    /// thing, which is the whole of the fix.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task SignOut_RecordsNothingWhenTheTokenStoreCouldNotRevoke()
+    {
+        Harness harness = Harness.Ready();
+        harness.CurrentUser.SetupGet(caller => caller.IsAuthenticated).Returns(true);
+        harness.CurrentUser.SetupGet(caller => caller.UserId).Returns(UserId);
+        harness.CurrentUser.SetupGet(caller => caller.PortalId).Returns(PortalId);
+        harness.Tokens
+            .Setup(tokens => tokens.RevokeRefreshTokenAsync(
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure(TokenStoreUnavailableCode, "The token store could not be written."));
+
+        Result result = await harness.Service.LogoutAsync(
+            new RefreshTokenRequest { RefreshToken = "a-token" },
+            CancellationToken.None);
+
+        result.IsFailure.Should().BeTrue("the presented token can still mint successors");
+        result.Reason!.Code.Should().Be(TokenStoreUnavailableCode);
+
+        harness.AuditRecords.Should().BeEmpty(
+            "the refresh token was not revoked, so no record may assert that the session ended");
+    }
+
+    /// <summary>
+    /// A retirement the store could not prove is refused and is recorded nowhere, and the refusal discloses
+    /// nothing about whether the presented value existed.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS FACT ASSERTED THE OPPOSITE AND THE EXPECTATION IS WITHDRAWN, because the reading it rested on
+    /// was shown to be unsound. It required an unrecognised token to be reported as a completed sign-out, on
+    /// the reading that a value the store cannot find can no longer mint a successor. That holds only for a
+    /// store that sees ALL of the state. With refresh families held per process it fails in the one case that
+    /// matters: replica B, asked to end a session established on replica A, does not recognise the token and
+    /// so would answer "signed out" while replica A went on honouring the very value presented for
+    /// revocation - and the client, told the sign-out succeeded, had already discarded its only copy, so the
+    /// live session could not even be retried.
+    /// </para>
+    /// <para>
+    /// THE IDEMPOTENCE PROMISE IS NOT LOST, IT IS RELOCATED TO WHERE IT IS PROVEN. The token service reports
+    /// success for a retirement it can prove - the family was retired now, or it holds the family and had
+    /// already retired it, or the store is authoritative across replicas and holds no such family - and
+    /// <see cref="SignOut_RecordsTheSessionEnding"/> is the fact that pins success and the record for that
+    /// path. Only an UNPROVEN retirement is refused, so the caller keeps the credential and can retry.
+    /// </para>
+    /// <para>
+    /// AND THE ORACLE CONCERN THAT MOTIVATED THE OLD EXPECTATION IS STILL HONOURED, by uniformity rather than
+    /// by always succeeding: a value this deployment never issued and a session this instance cannot reach
+    /// produce the SAME refusal, carrying no token material and naming neither condition, so the answer
+    /// still cannot be used to test whether a guessed token exists. That is asserted below rather than
+    /// assumed.
+    /// </para>
+    /// <para>
+    /// No record is written, for the reason its sibling above states: the event asserts that a session
+    /// ENDED, and an unconfirmed retirement is precisely the case in which it may not have.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task SignOut_RefusesAndRecordsNothingWhenTheRetirementCouldNotBeProven()
+    {
+        Harness harness = Harness.Ready();
+        harness.CurrentUser.SetupGet(caller => caller.IsAuthenticated).Returns(true);
+        harness.CurrentUser.SetupGet(caller => caller.UserId).Returns(UserId);
+        harness.CurrentUser.SetupGet(caller => caller.PortalId).Returns(PortalId);
+        harness.Tokens
+            .Setup(tokens => tokens.RevokeRefreshTokenAsync(
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure(
+                "REFRESH_TOKEN_NOTFOUND",
+                "This instance holds no such refresh-token family, so no session can be confirmed as "
+                + "retired. Retain the credential and retry."));
+
+        Result result = await harness.Service.LogoutAsync(
+            new RefreshTokenRequest { RefreshToken = "a-token" },
+            CancellationToken.None);
+
+        result.IsFailure.Should().BeTrue(
+            "a retirement this instance cannot prove may still leave a live session behind, and the client "
+            + "must keep the credential rather than discard it");
+
+        result.Reason!.Code.Should().Be(
+            "SESSION_REVOCATION_STORE_UNAVAILABLE",
+            "the transport maps this one code to the answer that tells a client to retain its credential");
+
+        result.Reason!.Message.Should().NotContain(
+            "a-token",
+            "a refusal may not quote the value presented to it");
+        result.Reason!.Message.Should().NotContainEquivalentOf(
+            "not found",
+            "the wording must not distinguish a value that never existed from a session this instance cannot "
+            + "reach, or the refusal becomes an oracle for whether a guessed token exists");
+        result.Reason!.Message.Should().NotContainEquivalentOf(
+            "unknown",
+            "for the same reason: the two conditions must be indistinguishable from outside");
+
+        harness.AuditRecords.Should().BeEmpty(
+            "the retirement was not confirmed, so no record may assert that the session ended");
     }
 
     /// <summary>
@@ -1526,11 +1664,23 @@ public class AuthServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
+    /// <para>
     /// The containment itself is correct - a failed cost upgrade must not fail a sign-in whose credential
     /// was right - but it used to be silent, and a silent containment is indistinguishable from an upgrade
     /// that is working. The sign-in is asserted to still succeed alongside the entry, because the whole
-    /// point is that the caller is unaffected. The failure travels as an exception so the implementation
-    /// attaches it rather than rendering it, and the credential is not a parameter at all.
+    /// point is that the caller is unaffected. The credential is not a parameter of either record.
+    /// </para>
+    /// <para>
+    /// THE AUDIT RECORD CARRIES A STABLE CODE AND THE DIAGNOSTIC CARRIES THE EXCEPTION TYPE, and the split is
+    /// what this fact pins. <c>AuditEvent.FailureCode</c> is documented as "the stable failure code ... the
+    /// same code the operation reported to its caller"; an earlier revision put
+    /// <c>exception.GetType().Name</c> there, which is chosen by whichever library threw and changes when an
+    /// implementation detail changes, so an audit query grouping on that column produced one bucket per
+    /// library version rather than one per condition. The type name is not lost - it travels the
+    /// security-diagnostics channel, whose <c>reasonCode</c> is documented to accept exactly "a failure code
+    /// from a Result, or the NAME of an exception type", and which accepts no message, no exception and no
+    /// object at all.
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task SignIn_RecordsAContainedCredentialCostUpgradeFailure()
@@ -1556,7 +1706,19 @@ public class AuthServiceTests
         harness.AuditRecords.Should().ContainSingle(entry =>
             entry.EventName == AuditEventNames.PasswordRehashFailure
             && entry.SubjectUserId == UserId
-            && entry.FailureCode == nameof(InvalidOperationException));
+            && entry.FailureCode == "credential_replacement_store_failure");
+
+        harness.AuditRecords.Should().NotContain(
+            entry => entry.FailureCode == nameof(InvalidOperationException),
+            "an exception type name is not a stable code and does not belong in that column");
+
+        harness.Diagnostics.Verify(
+            diagnostics => diagnostics.Record(
+                SecurityDiagnosticEvent.CredentialWorkFactorUpgradeFailed,
+                PortalId,
+                UserId,
+                nameof(InvalidOperationException)),
+            Times.Once());
     }
 
     /// <summary>

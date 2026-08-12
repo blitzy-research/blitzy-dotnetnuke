@@ -102,6 +102,59 @@ public sealed class ProblemDetailDisclosureTests
     }
 
     /// <summary>
+    /// A message naming a CLR exception type is refused, even though it is short and single-line.
+    /// </summary>
+    /// <param name="leaked">A one-sentence message that ends in a CLR type name.</param>
+    /// <remarks>
+    /// <para>
+    /// THE SHAPE THE FIRST TWO REFUSALS DID NOT CATCH. A service caught a credential-store failure and
+    /// appended <c>exception.GetType().Name</c> to the message on its failed outcome, so that a caller could
+    /// report the underlying cause. What it produced was one short single line: well inside the published
+    /// bound and free of line breaks, so both existing refusals passed it, and this edge then published the
+    /// internal type of a component the caller has no relationship with. In the instance found, that type
+    /// named the database client - so an unauthenticated registration attempt learned the storage technology,
+    /// and by repetition could map which dependency failed under which conditions.
+    /// </para>
+    /// <para>
+    /// The rule belongs at the source and was fixed there. This closes the class, because the premise is a
+    /// reasonable-sounding one and nothing about a <c>string</c> announces where it came from.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("The credential store could not be written: TimeoutException.")]
+    [InlineData("SqlException")]
+    [InlineData("The operation failed with DbUpdateConcurrencyException, please retry.")]
+    [InlineData("Creation failed (InvalidOperationException)")]
+    public void AMessageNamingAnExceptionType_IsReplacedByTheStandIn(string leaked)
+    {
+        string published = Detail(Result.Failure("some.code", leaked));
+
+        published.Should().NotBe(leaked);
+        published.Should().NotContain("Exception", "the refused shape must not survive in the stand-in");
+        published.Should().Contain("could not be completed");
+    }
+
+    /// <summary>
+    /// The refusal is a word test, so an authored sentence that merely uses the word "exception" in prose is
+    /// published unchanged.
+    /// </summary>
+    /// <param name="authored">An authored explanation containing the word in ordinary prose.</param>
+    /// <remarks>
+    /// The narrowing matters as much as the refusal. A substring test would have silently replaced
+    /// legitimate explanations with a stand-in, turning a disclosure guard into a message redactor - the
+    /// failure mode this suite's sibling assertions exist to prevent. Only a word ENDING in the type-family
+    /// suffix is refused, which is the .NET naming convention and a shape no authored explanation uses.
+    /// </remarks>
+    [Theory]
+    [InlineData("No exception was made for this account.")]
+    [InlineData("This request is an exception to the usual quota.")]
+    [InlineData("Exceptional circumstances apply to this tenant.")]
+    public void AnAuthoredSentenceUsingTheWordInProse_IsPublishedUnchanged(string authored)
+    {
+        Detail(Result.Failure("some.code", authored)).Should().Be(authored);
+    }
+
+    /// <summary>
     /// No member of the module-lifecycle factory that turns an exception into text reproduces that
     /// exception's message.
     /// </summary>

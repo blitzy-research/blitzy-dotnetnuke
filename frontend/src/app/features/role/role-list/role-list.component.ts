@@ -802,7 +802,6 @@ interface AwaitedGroupMutation {
     // The pager beneath the grid. An ADDITION with no legacy counterpart — see the note beside the
     // element in the paired template, and `ROLES_PAGE_SIZE` in the store for the measurements.
     PaginationComponent,
-    FocusFirstInvalidDirective,
   ],
   templateUrl: './role-list.component.html',
   styleUrl: './role-list.component.scss',

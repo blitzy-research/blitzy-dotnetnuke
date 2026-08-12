@@ -91,4 +91,30 @@ public enum SecurityDiagnosticEvent
     /// </para>
     /// </remarks>
     LegacyCredentialMigrationFailed = 4,
+
+    /// <summary>
+    /// A credential could not be written to the external credential store while an account was being
+    /// created, and the account creation was abandoned.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The credential store is EXTERNAL to the transaction that creates the account row - the membership
+    /// objects are installed by the ASP.NET registration tool and are mapped alongside rather than owned -
+    /// so a failure here abandons the whole creation rather than leaving an account that nobody can sign in
+    /// to. The caller is told that plainly and asked to retry.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THIS MEMBER EXISTS SO THAT THE CAUGHT TYPE HAS SOMEWHERE PRIVATE TO GO. The account
+    /// service used to append <c>exception.GetType().Name</c> to the message on its failed outcome, and a
+    /// failed outcome's message is published verbatim as the RFC 7807 <c>detail</c> - so the internal type of
+    /// the credential store reached an HTTP caller. The type name is a genuinely useful diagnostic for an
+    /// operator and genuinely none of a caller's business, which is precisely the division this contract
+    /// draws: it travels as the reason code on this occurrence, which no response ever carries.
+    /// </para>
+    /// <para>
+    /// Recorded for every caught failure of that write EXCEPT a cancellation, which is the caller
+    /// withdrawing rather than the store failing.
+    /// </para>
+    /// </remarks>
+    CredentialStoreWriteFailed = 5,
 }

@@ -58,6 +58,7 @@ import { EMPTY } from 'rxjs';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { provideRouter } from '@angular/router';
 
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { PortalStore } from '../../../core/state/portal.store';
 import { CONFLICT_MESSAGE } from '../../../core/utils/form-errors.util';
@@ -1167,6 +1168,44 @@ describe('PortalAliasListComponent', () => {
   // ---------------------------------------------------------------------------------------------------
 
   describe('the inline form', () => {
+    it('registers an unsaved-entry probe that a closed editor leaves silent', () => {
+      /*
+       * ⚠ THIS SCREEN'S ROUTE DECLARES `unsavedChangesGuard`, AND THE DECLARATION USED TO BE
+       * ANSWERED BY REFLECTION over the component's fields. That sweep is gone - it made
+       * `@angular/forms` reachable from the eager import graph of an application whose every form
+       * screen is lazily loaded - so this screen registers a probe of its own. A screen declaring the
+       * gate without one is not merely unprotected: it LOOKS protected in the route table, and the
+       * guard reads it as clean.
+       *
+       * ⚠ THE THIRD ASSERTION IS THE ONE THAT EARNS THIS CASE ITS PLACE. This screen is a listing
+       * with an inline editor, so a group left dirty by a cancelled edit would warn on every later
+       * departure - including departures from a screen that is, as far as the operator is concerned,
+       * just a table. Cancelling resets the one control the group holds, and a group whose every
+       * control is pristine is itself pristine. Silent, then dirty, then silent again.
+       *
+       * `isDirty()` is the guard's own public surface, so this asserts through the very call the
+       * guard makes rather than through an internal.
+       */
+      const tracker = TestBed.inject(UnsavedChangesTracker);
+
+      arrive([alias(7, 'localhost')]);
+
+      expect(tracker.isDirty()).withContext('a closed editor is not unsaved entry').toBeFalse();
+
+      press(ADD_ACTION_LABEL);
+      type('www.example.com');
+
+      expect(tracker.isDirty())
+        .withContext('a typed alias with no write in flight is what the guard exists to catch')
+        .toBeTrue();
+
+      press(CANCEL_LABEL);
+
+      expect(tracker.isDirty())
+        .withContext('an abandoned editor must not warn on every later departure')
+        .toBeFalse();
+    });
+
     it('opens the create form from the page action, labelled with this screen own add wording', () => {
       arrive([alias(7, 'localhost')]);
 

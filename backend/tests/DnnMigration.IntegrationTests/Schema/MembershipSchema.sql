@@ -2,7 +2,7 @@
 -- MembershipSchema.sql - the EXTERNAL ASP.NET membership objects the credential store
 -- reaches, which no mapped entity type describes and no EF migration can produce.
 --
--- WHY THESE THREE TABLES ARE PROVISIONED SEPARATELY
+-- WHY THESE TABLES ARE PROVISIONED SEPARATELY
 --   AAP 0.7.1.3 records the finding that settles this: the 88 legacy DDL scripts only
 --   ever ALTER the aspnet_* objects - 04.00.00.SqlDataProvider line 31 is
 --   "ALTER PROCEDURE dbo.aspnet_Membership_UpdateUser" and line 119 is
@@ -92,4 +92,99 @@ CREATE TABLE [dbo].[aspnet_Membership] (
     CONSTRAINT [FK_aspnet_Membership_Users] FOREIGN KEY ([UserId])
         REFERENCES [dbo].[aspnet_Users] ([UserId])
 );
+GO
+
+-- =====================================================================================
+-- THE DEPENDANT MEMBERSHIP TABLES
+--
+-- WHY THEY ARE HERE, AND WHY THEIR ABSENCE WAS A DEFECT IN THIS FIXTURE
+--   Four tables reference dbo.aspnet_Users through NON-CASCADING foreign keys, and the
+--   stock aspnet_Users_DeleteUser (InstallCommon.sql lines 421-541) clears every one of
+--   them before it removes the user row. A fixture that provisioned only Applications,
+--   Users and Membership could not observe that: with no dependant row able to exist, a
+--   deletion that skipped the dependants passed here and failed against any real
+--   installation whose account had ever held a membership role, stored a profile or
+--   personalised a page. The fixture masked the defect rather than catching it, so the
+--   tables are provisioned and the foreign keys are declared exactly as the stock schema
+--   declares them - WITHOUT ON DELETE CASCADE - because it is the absence of cascade that
+--   makes the ordering load-bearing.
+--
+-- WHAT IS REPRODUCED
+--   The stock columns, types and nullability of the aspnet_regsql schema for each table,
+--   including aspnet_Paths, which aspnet_PersonalizationPerUser references. Nothing is
+--   simplified away: a nullable column left NOT NULL here would let a seeded row exist
+--   that the real schema forbids, and a cascade added for convenience would delete the
+--   evidence the ordering test depends on.
+-- =====================================================================================
+
+CREATE TABLE [dbo].[aspnet_Roles] (
+    [ApplicationId]    uniqueidentifier NOT NULL,
+    [RoleId]           uniqueidentifier NOT NULL,
+    [RoleName]         nvarchar(256)    NOT NULL,
+    [LoweredRoleName]  nvarchar(256)    NOT NULL,
+    [Description]      nvarchar(256)    NULL,
+    CONSTRAINT [PK_aspnet_Roles] PRIMARY KEY ([RoleId]),
+    CONSTRAINT [FK_aspnet_Roles_Applications] FOREIGN KEY ([ApplicationId])
+        REFERENCES [dbo].[aspnet_Applications] ([ApplicationId])
+);
+GO
+
+CREATE UNIQUE INDEX [IX_aspnet_Roles_LoweredRoleName]
+    ON [dbo].[aspnet_Roles] ([ApplicationId], [LoweredRoleName]);
+GO
+
+CREATE TABLE [dbo].[aspnet_UsersInRoles] (
+    [UserId] uniqueidentifier NOT NULL,
+    [RoleId] uniqueidentifier NOT NULL,
+    CONSTRAINT [PK_aspnet_UsersInRoles] PRIMARY KEY ([UserId], [RoleId]),
+    CONSTRAINT [FK_aspnet_UsersInRoles_Users] FOREIGN KEY ([UserId])
+        REFERENCES [dbo].[aspnet_Users] ([UserId]),
+    CONSTRAINT [FK_aspnet_UsersInRoles_Roles] FOREIGN KEY ([RoleId])
+        REFERENCES [dbo].[aspnet_Roles] ([RoleId])
+);
+GO
+
+CREATE TABLE [dbo].[aspnet_Profile] (
+    [UserId]               uniqueidentifier NOT NULL,
+    [PropertyNames]        ntext            NOT NULL,
+    [PropertyValuesString] ntext            NOT NULL,
+    [PropertyValuesBinary] image            NOT NULL,
+    [LastUpdatedDate]      datetime         NOT NULL,
+    CONSTRAINT [PK_aspnet_Profile] PRIMARY KEY ([UserId]),
+    CONSTRAINT [FK_aspnet_Profile_Users] FOREIGN KEY ([UserId])
+        REFERENCES [dbo].[aspnet_Users] ([UserId])
+);
+GO
+
+CREATE TABLE [dbo].[aspnet_Paths] (
+    [ApplicationId] uniqueidentifier NOT NULL,
+    [PathId]        uniqueidentifier NOT NULL,
+    [Path]          nvarchar(256)    NOT NULL,
+    [LoweredPath]   nvarchar(256)    NOT NULL,
+    CONSTRAINT [PK_aspnet_Paths] PRIMARY KEY ([PathId]),
+    CONSTRAINT [FK_aspnet_Paths_Applications] FOREIGN KEY ([ApplicationId])
+        REFERENCES [dbo].[aspnet_Applications] ([ApplicationId])
+);
+GO
+
+CREATE UNIQUE INDEX [IX_aspnet_Paths_LoweredPath]
+    ON [dbo].[aspnet_Paths] ([ApplicationId], [LoweredPath]);
+GO
+
+CREATE TABLE [dbo].[aspnet_PersonalizationPerUser] (
+    [Id]              uniqueidentifier NOT NULL,
+    [PathId]          uniqueidentifier NULL,
+    [UserId]          uniqueidentifier NULL,
+    [PageSettings]    image            NOT NULL,
+    [LastUpdatedDate] datetime         NOT NULL,
+    CONSTRAINT [PK_aspnet_PersonalizationPerUser] PRIMARY KEY ([Id]),
+    CONSTRAINT [FK_aspnet_PersonalizationPerUser_Paths] FOREIGN KEY ([PathId])
+        REFERENCES [dbo].[aspnet_Paths] ([PathId]),
+    CONSTRAINT [FK_aspnet_PersonalizationPerUser_Users] FOREIGN KEY ([UserId])
+        REFERENCES [dbo].[aspnet_Users] ([UserId])
+);
+GO
+
+CREATE UNIQUE INDEX [IX_aspnet_PersonalizationPerUser_PathUser]
+    ON [dbo].[aspnet_PersonalizationPerUser] ([PathId], [UserId]);
 GO

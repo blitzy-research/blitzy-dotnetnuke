@@ -218,11 +218,21 @@ export class NotificationListComponent {
   private readonly notifications = inject(NotificationService);
 
   /**
-   * The surface's own root, used to find a sibling dismissal control after one is removed.
+   * The surface's own root.
    *
-   * Read from the host rather than through a template query because the control that must
-   * receive focus is chosen AFTER the framework has removed the dismissed entry, and a view
-   * query resolved before that removal would name the button that no longer exists.
+   * Two readers, and both need the same thing. It is used to find a sibling dismissal control after one
+   * is removed - read from the host rather than through a template query, because the control that must
+   * receive focus is chosen AFTER the framework has removed the dismissed entry and a view query resolved
+   * before that removal would name the button that no longer exists - and it is used to tell "focus left
+   * the region" from "focus moved within it".
+   *
+   * ⚠ ONE FIELD, WHICH IT WAS NOT. The identical `ElementRef` token was injected twice under two names,
+   * `host` and `hostElement`, each documented for one of the two uses as though they were different
+   * things. They are the same object: the injector resolves one host `ElementRef` per component, so the
+   * two fields were two references to it. Nothing misbehaved, and that is exactly why it was worth
+   * removing - a reader encountering both is invited to look for the distinction that justifies them, and
+   * the next person needing the host has two equally plausible fields to choose between and no way to
+   * pick correctly.
    */
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
 
@@ -237,8 +247,6 @@ export class NotificationListComponent {
    * the service stays free of both.
    */
   private readonly router = inject(Router);
-  /** The component host, read only to tell "focus left the region" from "focus moved within it". */
-  private readonly hostElement = inject<ElementRef<HTMLElement>>(ElementRef);
 
   /**
    * The queue, oldest entry first, exactly as the service publishes it.
@@ -410,7 +418,7 @@ export class NotificationListComponent {
   @HostListener('focusout', ['$event'])
   protected onFocusLeave(event: FocusEvent): void {
     const next = event.relatedTarget;
-    const host = this.hostElement.nativeElement;
+    const host = this.host.nativeElement;
 
     if (next instanceof Node && host.contains(next)) {
       return;

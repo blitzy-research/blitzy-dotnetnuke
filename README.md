@@ -140,10 +140,17 @@ access-control entry) — plus **Tab**, the DotNetNuke page abstraction, as a su
 aggregate. Tab is inseparable from the other five: module placement, tab permissions and
 portal navigation are all keyed by it.
 
-Everything the API exposes lives under a version segment: `/api/v1/portals`,
+Every **resource** endpoint lives under a version segment. All eleven attribute-routed
+controllers carry `[Route("api/v{version:apiVersion}/…")]`, giving `/api/v1/portals`,
 `/api/v1/modules`, `/api/v1/users`, `/api/v1/roles`, `/api/v1/permissions`, `/api/v1/tabs`,
 `/api/v1/auth`, and the lookup surfaces `/api/v1/module-definitions`,
-`/api/v1/profile-definitions` and `/api/v1/role-groups`.
+`/api/v1/profile-definitions` and `/api/v1/role-groups`. The segment is **mandatory** —
+`AssumeDefaultVersionWhenUnspecified` is false, so `/api/portals` matches no route.
+
+Two surfaces sit deliberately **outside** the version space, because neither is a resource a
+client versions against: the three health views `/health`, `/health/live` and
+`/health/ready`, and `/swagger`, the generated OpenAPI console. Both are described in
+[§4](#4-backend), including which endpoints answer without a bearer token.
 
 ---
 
@@ -163,8 +170,13 @@ Everything the API exposes lives under a version segment: `/api/v1/portals`,
 Two pins make those versions reproducible rather than aspirational:
 
 - [`backend/global.json`](./backend/global.json) pins the SDK to the **8.0.423** band with
-  `rollForward: latestFeature`, and every `Microsoft.*` package is pinned to the matching
-  **8.0.29** runtime band.
+  `rollForward: latestFeature`, and every package that versions in step with the .NET 8
+  shared framework is pinned to the matching **8.0.29** runtime band — the EF Core family,
+  `Microsoft.AspNetCore.Authentication.JwtBearer`, `Microsoft.AspNetCore.OpenApi` and
+  `Microsoft.AspNetCore.Mvc.Testing`. Two `Microsoft.*` packages version independently of
+  that framework and carry their own pins: **`Microsoft.Data.SqlClient` 5.2.3**, pinned
+  explicitly because without it the SQL Server provider resolves 5.1.7 transitively, and
+  **`Microsoft.NET.Test.Sdk` 17.14.1**.
 - [`frontend/.nvmrc`](./frontend/.nvmrc) pins Node to **20.20.2**, which is also the
   `engines` floor in `frontend/package.json` and the version of the `node:20-alpine` build
   stage in [`docker/frontend.Dockerfile`](./docker/frontend.Dockerfile). Build the SPA on a
@@ -205,15 +217,13 @@ No other warning is suppressed anywhere, and nothing widens that list per projec
 
 ### Configure
 
-Configuration is read from `appsettings.json`, then the environment overlay
-(`appsettings.Development.json` / `appsettings.Production.json`), then the environment
-itself. Every key is overridable with .NET's standard **double-underscore** form, which is
-how the containers supply them — a single underscore binds to nothing.
+Every key is overridable with .NET's standard **double-underscore** form, which is how the
+containers supply them — a single underscore binds to nothing.
 
 ```json
 {
   "ConnectionStrings": {
-    "Default": "Server=localhost,1433;Database=DotNetNuke;User Id=REPLACE_ME;Password=REPLACE_ME;TrustServerCertificate=True;Encrypt=True"
+    "Default": "Server=sqlserver.example.com,1433;Database=DotNetNuke;User Id=REPLACE_ME;Password=REPLACE_ME;Encrypt=True"
   },
   "Jwt": {
     "Issuer": "DnnMigration",
@@ -223,16 +233,101 @@ how the containers supply them — a single underscore binds to nothing.
 }
 ```
 
-| Key | Environment form | Notes |
-| --- | --- | --- |
-| `ConnectionStrings:Default` | `ConnectionStrings__Default` | The existing DotNetNuke database. This key replaces the legacy `SiteSqlServer` connection string in `Website/release.config`. The host refuses to start on a value that is blank, unparseable, structurally incomplete or still a template placeholder |
-| `Jwt:Secret` | `Jwt__Secret` | **At least 32 UTF-8 bytes, or the host refuses to start** — it also rejects a low-entropy or well-known placeholder. **No overlay carries one, in any environment**: `appsettings.json` ships it blank and neither overlay supplies a value, so every run — including a local one — passes it in from the environment or a secret store. There is deliberately no committed key to leak |
-| `Jwt:Issuer`, `Jwt:Audience`, `Jwt:ExpirationMinutes` | `Jwt__…` | Access tokens are deliberately short-lived and refresh tokens rotate; see [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md) on sign-out |
-| `Cors:AllowedOrigins` | `Cors__AllowedOrigins__0` | A named policy restricted to the SPA origin. A wildcard is never acceptable here |
+#### Where a value comes from, in order
 
-**Never commit a real secret.** The connection string and `Jwt:Secret` come from environment
-variables or a secret store in every environment, development included. Every credential
-shown in this file is an obvious placeholder.
+Sources are listed lowest precedence first; **the last one that supplies a key wins.**
+
+1. `appsettings.json` — the shipped defaults, and the only complete inventory of the shape.
+2. `appsettings.{Environment}.json` — `Development` or `Production`, selected by
+   `ASPNETCORE_ENVIRONMENT`.
+3. User secrets — `Development` only.
+4. Environment variables — what `docker-compose.yml` supplies.
+5. Command-line arguments.
+6. **A key-per-file secrets directory**, added last in `Program.cs` and therefore highest.
+   The **file name is the key** (`/run/secrets/Jwt__Secret` supplies `Jwt:Secret`), the source
+   is optional, and an absent directory contributes nothing and raises nothing. A mounted
+   secret deliberately **beats** an environment variable of the same name, so migrating off
+   environment delivery is one step rather than a cutover.
+
+`Secrets:Directory` is the one key that cannot come from a secret file: it is read to decide
+*where* that source points, so it must arrive from a source already loaded — an environment
+variable or an `appsettings` entry.
+
+#### The complete matrix
+
+Every key the API reads is listed. **Secret** marks a value that must never be committed or
+appear in a build log. **Production** states what a production deployment must do about it.
+
+| Key | Environment form | Type | Default | Validation | Secret | Compose | Production |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `ConnectionStrings:Default` | `ConnectionStrings__Default` | string | *(blank)* | **Refuses to start** unless present, parseable, naming both a server and a database, naming a way to authenticate, and free of template placeholders. No refusal echoes any part of the value | **Yes** | `${DB_CONNECTION_STRING}` | **Required.** Replaces the legacy `SiteSqlServer` entry in `Website/release.config` |
+| `Jwt:Secret` | `Jwt__Secret` | string | *(blank)* | **Refuses to start** below 32 UTF-8 bytes, below 8 distinct characters, or on a well-known placeholder | **Yes** | `${JWT_SECRET}` | **Required.** No overlay carries one in any environment, so there is no committed key to leak |
+| `Jwt:Issuer` | `Jwt__Issuer` | string | `DnnMigration` | Non-blank, at most 256 characters | No | `${JWT_ISSUER:-DnnMigration}` | Optional |
+| `Jwt:Audience` | `Jwt__Audience` | string | `DnnMigration` | Non-blank, at most 256 characters | No | `${JWT_AUDIENCE:-DnnMigration}` | Optional |
+| `Jwt:ExpirationMinutes` | `Jwt__ExpirationMinutes` | int | `60` | 1–60 inclusive | No | `${JWT_EXPIRATION_MINUTES:-60}` | Optional. 60 preserves the legacy ticket timeout exactly |
+| `Jwt:RefreshTokenExpirationDays` | `Jwt__RefreshTokenExpirationDays` | int | `7` | 1–30, and never above the absolute ceiling below | No | — | Optional |
+| `Jwt:RefreshTokenAbsoluteExpirationDays` | `Jwt__RefreshTokenAbsoluteExpirationDays` | int | `30` | 1–30 inclusive | No | — | Optional. The family ceiling no rotation can extend |
+| `RefreshTokenStore:Provider` | `RefreshTokenStore__Provider` | string | `InProcess` | `InProcess` or `External` only; **refuses to start** on any other value, and on a declaration the registered store contradicts | No | `${REFRESH_TOKEN_STORE_PROVIDER:-InProcess}` | Leave at `InProcess` unless you build your own host — see [Operating the topology](#operating-the-topology) |
+| `RefreshTokenStore:MaximumTrackedTokens` | `RefreshTokenStore__MaximumTrackedTokens` | int | `100000` | 1,000–1,000,000 inclusive | No | `${REFRESH_TOKEN_MAX_TRACKED:-100000}` | Optional. Raise it only if the `refresh-token-store` probe reports `Degraded` |
+| `RefreshTokenStore:ConcurrentUseGraceSeconds` | `RefreshTokenStore__ConcurrentUseGraceSeconds` | int | `5` | 0–60 inclusive; `0` disables the grace | No | `${REFRESH_TOKEN_GRACE_SECONDS:-5}` | Optional |
+| `PasswordPolicy:MinRequiredPasswordLength` | `PasswordPolicy__MinRequiredPasswordLength` | int | `7` | At least 7 — **the measured legacy minimum, and lowering it is refused** — and at most the 256-byte credential ceiling | No | — | Optional |
+| `PasswordPolicy:MinRequiredNonAlphanumericCharacters` | `PasswordPolicy__…` | int | `0` | Not negative, and not above the required length | No | — | Optional. `0` is the measured legacy value |
+| `PasswordPolicy:RequiresQuestionAndAnswer` | `PasswordPolicy__…` | bool | `false` | **`true` is refused**: no question-and-answer flow was migrated, so enabling it would advertise a step that cannot be completed | No | — | Leave `false` |
+| `PasswordPolicy:RequiresUniqueEmail` | `PasswordPolicy__…` | bool | `false` | **`true` is refused**: the legacy installation permitted duplicate addresses, and existing rows may already hold them | No | — | Leave `false` |
+| `PasswordPolicy:PasswordResetEnabled` | `PasswordPolicy__…` | bool | `true` | — | No | — | Optional |
+| `PasswordPolicy:PasswordStrengthRegularExpression` | `PasswordPolicy__…` | string | *(blank)* | Must compile, and at most 512 characters. Blank disables the rule | No | — | Optional |
+| `PasswordPolicy:MaxInvalidPasswordAttempts` | `PasswordPolicy__…` | int | `5` | Positive | No | — | Optional |
+| `PasswordPolicy:PasswordAttemptWindowMinutes` | `PasswordPolicy__…` | int | `10` | Positive | No | — | Optional |
+| `LegacyCredentials:Enabled` | `LegacyCredentials__Enabled` | bool | `false` | Must parse as a boolean. When `true`, a deadline and a key are required | No | `${LEGACY_CREDENTIALS_ENABLED:-false}` | **Leave `false`** unless a bounded legacy-credential migration window is genuinely open |
+| `LegacyCredentials:EnabledUntilUtc` | `LegacyCredentials__EnabledUntilUtc` | ISO-8601 instant | `null` | Round-trip parseable with a **zero** offset; required while the switch is on | No | `${LEGACY_CREDENTIALS_ENABLED_UNTIL_UTC:-}` | Required only inside the window |
+| `LegacyCredentials:DecryptionKey` | `LegacyCredentials__DecryptionKey` | hex string | *(blank)* | Validated for the named algorithm; **no error echoes any part of it** | **Yes** | `${LEGACY_CREDENTIALS_DECRYPTION_KEY:-}` | Required only inside the window; remove it afterwards |
+| `LegacyCredentials:DecryptionAlgorithm` | `LegacyCredentials__…` | string | `3DES` | A supported algorithm name | No | — | Leave at the legacy value |
+| `LegacyCredentials:ValidationAlgorithm` | `LegacyCredentials__…` | string | `SHA1` | A supported algorithm name | No | — | Leave at the legacy value |
+| `Cors:AllowedOrigins` | `Cors__AllowedOrigins__0` | string array | `["https://localhost:4443"]`; `Development` overlay uses `http://localhost:4200` | Each entry must be an exact scheme-and-host origin — **a wildcard, an upper-case scheme, a scheme-less value, a trailing path and a documentation host are each refused at start-up** | No | `${FRONTEND_ORIGIN:-http://localhost:4200}` (base) / derived from `DNN_PUBLIC_HOST` (TLS overlay) | Set it to the SPA's own origin. The containerised SPA is same-origin through the proxy and needs none of this |
+| `RateLimiting:Authentication:PermitLimit` | `RateLimiting__Authentication__PermitLimit` | int | `30` | Positive; a non-positive value **stops the host** rather than refusing every sign-in | No | — | Optional |
+| `RateLimiting:Authentication:WindowSeconds` | `RateLimiting__Authentication__WindowSeconds` | int | `60` | Positive | No | — | Optional |
+| `Caching:PerformanceMultiplier` | `Caching__PerformanceMultiplier` | int | `3` | 0–1440 inclusive; `0` disables caching outright | No | — | Optional. Multiplies every cache lifetime; the legacy setting accepted a wider range than its four named levels, so the range is deliberately not narrowed |
+| `Portal:AdminTemplateFileName` | `Portal__AdminTemplateFileName` | string | `admin.template` | Non-blank, at most 260 characters, no path separator and no `..` segment | No | — | Optional |
+| `Portal:HomeDirectoryFormat` | `Portal__HomeDirectoryFormat` | string | `Portals/{0}` | Must contain the `{0}` portal placeholder, at most 260 characters, no `..` segment | No | — | Optional |
+| `Swagger:Enabled` | `Swagger__Enabled` | bool | `false` | — | No | — | **Leave `false`.** Swagger is mounted unconditionally in `Development`; outside it, this key is the only way it appears |
+| `Https:RedirectEnabled` | `Https__RedirectEnabled` | bool | `false` in `appsettings.json` and the `Development` overlay, **`true`** in the `Production` overlay | When enabled, the port below must be present and 1–65535 | No | `Https__RedirectEnabled=false` in the base topology | **`true` only when this process terminates TLS itself.** The base Compose topology sets it to `false` because nginx fronts the API over plain HTTP inside the network; leaving it on there answers every proxied call with a redirect the browser cannot follow |
+| `Https:RedirectPort` | `Https__RedirectPort` | int | `443` in `appsettings.json`, repeated by the `Production` overlay; `4443` in `Development` | 1–65535 when the redirect is enabled | No | — | Required when the redirect is enabled |
+| `Proxy:KnownProxies` | `Proxy__KnownProxies__0` | string array of IP addresses | `[]` | Each entry must parse as an IP address | No | `${TRUSTED_PROXY_ADDRESS:-172.28.0.10}` — the frontend container's fixed address on the Compose network | Required if a reverse proxy forwards `X-Forwarded-For`/`X-Forwarded-Proto`; without it those headers are ignored, which is the safe default |
+| `Proxy:KnownNetworks` | `Proxy__KnownNetworks__0` | string array of CIDR ranges | `[]` | Each entry must parse as `prefix/length` | No | — | Alternative to the above for a proxy whose address is not fixed |
+| `AllowedHosts` | `AllowedHosts` | `;`-separated string | `*` | Each entry is checked at start-up: **a host reserved for documentation (`example.com`, the `.example` TLD) or an editing marker (`changeme`, `yourdomain`) refuses to start.** `*` is deliberately permitted so the image runs unconfigured | No | Derived from `DNN_PUBLIC_HOST` by the TLS overlay | Set it to the deployment's own public host plus the loopback names the container probe uses |
+| `Secrets:Directory` | `Secrets__Directory` | string | `/run/secrets` | A blank value means "not configured" rather than the filesystem root. The source is optional, so a missing directory is silent | No | — | Optional. Point it at a projected-volume path if your platform mounts elsewhere |
+| `Serilog:*` | `Serilog__MinimumLevel__Default`, `Serilog__MinimumLevel__Override__<Category>` | Serilog configuration | Console sink, compact JSON, `Information`, with `Microsoft.AspNetCore` and the EF Core command channels held at `Warning` | Read by Serilog itself | No | — | Do **not** relax `Microsoft.AspNetCore` below `Warning`: the framework's request entries embed the raw query string, and this API has query-backed reads whose natural search term is an email address |
+| `ASPNETCORE_ENVIRONMENT` | *(host variable)* | string | `Production` | — | No | `ASPNETCORE_ENVIRONMENT=Production` | Selects the overlay, and `Development` alone mounts Swagger and user secrets |
+| `ASPNETCORE_URLS` | *(host variable)* | string | `http://+:8080` in the image | — | No | Set in `api.Dockerfile` | Change only alongside the published port and the container health check |
+
+**Never commit a real secret.** The three keys marked **Secret** come from environment
+variables or a mounted secret file in every environment, development included. Every
+credential shown in this file is an obvious placeholder.
+
+`appsettings.json` is the authoritative inventory of the shape, and the matrix is reconciled
+against it in both directions: every configuration key above appears there with its shipped
+default, and every key it declares appears above. The two host variables at the end of the
+table are the only exceptions — `ASPNETCORE_ENVIRONMENT` and `ASPNETCORE_URLS` are read by the
+host itself, not from a settings file. So a deployment can diff its own configuration against
+`appsettings.json` and account for every difference.
+
+**The connection strings in this file validate the server's certificate, and that is
+deliberate.** `Microsoft.Data.SqlClient` has defaulted to `Encrypt=True` since its 4.0
+release, so the driver always negotiates TLS; what `TrustServerCertificate=True` adds is the
+silent *disabling* of the validation that makes the encryption worth having. Exactly one
+copyable line in this file carries it — the explicitly labelled local-development line below —
+and it belongs nowhere else:
+
+```bash
+# LOCAL DEVELOPMENT ONLY — a SQL Server presenting a self-signed certificate. Never deploy
+# this shape: install the server certificate's issuer into the client's trust store, or issue
+# the server a certificate from an authority the client already trusts, and drop the override.
+ConnectionStrings__Default='Server=localhost,1433;Database=DotNetNuke;User Id=REPLACE_ME;Password=REPLACE_ME;TrustServerCertificate=True;Encrypt=True'
+```
+
+No tracked configuration file in this repository carries the override:
+`appsettings.json` ships the connection string empty and neither environment overlay declares
+one at all.
 
 ### Test
 
@@ -270,9 +365,13 @@ the suite at any SQL Server 2019 or later:
 
 ```bash
 cd backend
-DNN_TEST_SQLSERVER='Server=localhost,1433;Database=master;User Id=REPLACE_ME;Password=REPLACE_ME;TrustServerCertificate=True;Encrypt=True' \
+DNN_TEST_SQLSERVER='Server=sqlserver.example.com,1433;Database=master;User Id=REPLACE_ME;Password=REPLACE_ME;Encrypt=True' \
   dotnet test --configuration Release --filter "Category=Integration"
 ```
+
+Against a local server presenting a self-signed certificate, and only there, add
+`TrustServerCertificate=True` — see the note in [Configure](#configure) for why that switch
+belongs in a labelled local line and nowhere else.
 
 The suite fails closed rather than degrading when it can reach neither, and the failure names
 both routes. Each run creates a database whose name carries a fresh identifier, so parallel
@@ -282,21 +381,47 @@ checkouts sharing one server cannot collide.
 
 ```bash
 cd backend
-ConnectionStrings__Default='Server=localhost,1433;Database=DotNetNuke;User Id=REPLACE_ME;Password=REPLACE_ME;TrustServerCertificate=True;Encrypt=True' \
+ConnectionStrings__Default='Server=sqlserver.example.com,1433;Database=DotNetNuke;User Id=REPLACE_ME;Password=REPLACE_ME;Encrypt=True' \
 Jwt__Secret="$(openssl rand -base64 48)" \
   dotnet run --project src/DnnMigration.Api
 ```
 
-The launch profile serves `http://localhost:8080` in the `Development` environment.
-`/swagger` serves the generated OpenAPI document **in Development only**; every other
-endpoint lives under `/api/v1/` and requires a bearer token. If port 8080 is already taken —
-by the container topology, for instance — bypass the profile:
+`Properties/launchSettings.json` is what makes that command short: its single profile sets
+`ASPNETCORE_ENVIRONMENT=Development` and `applicationUrl=http://localhost:8080`.
+
+Which endpoints answer without a bearer token, precisely:
+
+| Endpoint | Credential |
+| --- | --- |
+| `GET /health`, `GET /health/live`, `GET /health/ready` | **None.** Mapped with `.AllowAnonymous()`, because an orchestrator's probe carries none |
+| `POST /api/v1/auth/login`, `/auth/refresh`, `/auth/logout` | **None.** Each carries `[AllowAnonymous]` — a caller has no token yet, or is discarding the one it has. All three are rate-limited |
+| `GET /api/v1/auth/me` and **every other** `/api/v1/…` endpoint | Bearer token, plus the endpoint's authorisation policy |
+| `/swagger` | See below |
+
+`/swagger` is mounted **unconditionally in Development**. Outside Development it is **off**
+unless a deployment sets `Swagger:Enabled` to true, and when it is on there it is served
+**only to an authenticated caller** — the console is branched behind an
+`IsAuthenticated` predicate rather than published anonymously.
+
+If port 8080 is already taken — by the container topology, for instance — bypass the profile.
+Bypassing it discards the profile's environment as well as its URL, so the command has to
+supply everything itself; without `ASPNETCORE_ENVIRONMENT` the host starts in **Production**,
+where `appsettings.Production.json` turns HTTPS redirection on. Measured: the three health
+views still answer `200`, and every other path — including `/swagger` — is answered `308` to
+`https://…`, which this plain-HTTP listener cannot satisfy.
 
 ```bash
 cd backend
-dotnet run --project src/DnnMigration.Api --configuration Release \
+ASPNETCORE_ENVIRONMENT=Development \
+ConnectionStrings__Default='Server=sqlserver.example.com,1433;Database=DotNetNuke;User Id=REPLACE_ME;Password=REPLACE_ME;Encrypt=True' \
+Jwt__Secret="$(openssl rand -base64 48)" \
+  dotnet run --project src/DnnMigration.Api --configuration Release \
   --no-launch-profile --urls http://127.0.0.1:5080
 ```
+
+To run that same command in `Production` deliberately, either serve HTTPS or set
+`Https__RedirectEnabled=false` for the run — which is exactly what the plain-HTTP container
+topology does, visibly, in [`docker/docker-compose.yml`](./docker/docker-compose.yml).
 
 Three **anonymous** health views answer three different questions:
 
@@ -312,14 +437,19 @@ All three answer plain HTTP with no credential and emit the same document:
 {"status":"Healthy","timestamp":"2026-01-01T00:00:00.0000000+00:00","version":"1.0.0.0","serviceName":"DnnMigration.Api"}
 ```
 
-The split is deliberate. Both [`docker/api.Dockerfile`](./docker/api.Dockerfile) and
-[`docker/docker-compose.yml`](./docker/docker-compose.yml) probe `/health`, and the compose
-topology declares no database service — the store is external and may legitimately be
-unreachable while the API starts. A liveness view that ran a database probe would report the
-container unhealthy for a reason unrelated to whether it can answer, and would hold the
-front-end service back behind `condition: service_healthy` indefinitely. Point an
-orchestrator's readiness probe at `/health/ready`, its restart-or-not probe at
-`/health/live`, and leave the container health check on `/health`.
+The split is deliberate, and **both [`docker/api.Dockerfile`](./docker/api.Dockerfile) and
+[`docker/docker-compose.yml`](./docker/docker-compose.yml) probe `/health/ready`** — not
+`/health`. They used to probe `/health`, which is the process-only view: the container was
+therefore reported healthy while SQL Server was unreachable, and the front-end service started
+in front of an API that could not answer a single membership-backed request. `service_healthy`
+is a statement about whether traffic may be sent, so it is tested against the view that
+exercises the dependency.
+
+The consequence is stated rather than hidden: the compose topology declares no database
+service, so a deployment whose store is genuinely absent will see the API container marked
+unhealthy and the front end held back. That is the correct report — the API cannot serve — and
+it is why `/health/live` exists alongside it: point a restart-or-not probe there, so an
+orchestrator does not recycle a healthy process merely because its dependency is down.
 
 ---
 
@@ -336,8 +466,13 @@ npx ng build --configuration production                       # emits dist/dnn-m
 ```
 
 `npm run build -- --configuration production` and `npm test -- --watch=false
---browsers=ChromeHeadless --code-coverage` are equivalent to the last two commands and are
-what [`docker/frontend.Dockerfile`](./docker/frontend.Dockerfile) invokes.
+--browsers=ChromeHeadless --code-coverage` go through `package.json`'s `build` and `test`
+scripts and are equivalent to the last two commands above.
+
+[`docker/frontend.Dockerfile`](./docker/frontend.Dockerfile) runs **the install and the
+production build only** — `npm ci` followed by `npm run build -- --configuration production`.
+It runs no tests: the image build is not a test gate, and the suite is a separate validation
+step ([§7](#7-validation-gates), gate 4).
 
 The development server runs in the foreground, so give it its own shell:
 
@@ -389,7 +524,8 @@ them.
 cp docker/.env.example docker/.env      # then fill in the values; docker/.env is never committed
 docker compose -f docker/docker-compose.yml --env-file docker/.env build
 docker compose -f docker/docker-compose.yml --env-file docker/.env up -d
-curl -f http://localhost:8080/health    # 200, the anonymous liveness view
+curl -f http://localhost:8080/health/ready  # 200, the readiness view the container probes
+curl -f http://localhost:8080/health    # 200, the anonymous process-only view
 curl -f http://localhost:4200           # 200, the SPA document
 docker compose -f docker/docker-compose.yml --env-file docker/.env down
 ```
@@ -418,9 +554,10 @@ deleting the key would be a deviation with nothing to gain.
 | --- | --- | --- |
 | Build stage | `mcr.microsoft.com/dotnet/sdk:8.0-alpine` | `node:20-alpine`, running `npm ci` then `npm run build -- --configuration production` |
 | Runtime stage | `mcr.microsoft.com/dotnet/aspnet:8.0-alpine` | `nginx:alpine` |
+| Base images | **All four `FROM` lines pin a digest as well as the readable tag**, so one commit builds one image rather than whatever the moving tag points at that week. What was verified inside each pinned digest, and how a digest is refreshed, is in [§10](#10-security) | |
 | Runs as | a **non-root** user created with `adduser -D -u 1000 appuser` | nginx |
 | Listens on | `ASPNETCORE_URLS=http://+:8080`, `EXPOSE 8080` | `listen 80`, `EXPOSE 80` |
-| Published as | **`127.0.0.1:8080:8080`** — loopback only, so the cleartext listener that carries credentials and bearer tokens is reachable from this host and the Compose network and nowhere else | `4200:80` |
+| Published as | **`127.0.0.1:8080:8080`** — loopback only, so the cleartext listener that carries credentials and bearer tokens is reachable from this host and the Compose network and nowhere else | **`127.0.0.1:4200:80`** — loopback only for the same reason and more sharply, since this port proxies `/api/`; the TLS overlay is the only topology that publishes a routable port |
 | Entry point | `ENTRYPOINT ["dotnet", "DnnMigration.Api.dll"]` | `CMD ["nginx", "-g", "daemon off;"]` |
 | Health probe | `HEALTHCHECK` with **`wget --spider`** against `/health` | its own baked-in probe |
 | Starts | first | only once the API reports healthy (`depends_on: condition: service_healthy`) |
@@ -433,8 +570,10 @@ Four constraints make that topology work, and each of them fails silently if bro
   the front end back for ever — with both images built perfectly.
 - **`/health` must be anonymous.** Because the front end waits on `service_healthy`, an
   authenticated health endpoint means the probe is answered `401`, the API service never
-  becomes healthy, and the front-end container never starts. The health endpoints carry
-  `[AllowAnonymous]` for exactly this reason.
+  becomes healthy, and the front-end container never starts. The three health views are
+  endpoint mappings rather than controller actions, so their exemption is the
+  `.AllowAnonymous()` call on each `MapHealthChecks` registration in
+  `Api/Extensions/ApplicationBuilderExtensions.cs` — keep it there.
 - **The production `apiBaseUrl` must be relative.** `docker/nginx.conf` proxies `/api/` to
   the `api` service over the Compose network, so the browser addresses the API through the
   same origin that served the application.
@@ -450,34 +589,108 @@ described so the composed topology works as delivered. Every deviation is record
 [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md).
 
 As delivered this topology speaks plain HTTP on both published ports, because the end-to-end
-gate probes `http://localhost:8080/health` and `http://localhost:4200` directly. It is a
-validation and demonstration topology, **not a public-facing one**. To face the internet, add
-the TLS overlay, which terminates TLS at the front end, withdraws the API's published port
-and switches HTTPS redirection back on:
+gate probes `http://localhost:8080/health/ready` - the view the image and Compose both probe,
+which is the one that exercises the database dependency - and `http://localhost:4200` directly.
+It is a validation and demonstration topology, **not a public-facing one** — and it is
+*constrained* to that role rather than merely described as having it: **both** published ports
+are bound to `127.0.0.1`. The front end's binding matters most, because it proxies `/api/`, so a
+browser that loads the sign-in screen from it posts a credential and then sends a bearer token
+through it; published on every interface, that whole exchange was cleartext on any network this
+host can route to, and the API's own loopback binding did nothing to prevent it.
+
+To face the internet, add the TLS overlay. It terminates TLS at the front end, publishes `443`
+(with `80` redirecting to it), withdraws the API's published port (`ports: !reset []`, so the API
+is reachable only over the Compose network) and switches HTTPS redirection back on. **Two
+variables are required and no tracked file is edited:**
 
 ```bash
+DNN_PUBLIC_HOST=admin.acme.test \
+TLS_CERTIFICATE_DIRECTORY=/etc/letsencrypt/live/admin.acme.test \
 docker compose -f docker/docker-compose.yml -f docker/docker-compose.tls.yml \
   --env-file docker/.env up -d
 ```
 
+| Variable | What it drives |
+| --- | --- |
+| `DNN_PUBLIC_HOST` | **One input, four consumers**: both `server_name` directives in the rendered TLS server block, the API's `AllowedHosts` (as `<host>;localhost;127.0.0.1`), the API's permitted browser origin (as `https://<host>`), and the name the certificate must be valid for |
+| `TLS_CERTIFICATE_DIRECTORY` | A host directory holding `fullchain.pem` and `privkey.pem` for that name, mounted read-only |
+
+Both are **required with no fallback**, so `docker compose` refuses to create a container
+while either is unset or blank. The public host name is also checked by the API: a name
+reserved for documentation — `example.com`, `example.net`, `example.org`, the `.example`
+top-level domain, or an unreplaced marker such as `changeme` — makes the API **refuse to
+start**, and because the front end waits on `condition: service_healthy` the deployment then
+never serves at all. Reserved *test* domains are deliberately accepted, so `admin.acme.test`
+and an internal certificate authority work as they should.
+
+The server block itself is [`docker/nginx.tls.conf.template`](./docker/nginx.tls.conf.template),
+rendered by the nginx image's own entrypoint into the directory
+[`docker/nginx.conf`](./docker/nginx.conf) already scans (`include /etc/nginx/tls/*.conf`).
+It serves the application by including the same three snippets the plain-HTTP server includes,
+so the public listener cannot behave differently from the one the gate probes. Earlier
+revisions hard-coded `dnn.example.com` in that block and in the API's host filter while
+parameterising only the browser origin — a deployment that set its origin got a redirect its
+browsers never matched, a certificate that matched no server name, and an API that answered
+`400` to all of its own traffic.
+
 ### Operating the topology
 
-- **Redeploying the API alone is supported.** `docker compose … up -d --force-recreate api`
-  may place the API container on a different address, and the front end resolves the API per
-  request rather than once at start-up, so it follows the new address by itself. Calls made
-  in the first few seconds may be answered `503` with `Retry-After: 5` and an RFC 7807 body
-  while the short-lived DNS entry ages out; nothing needs restarting. The front end also
-  starts and keeps serving the application while the API is absent — only `/api/` calls fail,
-  and they fail with a problem document rather than an HTML error page.
+- **Redeploying the API alone is supported, on both listeners.** `docker compose … up -d
+  --force-recreate api` may place the API container on a different address, and the front end
+  resolves the API per request rather than once at start-up, so it follows the new address by
+  itself. Calls made in the first few seconds may be answered `503` with `Retry-After: 5` and
+  an RFC 7807 body while the short-lived DNS entry ages out; nothing needs restarting. The
+  front end also starts and keeps serving the application while the API is absent — only
+  `/api/` calls fail, and they fail with a problem document rather than an HTML error page.
+  This holds for the **TLS listener as well as the plain-HTTP one**, because both include the
+  same [`docker/api-proxy.conf`](./docker/api-proxy.conf); it did not before, and that was a
+  defect rather than a limitation — the public listener carried a copy of the original
+  four-line proxy block and therefore none of these protections. The three shared snippets are
+  the whole mechanism:
+
+  | Snippet | What it owns | Included by |
+  | --- | --- | --- |
+  | [`docker/api-proxy.conf`](./docker/api-proxy.conf) | `location /api/` — per-request upstream resolution, the raw request target, the 6,356,992-byte import allowance, the six forwarded headers — and the `@api_unavailable` RFC 7807 answer | both servers |
+  | [`docker/spa-static.conf`](./docker/spa-static.conf) | the immutable hashed-asset policy and the SPA deep-link fallback | both servers |
+  | [`docker/security-headers.conf`](./docker/security-headers.conf) | the nine response headers, including the content security policy and TLS-only HSTS | both servers, and every location that sets a `Cache-Control` of its own |
 - **Treat an API restart as a sign-out.** Refresh-token state is held in the API process,
   because the DotNetNuke schema this API maps onto is immutable and owns no table for it. A
   restart or a redeploy therefore invalidates every refresh token: access tokens already
   issued stay valid until they expire, and after that each signed-in user authenticates
   again. The front end handles this cleanly — a rejected refresh returns the user to the
   sign-in screen — but the effect is visible, so a redeploy is best scheduled accordingly.
-- **Run exactly one API instance.** For the same reason, a second replica without sticky
-  routing would reject refresh tokens issued by the first. Introduce a shared, durable store
-  behind `IRefreshTokenStore` before scaling out.
+- **Run exactly one API instance, unless you supply a shared store.** A second replica
+  without sticky routing would reject refresh tokens issued by the first, and its in-memory
+  cache would keep serving its own projection of a row the other replica had just changed
+  until that entry expired. Both are properties of the *shipped implementations*, not of the
+  contracts: `IRefreshTokenStore` and `ICacheService` are public contracts, the container
+  resolves the **last** registration of a service, and both consumers of the token store
+  depend on the contract rather than the class. A deployment that needs cross-process
+  continuity therefore calls `AddInfrastructure(...)`, registers its own implementation
+  after it, and sets `RefreshTokenStore:Provider` to `External` — no file in this repository
+  changes. The seam is covered by
+  [`RefreshTokenStoreTopologyTests`](./backend/tests/DnnMigration.UnitTests/Infrastructure/RefreshTokenStoreTopologyTests.cs)
+  rather than merely asserted here.
+- **The store you are running is declared, enforced and reported.** Three mechanisms exist so
+  that the limitation above can never be one a deployment *believes* it has escaped:
+
+  | Mechanism | What it does |
+  | --- | --- |
+  | `RefreshTokenStore:Provider` (`InProcess` \| `External`) | Makes the choice of store an explicit, validated setting instead of a default nobody chose. An unrecognised name is refused rather than treated as `InProcess` |
+  | Start-up topology check | Compares the declaration against the store the container actually resolves and **refuses to start** in either direction — declaring `External` with nothing registered, or overriding the store while still declaring `InProcess`. Wired in `Program.cs` immediately after the host is built, and covered by [`RefreshTokenStoreTopologyContractTests`](./backend/tests/DnnMigration.IntegrationTests/Api/RefreshTokenStoreTopologyContractTests.cs) |
+  | `refresh-token-store` health probe | Reports the active store, whether it is replica-safe, whether it survives a restart, and how full it is. It is on the **liveness** view with a `Degraded` failure status, so it never holds a starting container back and never withdraws a serving instance; its finding reaches an operator through the structured health-report log entry, never through the anonymous response body |
+
+  Reaching the tracked-generation ceiling is the one condition to act on: the store then
+  retires the **oldest** refresh families first, so their holders sign in again while every
+  request continues to be served. The probe reports `Degraded` with the usage and the two
+  remedies — raise `RefreshTokenStore:MaximumTrackedTokens`, or register a shared store.
+- **Why not a shared store in this repository.** Every route to one is closed by the plan
+  this delivery implements, and the constraint is recorded rather than worked around: a
+  target-owned SQL table is forbidden by AAP rule T4 (the existing schema is immutable), a
+  distributed-cache client is absent from the frozen dependency inventory in AAP 0.6, and a
+  third service to host one would break the two-service Compose topology AAP 0.9.3
+  reproduces verbatim. [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md) records the divergence
+  with those citations.
 - **A database outage is reported as a dependency failure, not a server fault.** Data
   endpoints answer `503` with `Retry-After` while `/health` and `/health/live` stay `200` and
   `/health/ready` reports `503`. The API is not restarted by the outage and recovers on its
@@ -496,8 +709,13 @@ docker compose -f docker/docker-compose.yml -f docker/docker-compose.tls.yml \
 
 ## 7. Validation gates
 
-Seven gates are the acceptance criteria for this migration, and this section is the
-validation report for them. The commands are reproduced **verbatim**, exactly as specified:
+Seven gates are the acceptance criteria for this migration, and this section is the validation
+report for them. It is in two halves: the commands **as specified**, then the commands **as
+executed**, with one status and one date per gate.
+
+**The specification, reproduced verbatim.** This block is the frozen input, kept for
+traceability. Two of its lines cannot run on a current toolchain — see the notes under the
+matrix — so do not copy from here.
 
 ```text
 Gate 1: cd backend; dotnet restore; dotnet build --configuration Release --warnaserror
@@ -510,45 +728,156 @@ Gate 7: docker-compose up -d; sleep 10; curl -f http://localhost:8080/health;
         curl -f http://localhost:4200; docker-compose down
 ```
 
-| Gate | What it proves | Status | Precondition / note |
+**The supported equivalents, which is what to run.** Every line below is copy-pasteable from
+the repository root and is what produced the evidence in the matrix. The differences from the
+block above are mechanical and are listed after it: a working directory, a locally installed
+CLI, and the Compose v2 spelling.
+
+```bash
+# Gate 1
+cd backend && dotnet restore && dotnet build --configuration Release --warnaserror
+
+# Gate 2  (run after gate 1: --no-build uses the binaries gate 1 produced)
+cd backend && dotnet test --configuration Release --no-build --verbosity normal
+
+# Gate 3
+cd frontend && npm ci && npx ng build --configuration production
+
+# Gate 4
+cd frontend && npx ng test --watch=false --browsers=ChromeHeadless --code-coverage
+
+# Gate 5
+cd backend && dotnet test --configuration Release --filter "Category=Integration"
+
+# Gate 6
+docker compose -f docker/docker-compose.yml --env-file docker/.env build
+
+# Gate 7
+docker compose -f docker/docker-compose.yml --env-file docker/.env up -d
+sleep 10
+curl -f http://localhost:8080/health
+curl -f http://localhost:4200
+docker compose -f docker/docker-compose.yml --env-file docker/.env down
+```
+
+Three mechanical differences, and nothing else:
+
+- **`cd backend` / `cd frontend`** are added to gates 2, 4 and 5. The specification carries
+  the directory change only on the gate that first needs it; each command above is
+  self-contained instead.
+- **`npx ng`** replaces the bare `ng` in gates 3 and 4, because the Angular CLI is a local
+  devDependency by design — there is no global `ng` on the path, and the bare spelling exits
+  127.
+- **`docker compose`** — two words — replaces `docker-compose` in gates 6 and 7, and the
+  explicit `-f docker/docker-compose.yml --env-file docker/.env` replaces the implicit
+  lookup, because the Compose file lives in `docker/` rather than at the repository root.
+  Compose v1 is end-of-life and absent from current Docker distributions; the literal v1
+  spelling exits 127 without starting anything. No product change can address this.
+
+**Result matrix.** All seven gates were executed from this repository on **12 August 2026** on
+Linux (Ubuntu 25.10 container) with .NET SDK 8.0.423 (runtimes 8.0.29), Node 20.20.2, npm
+10.8.2, Angular CLI 19.2.27, Chrome Headless 151.0.0.0, Docker Engine 29.7.0 with Compose
+v5.3.1, and SQL Server 2022 for the integration suites. Each row names the command that
+produced its evidence.
+
+| Gate | Command run | Status (12 Aug 2026) | Measured evidence |
 | --- | --- | --- | --- |
-| 1 | The solution compiles clean with warnings as errors | **Proven** | Fails until `CS1591` is suppressed: documentation generation plus warnings-as-errors turns every undocumented public member into a build error. See [§4](#4-backend) |
-| 2 | The full test suite passes | **Proven** | `--no-build` means it runs against the binaries Gate 1 produced, so run the two in that order. The integration project needs a reachable SQL Server; it provisions its own throwaway database by either of the routes in [§4](#the-database-the-integration-suite-runs-against) |
-| 3 | Deterministic install and an ahead-of-time production build | **Proven** | Requires the committed `frontend/package-lock.json`; emits `dist/dnn-migration/browser` |
-| 4 | The frontend specs pass with coverage | **Proven, conditionally** | **Fails outright without [`frontend/karma.conf.js`](./frontend/karma.conf.js)** and its `ChromeHeadlessNoSandbox` launcher. The literal command names `ChromeHeadless`, which overrides the configured browser list, so that name is declared as a flagged launcher too |
-| 5 | The integration CRUD suites pass | **Proven** | Selects on `[Trait("Category", "Integration")]`. `PortalApiTests`, `ModuleApiTests` and `UserApiTests` assert `POST` 201, `GET` 200, `PUT` 200 and `DELETE` 204 |
-| 6 | Both container images build | **Not executed — no container runtime available in the authoring environment.** Since exercised, and passing, wherever one is available | The four Docker artefacts were authored correct-by-construction from their verbatim specifications, with both name placeholders independently proven by real builds: a solution emitting `DnnMigration.Api.dll`, the exact filename the image's `ENTRYPOINT` names, and a workspace emitting `dist/dnn-migration/browser/`, the exact path the frontend image copies. They have since been built on Docker Engine with the Compose plugin, including a full `--no-cache` build |
-| 7 | The end-to-end two-container topology is healthy | **Not executed — no container runtime available in the authoring environment.** Since exercised, and passing, wherever one is available | Depends on three things no build step checks: the **anonymous** `/health`, the **`wget`-based** probe, and the **relative** production `apiBaseUrl`. All three are pinned in [§6](#6-containers). Where it has been run, the full cycle — down, up, `curl -f` both endpoints, down — completes with both services reporting `healthy` |
+| 1 | Gate 1 above | **PASS** | `Build succeeded. 0 Warning(s) 0 Error(s)` across all six projects |
+| 2 | Gate 2 above | **PASS** | `DnnMigration.UnitTests` 3078 passed / 0 failed / 0 skipped; `DnnMigration.IntegrationTests` 1362 passed / 0 failed / 0 skipped; 4440 tests total |
+| 3 | Gate 3 above | **PASS** | `npm ci` restored 938 packages; production build emitted `dist/dnn-migration/browser`; initial payload 500.80 kB raw / 131.74 kB transfer |
+| 4 | Gate 4 above | **PASS** | `TOTAL: 5724 SUCCESS` — 5 724 specs, zero failures; coverage written to `frontend/coverage/dnn-migration` — statements 95.08 %, branches 85.38 %, functions 97.60 %, lines 95.04 % |
+| 5 | Gate 5 above | **PASS** | `Failed: 0, Passed: 1362, Skipped: 0` on `DnnMigration.IntegrationTests.dll`; the unit-test assembly matches nothing and the run still exits 0 |
+| 6 | Gate 6 above | **PASS** | Exit 0; both images tagged — `dnnmigration-api:latest` (197 MB) and `dnnmigration-frontend:latest` (63.5 MB) |
+| 7 | Gate 7 above | **PASS** | `curl -f http://localhost:8080/health` → 200 and `curl -f http://localhost:4200` → 200, both services reporting `healthy`; the full `up -d` → probe → `down` cycle completed with exit 0 throughout. A request through the SPA origin (`/api/v1/portals`, no token) was answered 401 `application/problem+json`, proving the proxy hop end to end |
 
-Two facts about the commands themselves, both of which apply to any environment:
+One note on how gate 7 was measured, because the host it ran on matters. An instance of this
+same topology was already running there, and the Compose file fixes `container_name`, so the
+gate was taken in two parts: the `curl -f` probes above were made against the canonical
+`127.0.0.1:8080` and `:4200` mappings of the running instance, and the full `up -d` → probe →
+`down` cycle was run from this checkout under a second Compose project name with the container
+names, published ports and network subnet shifted, so that it could not disturb the first. Both
+halves used the gate command above unchanged apart from those shifts; a host with nothing
+already running needs neither.
 
-- **The literal `docker-compose` spelling in Gates 6 and 7 cannot run on a current Docker
-  installation.** Compose v1 is end-of-life and absent; the supported spelling is the two-word
-  `docker compose`, which is what [§6](#6-containers) documents and what was executed. Every
-  gate passes on that spelling. No product change can address this.
-- **The legacy VB.NET solution was never compiled.** `msbuild`, `mono` and `vbnc` are all
-  unavailable in the authoring environment, so legacy behaviour was established by reading the
-  source and analysing the DDL chain. That is why every claim in
-  [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md) carries a file and line citation rather than a
-  runtime observation.
+Four things worth knowing about individual gates, each discovered by running it rather than by
+predicting it:
+
+- **Gate 1 fails until `CS1591` is suppressed.** Documentation generation combined with
+  warnings-as-errors turns every undocumented public member into a build error. See
+  [§4](#4-backend) for the suppression and why it is required rather than preferred.
+- **Gate 4 cannot start without [`frontend/karma.conf.js`](./frontend/karma.conf.js)** and its
+  `ChromeHeadlessNoSandbox` launcher. The literal command names `ChromeHeadless`, which
+  *overrides* the configured browser list, so that name is declared as a flagged launcher too.
+- **Gates 2 and 5 need a reachable SQL Server.** The suite provisions its own throwaway
+  database by either of the routes in
+  [§4](#the-database-the-integration-suite-runs-against) — a container runtime, or
+  `DNN_TEST_SQLSERVER` pointed at an existing server. It fails closed rather than degrading.
+- **Gate 7 depends on three things no build step checks:** the **anonymous** `/health`, the
+  **`wget`-based** container probe, and the **relative** production `apiBaseUrl`. All three
+  are pinned in [§6](#6-containers).
+
+**Authoring history, kept separate from the result above.** Gates 6 and 7 were *not*
+executable in the environment in which the container artefacts were first written: it had no
+container runtime at all. The four Docker artefacts were therefore authored
+correct-by-construction from their verbatim specifications, with both name placeholders proven
+indirectly — a solution that emitted `DnnMigration.Api.dll`, the exact filename the image's
+`ENTRYPOINT` names, and a workspace that emitted `dist/dnn-migration/browser/`, the exact path
+the frontend image copies. That constraint no longer applies and is recorded only so the dated
+`PASS` rows above are not mistaken for a re-statement of it. The same is true of one further
+limitation, which **does** still apply: **the legacy VB.NET solution was never compiled**,
+because `msbuild`, `mono` and `vbnc` are unavailable, so every claim about *legacy* behaviour
+in [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md) rests on reading the source and the DDL chain
+and carries a file-and-line citation. Claims about the *target* in that document are a
+different matter: many are runtime observations, and its register records the measurements
+they came from.
 
 ### `npm audit` is deliberately not a build gate
 
-A **pristine, freshly scaffolded** Angular 19.2.x workspace reports 48 advisories before a
-single line of application code exists. Almost all of them are build-toolchain transitives
-that never reach the browser bundle — archive, glob, worker-pool, CSS-processing, dev-server
-proxy and registry-client chains. Exactly one root advisory touches a runtime dependency: a
-client-hydration advisory against `@angular/core` whose affected range covers every 19.2.x
-release, with no remedy inside the mandated major version.
+This is a decision about the *build*, not a claim that the dependency graph is clean. It is
+recorded with the evidence it rests on, and that evidence has a date on it because advisory
+data changes underneath a fixed lockfile.
 
-That vector was verified unreachable rather than assumed so. The workspace is scaffolded
-without server-side rendering, `@angular/platform-server` is not installed, and no hydration
-provider appears anywhere in the source — `frontend/src/main.ts` records that absence as
-deliberate and load-bearing. Adding an audit threshold to the build would therefore fail a
-pristine workspace on day one and block delivery for a vector this application cannot
-execute. The same reasoning is applied to the NuGet graph, where auditing is left at the SDK
-default rather than promoted to an error under `TreatWarningsAsErrors`. Both decisions, and
-the advisory itself, are recorded in [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md).
+**Reproduce it:** `cd frontend && npm audit`. Measured on **12 August 2026** with npm 10.8.2
+against the committed `package-lock.json` (SHA-256 `27114fb8…`), which resolves 1,047
+dependencies — 11 production, 1,037 development, 144 optional:
+
+| Severity | Count |
+| --- | --- |
+| Critical | 0 |
+| High | 19 |
+| Moderate | 7 |
+| Low | 1 |
+| **Total** | **27** across 22 distinct root advisories |
+
+Sixteen of the 22 are development and build-toolchain packages that never ship in the browser
+bundle and are absent from the runtime image, which serves static files from nginx:
+`webpack-dev-server` (4), `http-proxy-middleware` (2), `serialize-javascript` (2),
+`image-size` (2), the `esbuild` development server, `nanoid`, `uuid`, `sigstore` and
+`@sigstore/core`.
+
+Six are against packages that *do* ship in the bundle, and each names a feature this
+application does not use. All six are ranged `<= 19.2.25`, i.e. the whole of Angular 19.2.x,
+so none has a remedy inside the mandated major version:
+
+| Advisory | Package | Requires | Measured in this workspace |
+| --- | --- | --- | --- |
+| GHSA-rgjc-h3x7-9mwg | `@angular/core` | Client hydration | No `provideClientHydration`, no `provideServerRendering`, `@angular/platform-server` not installed |
+| GHSA-39pv-4j6c-2g6v, GHSA-jhpw-976m-542j | `@angular/common` | `HttpTransferCache` | No `withHttpTransferCache`; the cache exists only alongside hydration |
+| GHSA-48r7-hpm6-gfxm | `@angular/common` | A caller-influenced date format | `formatDate` is called once, in `shared/pipes/date-display.pipe.ts`, with a closed two-member pattern union that no request value can reach |
+| GHSA-jj27-h5hq-8x99 | `@angular/compiler` | Angular i18n | No `i18n` template attributes and `@angular/localize` is not installed |
+| GHSA-58w9-8g37-x9v5 | `@angular/compiler` | A sanitised property bound two-way | No security-sensitive DOM property is bound anywhere: zero `innerHTML`, zero `DomSanitizer`, zero `bypassSecurityTrust` in production source |
+
+So an audit threshold on the build would fail on 19 high-severity findings that this
+application cannot execute, on the day it was added, with no upgrade available inside Angular
+19 — which is why the gate list stops at install-plus-build (gate 3) and the test run (gate
+4). The same reasoning is applied to the NuGet graph, where auditing is left at the SDK default
+rather than promoted to an error under `TreatWarningsAsErrors`.
+
+**Re-check the table above** whenever `package-lock.json` changes, before a release, and when
+the Angular major version is raised — at which point the six runtime advisories should be
+re-tested for a remedy rather than re-inherited. The decision is scoped to this lockfile and
+this major version, not open-ended. `MIGRATION_NOTES.md` carries the same record with its
+supersession history.
 
 ### No throughput or latency target is claimed
 
@@ -619,7 +948,6 @@ is itemised in [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md).
 ├── DotNetNuke_VS2008.sln       LEGACY VS2008 solution — untouched
 ├── catalog-info.yaml           Backstage component descriptor — untouched
 ├── mkdocs.yml                  docs site config — deliberately untouched
-├── NuGet.Config                cleared package sources plus package-source mapping
 ├── MIGRATION_NOTES.md          migration decision log
 ├── README.md                   this file
 ├── .gitignore
@@ -631,6 +959,7 @@ backend/
 ├── DnnMigration.sln
 ├── Directory.Build.props       net8.0, C# 12, nullable, warnings-as-errors, two suppressions
 ├── global.json                 SDK 8.0.423, rollForward latestFeature
+├── NuGet.Config                cleared package sources plus package-source mapping
 ├── .editorconfig
 ├── src/
 │   ├── DnnMigration.Domain/            Entities/ Enums/ ValueObjects/ Abstractions/ Common/
@@ -666,10 +995,13 @@ frontend/
 docker/
 ├── api.Dockerfile              sdk:8.0-alpine -> aspnet:8.0-alpine, non-root, wget probe
 ├── frontend.Dockerfile         node:20-alpine -> nginx:alpine
-├── docker-compose.yml          the two-service topology
-├── docker-compose.tls.yml      TLS overlay
-├── nginx.conf                  SPA fallback plus the /api/ proxy — copied into the image
-├── nginx.tls.conf              TLS server block, and its .example twin
+├── docker-compose.yml          the two-service topology, loopback-published
+├── docker-compose.tls.yml      TLS overlay: public 80/443, API port withdrawn
+├── nginx.conf                  the main configuration — copied into the image
+├── api-proxy.conf              the /api/ proxy and its RFC 7807 gateway answer  \
+├── spa-static.conf             hashed-asset policy and SPA fallback             > shared by
+├── security-headers.conf       the response header policy                       /  both servers
+├── nginx.tls.conf.template     TLS server block; server_name from DNN_PUBLIC_HOST
 └── .env.example                the documented contract for every deployment value
 ```
 
@@ -729,10 +1061,49 @@ Three consequences follow, and all three are deliberate:
   `DB_CONNECTION_STRING` and `JWT_SECRET` from the environment or a secret store. There is no
   committed signing key anywhere in this repository — ending the committed-key practice of the
   legacy application is one of the reasons this migration exists.
-- **Package restore is repository-controlled.** `NuGet.Config` clears every inherited source,
-  declares the single public source the dependency inventory was pinned against, and maps each
-  package identity to it with no bare `*` pattern, so an unreviewed identity fails restore
-  rather than resolving from an unexpected feed.
+- **Package restore is repository-controlled.** [`backend/NuGet.Config`](./backend/NuGet.Config)
+  clears every inherited source, declares the single public source the dependency inventory was
+  pinned against, and maps each package identity to it with no bare `*` pattern, so an unreviewed
+  identity fails restore rather than resolving from an unexpected feed. It sits beside the
+  solution rather than at the repository root because NuGet searches upwards from each project,
+  so that placement governs all six projects while leaving the legacy trees beside it alone — and
+  it travels into the API image with `COPY backend/ ./`, so the container restore is governed the
+  same way without an instruction of its own.
+- **Secrets can be delivered as mounted files, and the host reads them.** A key-per-file
+  configuration source is registered over `/run/secrets`, where the **file name is the
+  configuration key** with `__` for the section separator — so
+  `/run/secrets/ConnectionStrings__Default` and `/run/secrets/Jwt__Secret` supply exactly what
+  the matching environment variables would, and a trailing newline is trimmed. That is the
+  shape `docker compose secrets:`, Docker Swarm and a Kubernetes secret volume all produce; set
+  `Secrets__Directory` if a projected volume is mounted elsewhere. A mounted file **outranks**
+  an environment variable of the same name, because mounting is how a value is kept out of the
+  environment block `docker inspect` can read. Each file must be readable by the image's
+  unprivileged uid 1000 account — mode `0444`, which is the orchestrator default. This closes a
+  gap rather than adding a feature: the deployment template previously said file delivery
+  needed no code change while no such source was registered, so a `/run/secrets` mount was not
+  read at all.
+- **Package restore is repository-controlled, in the container as well as on a workstation.**
+  [`NuGet.Config`](./NuGet.Config) clears every inherited source, declares the single public
+  source the dependency inventory was pinned against, and maps each package identity to it
+  with no bare `*` pattern, so an unreviewed identity fails restore rather than resolving from
+  an unexpected feed. [`docker/api.Dockerfile`](./docker/api.Dockerfile) copies that file into
+  its build stage and restores with `--configfile`, which makes NuGet read it *and nothing
+  else* — so the image cannot inherit a source from the base image's own settings or from a
+  build agent. Locked mode is not passed on the command line: `backend/Directory.Build.props`
+  sets `RestorePackagesWithLockFile` and `RestoreLockedMode` for all six projects, and the six
+  committed `packages.lock.json` files travel into the build with the source tree.
+- **Both images are pinned by base-image digest, with the readable tag retained.** All four
+  `FROM` lines name a digest as well as a tag, so one commit builds one image rather than
+  whatever the moving tag points at that week. What was verified inside each pinned digest is
+  recorded at the instruction: SDK 8.0.424 (satisfying `backend/global.json`), ASP.NET Core
+  runtime 8.0.30 on Alpine 3.24.1 with ICU 78.1-r0 available, Node 20.20.2 with npm 10.8.2
+  (satisfying the `engines` range), and nginx 1.31.3 with the BusyBox `wget` the health probe
+  depends on. Refreshing a digest is a reviewed step — resolve the tag's current digest,
+  confirm the pinned prerequisite still holds, then re-run the container and end-to-end gates
+  — and it is where a base-image advisory is acted on. The `apk`-installed ICU packages are
+  controlled by that digest rather than by a version constraint, because an Alpine branch
+  repository serves only the current version of each package, so an exact `apk` pin would turn
+  a distribution security update into a broken build.
 
 ---
 
@@ -785,17 +1156,28 @@ the migration's own normative sections are treated as binding:
   API mapping with an intentionally empty baseline migration, not model-generated DDL. These are
   settled decisions; please do not re-litigate them in a pull request.
 - Exact dependency versions only. No `latest`, no floating ranges, and a new package identity
-  needs its `NuGet.Config` mapping in the same commit.
+  needs its `backend/NuGet.Config` mapping in the same commit.
 
 ### Frontend conventions
 
 - Standalone components, signals for state, typed `nonNullable` reactive forms, built-in
   control flow with `track` on every `@for`, and `ChangeDetectionStrategy.OnPush` everywhere.
 - Component-scoped SCSS over global design tokens — not Tailwind, and no component library.
-- **Zero hardcoded CSS values.** Every value resolves to a token in
-  `frontend/src/styles/_tokens.scss`; the only permitted literals are `0`, `none`, `auto`,
-  `inherit`, `currentColor` and `transparent`. Breakpoints come from the shared mixins, never
-  from an ad-hoc media query.
+- **No hardcoded design values.** Every colour, type step, space, radius, elevation, duration
+  and dimension resolves to a token in `frontend/src/styles/_tokens.scss` — if a value
+  describes how the application *looks*, it is a token or it is a bug. The keyword literals
+  `0`, `none`, `auto`, `inherit`, `currentColor` and `transparent` are permitted anywhere.
+  Breakpoints come from the shared mixins, never from an ad-hoc media query.
+
+  Separately, a **bounded set of structural literals** is permitted, because these describe
+  layout mechanics rather than design and a token for them would name nothing: CSS-grid line
+  indices and track counts (`grid-column: 1 / -1`, `repeat(2, …)`), the `fr` unit and
+  `minmax(0, 1fr)`, flex factors (`flex: 1 1 …`), line-clamp counts, the `-1` multiplier in
+  `calc(-1 * var(--token))`, viewport and percentage bounds inside `min()`/`calc()`
+  (`100vw`, `100vh`, `100%`), `1em` where a box is deliberately sized to the current type
+  step, and keyframe rotation angles (`0deg`, `360deg`). That list is exhaustive as of this
+  writing — 24 declarations across the workspace, and no other kind of literal appears in a
+  declaration. Adding a category to it is a review decision, not a local one.
 - Services under `core/services/` are typed `HttpClient` wrappers and hold no business logic.
 - **Accessibility is required, not optional:** semantic landmarks, `<caption>` and
   `<th scope>` on tables, every control label-associated through `form-field`, `aria-live` on
@@ -823,7 +1205,7 @@ the migration's own normative sections are treated as binding:
 | The host refuses to start over `Jwt:Secret` | No signing key supplied, or a low-entropy placeholder | Supply at least 32 bytes from the environment or a secret store. No overlay ships one, by design |
 | CORS errors in the browser | API origin mismatch | Align `Cors:AllowedOrigins` with the SPA origin. In containers the SPA is same-origin and uses the relative `/api/v1` |
 | `docker-compose: command not found`, or exit 127 | Compose v1 is end-of-life and absent | Use the two-word `docker compose` — see [§6](#6-containers) |
-| Health check returns 401 | `/health` is not anonymous | Restore `[AllowAnonymous]`; Compose's `service_healthy` condition depends on it |
+| Health check returns 401 | `/health` is not anonymous | Restore the `.AllowAnonymous()` call on the `MapHealthChecks` registration in `Api/Extensions/ApplicationBuilderExtensions.cs`; Compose's `service_healthy` condition depends on it |
 | The frontend container never starts | The API health check never passes | Fix `/health`, and confirm the probe uses `wget --spider` rather than `curl` — the Alpine runtime image has no `curl` |
 | The frontend image build fails at a `COPY` step | `docker/nginx.conf` missing, or excluded from the build context | Ensure the file exists and that the root [`.dockerignore`](./.dockerignore) does not exclude `docker/`. Build from the repository root, not from `docker/` |
 | SPA requests answered 502 while both containers are healthy | The `api` service was renamed | `docker/nginx.conf` resolves the hostname `api`; keep the service name |
@@ -839,7 +1221,7 @@ the migration's own normative sections are treated as binding:
 | Document | What it answers | Standing |
 | --- | --- | --- |
 | `README.md` (this file) | How to build, configure, test, run and operate both stacks, and how the seven gates came out | Current |
-| [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md) | Why the target differs from the legacy application, decision by decision, with file and line citations | Current; its register is append-only |
+| [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md) | Why the target differs from the legacy application, decision by decision. Legacy claims carry a file-and-line citation; target claims are frequently runtime observations, and its register carries the measurements | Current. Sections 1–13 are canonical; the register below them is append-only evidence |
 | [`frontend/README.md`](./frontend/README.md) | The SPA workspace in detail — commands, structure, conventions and its API base URL | Current |
 | [`docker/.env.example`](./docker/.env.example) | The documented contract for every deployment value, and how to move them to a secret store | Current |
 | [`docs/index.md`](./docs/index.md), [`docs/project-guide.md`](./docs/project-guide.md), [`docs/technical-specifications.md`](./docs/technical-specifications.md) | Published through MkDocs | **Prior planning artefacts, reference only** |

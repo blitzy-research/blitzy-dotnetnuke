@@ -222,10 +222,20 @@ internal static class SortableFields
     /// <remarks>
     /// <para>
     /// Every name below is an ACCOUNT field, because the legacy grid rendered the account and sorted on
-    /// what it rendered. The listing materialises the role's assignment rows composed with their accounts
-    /// and pages them in memory, so each name is honoured over a value that is genuinely present -
-    /// including the three the external membership store supplies, which the composing read populates and
-    /// which no ordering clause over <c>dbo.UserRoles</c> alone could reach.
+    /// what it rendered.
+    /// </para>
+    /// <para>
+    /// ⚠ SEC-F11. THREE NAMES WERE WITHDRAWN FROM THIS SET, AND THE COMMENT THAT JUSTIFIED THEM WAS WRONG.
+    /// <c>CreatedDate</c>, <c>LastLoginDate</c> and <c>IsApproved</c> were admitted on the reading that this
+    /// listing materialises the role's assignments and pages them IN MEMORY, so the three values the
+    /// external <c>aspnet_*</c> membership objects supply would be present on every row before a page was
+    /// cut. The implementation does not do that: the filter, the ordering, the count and the window all
+    /// travel to the store, and the repository's ordering arm for those three names fell through to the
+    /// assignment key. A caller asking for them was answered <c>200</c> with rows ordered by something else
+    /// entirely - and the membership projection does not carry the three values, so the response could not
+    /// even be inspected to notice. An ordering the store cannot perform over a value the response does not
+    /// publish is not a capability, so it is no longer advertised: the boundary now refuses those names with
+    /// a field-keyed <c>400</c> naming <c>sortBy</c>.
     /// </para>
     /// <para>
     /// It is narrower than the projection: the two assignment dates the projection carries are deliberately
@@ -243,9 +253,6 @@ internal static class SortableFields
             "LastName",
             "DisplayName",
             "Email",
-            "CreatedDate",
-            "LastLoginDate",
-            "IsApproved",
             "IsSuperUser",
         };
 
@@ -261,6 +268,30 @@ internal static class SortableFields
     /// clause; whether it is meaningful for the collection actually being read is settled
     /// by the per-collection set.
     /// </remarks>
+    /// <summary>
+    /// Field names that may order the account picker served by <c>GET /api/v1/users/choices</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// THE NARROWEST SET IN THIS FILE, AND NARROW FOR ONE REASON: it is exactly the projection. That
+    /// endpoint returns a key and the two captions an option shows - <c>Users.Username</c> and
+    /// <c>Users.DisplayName</c> - so those two are the only values a caller could see the effect of
+    /// ordering by. Every other account field is absent from the payload by design, and ordering a
+    /// drop-down by a value the operator cannot read is an ordering they cannot verify.
+    /// </para>
+    /// <para>
+    /// The key itself is deliberately not a member. It orders the options by the accident of when each
+    /// account was created, which is meaningless to somebody choosing one, and it is already the final
+    /// tie-break on both arms so the sequence is total either way.
+    /// </para>
+    /// </remarks>
+    internal static readonly IReadOnlySet<string> UserChoices =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Username",
+            "DisplayName",
+        };
+
     internal static readonly IReadOnlySet<string> All = BuildUnion();
 
     /// <summary>
@@ -344,6 +375,7 @@ internal static class SortableFields
         union.UnionWith(Portals);
         union.UnionWith(Roles);
         union.UnionWith(Users);
+        union.UnionWith(UserChoices);
         union.UnionWith(Modules);
         union.UnionWith(RoleUsers);
 

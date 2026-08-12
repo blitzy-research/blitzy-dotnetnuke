@@ -266,6 +266,92 @@ internal sealed class UserRepository : IUserRepository
 
     /// <inheritdoc />
     /// <remarks>
+    /// <para>
+    /// ⚠ THE PROJECTION IS THE WHOLE POINT OF THIS MEMBER. <c>Select</c> is applied to the query, so the
+    /// three columns are the three columns the provider is asked for: the generated statement names
+    /// <c>UserID</c>, <c>Username</c> and <c>DisplayName</c> and no others, nothing is materialised as an
+    /// entity, nothing is tracked, and none of the composition <see cref="ListAsync"/> performs after
+    /// taking a page runs here. Projecting AFTER materialising a page of accounts would leave the cost
+    /// and the exposure exactly where the review found them and only hide it from the caller.
+    /// </para>
+    /// <para>
+    /// <c>AsNoTracking</c> is stated even though a projection to a non-entity type is untracked anyway,
+    /// because the guarantee is worth being explicit about on a read this wide: a picker may enumerate a
+    /// whole tenant, and a change tracker holding a thousand accounts would outlive the request scope's
+    /// usefulness.
+    /// </para>
+    /// <para>
+    /// The prefix is matched with an ESCAPED <c>LIKE</c> rather than a case-folded <c>StartsWith</c>. The
+    /// legacy searches ran <c>LIKE @SearchText</c> against the column under the installation's own
+    /// collation, so collation-driven case handling IS the reproduced behaviour, and leaving the column
+    /// unwrapped is what lets the provider seek rather than normalise every candidate row. Every wildcard
+    /// in the caller's text is escaped by <see cref="LikePrefixPattern"/>, so a per-cent sign typed by an
+    /// operator matches a per-cent sign.
+    /// </para>
+    /// <para>
+    /// THE LOGIN NAME IS THE ONE VALUE MATCHED, and the narrowness is a preserved behaviour rather than an
+    /// economy. The legacy name box looked an account up by its login name
+    /// (<c>SecurityRoles.ascx.vb:L476-L488</c>), and the caller that walks this member for a typed name
+    /// depends on ordering by that same login name to put an exact match first - a filter that also matched
+    /// display names would admit rows whose login name sorts before the exact match, so the ordinary answer
+    /// would stop arriving in one request. The electronic-mail address is not matched either, and for a
+    /// different reason: it is the identifier this projection refuses to RETURN, and matching on a value it
+    /// will not show would let a caller confirm an address by observing which rows came back.
+    /// </para>
+    /// <para>
+    /// An unpaged request is served without a second round trip, exactly as <see cref="ListAsync"/> serves
+    /// one: the total of an unpaged read is the row count itself, so counting separately would ask the
+    /// same question twice.
+    /// </para>
+    /// </remarks>
+    public async Task<PagedResult<AccountChoice>> ListAccountChoicesAsync(
+        int portalId,
+        int pageIndex,
+        int pageSize,
+        string? namePrefix,
+        string? sortBy = null,
+        bool descending = false,
+        CancellationToken cancellationToken = default)
+    {
+        // Host accounts are excluded and unauthorised memberships are included, which is the pair the
+        // legacy picker applied (UserModuleBase.vb:L178-L186): every account holding a membership row for
+        // the tenant was offered, authorised or not, and a host account never was.
+        IQueryable<User> filtered = _context.Users
+            .AsNoTracking()
+            .Where(u => !u.IsSuperUser
+                && _context.UserPortals.Any(m => m.UserId == u.UserId && m.PortalId == portalId));
+
+        if (!string.IsNullOrWhiteSpace(namePrefix))
+        {
+            string pattern = LikePrefixPattern(namePrefix.Trim());
+            filtered = filtered.Where(u => EF.Functions.Like(u.Username, pattern, LikeEscapeCharacter));
+        }
+
+        // Ordered by what the option shows, and always ending on the key so the sequence is total and a
+        // page boundary cannot repeat or drop a row. Ordering happens BEFORE the projection and before
+        // Skip and Take, so it orders the collection rather than one arbitrary page.
+        IQueryable<AccountChoice> choices = ApplyChoiceOrder(filtered, sortBy, descending)
+            .Select(u => new AccountChoice(u.UserId, u.Username, u.DisplayName));
+
+        if (pageSize == 0)
+        {
+            List<AccountChoice> all = await choices.ToListAsync(cancellationToken).ConfigureAwait(false);
+            return PagedResult<AccountChoice>.Unpaged(all);
+        }
+
+        int totalCount = await choices.CountAsync(cancellationToken).ConfigureAwait(false);
+
+        List<AccountChoice> rows = await choices
+            .Skip(Paging.SkipCount(pageIndex, pageSize))
+            .Take(pageSize)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return PagedResult<AccountChoice>.Create(rows, totalCount, pageIndex, pageSize);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
     /// <see cref="User.UserPortals"/> is populated with every membership the account holds, not only the
     /// one that was asked about. A caller deleting an account has to know whether the account still
     /// belongs to another portal before it may remove the account itself, and a caller resolving a
@@ -404,9 +490,11 @@ internal sealed class UserRepository : IUserRepository
     /// the server clock, so the answer is reproducible and testable.
     /// <para>
     /// Only roles belonging to the requested portal are considered. <c>UserRoles</c> carries no portal
-    /// column, so the scope is applied through the role, and a host-level role - whose <c>PortalID</c> is
-    /// null - never equals a portal identifier and is therefore excluded by construction. The names are
-    /// ordered so that the claim set an access token carries is stable between issues.
+    /// column, so the scope is applied through the role, and a row whose <c>PortalID</c> were null would
+    /// never equal a portal identifier and so would be excluded by construction - a case the terminal
+    /// <c>Roles.PortalID int NOT NULL</c> forbids outright, which makes the exclusion belt and braces
+    /// rather than a live path. The names are ordered so that the claim set an access token carries is
+    /// stable between issues.
     /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<string>> ListRoleNamesAsync(
@@ -429,9 +517,9 @@ internal sealed class UserRepository : IUserRepository
 
     /// <inheritdoc />
     /// <remarks>
-    /// The scope is applied through the role, because <c>UserRoles</c> carries no portal column: a
-    /// host-level role, whose portal identifier is null, never equals a portal identifier and is
-    /// therefore excluded by construction.
+    /// The scope is applied through the role, because <c>UserRoles</c> carries no portal column: a row
+    /// whose portal identifier were null would never equal a portal identifier and so would be excluded
+    /// by construction, and the terminal <c>Roles.PortalID int NOT NULL</c> forbids such a row anyway.
     /// <para>
     /// Assignment dates are deliberately not evaluated, reproducing the terminal legacy procedure at
     /// <c>04.03.06.SqlDataProvider</c> lines 15 to 41, which filtered on the role's name and portal
@@ -754,6 +842,51 @@ internal sealed class UserRepository : IUserRepository
             "ISSUPERUSER" => descending
                 ? query.OrderByDescending(u => u.IsSuperUser).ThenByDescending(u => u.UserId)
                 : query.OrderBy(u => u.IsSuperUser).ThenBy(u => u.UserId),
+            _ => descending
+                ? query.OrderByDescending(u => u.DisplayName)
+                    .ThenByDescending(u => u.Username)
+                    .ThenByDescending(u => u.UserId)
+                : query.OrderBy(u => u.DisplayName)
+                    .ThenBy(u => u.Username)
+                    .ThenBy(u => u.UserId),
+        };
+    }
+
+    /// <summary>
+    /// Orders an account query by one of the two captions an account picker shows.
+    /// </summary>
+    /// <param name="query">The filtered accounts.</param>
+    /// <param name="sortBy">The caption to order by, or <see langword="null"/> for the default.</param>
+    /// <param name="descending">Whether to order descending.</param>
+    /// <returns>The ordered query.</returns>
+    /// <remarks>
+    /// <para>
+    /// Separate from <see cref="ApplyOrder"/> because the admissible set is different, and it is
+    /// different because the PROJECTION is different: a picker returns a key and two captions, so those
+    /// captions are the only values it can meaningfully be ordered by. Reusing the listing's arms would
+    /// let a caller order a drop-down by an electronic-mail address or a super-user flag that no option
+    /// displays - the same silently-discarded ordering the listing's own set was narrowed to eliminate.
+    /// </para>
+    /// <para>
+    /// The two arms correspond exactly to <c>SortableFields.UserChoices</c>, and the correspondence has
+    /// to be maintained in both directions: a name the boundary admits without an arm here is a field the
+    /// endpoint accepts and then ignores, and an arm without a permitted name is unreachable and misleads
+    /// the next reader about what the endpoint offers.
+    /// </para>
+    /// <para>
+    /// The default arm reproduces the legacy drop-down's own order. <c>UserModuleBase.vb:L178-L186</c>
+    /// filled <c>cboUsers</c> from the account read whose default order led with the display name, which
+    /// is also the value each option is captioned by, so an unsorted request answers as the legacy
+    /// control did. Every ordering ends on the primary key so the sequence is total.
+    /// </para>
+    /// </remarks>
+    private static IQueryable<User> ApplyChoiceOrder(IQueryable<User> query, string? sortBy, bool descending)
+    {
+        return (sortBy ?? string.Empty).Trim().ToUpperInvariant() switch
+        {
+            "USERNAME" => descending
+                ? query.OrderByDescending(u => u.Username).ThenByDescending(u => u.UserId)
+                : query.OrderBy(u => u.Username).ThenBy(u => u.UserId),
             _ => descending
                 ? query.OrderByDescending(u => u.DisplayName)
                     .ThenByDescending(u => u.Username)

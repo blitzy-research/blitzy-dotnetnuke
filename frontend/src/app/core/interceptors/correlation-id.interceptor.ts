@@ -78,13 +78,15 @@ import { isApiRequest } from '../config/api-endpoints';
  *
  * Presence alone is not enough to earn that pass-through, because presence alone
  * does not achieve it. The server keeps an inbound identifier only when it is a
- * single header line, non-blank, no longer than its length bound and printable
- * US-ASCII throughout; anything else it discards and replaces with one of its own.
- * Forwarding a value that fails those clauses would therefore not preserve the
- * caller's identifier at all - the caller would simply lose it further downstream,
- * and the browser would hold an identifier that appears in no server log line.
- * Validating here against the same clauses is what makes the pass-through mean what
- * it claims: an identifier that survives is one both sides will actually use.
+ * single header line in one of two CANONICAL, NON-SEMANTIC shapes - 32 hexadecimal
+ * characters, or the hyphenated 36-character `8-4-4-4-12` form; anything else it
+ * discards and replaces with one of its own. Forwarding a value that fails that test
+ * would therefore not preserve the caller's identifier at all - the caller would
+ * simply lose it further downstream, and the browser would hold an identifier that
+ * appears in no server log line. Validating here against the same rule is what makes
+ * the pass-through mean what it claims: an identifier that survives is one every
+ * layer will actually use. See {@link isCanonicalCorrelationId} for why the shape,
+ * rather than merely the character range, is the security control.
  *
  * ## What it deliberately does not do
  *
@@ -103,7 +105,7 @@ import { isApiRequest } from '../config/api-endpoints';
  * cosmetic, but the spelling is not - a different one would break the loop
  * silently, each side looking for a header the other never sends.
  */
-const CORRELATION_ID_HEADER = 'X-Correlation-Id';
+export const CORRELATION_ID_HEADER = 'X-Correlation-Id';
 
 /**
  * The number of random bytes a UUID is built from.
@@ -125,10 +127,10 @@ const BYTE_VALUE_COUNT = 256;
  * downstream, because a log query that recognises the identifier must not have to
  * know which code path below produced it.
  *
- * The output also satisfies every clause the server validates an inbound
- * identifier against - a single header line, non-blank, well inside the 128
- * character bound, and printable US-ASCII throughout - so a value generated here
- * is kept by the server rather than discarded and replaced.
+ * The output is also one of the two CANONICAL shapes the server accepts - see
+ * {@link isCanonicalCorrelationId} - so a value generated here is kept by the server
+ * rather than discarded and replaced. That is a hard requirement rather than a
+ * nicety: an identifier the server refuses is one the browser holds alone.
  *
  * @param bytes Exactly {@link UUID_BYTE_LENGTH} bytes of randomness. Mutated in
  * place, which is safe because every caller passes a freshly allocated array.
@@ -199,66 +201,106 @@ function newCorrelationId(): string {
 }
 
 /**
- * The greatest number of characters the server accepts in an inbound identifier.
+ * The length of the unhyphenated canonical form: 32 hexadecimal characters.
  *
- * Mirrors the bound the API's correlation-id middleware declares. Counting is by
- * UTF-16 code unit on both sides, so the two measurements agree exactly, including
- * for characters outside the basic multilingual plane, which each occupy two units.
+ * This is the form the API generates — a .NET `Guid` rendered with `"N"` — and the
+ * form the reverse proxy substitutes when it has to mint one, so a value that
+ * originated on either of them takes this branch on the way back.
  */
-const MAX_CORRELATION_ID_LENGTH = 128;
+const COMPACT_FORM_LENGTH = 32;
 
 /**
- * The lowest character code the server accepts, `0x20` (space).
+ * The length of the hyphenated canonical form: the RFC 4122 `8-4-4-4-12` rendering.
  *
- * Anything below it is a C0 control character. Carriage return and line feed are
- * the two that matter most: an identifier carrying either could split one header
- * line into several, so excluding the whole range below space closes that class of
- * response-splitting and log-forging problem rather than naming its members.
+ * This is the form {@link newCorrelationId} produces.
  */
-const LOWEST_ACCEPTED_CHARACTER_CODE = 0x20;
+const HYPHENATED_FORM_LENGTH = 36;
 
 /**
- * The highest character code the server accepts, `0x7e` (tilde).
+ * The character positions of the four hyphens in the hyphenated canonical form.
  *
- * Above it lie the C1 controls and the whole of non-ASCII. Header values have no
- * reliable encoding negotiation, so a non-ASCII identifier cannot be relied upon to
- * arrive as it left.
+ * Declared rather than derived so the shape test reads as the specification it
+ * enforces. Every other position must hold a hexadecimal digit.
  */
-const HIGHEST_ACCEPTED_CHARACTER_CODE = 0x7e;
+const HYPHEN_POSITIONS: readonly number[] = Object.freeze([8, 13, 18, 23]);
 
 /**
- * Reports whether an inbound identifier is one the server will keep.
+ * Reports whether one character is a hexadecimal digit, in either register.
  *
- * The three clauses and their order mirror the API's own validation exactly, so
- * that this side never forwards a value the other side would reject:
+ * Written against character codes rather than a regular expression so that the test
+ * is a comparison per character with nothing to compile and no locale to consult.
  *
- * 1. Not blank. A value of only whitespace is rejected even though space itself is
- *    an accepted character, because it names nothing.
- * 2. Within the length bound. Measured on the value as received, not on a trimmed
- *    copy, because the server measures it that way too.
- * 3. Printable US-ASCII throughout.
- *
- * The value is deliberately *not* trimmed or otherwise repaired. The server keeps a
- * usable value verbatim, so silently rewriting it here would make the browser and
- * the server disagree about the identifier for the same request - the precise
- * failure this whole mechanism exists to prevent.
- *
- * @param candidate The single inbound header value.
- * @returns `true` when every clause passes.
+ * @param code A UTF-16 code unit.
+ * @returns `true` for `0`–`9`, `a`–`f` and `A`–`F`.
  */
-function isUsableCorrelationId(candidate: string): boolean {
-  if (candidate.trim().length === 0) {
+function isHexDigitCode(code: number): boolean {
+  return (
+    (code >= 0x30 && code <= 0x39) ||
+    (code >= 0x61 && code <= 0x66) ||
+    (code >= 0x41 && code <= 0x46)
+  );
+}
+
+/**
+ * Reports whether an identifier is in one of the two canonical, non-semantic shapes.
+ *
+ * ⚠ THIS IS A SECURITY CONTROL AND NOT A FORMAT PREFERENCE, and it is the whole of the
+ * fix for a critical finding that spanned this file and the API's correlation-id
+ * middleware. Both sides previously accepted ANY non-blank printable US-ASCII value up
+ * to 128 characters. That closed log forging and response splitting, because it excluded
+ * every control character — and it did nothing at all about SEMANTIC content. A caller
+ * could send a password, a bearer token, an e-mail address or an API key as its
+ * correlation header, and the value was then forwarded here, published to the server's
+ * logging scope, written into every request, exception and audit entry for that request,
+ * echoed on the response, published as the RFC 7807 `correlationId` member and finally
+ * shown to an operator as the support reference to quote. A secret in a retained log is a
+ * disclosure however it arrived.
+ *
+ * Two shapes are accepted, both pure hexadecimal and therefore incapable of carrying a
+ * word, a delimiter, an at-sign, a dot or a slash:
+ *
+ * 1. 32 hexadecimal characters — what the API and the proxy generate.
+ * 2. The hyphenated 36-character `8-4-4-4-12` form — what this file generates.
+ *
+ * Case is accepted in either register and is neither required nor rewritten. There is no
+ * separate length bound because each form has exactly one length.
+ *
+ * ⚠ THE THREE LAYERS MUST AGREE, and this predicate is one of the three copies of one
+ * rule: the API's `Api/Middleware/CorrelationIdMiddleware.cs` applies it to what arrives,
+ * and `docker/nginx.conf` applies it a third time before forwarding. A value one layer
+ * keeps and another replaces leaves the browser holding an identifier that appears in no
+ * server log line, which is indistinguishable from having none.
+ *
+ * The value is deliberately *not* trimmed, re-cased or otherwise repaired. A repaired
+ * value is one the caller never saw, so it would be the server's identifier and not the
+ * caller's — the precise failure this whole mechanism exists to prevent. It is either
+ * usable exactly as it arrived or it is replaced outright.
+ *
+ * Exported so that `core/interceptors/error.interceptor.ts` can apply the identical test
+ * to a correlation identifier read from a RESPONSE header, which is the only place a
+ * gateway-authored identifier can be recovered from. Sharing the predicate is what keeps
+ * that surface from admitting a shape this one refuses.
+ *
+ * @param candidate The identifier to test.
+ * @returns `true` when the value is in a canonical shape.
+ */
+export function isCanonicalCorrelationId(candidate: string): boolean {
+  if (candidate.length !== COMPACT_FORM_LENGTH && candidate.length !== HYPHENATED_FORM_LENGTH) {
     return false;
   }
 
-  if (candidate.length > MAX_CORRELATION_ID_LENGTH) {
-    return false;
-  }
+  const hyphenated = candidate.length === HYPHENATED_FORM_LENGTH;
 
   for (let index = 0; index < candidate.length; index += 1) {
-    const code = candidate.charCodeAt(index);
+    if (hyphenated && HYPHEN_POSITIONS.includes(index)) {
+      if (candidate.charCodeAt(index) !== 0x2d) {
+        return false;
+      }
 
-    if (code < LOWEST_ACCEPTED_CHARACTER_CODE || code > HIGHEST_ACCEPTED_CHARACTER_CODE) {
+      continue;
+    }
+
+    if (!isHexDigitCode(candidate.charCodeAt(index))) {
       return false;
     }
   }
@@ -372,15 +414,21 @@ export const correlationIdInterceptor: HttpInterceptorFn = (req, next) => {
   //
   // Preservation is conditional on the value being one the server will honour, and
   // that condition is what makes the preservation real rather than nominal. Presence
-  // is necessary but not sufficient: an identifier that is repeated across several
-  // header lines, blank, over the length bound, or carrying a control or non-ASCII
-  // character is discarded by the server and replaced with one of its own. Passing
-  // such a value through would preserve nothing - it would leave the browser holding
-  // an identifier that appears in no server log line, which is indistinguishable
-  // from having no identifier at all and is strictly worse than stamping a fresh
-  // usable one. Every value the pass-through is actually meant to protect - a single
-  // printable identifier within the bound, such as the one a retry re-sends - still
-  // takes this branch and is still forwarded on the original, un-cloned request.
+  // is necessary but not sufficient: an identifier repeated across several header
+  // lines, or one whose shape is not canonical, is discarded by the server and
+  // replaced with one of its own. Passing such a value through would preserve
+  // nothing - it would leave the browser holding an identifier that appears in no
+  // server log line, which is indistinguishable from having no identifier at all and
+  // is strictly worse than stamping a fresh usable one. Every value the pass-through
+  // is actually meant to protect - the canonical identifier a retry re-sends, which
+  // this application generated in the first place - still takes this branch and is
+  // still forwarded on the original, un-cloned request.
+  //
+  // ⚠ AND THE CONDITION IS NOW A SHAPE RATHER THAN A CHARACTER RANGE, which is the
+  // fix for a critical finding: a caller-chosen value of arbitrary printable text
+  // could carry a secret into this application's logs, its response headers, its
+  // problem documents and its operator-facing support references. See
+  // isCanonicalCorrelationId.
 
   // ⚠ THE SCOPE TEST COMES FIRST, BEFORE THE HEADER IS EVEN READ, and it is the whole of
   // the fix for the unscoped stamping described in the file header. A request that does not
@@ -399,7 +447,7 @@ export const correlationIdInterceptor: HttpInterceptorFn = (req, next) => {
 
   const inbound = req.headers.getAll(CORRELATION_ID_HEADER);
 
-  if (inbound !== null && inbound.length === 1 && isUsableCorrelationId(inbound[0])) {
+  if (inbound !== null && inbound.length === 1 && isCanonicalCorrelationId(inbound[0])) {
     return next(req);
   }
 

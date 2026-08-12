@@ -186,7 +186,6 @@
   [userName]="userName()"
   [accountProfileLink]="accountProfileLink()"
   [accountPasswordLink]="accountPasswordLink()"
-  [accountServicesLink]="accountServicesLink()"
   [signingOut]="signingOut()"
   (signOut)="onSignOut()"
 />
@@ -230,6 +229,7 @@
   class="shell__sidebar"
   [hostAccount]="hostAccount()"
   [administersTenant]="administersTenant()"
+  [editsContent]="editsContent()"
 />
 
 <!-- MIGRATION: the main landmark is a NET ADDITION. No legacy page emitted one; the

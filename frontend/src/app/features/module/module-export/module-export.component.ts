@@ -523,7 +523,6 @@ function nonBlankFileName(control: AbstractControl<string>): ValidationErrors | 
     FormFieldComponent,
     LoadingSpinnerComponent,
     ErrorBannerComponent,
-    FocusFirstInvalidDirective,
   ],
   templateUrl: './module-export.component.html',
   styleUrl: './module-export.component.scss',

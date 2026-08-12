@@ -27,13 +27,18 @@
 //      .module-settings__toggle--ruled
 //      .module-settings__body
 //      .module-settings__fields
-//      .module-settings__field
-//      .module-settings__field--stacked
-//      .module-settings__control
 //      .module-settings__choices
 //      .module-settings__slot
 //      .module-settings__actions
 //
+//  ⚠ FOUR ENTRIES LEFT THIS LIST WITH THE FIELD SYSTEM, and three more that were
+//  never in it. `__field`, `__field--stacked`, `__control` and `__label` are gone,
+//  along with `__messages`, and the template no longer emits any of them: every
+//  field is an `app-form-field`, and the variant classes it takes —
+//  `form-field--inline`, `form-field--multiline`, `form-field--stacked` — belong to
+//  the shared component's own stylesheet and must NOT be declared here. A rule
+//  written for one of those names in this file would be scoped to this component and
+//  would not reach the shared component's shadowed internals anyway.
 //  WHAT THE SCREEN CONSUMES. The workspace carries nine shared components — page
 //  header, data table, pagination, form field, search input, confirm dialog,
 //  error banner, loading spinner and empty state — plus the `hasPermission`
@@ -261,14 +266,19 @@
     color: var(--color-primary-hover);
   }
 
-  // The element baseline already rings every natively focusable element,
-  // including a disclosure summary and a button, so this include is a deliberate
-  // and idempotent reinforcement rather than an oversight: it keeps the ring
-  // attached at the same place this file restyles the head, so no future edit to
-  // the head's chrome can leave the indicator behind. The mixin scopes itself to
-  // the keyboard-focus pseudo-class, so a mouse press never draws it, and
-  // nothing in this file suppresses an outline.
-  @include mx.focus-ring;
+  // ⚠ NO FOCUS RING IS DECLARED HERE, AND THAT IS THE CORRECTION RATHER THAN THE
+  // OVERSIGHT. `_reset.scss` applies the very same `focus-ring` mixin to `a`, `button`,
+  // `input`, `select`, `textarea`, `summary` and every positively tab-indexed element,
+  // so this head is rung by the element baseline whichever of the two shapes the template
+  // settles on - and it settles on `<button>` at all seven sites. Including the mixin here
+  // as well emitted a byte-for-byte duplicate of a rule already in the stylesheet: the
+  // LARGEST rule in this file, 288 bytes of it, for no rendered difference whatsoever.
+  //
+  // The rationale it carried was that keeping the include beside the head's own chrome
+  // stops a future edit detaching the indicator. It does not: the ring is not this file's
+  // to detach. Nothing below suppresses an outline, and a component that genuinely needed
+  // its own ring - one drawn on a wrapper rather than on the focusable element - would
+  // include the mixin for THAT element rather than restate it for this one.
 
   // ---------------------------------------------------------------------------
   //  PRESS AND UNAVAILABLE — the two states this head previously had no
@@ -326,164 +336,64 @@
 }
 
 // -----------------------------------------------------------------------------
-//  SECTION BODY
+//  THE THREE VERTICAL STACKS
 // -----------------------------------------------------------------------------
-.module-settings__body {
-  display: grid;
-  gap: var(--space-3);
-}
-
-// -----------------------------------------------------------------------------
-//  FIELD GRID
-// -----------------------------------------------------------------------------
+//  A section's body, the field grid inside it, and the injected module-specific
+//  group. All three are the same thing — a single column at the section rhythm —
+//  and all three were declared separately with byte-for-byte identical bodies.
+//
+// ⚠ ONE RULE RATHER THAN THREE, AND A SELECTOR LIST RATHER THAN A MIXIN. A mixin
+// would read better and would emit exactly the same three copies, because a mixin
+// inlines; only a shared selector states the shared appearance once. Each of the
+// three keeps its own documented place below, describing what it is and carrying
+// whatever is particular to it, so nothing about this file's structure is lost.
+//
 // MIGRATION: the nine legacy layout tables that arranged this screen produce no
 // rule of any kind here — this component emits none of that element family and
 // this file styles none of it. That they were layout scaffolding rather than data
 // is settled by their own summary attributes: eight carried one, and three of
 // those eight are wrong or copy-pasted, two pairs of unrelated groups sharing a
 // single description between them. Grid replaces them.
-.module-settings__fields {
+.module-settings__body,
+.module-settings__fields,
+.module-settings__slot {
   display: grid;
   gap: var(--space-3);
 }
 
-// A field is a label and its control group. Below the medium step the two stack,
-// which is the only arrangement a narrow viewport can hold; at and above it they
-// sit side by side, reproducing the legacy label-cell-then-control-cell pairing.
-//
-// MIGRATION: the responsive behaviour is one hundred per cent net-new. Neither
-// legacy stylesheet contains a single media feature query, so the legacy screen
-// had no responsive behaviour whatsoever to preserve. It is obtained entirely
-// through the shared breakpoint mixin: the step is declared once, centrally, and
-// this file neither restates a width nor writes a query.
-//
-// MIGRATION: the legacy label cells pinned three DIFFERENT fixed widths for one
-// role — one hundred and fifty on five cells, two hundred on thirteen, two
-// hundred and twenty-five on three. None is reproduced. The token vocabulary
-// declares no width or measure token, and design-system compliance outranks
-// legacy fidelity, so the label track is sized intrinsically instead. The
-// visible consequence is recorded plainly: label columns align within a field
-// rather than across every field on the screen, where the legacy fixed widths
-// aligned them per group. The trade is deliberate — three inconsistent literals
-// replaced by one consistent intrinsic rule.
-//
-// `auto minmax(0, 1fr)` follows the shell precedent: the leading track is sized
-// by its content and the trailing one takes the remainder, with a zero floor
-// rather than a bare fraction so a long value can never force the control track
-// wider than its share. The intrinsic grid keywords express layout mechanics
-// rather than design values and so have no token to resolve to. Alignment to the
-// start keeps a tall control — a multi-line field, a permissions grid — from
-// dragging its label down to its own centre.
-// ⚠ THE LABEL TRACK IS CAPPED, AND `auto` ALONE WAS A MEASURED CRITICAL DEFECT. The rule
-// above reasons about a long VALUE forcing the control track wider than its share, and
-// `minmax(0, 1fr)` guards that direction correctly. The failure was the OPPOSITE
-// direction, which nothing guarded: `auto` has no upper bound, the help sentence lives
-// INSIDE the `<label>`, and so a 519.81px sentence sized the label track and starved the
-// control beside it. Measured at exactly 768: `input#module-settings-moduleTitle` rendered
-// **18.00 × 25 px** with its right edge at 770 against a client width of 768 — a two-pixel
-// overflow, and the only overflow on any form screen in the application. The help box was
-// 28.88× the width of the control it was explaining. Knife-edge in both directions: clean
-// at 767 and clean at 1023, so nothing but a measurement at the exact step would find it.
-//
-// `minmax(0, $label-measure)` keeps the intrinsic behaviour that the comment above argues
-// for — a short label still takes only the room it needs — while refusing to let the track
-// grow past a bound. The help sentence then wraps inside the label instead of pushing the
-// control out of the row, which is what a sentence should do.
-//
-// THE BOUND IS MEASURED, NOT CHOSEN. The comment above records the legacy label widths
-// this screen's ancestor declared: one hundred and fifty on five cells, two hundred on
-// thirteen, two hundred and twenty-five on three. Two hundred is what the legacy used on
-// the clear majority of its label cells, so the cap is that value expressed in the root
-// unit. It is a MAXIMUM rather than a fixed width, so the objection the comment above
-// raises against the legacy literals — three inconsistent fixed widths for one role — does
-// not apply: nothing is pinned to it, and a label narrower than the bound is unaffected.
-$label-measure: 12.5rem;
-
-.module-settings__field {
-  display: grid;
-  gap: var(--space-1);
-  grid-template-columns: var(--grid-track-fluid);
-
-  @include mx.respond-above('md') {
-    grid-template-columns: minmax(0, $label-measure) var(--grid-track-fluid);
-    gap: var(--space-2) var(--space-4);
-    align-items: start;
-  }
-}
-
-// Fields that keep the stacked arrangement at every width, because side-by-side
-// wastes their measure: the two six-row multi-line entries, the permissions
-// region and the injected module-specific group. The declaration is repeated
-// inside the breakpoint because the wider rule above would otherwise re-establish
-// two tracks on it.
-.module-settings__field--stacked {
-  grid-template-columns: var(--grid-track-fluid);
-
-  @include mx.respond-above('md') {
-    grid-template-columns: var(--grid-track-fluid);
-  }
-}
-
 // -----------------------------------------------------------------------------
-//  CONTROL GROUP
+//  THE FIELD SYSTEM THIS FILE NO LONGER OWNS
 // -----------------------------------------------------------------------------
-//  A control and whatever sits beside it: the two date entries each carry an
-//  adjacent calendar link, and several carry a validation message. Wrapping is
-//  intrinsic and deliberate, so on a narrow viewport the adjunct drops to its own
-//  line instead of overflowing, and the gap then supplies the row spacing as well
-//  as the column spacing. Baseline alignment keeps a link's text sitting on the
-//  same line as the text inside the control rather than on the control's box edge.
+//  Five rules stood here - `__field`, `__field--stacked`, `__control`, `__messages`
+//  and `__label` - and with them roughly a hundred and fifty lines of reasoning
+//  about label tracks, measured legacy cell widths, a capped `minmax` bound and a
+//  message region's flex basis. All five are withdrawn. This screen composes every
+//  one of its fields through the shared `app-form-field` primitive, which owns the
+//  two-column arrangement, the responsive step, the label measure, the help
+//  disclosure and the assertive message region - and owns them once, for the whole
+//  application, instead of once here and once there.
 //
-//  No block size is declared for the two six-row multi-line entries. The global
-//  form layer leaves that to the rows attribute, which is the markup mechanism
-//  for it, so the legacy six-row height carries over natively and no height is
-//  invented here.
-.module-settings__control {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-2);
-  min-inline-size: 0;
-}
-
-// One identified region per field, holding whatever the server said about that field. It exists as a
-// container rather than as loose siblings so the messages have ONE stable identifier for the control's
-// aria-describedby to name - see the template's note. It takes a line of its own, which is where a wrapped
-// message ended up before and is where an error is easiest to read.
-.module-settings__messages {
-  display: flex;
-  flex-direction: column;
-  flex-basis: var(--size-full);
-  gap: var(--space-1);
-  min-inline-size: 0;
-}
-
-// -----------------------------------------------------------------------------
-//  FIELD NAME CARRIED BY A NON-LABEL ELEMENT
-// -----------------------------------------------------------------------------
-//  Three of this screen's field names are NOT <label> elements, because a label
-//  names exactly one control and these three name something else: the read-only
-//  definition name, the permissions region, and the visibility choice group,
-//  which is named through role="radiogroup" + aria-labelledby. A <label> that
-//  names nothing is both wrong semantically and reported by the browser as an
-//  unassociated form label.
+//  ⚠ THE MEASURED DEFECT THAT USED TO LIVE HERE CANNOT RECUR, AND IT IS WORTH
+//  RECORDING WHY RATHER THAN JUST DELETING IT. The retired `__field` rule sized its
+//  label track with a bare `auto`, which has no upper bound; the help sentence sits
+//  INSIDE the caption; so at exactly 768px a 519.81px sentence sized the track and
+//  starved the control beside it - `input#module-settings-moduleTitle` rendered
+//  18.00 x 25px with its right edge at 770 against a client width of 768, the only
+//  overflow on any form screen in the application. It was clean at 767 and clean at
+//  1023, so nothing but a measurement at the exact step would ever have found it.
+//  That is the whole argument against a parallel field system: the bound had to be
+//  discovered and fixed HERE after being discovered and fixed in the shared
+//  component, and a second copy is a second place for it to be missing.
 //
-//  MIGRATION: a field name must look identical whichever element carries it. The
-//  legacy screen gave ALL of its label cells one class — the twenty-one cells
-//  recorded at the head of this file all carried class="SubHead" — so a name
-//  rendered in body ink beside thirteen siblings rendered in bold primary ink
-//  would be a divergence this screen never had. The declarations therefore
-//  reproduce the global label presentation from the same tokens it resolves,
-//  omitting only `cursor: pointer`: there is no control for a click to focus, so
-//  advertising one would be a false affordance.
-.module-settings__label {
-  display: block;
-  margin-block-end: var(--space-1);
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-bold);
-  line-height: var(--line-height-tight);
-  color: var(--color-primary);
-}
+//  ⚠ ONE DELIBERATE VISUAL CHANGE. The retired rule capped its label track with
+//  `--field-label-inline-size-wide`, the 200px the legacy screen used on thirteen of
+//  its twenty-one label cells; the shared component uses `--field-label-inline-size`,
+//  the measured 150px, which is the value every other form surface in the
+//  application resolves against. The captions on this screen therefore align with
+//  the captions on every other screen instead of with a bound only this screen used.
+//  Design-system compliance outranks per-screen legacy fidelity, the help sentence
+//  still wraps inside the caption rather than pushing the control out of the row, and
+//  the change is recorded in MIGRATION_NOTES.md.
 
 // -----------------------------------------------------------------------------
 //  THE DECLARED-PERMISSION ADVISORY
@@ -538,11 +448,8 @@ $label-measure: 12.5rem;
 // -----------------------------------------------------------------------------
 //  The successor to the legacy panel that hosted each module's own settings
 //  control. Only flow and rhythm are declared: what is placed inside owns its own
-//  appearance, and this file must not presume it.
-.module-settings__slot {
-  display: grid;
-  gap: var(--space-3);
-}
+//  appearance, and this file must not presume it. Declared with the two stacks
+//  above, because only flow and rhythm are what those three have in common.
 
 // -----------------------------------------------------------------------------
 //  COMMAND ROW
@@ -658,9 +565,10 @@ $label-measure: 12.5rem;
 //  content, which concerns content that carries no such author instruction.
 //
 //  Both forms are scoped to this component, so neither can reach inside a shared
-//  component and override an appearance this file does not own. Written once
-//  rather than repeated per block, which holds the emitted weight to two short
-//  selectors instead of one per display declaration.
+//  component and override an appearance this file does not own. Written once as a
+//  selector list rather than per block, which holds the emitted weight to ONE short
+//  rule instead of one per display declaration - and to one rather than the two it
+//  used to be, since the two selectors carried the identical single declaration.
 //
 // MIGRATION: the legacy screen had no equivalent and needed none. Its collapsible
 // groups were server-rendered panels whose visibility was decided before any
@@ -668,10 +576,7 @@ $label-measure: 12.5rem;
 // Net-new, and required by either of the two disclosure affordances the target
 // template may choose: a native disclosure group hides its own content, but a
 // toggle paired with a separately marked panel relies entirely on this guard.
-:host([hidden]) {
-  display: none;
-}
-
+:host([hidden]),
 :host [hidden] {
   display: none;
 }

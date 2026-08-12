@@ -148,6 +148,7 @@ const SERVER_POLICY_NAMES = [
   'HostAdministrator',
   'AccountOwner',
   'AccountOwnerOrPortalAdministrator',
+  'PortalContentEditor',
 ] as const;
 
 /**
@@ -323,6 +324,10 @@ function scopeFor(policy: (typeof SERVER_POLICY_NAMES)[number]): Record<string, 
       return { userId: '7' };
     case 'PortalAdministrator':
     case 'HostAdministrator':
+    // Unscoped for a THIRD reason, distinct from the two above: the operations it supports name
+    // no item because the item does not exist yet. Module creation carries its target page in
+    // the request body, so there is nothing in the route to scope to.
+    case 'PortalContentEditor':
       return {};
   }
 }
@@ -451,6 +456,7 @@ const routes: Routes = [
   // The two unscoped policies.
   guarded('portal-admin', 'PortalAdministrator'),
   guarded('host-admin', 'HostAdministrator'),
+  guarded('content-edit', 'PortalContentEditor'),
 
   // Scoped by the server's module key, with the child policy BENEATH the parameter.
   {
@@ -817,14 +823,14 @@ describe('permissionGuard', () => {
   });
 
   // =========================================================================
-  // 2 — THE CATALOGUE AGREES WITH THE SERVER, ALL EIGHT NAMES
+  // 2 — THE CATALOGUE AGREES WITH THE SERVER, ALL NINE NAMES
   // =========================================================================
   describe('the declared policy catalogue', () => {
     beforeEach(() => {
       signInAsHostAccount();
     });
 
-    it('admits a route declaring each of the eight policies the server registers', async () => {
+    it('admits a route declaring each of the nine policies the server registers', async () => {
       // ⚠ THE POSITIVE CONTROL FOR THE WHOLE FINDING, and the reason this block cannot be
       // replaced by refusal tests. Before the catalogue was corrected, three of these names
       // were absent from the client and every route declaring one was refused outright. A
@@ -841,6 +847,7 @@ describe('permissionGuard', () => {
         HostAdministrator: '/host-admin',
         AccountOwner: '/users/7',
         AccountOwnerOrPortalAdministrator: '/accounts/7',
+        PortalContentEditor: '/content-edit',
       };
 
       for (const policy of SERVER_POLICY_NAMES) {
@@ -855,11 +862,13 @@ describe('permissionGuard', () => {
     });
 
     it('covers every policy the server registers, with none left untested', () => {
-      // Guards the SUITE rather than the gate. If a ninth policy is registered server-side
+      // Guards the SUITE rather than the gate. If a TENTH policy is registered server-side
       // and mirrored into the gate, the map above stops being exhaustive and this fails
-      // loudly instead of quietly testing eight of nine.
-      expect(SERVER_POLICY_NAMES.length).toBe(8);
-      expect(new Set(SERVER_POLICY_NAMES).size).toBe(8);
+      // loudly instead of quietly testing nine of ten. It did exactly that for the ninth,
+      // `PortalContentEditor`, which is how that name reached the map above rather than
+      // being mirrored into the gate and left untested.
+      expect(SERVER_POLICY_NAMES.length).toBe(9);
+      expect(new Set(SERVER_POLICY_NAMES).size).toBe(9);
     });
 
     it('treats the catalogue as case-sensitive, refusing a differently-cased name', () => {

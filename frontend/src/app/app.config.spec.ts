@@ -57,7 +57,7 @@ import { HttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { APP_BOOTSTRAP_LISTENER, NgZone } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { PreloadingStrategy, Router, Scroll } from '@angular/router';
+import { PreloadAllModules, PreloadingStrategy, Router, Scroll } from '@angular/router';
 import { firstValueFrom, of } from 'rxjs';
 import type { Observable } from 'rxjs';
 
@@ -334,26 +334,33 @@ describe('appConfig', () => {
       expect(TestBed.inject(Router).componentInputBindingEnabled).toBeTrue();
     });
 
-    it('preloads every lazily declared feature bundle, but only once a session is held', () => {
+    it("preloads every lazily declared feature bundle through the framework's own strategy", () => {
       /*
-       * ASSERTED ON BEHAVIOUR RATHER THAN ON TYPE, and the two things asserted are the two things
-       * that can each be silently lost.
+       * ASSERTED BY IDENTITY **AND** BY BEHAVIOUR, because each catches a different loss.
        *
-       * The first is that preloading happens at all. The router's default is none, which
-       * type-checks, builds and serves while paying the lazy bundle cost again on the first
-       * navigation into each feature - so dropping the strategy is invisible except as a slower
-       * console.
+       * The identity assertion is the one the project plan requires: it fixes the router
+       * configuration verbatim as `withPreloading(PreloadAllModules)`, so substituting a
+       * bespoke strategy of the same shape is a specification change however well it behaves.
+       * An earlier revision did exactly that - a session-gated preloader, installed because
+       * `PreloadAllModules` begins fetching as soon as the FIRST navigation settles and for an
+       * anonymous visitor that navigation settles on the sign-in screen. The measurement behind
+       * it was real (163,918 bytes, 54.49% of the application's JavaScript, reachable by anyone
+       * who could reach that screen) and it is recorded in the migration notes, but a bundle
+       * name carries no authority: every route inside those bundles is refused by its own gate
+       * and re-authorised server-side. The plan stands; this case is what stops it drifting
+       * again, and it names the built-in so a substitute cannot pass by imitating it.
        *
-       * ⚠ THE SECOND IS THAT IT DOES NOT HAPPEN BEFORE A SESSION EXISTS, and this case used to
-       * require the opposite. It asserted `PreloadAllModules` by identity, which begins fetching as
-       * soon as the FIRST navigation settles - and for an anonymous visitor that navigation settles
-       * on the sign-in screen. A review measured the result: 163,918 bytes, 54.49% of all the
-       * application's JavaScript, downloaded by anyone who could reach the login page, carrying
-       * every administration route name and every API endpoint with it. An `instanceof` check
-       * cannot express that distinction, so the loader is driven directly instead.
+       * The behavioural assertion is that preloading happens AT ALL and happens
+       * UNCONDITIONALLY. The router's default is no strategy, which type-checks, builds and
+       * serves while paying the lazy bundle cost again on the first navigation into each
+       * feature - invisible except as a slower console. Driving the loader with no session held
+       * proves the eager semantics rather than merely the type.
        */
       const strategy = TestBed.inject(PreloadingStrategy);
-      const tokens = TestBed.inject(TokenStorageService);
+
+      expect(strategy)
+        .withContext("the plan names the framework's built-in strategy verbatim")
+        .toBeInstanceOf(PreloadAllModules);
 
       let loaded = 0;
       const load = (): Observable<unknown> => {
@@ -362,23 +369,14 @@ describe('appConfig', () => {
         return of(null);
       };
 
-      // Anonymous. The returned stream is subscribed, because a strategy that deferred the work
-      // into the subscription rather than refusing it would otherwise pass while still loading.
+      // Anonymous, and it still loads. The returned stream is subscribed, because a strategy
+      // that deferred the work into the subscription rather than performing it would otherwise
+      // pass while loading nothing.
       strategy.preload({ path: 'portals' }, load).subscribe();
 
       expect(loaded)
-        .withContext('nothing is fetched for a caller with no session')
-        .toBe(0);
-
-      tokens.store(sessionFor(ACCESS_TOKEN, REFRESH_TOKEN));
-
-      strategy.preload({ path: 'portals' }, load).subscribe();
-
-      expect(loaded)
-        .withContext('and the eager behaviour is intact for a caller that has one')
+        .withContext('the eager behaviour does not wait for a session')
         .toBe(1);
-
-      tokens.clear();
     });
 
     it('takes over scroll restoration from the browser and puts each screen at the top', async () => {
@@ -628,9 +626,23 @@ describe('appConfig', () => {
       expect(announced[0]?.message)
         .withContext('it says what happened and what to do, and quotes nothing from the refusal')
         .toBe(SESSION_ENDED_MESSAGE);
-      expect(announced[0]?.survivesNavigation)
-        .withContext('and it is marked to outlive the very navigation that follows it')
-        .toBeTrue();
+      // ⚠ ASSERTED AS SURVIVAL RATHER THAN AS A FLAG, WHICH IS AN IMPROVEMENT ON WHAT THIS CASE USED
+      // TO CHECK. It read `announced[0].survivesNavigation` and required it true - one of the TWO
+      // mechanisms the queue exempts an entry by, and not the one this path uses. The flag was true only
+      // because the authentication interceptor raised a SECOND, identical statement with the flag set,
+      // alongside the one the session teardown already raises; removing that duplicate left the flag
+      // false while the exemption itself was untouched, because the teardown claims it through
+      // `retainAcrossNavigation()`.
+      //
+      // A specification that names one of two equivalent mechanisms fails when the other is used and
+      // passes when neither works but the flag happens to be set. Driving the sweep instead asserts the
+      // property the operator actually depends on - the sentence is still there to read once the
+      // redirect has landed - and holds however the exemption was obtained.
+      notifications.clearOnNavigation();
+
+      expect(notifications.notifications().map((entry) => entry.message))
+        .withContext('it outlives the very navigation that follows it')
+        .toEqual([SESSION_ENDED_MESSAGE]);
     });
   });
 });

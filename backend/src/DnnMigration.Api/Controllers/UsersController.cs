@@ -530,6 +530,81 @@ public sealed class UsersController : ControllerBase
         return this.CompletePage(outcome);
     }
 
+    /// <summary>Lists a portal's accounts as an account picker needs them, and nothing more.</summary>
+    /// <param name="request">
+    /// Paging, ordering and the optional name filter, bound from the query string. The filter matches a
+    /// prefix of the login name or the display name.
+    /// </param>
+    /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
+    /// <returns>
+    /// One page of choices in the wire envelope: an <c>items</c> array of rows carrying <c>userId</c>,
+    /// <c>username</c> and <c>displayName</c> only, plus a <c>meta</c> object carrying the total across
+    /// every page, the page index and the page size.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ WHY THIS EXISTS ALONGSIDE <see cref="ListAsync"/>, AND WHY IT MUST NOT BE FOLDED BACK INTO IT. A
+    /// performance and privacy review measured the role-assignment screen building its account drop-down,
+    /// and its account-count probe, from the account listing. Every candidate row carried a postal address,
+    /// a telephone number, an electronic-mail address, a creation instant, a last-login instant and the
+    /// approval, lockout, online and super-user flags across the wire so that three values could be
+    /// rendered - and that screen is permitted to enumerate a tenant of up to a thousand accounts. Being
+    /// authorised to read the account grid is not a licence to receive fields the asking screen has no use
+    /// for; this address is where a caller that only needs to CHOOSE an account asks for exactly that.
+    /// </para>
+    /// <para>
+    /// THE COUNT PROBE IS THE CHEAPEST CASE AND IS SERVED BY THE SAME ADDRESS. A caller that needs only how
+    /// many accounts a tenant holds asks for one row and reads <c>meta.totalCount</c>; the single row it
+    /// receives carries no personal detail at all, whereas the same probe against the listing disclosed a
+    /// complete account row to read a number.
+    /// </para>
+    /// <para>
+    /// IT CARRIES THE SAME AUTHORISATION POLICY AS THE LISTING, NOT A WEAKER ONE. Narrowing a projection
+    /// changes what is disclosed and nothing about who may ask, and the answer still enumerates a tenant's
+    /// membership - so the portal-administrator gate stands, and the tenant is the resolved request tenant
+    /// rather than anything the caller names.
+    /// </para>
+    /// <para>
+    /// A <c>GET</c> RATHER THAN A <c>POST</c>, unlike <see cref="SearchAsync"/>, and the distinction is the
+    /// same one that governs the listing: the filter here is a prefix of a name an operator can already see
+    /// in a drop-down on the same screen, and it reaches at most two public captions. The listing's search
+    /// moves to a body because it matches an electronic-mail address and arbitrary tenant-defined profile
+    /// values, which are neither public nor bounded in what they may contain. Nothing this filter can match
+    /// is absent from the response, so a request target recording it discloses nothing the response did not.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this is <c>cboUsers</c> on <c>Website/admin/Security/securityroles.ascx</c>, filled by
+    /// <c>UserModuleBase.vb:L178-L186</c>. That code read the tenant's account count first and offered the
+    /// drop-down only at or below one thousand accounts, offering a name box above it - so both halves of
+    /// the legacy behaviour, the count and the enumeration, are served here.
+    /// </para>
+    /// </remarks>
+    [HttpGet("choices")]
+    [Authorize(Policy = PolicyNames.PortalAdministrator)]
+    [ProducesResponseType(typeof(PagedResponse<UserChoiceDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<PagedResponse<UserChoiceDto>>> ListChoicesAsync(
+        [FromQuery] UserChoicePagedRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
+        // Validated by the globally registered filter, which resolves UserChoicePagedRequestValidator from
+        // this parameter's DECLARED TYPE. That is why the type is the specialised one: the unspecialised
+        // paging contract resolves the general validator, whose sortable set is the union of every
+        // collection's, so a portal or module field name would be accepted here and then discarded.
+        Result<PagedResult<UserChoiceDto>> outcome = await _users
+            .ListAccountChoicesAsync(portalId, request, cancellationToken)
+            .ConfigureAwait(false);
+
+        return this.CompletePage(outcome);
+    }
+
     /// <summary>Retrieves one user.</summary>
     /// <param name="userId">The user identifier.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
@@ -953,22 +1028,35 @@ public sealed class UsersController : ControllerBase
     /// <summary>Retrieves a portal's membership settings.</summary>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns>The membership settings.</returns>
-    /// <response code="200">The tenant's membership settings.</response>
-    /// <response code="404">No such portal, or it stores no membership settings.</response>
+    /// <response code="200">
+    /// The tenant's membership settings. A tenant with no settings source is answered here too, with the
+    /// measured legacy defaults and <c>isStored: false</c>, rather than with a failure.
+    /// </response>
     /// <remarks>
+    /// <para>
     /// MIGRATION: replaces <c>Website/admin/Users/UserSettings.ascx.vb:L106</c>, which read the settings
     /// through <c>UserController.GetUserSettings(UserPortalID)</c> - a member returning an untyped
     /// <c>Hashtable</c> (<c>Library/Components/Users/UserController.vb:L656</c>) - and then walked it with a
     /// dictionary enumerator, splitting each key on an underscore to recover its grouping. One typed transfer
     /// object replaces the dictionary, so the available settings are declared rather than discovered. The
     /// address is keyed by the PORTAL alone: these are the tenant's settings, not any account's.
+    /// </para>
+    /// <para>
+    /// ⚠ NO <c>404</c> IS DECLARED, BECAUSE NONE IS REACHABLE. This action used to advertise one for a
+    /// tenant that stores no settings, from when the service answered that case with a value-free success
+    /// that <see cref="ApiResults"/> mapped onto <c>404</c> by convention. It no longer does:
+    /// <c>GetMembershipSettingsAsync</c> always returns a document, so the only failures left are the
+    /// authentication and tenant-resolution refusals below. A declared response the pipeline cannot produce
+    /// is a published contract describing a different API from the one running - see
+    /// <c>ResponseDeclarationContractTests</c> - so it is withdrawn rather than left as documentation of a
+    /// branch a generated client would carry and never take.
+    /// </para>
     /// </remarks>
     [HttpGet("settings")]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
     [ProducesResponseType(typeof(ApiResponse<MembershipSettingsDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ApiResponse<MembershipSettingsDto?>>> GetMembershipSettingsAsync(
         CancellationToken cancellationToken)
     {
@@ -991,7 +1079,16 @@ public sealed class UsersController : ControllerBase
     /// <c>200 OK</c> carrying what the write did beyond storing the policy: whether the display-name format
     /// changed, and how many accounts were consequently rewritten.
     /// </returns>
+    /// <response code="409">
+    /// The tenant has nowhere to store membership settings, because the installation defines no user-accounts
+    /// module instance on any of the tenant's pages. Reported as a conflict rather than as a missing resource
+    /// on purpose: the read beside this write answers <c>200</c> for the same address with the legacy
+    /// defaults, so the settings resource demonstrably exists and what is absent is the store behind it. The
+    /// detail names the module to add, so the operator can resolve the state and re-send the identical
+    /// request.
+    /// </response>
     /// <remarks>
+    /// <para>
     /// ⚠ ANSWERS 200 WITH A BODY WHERE EVERY OTHER SETTINGS WRITE IN THIS API ANSWERS 204, and the
     /// difference is the point rather than an inconsistency. This write has one side effect whose size the
     /// caller cannot predict: changing <c>Security_DisplayNameFormat</c> rewrites the display name of every
@@ -999,14 +1096,34 @@ public sealed class UsersController : ControllerBase
     /// nothing (<c>UserSettings.ascx.vb</c> L175-L182), so an operator had no way to know whether it had
     /// happened, how many accounts it touched, or whether it had failed half way. A 204 here would preserve
     /// exactly that blindness.
+    /// </para>
+    /// <para>
+    /// ⚠ THE DECLARED FAILURE FOR AN ABSENT STORE IS <c>409</c>, NOT <c>404</c>, and the pair with the read
+    /// above is the reason. A tenant whose portal holds no
+    /// <c>"User Accounts"</c> module instance is answered <c>200</c> by the read for this very address, so
+    /// the resource exists and only its store does not - a state the operator can repair, which is a
+    /// conflict. <c>UserService</c> reports it as <c>user.membership-settings.storage-conflict</c> and
+    /// <see cref="ApiResults"/> resolves that reason onto <c>409</c>. The <c>404</c> this action used to
+    /// advertise was unreachable once the read stopped answering absence on the status line, and a declared
+    /// response the pipeline cannot produce describes a different API from the one running.
+    /// </para>
     /// </remarks>
+    /// <response code="200">What the write did beyond storing the policy.</response>
+    /// <response code="409">
+    /// The portal holds no <c>"User Accounts"</c> module instance, so there is nowhere to store the policy.
+    /// The detail names the module the installation needs.
+    /// </response>
     [HttpPut("settings")]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
     [ProducesResponseType(typeof(ApiResponse<MembershipSettingsUpdateResultDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
-    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    // MIGRATION: the conflict branch is DECLARED, not new. The service already refuses this write when the
+    // tenant has no settings store, with a code the shared translator answers 409 for; leaving it out of the
+    // published contract meant a generated client had no member for the one refusal an operator can actually
+    // act on, and would surface it as an unexpected status instead of the actionable message it carries.
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult<ApiResponse<MembershipSettingsUpdateResultDto>>> UpdateMembershipSettingsAsync(
         [FromBody] UpdateMembershipSettingsRequest request,
         CancellationToken cancellationToken)
@@ -1068,6 +1185,12 @@ public sealed class UsersController : ControllerBase
     /// <response code="204">The profile values have been stored.</response>
     /// <response code="400">A required property was left empty, or a value was refused by its definition.</response>
     /// <response code="404">No such account in this portal, or the body named a property that is not defined.</response>
+    /// <response code="409">
+    /// One submission named the same property definition more than once. The body is well formed and every
+    /// value in it is individually acceptable, so the refusal is about the submission as a whole rather than
+    /// about any single member - which is why it is a conflict carrying a plain problem document rather than a
+    /// validation document keyed to a field. Removing the repeat makes the request succeed.
+    /// </response>
     /// <remarks>
     /// MIGRATION: replaces <c>Website/admin/Users/Profile.ascx.vb:L226</c>, which handed a whole
     /// property-definition collection to the profile controller and took a rebuilt account back. Here the
@@ -1085,6 +1208,11 @@ public sealed class UsersController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    // MIGRATION: the conflict branch is DECLARED, not new. A repeated property definition in one submission
+    // is already refused with a code the shared translator answers 409 for, and the declaration is what tells
+    // a generated client that this endpoint has a refusal outside the validation document it otherwise
+    // advertises.
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult> UpdateProfileAsync(
         int userId,
         [FromBody] UserProfileDto profile,

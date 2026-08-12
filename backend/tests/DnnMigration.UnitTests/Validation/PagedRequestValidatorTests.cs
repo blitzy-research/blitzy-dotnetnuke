@@ -89,8 +89,7 @@ public class PagedRequestValidatorTests
     /// </remarks>
     private static readonly string[] RoleUserFields =
     [
-        "UserId", "Username", "FirstName", "LastName", "DisplayName", "Email",
-        "CreatedDate", "LastLoginDate", "IsApproved", "IsSuperUser",
+        "UserId", "Username", "FirstName", "LastName", "DisplayName", "Email", "IsSuperUser",
     ];
 
     // ------------------------------------------------------------------------
@@ -279,34 +278,38 @@ public class PagedRequestValidatorTests
         => ShouldRefuseSort(new UserPagedRequestValidator(), new UserPagedRequest(), sortBy, UserFields);
 
     /// <summary>
-    /// The role-membership listing ADMITS the same three fields the account listing refuses, because this
-    /// listing genuinely can order by them.
+    /// The role-membership listing refuses the same three membership-store fields the account listing
+    /// refuses, because neither can order by them.
     /// </summary>
     /// <param name="sortBy">The field the caller named.</param>
     /// <remarks>
     /// <para>
-    /// MIGRATION: this is the fact the review's finding turns on, and it is the exact counterpart of
-    /// <c>UserListing_RefusesTheFieldsItCannotOrderInTheDatabase</c> above. The role-membership listing
-    /// bound the ACCOUNT collection's request type, so the account validator resolved for it and refused
-    /// these three names at the boundary - even though <c>RoleService.OrderRoleMemberships</c> has an arm
-    /// for each and honours it over a value present on every row. Three orderings the service implemented
-    /// were unreachable, and the endpoint advertised less than it could do.
+    /// ⚠ SEC-F11. THIS TEST ASSERTED THE OPPOSITE, AND THE JUSTIFICATION IT CARRIED WAS FACTUALLY WRONG. It
+    /// claimed the role-membership listing materialises the assignment rows and pages them IN MEMORY, so
+    /// that the three values the external <c>aspnet_*</c> membership objects supply are present on every row
+    /// before a page is cut. The implementation does no such thing: the filter, the ordering, the count and
+    /// the window all travel to the store, and the repository's ordering arm for these three names fell
+    /// through to the assignment key. A caller naming one of them received <c>200</c> with rows ordered by
+    /// something else - and since the membership projection publishes none of the three, the wrong order was
+    /// not even observable in the response.
     /// </para>
     /// <para>
-    /// The two facts must be read together: the same three names are refused by one listing and admitted by
-    /// the other, and neither verdict is a mistake. The account listing pages in the store and so cannot
-    /// reach values the external membership objects fill afterwards; this listing materialises the
-    /// assignment rows composed with their accounts and pages in memory, so the values are already there.
-    /// Making the two verdicts agree would break one listing or the other, which is precisely why each
-    /// collection needs its own request type rather than a shared or a borrowed one.
+    /// The two listings therefore agree now, and for the same reason: both page in the store, and neither
+    /// can order by a value the store does not hold. Restoring the capability would mean joining the
+    /// membership objects into the query and publishing the values on the projection - which is a change to
+    /// the read, not a relaxation of this rule.
     /// </para>
     /// </remarks>
     [Theory]
     [InlineData("CreatedDate")]
     [InlineData("LastLoginDate")]
     [InlineData("IsApproved")]
-    public void RoleMembershipListing_AdmitsTheThreeFieldsTheAccountListingCannotOrder(string sortBy)
-        => ShouldAcceptSort(new RoleUserPagedRequestValidator(), new RoleUserPagedRequest(), sortBy);
+    public void RoleMembershipListing_RefusesTheMembershipStoreFieldsItCannotOrder(string sortBy)
+        => ShouldRefuseSort(
+            new RoleUserPagedRequestValidator(),
+            new RoleUserPagedRequest(),
+            sortBy,
+            RoleUserFields);
 
     /// <summary>
     /// The two module fields that cannot be ordered are refused, even though both are projected.

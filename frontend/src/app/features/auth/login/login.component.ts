@@ -634,7 +634,6 @@ const DELETE_CODE_UNIT = 0x7f;
     FormFieldComponent,
     ErrorBannerComponent,
     LoadingSpinnerComponent,
-    FocusFirstInvalidDirective,
   ],
   templateUrl: './login.component.html',
   styleUrl: './login.component.scss',

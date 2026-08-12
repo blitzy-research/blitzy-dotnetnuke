@@ -40,6 +40,7 @@ import {
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { EmptyStateComponent } from '../../../shared/components/empty-state/empty-state.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
+import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
 import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
@@ -928,7 +929,7 @@ const CURRENT_PAGE_LABEL = 'This page';
     EmptyStateComponent,
     ErrorBannerComponent,
     ConfirmDialogComponent,
-    FocusFirstInvalidDirective,
+    FormFieldComponent,
   ],
   templateUrl: './module-settings.component.html',
   styleUrl: './module-settings.component.scss',
@@ -2166,32 +2167,18 @@ export class ModuleSettingsComponent {
   }
 
   /**
-   * The element identifier for a field's help text, referenced by its control's `aria-describedby`.
-   *
-   * @param field The field.
-   * @returns A stable identifier scoped to this screen.
-   */
-  protected hintId(field: ModuleSettingsField): string {
-    return `module-settings-${field}-hint`;
-  }
-
-  /**
-   * The element identifier for a field's validation message.
-   *
-   * @param field The field.
-   * @returns A stable identifier scoped to this screen.
-   */
-  protected messageId(field: ModuleSettingsField): string {
-    return `module-settings-${field}-message`;
-  }
-
-  /**
    * The element identifier for a choice group's visible name.
    *
-   * MIGRATION: a radio group's name is carried by a `label` with no `for`, referenced through
+   * MIGRATION: a radio group's name is carried by a caption with no `for`, referenced through
    * `aria-labelledby`. Pointing `for` at the first radio would name the group by side effect and make
    * clicking its title select an option - which is stronger than the legacy screen managed, since its label
    * pointed at the table ASP.NET rendered the group as and therefore named nothing.
+   *
+   * ⚠ NO LONGER READ BY THE TEMPLATE FOR ANY FIELD'S CAPTION. Every caption on this screen is now rendered
+   * by the shared field component, which publishes its own `labelId()` - and the radio group is named from
+   * THAT, through a template reference, rather than from this. What still reads this is the specification
+   * suite, which asserts the screen's identifier scheme; it is kept for that and because the scheme is the
+   * one `controlId` and `choiceId` belong to.
    *
    * @param field The choice group's field.
    * @returns A stable identifier scoped to this screen.
@@ -2256,13 +2243,13 @@ export class ModuleSettingsComponent {
   /**
    * The client-side validation message for one control, when one is currently reportable.
    *
-   * ⚠ THIS EXISTS SO THAT ONE FIELD HAS EXACTLY ONE MESSAGE REGION, WITH EXACTLY ONE IDENTIFIER. The client
-   * message and the server messages were previously two sibling elements that both bound `messageId(field)`,
-   * which is a duplicated identifier for the four controls that carry a client rule — invalid markup, and an
-   * `aria-describedby` that resolves to whichever element the browser happens to find first. Reporting both
-   * kinds through a single region removes the collision at its source rather than papering over it with a
-   * second identifier, and it means a control's description names one element whose content is the complete
-   * set of reasons the value was refused, in the order they were produced: locally first, then by the server.
+   * ⚠ REPORTED THROUGH THE SAME SINGLE REGION AS THE SERVER'S MESSAGES, and the history is worth keeping
+   * because it is the defect this shape exists to prevent. The client message and the server messages were
+   * once two sibling elements that both bound the same message-region identifier - a DUPLICATED id for the
+   * five controls carrying a client rule, which is invalid markup and an `aria-describedby` resolving to
+   * whichever element the browser happened to find first. Both are now combined by {@link messagesFor} and
+   * handed to the shared field component as one list, so there is one region, one identifier, and one
+   * complete set of reasons in the order they were produced: locally first, then by the server.
    *
    * Only four of this screen's fields have a client rule at all — the legacy screen declared exactly four
    * validators (`valtxtStartDate`, `valtxtEndDate`, `valCacheTime` and the title's length bound) — so every
@@ -2304,78 +2291,31 @@ export class ModuleSettingsComponent {
   }
 
   /**
-   * Whether a field currently has anything to report, from either side.
+   * Every message a field currently has to report, client failure first and server messages after.
    *
-   * This is the single condition that both the message region's presence and the control's
-   * `aria-describedby` are derived from, so the two cannot drift apart: a named region always exists, and an
-   * existing region is always named.
+   * ⚠ ONE LIST, HANDED WHOLE TO THE SHARED FIELD COMPONENT, which is what replaced this screen's own
+   * field machinery. Five members used to compose the same answer between them - a hint identifier, a
+   * message-region identifier, a `hasMessages` predicate, a `describedBy` that concatenated the two
+   * identifiers conditionally, and an `errorMessageId` that named the region a second time through
+   * `aria-errormessage`. All five are gone: the shared component owns the region, its identifier, the
+   * assertive live-region role, the description wiring onto the projected control and the presence
+   * condition, so the screen's only remaining job is to say WHAT is wrong.
+   *
+   * ORDER IS LOAD-BEARING AND IS THE ORDER THE FAILURES WERE PRODUCED IN: locally first, then by the
+   * server. That is the order the previous single-region arrangement emitted them in, and it is preserved
+   * exactly - the shared component neither reorders nor de-duplicates what it is given.
+   *
+   * Only five of this screen's fields have a client rule at all, so for every other field this is the
+   * server's list unchanged and is empty in the ordinary case.
    *
    * @param field The field to report on.
-   * @returns `true` when a client or server message is on screen for the field.
+   * @returns The messages, in production order. Empty when the field has nothing to report.
    */
-  protected hasMessages(field: ModuleSettingsField): boolean {
-    return this.clientMessage(field) !== null || this.serverMessages(field).length > 0;
-  }
+  protected messagesFor(field: ModuleSettingsField): readonly string[] {
+    const client: string | null = this.clientMessage(field);
+    const server: readonly string[] = this.serverMessages(field);
 
-  /**
-   * The identifiers a control's `aria-describedby` should name: its own hint, and its message region
-   * when there is something to report.
-   *
-   * ⚠ THE MESSAGE REGION HAS TO BE NAMED HERE, AND THE EARLIER REASONING FOR OMITTING IT WAS WRONG. A
-   * `role="alert"` region is announced ONCE, at the moment it appears, and never again — so a person who
-   * hears it, moves to the control to correct the value and then returns is told nothing, and has no way
-   * to reach the message from the control at all. That is the ordinary case rather than an edge one: the
-   * whole purpose of a per-field message is that the person goes to that field.
-   *
-   * The message is also not transient in the sense the earlier note assumed. It stays on screen until the
-   * next save answers, which is exactly as long as the hint does, so for the time it exists it IS part of
-   * the control's description.
-   *
-   * The hint is named first so it is announced first, which keeps the order the same whether or not a
-   * message is present. The region's identifier is omitted entirely when there is no message, rather than
-   * named and empty: naming an element that does not exist leaves a dangling reference.
-   *
-   * @param hintField The field whose hint describes the control.
-   * @param errorField The field messages are reported under, when it differs from the hint's — the
-   * permission switch is described by its region's hint but reports under its own control name.
-   * @returns A space-separated identifier list for `aria-describedby`.
-   */
-  protected describedBy(
-    hintField: ModuleSettingsField,
-    errorField: ModuleSettingsField = hintField,
-  ): string {
-    const hint = this.hintId(hintField);
-
-    return this.hasMessages(errorField) ? `${hint} ${this.messageId(errorField)}` : hint;
-  }
-
-  /**
-   * Names the region holding a control's failures, for `aria-errormessage`.
-   *
-   * ⚠ THIS IS A SEPARATE ASSOCIATION FROM THE DESCRIPTION, NOT A DUPLICATE OF IT, and this screen
-   * was missing it. `aria-describedby` says "this text describes the control" and is announced
-   * whenever the control is reached; `aria-errormessage` says "this text is the ERROR", and assistive
-   * technology is free to treat the two differently - announcing the failure with its own wording, or
-   * offering a command to jump to it. The shared field component publishes both, so nearly every form
-   * in the application does; this screen predates that component and published only the description.
-   * Runtime measurement caught the gap directly: on the module form the icon control reported
-   * `aria-errormessage="module-form-icon-file-error"`, and on this screen the same rule, refused on
-   * the same control for the same reason, reported none.
-   *
-   * Returns `null` rather than an empty string when there is nothing to name, because Angular removes
-   * an attribute bound to `null` and an `aria-errormessage` pointing at nothing is worse than its
-   * absence - it is a dangling reference the control asserts is an error message.
-   *
-   * The identifier is the SAME region `describedBy` names, and deliberately so: there is one message
-   * region per control, holding the client failure and any server messages together, so both
-   * associations point at it and neither invents a second element.
-   *
-   * @param field The field whose failures are reported. Pass the field messages are reported UNDER,
-   * which for the permission switch differs from the field whose hint describes it.
-   * @returns The message region's identifier, or `null` when the control has nothing to report.
-   */
-  protected errorMessageId(field: ModuleSettingsField): string | null {
-    return this.hasMessages(field) ? this.messageId(field) : null;
+    return client === null ? server : [client, ...server];
   }
 
   // -----------------------------------------------------------------------------------------------------

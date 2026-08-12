@@ -220,8 +220,8 @@ public class UserServiceTests
     private static readonly DateTime Now = new(2026, 8, 2, 12, 0, 0, DateTimeKind.Utc);
 
     /// <summary>
-    /// The account contract exposes exactly twenty-six named asynchronous operations, every one of them scoped
-    /// to a tenant.
+    /// The account contract exposes exactly twenty-seven named asynchronous operations, every one of them
+    /// scoped to a tenant.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -251,15 +251,26 @@ public class UserServiceTests
     /// are writes still have one implementation, because the service delegates them, which is what the
     /// delegation facts in this suite pin.
     /// </para>
+    /// <para>
+    /// The twenty-seventh is <c>ListAccountChoicesAsync</c>, and it is a member of its own rather than an
+    /// argument on the listing for a reason a reader should not have to reconstruct. It serves an account
+    /// PICKER, which needs a key and two captions; the listing serves a GRID, whose row carries a postal
+    /// address, a telephone number, an electronic-mail address, two audit instants and four status flags, and
+    /// which performs four supporting reads to fill them. A picker built on the listing therefore moved every
+    /// one of those fields across the wire so that three could be rendered - measured on the role-assignment
+    /// screen, which may enumerate a tenant of up to a thousand accounts. Two projections, two members, and
+    /// no flag on one member deciding which of them a caller gets.
+    /// </para>
     /// </remarks>
     [Fact]
-    public void UserContract_OffersExactlyTwentySixNamedTenantScopedOperations()
+    public void UserContract_OffersExactlyTwentySevenNamedTenantScopedOperations()
     {
         MethodInfo[] members = typeof(IUserService).GetMethods();
 
         members.Select(member => member.Name).Should().BeEquivalentTo(
         [
             "ListUsersAsync",
+            "ListAccountChoicesAsync",
             "GetUserAsync",
             "CreateUserAsync",
             "UpdateUserAsync",
@@ -318,80 +329,95 @@ public class UserServiceTests
         var currentUser = new Mock<ICurrentUser>().Object;
         var audit = new Mock<IAuditSink>().Object;
         var tokens = new Mock<ITokenService>().Object;
+        var storeFailures = new Mock<IStoreFailureClassifier>().Object;
+        var diagnostics = new Mock<ISecurityDiagnostics>().Object;
         var policy = new PasswordPolicyOptions();
         var caching = new CachingOptions();
+        var portalContext = new Mock<IPortalContextHolder>().Object;
 
         Assert.Throws<ArgumentNullException>("users", () =>
         {
-            _ = new UserService(null!, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(null!, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, storeFailures, diagnostics, policy, caching, portalContext);
         });
         Assert.Throws<ArgumentNullException>("profiles", () =>
         {
-            _ = new UserService(users, null!, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, null!, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, storeFailures, diagnostics, policy, caching, portalContext);
         });
         Assert.Throws<ArgumentNullException>("roles", () =>
         {
-            _ = new UserService(users, profiles, null!, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, null!, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, storeFailures, diagnostics, policy, caching, portalContext);
         });
         Assert.Throws<ArgumentNullException>("permissions", () =>
         {
-            _ = new UserService(users, profiles, roles, null!, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, null!, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, storeFailures, diagnostics, policy, caching, portalContext);
         });
         Assert.Throws<ArgumentNullException>("roleService", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, null!, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, null!, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, storeFailures, diagnostics, policy, caching, portalContext);
         });
         Assert.Throws<ArgumentNullException>("portals", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, roleService, null!, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, null!, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, storeFailures, diagnostics, policy, caching, portalContext);
         });
         Assert.Throws<ArgumentNullException>("modules", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, roleService, portals, null!, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, null!, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, storeFailures, diagnostics, policy, caching, portalContext);
         });
         Assert.Throws<ArgumentNullException>("definitions", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, null!, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, null!, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, storeFailures, diagnostics, policy, caching, portalContext);
         });
         Assert.Throws<ArgumentNullException>("tabs", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, null!, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, null!, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, storeFailures, diagnostics, policy, caching, portalContext);
         });
         Assert.Throws<ArgumentNullException>("unitOfWork", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, null!, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, null!, hasher, clock, cache, currentUser, audit, tokens, storeFailures, diagnostics, policy, caching, portalContext);
         });
         Assert.Throws<ArgumentNullException>("passwordHasher", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, null!, clock, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, null!, clock, cache, currentUser, audit, tokens, storeFailures, diagnostics, policy, caching, portalContext);
         });
         Assert.Throws<ArgumentNullException>("clock", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, null!, cache, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, null!, cache, currentUser, audit, tokens, storeFailures, diagnostics, policy, caching, portalContext);
         });
         Assert.Throws<ArgumentNullException>("cache", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, null!, currentUser, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, null!, currentUser, audit, tokens, storeFailures, diagnostics, policy, caching, portalContext);
         });
         Assert.Throws<ArgumentNullException>("currentUser", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, null!, audit, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, null!, audit, tokens, storeFailures, diagnostics, policy, caching, portalContext);
         });
         Assert.Throws<ArgumentNullException>("audit", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, null!, tokens, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, null!, tokens, storeFailures, diagnostics, policy, caching, portalContext);
         });
         Assert.Throws<ArgumentNullException>("tokens", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, null!, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, null!, storeFailures, diagnostics, policy, caching, portalContext);
+        });
+        Assert.Throws<ArgumentNullException>("storeFailures", () =>
+        {
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, null!, diagnostics, policy, caching, portalContext);
+        });
+        Assert.Throws<ArgumentNullException>("diagnostics", () =>
+        {
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, storeFailures, null!, policy, caching, portalContext);
         });
         Assert.Throws<ArgumentNullException>("passwordPolicy", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, null!, caching);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, storeFailures, diagnostics, null!, caching, portalContext);
         });
         Assert.Throws<ArgumentNullException>("caching", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, null!);
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, storeFailures, diagnostics, policy, null!, portalContext);
+        });
+        Assert.Throws<ArgumentNullException>("portalContext", () =>
+        {
+            _ = new UserService(users, profiles, roles, permissions, roleService, portals, modules, definitions, tabs, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, storeFailures, diagnostics, policy, caching, null!);
         });
     }
 
@@ -1117,6 +1143,110 @@ public class UserServiceTests
     }
 
     /// <summary>
+    /// Reading one account takes the designated administrator from the tenant facts already settled for the
+    /// call, so no second tenant read is issued for one column.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ WHAT THIS PINS IS AN ABSENCE, WHICH IS WHY THE CONTROL MATTERS. A detail read used to issue its own
+    /// <c>Portals</c> round trip for <c>AdministratorId</c> alone, once per account opened, when the value was
+    /// already sitting in the call-scoped tenant snapshot the container hands over for free. The verification
+    /// is <c>Times.Never</c>, so it would pass against a service that never needed the value at all - the
+    /// projected capability is therefore asserted alongside it, proving the value was obtained rather than
+    /// skipped.
+    /// </para>
+    /// <para>
+    /// The account under test IS the designated administrator, so the capability it publishes is the negative
+    /// one. That is the harder direction to reach by accident: a service that silently lost the value would
+    /// report the account as removable, which is the defect the projection exists to prevent.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task GetUser_ReadsTheDesignatedAdministratorFromTheCallScopedTenantFacts()
+    {
+        Harness harness = Harness.Ready();
+        harness.PortalContext.SetupGet(holder => holder.IsResolved).Returns(true);
+        harness.PortalContext.SetupGet(holder => holder.Current).Returns(
+            TenantFacts(PortalId, administratorId: UserId));
+
+        Result<UserDetailDto?> outcome = await harness.Service
+            .GetUserAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value!.CanDelete.Should().BeFalse(
+            "the snapshot designates this very account, so the value was read rather than lost");
+
+        harness.Portals.Verify(
+            p => p.GetByIdAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
+    /// <summary>
+    /// A snapshot describing a DIFFERENT tenant is not trusted, so the designated administrator is read from
+    /// persistence for the tenant actually being acted on.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// ⚠ THE CORRECTNESS HALF OF THE OPTIMISATION, AND THE REASON THE TENANT IS COMPARED AT ALL. The snapshot
+    /// describes the tenant the REQUEST was addressed to, which is not always the tenant the call acts on: a
+    /// host-level caller may name any portal it administers, which is precisely why the identifier arrives as
+    /// an argument. Reading <c>AdministratorId</c> off a snapshot for another portal would publish one
+    /// tenant's protected account against another tenant's account, so a mismatch must fall through. Minus one
+    /// and zero are both genuine portal keys, so the comparison is equality and never positivity - the
+    /// snapshot here names a real neighbouring tenant rather than an impossible one.
+    /// </remarks>
+    [Fact]
+    public async Task GetUser_IgnoresASnapshotDescribingAnotherTenant()
+    {
+        Harness harness = Harness.Ready();
+        harness.PortalContext.SetupGet(holder => holder.IsResolved).Returns(true);
+        harness.PortalContext.SetupGet(holder => holder.Current).Returns(
+            TenantFacts(PortalId + 1, administratorId: UserId));
+        harness.PortalRow!.AdministratorId = AdministratorId;
+
+        Result<UserDetailDto?> outcome = await harness.Service
+            .GetUserAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value!.CanDelete.Should().BeTrue(
+            "the acted-on tenant designates a different account, and its own row is what decides");
+
+        harness.Portals.Verify(
+            p => p.GetByIdAsync(PortalId, false, It.IsAny<CancellationToken>()),
+            Times.Once());
+    }
+
+    /// <summary>
+    /// Outside a request scope the tenant facts are unresolved, so the designated administrator is read from
+    /// persistence and the holder is never dereferenced.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The holder's contract states that reading its current snapshot before the tenant has been settled
+    /// THROWS, so a background caller - or any unit test - must fall through rather than fault. This is the
+    /// default the harness reports, and it is asserted explicitly because it is the path every other case in
+    /// this file silently depends on.
+    /// </remarks>
+    [Fact]
+    public async Task GetUser_FallsBackToPersistenceWhenNoTenantHasBeenResolved()
+    {
+        Harness harness = Harness.Ready();
+        harness.PortalRow!.AdministratorId = UserId;
+
+        Result<UserDetailDto?> outcome = await harness.Service
+            .GetUserAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value!.CanDelete.Should().BeFalse("the stored row designates this account");
+
+        harness.Portals.Verify(
+            p => p.GetByIdAsync(PortalId, false, It.IsAny<CancellationToken>()),
+            Times.Once());
+        harness.PortalContext.VerifyGet(holder => holder.Current, Times.Never());
+    }
+
+    /// <summary>
     /// Creating an account requires a request.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
@@ -1590,28 +1720,160 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A credential store that faults rolls the transaction back and reports the fault by kind, without
-    /// letting the exception escape as a five-hundred.
+    /// A credential store failure the classifier attributes to the store rolls the transaction back and is
+    /// reported as a provider error in fixed wording, without letting the exception escape as a five-hundred.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE CLASSIFIER IS ARRANGED RATHER THAN ASSUMED, and that is the point of the fact. The guard now absorbs
+    /// only a failure the Domain classifier POSITIVELY attributes to the store, so a test that simulates a store
+    /// failure has to say so - and the production classifier deliberately answers <see langword="false"/> for a
+    /// bare <see cref="TimeoutException"/>, because a timeout with no provider fault beneath it is not evidence
+    /// that the database is unreachable.
+    /// </para>
+    /// <para>
+    /// The published message no longer carries the exception type name. A caller can do nothing with a type
+    /// name, and it is the exception's own shape rather than authored text, so publishing it disclosed which
+    /// client library and which failure mode a write had hit to whoever asked. The type is recorded for the log
+    /// by the global handler, which is where a type name belongs.
+    /// </para>
+    /// <para>
+    /// AND THE CAUGHT TYPE IS RECORDED PRIVATELY RATHER THAN PUBLISHED, which is the other half of the same
+    /// finding. THIS ASSERTION IS INVERTED FROM THE ONE IT REPLACES. The earlier revision required the failure
+    /// message to end in the CLR type name of whatever the credential store threw, and the account
+    /// endpoints hand a failed <c>Result</c>'s message straight to the caller as the
+    /// <c>ProblemDetails.detail</c>. An unauthenticated registration attempt therefore learned which
+    /// component had failed and, by repetition, could map the deployment's internals - and a
+    /// provider-specific type name leaks the storage technology to a caller who has no business knowing it.
+    /// The type is still needed, but by the operator: it is now recorded on the private diagnostics channel,
+    /// whose reason-code contract is exactly a short stable token such as a type name. Both halves are
+    /// asserted here, because a fix that merely deleted the type name would pass the caller-facing check and
+    /// silently destroy the only clue to which store refused the write.
+    /// </para>
+    /// </remarks>
     [Fact]
-    public async Task CreateUser_RollsBackAndNamesTheFaultKind()
+    public async Task CreateUser_RollsBackAndKeepsTheFaultKindOffTheCallerFacingResult()
     {
         Harness harness = Harness.Ready();
-        harness.CredentialFault = new TimeoutException("the store did not answer");
+        var fault = new TimeoutException("the store did not answer");
+        harness.CredentialFault = fault;
+        harness.StoreFailures.Setup(classifier => classifier.IsStoreUnavailable(fault)).Returns(true);
 
         Result<UserDetailDto> outcome = await harness.Service
             .CreateUserAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(CreateProviderErrorCode);
-        outcome.Reason!.Message.Should()
-            .Be("The credential store could not be written: TimeoutException.");
+        outcome.Reason!.Message.Should().NotContain(
+            nameof(TimeoutException),
+            "an exception type name is a diagnostic for the log, not a sentence for a caller");
+
+        // The caller learns that the write did not happen and how to get help, and nothing else. No CLR
+        // type name, no provider name, no exception message.
+        outcome.Reason!.Message.Should().Be(
+            "The credential store could not be written, so the account was not created. Try again, "
+            + "and quote the correlation identifier from the response if the problem persists.");
+        outcome.Reason!.Message.Should().NotContain("Exception");
+        outcome.Reason!.Message.Should().NotContain("the store did not answer");
+
+        // The operator keeps everything the caller lost.
+        harness.DiagnosedOccurrences.Should().ContainSingle();
+        (SecurityDiagnosticEvent occurrence, int? portalId, int? userId, string? reasonCode) =
+            harness.DiagnosedOccurrences[0];
+        occurrence.Should().Be(SecurityDiagnosticEvent.CredentialStoreWriteFailed);
+        portalId.Should().Be(PortalId);
+        userId.Should().NotBeNull();
+        reasonCode.Should().Be(nameof(TimeoutException));
+
         harness.RemovedUsers.Should().BeEmpty();
         harness.Transaction.Verify(
             transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),
             Times.Never());
         harness.Transaction.Verify(transaction => transaction.DisposeAsync(), Times.Once());
+    }
+
+    /// <summary>
+    /// A credential failure the classifier does NOT attribute to the store is allowed to surface rather than
+    /// being reported to the caller as a store fault.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the half of the narrowing that has teeth. The guard used to admit every exception that was not a
+    /// cancellation, so a null argument, a mis-registered collaborator or an invalid operation raised by our own
+    /// code was converted into "the credential store could not be written" - a programming fault inside this
+    /// request reported as an external store fault, with the report pointing away from the thing that needed
+    /// fixing. Such a failure now reaches the global handler, whose job is to report an unexpected fault as one.
+    /// The transaction is still abandoned as the exception unwinds, so nothing is left half-created.
+    /// </remarks>
+    [Fact]
+    public async Task CreateUser_LetsAnUnclassifiedFailureSurface()
+    {
+        Harness harness = Harness.Ready();
+        harness.CredentialFault = new InvalidOperationException("a collaborator was misused");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => harness.Service.CreateUserAsync(PortalId, ValidCreateRequest(), CancellationToken.None));
+
+        harness.Transaction.Verify(
+            transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.Transaction.Verify(transaction => transaction.DisposeAsync(), Times.Once());
+        harness.InvalidatedPortalIds.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A submitted account name carrying surrounding whitespace is canonicalised once, so the row that is
+    /// stored is the row every later lookup can find.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// The defect this pins was an account nobody could reach. Every read of the column normalises the value it
+    /// is GIVEN - <c>UserRepository.GetByUsernameAsync</c> and <c>UsernameExistsAsync</c> both compute
+    /// <c>Trim().ToLowerInvariant()</c> before comparing - while nothing normalised the value being WRITTEN.
+    /// SQL Server ignores trailing spaces when comparing strings and does not ignore leading ones, so a
+    /// submitted <c>" grace"</c> was stored verbatim and no later lookup for <c>"grace"</c> could match it: the
+    /// account existed, occupied the name, could not sign in, and did not appear in the administration screens.
+    /// </para>
+    /// <para>
+    /// Both the uniqueness READS and the stored ROW are asserted, because the fix is that they use ONE value. A
+    /// guard that asks about a different string from the one the write stores is not a guard - it was the reason
+    /// the name looked free.
+    /// </para>
+    /// <para>
+    /// Case is deliberately NOT folded: <c>dbo.Users.Username</c> is what the screens display and the legacy
+    /// stored the operator's own casing. Case-insensitive matching is already provided by the reads and by the
+    /// database collation.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreateUser_CanonicalisesTheSubmittedAccountName()
+    {
+        Harness harness = Harness.Ready();
+        CreateUserRequest request = ValidCreateRequest();
+        request.Username = $"  {Username}  ";
+
+        Result<UserDetailDto> outcome = await harness.Service
+            .CreateUserAsync(PortalId, request, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.AddedUsers.Should().ContainSingle().Which.Username.Should().Be(
+            Username,
+            "the stored name is the canonical one, so the reads that normalise their argument can find it");
+
+        harness.Users.Verify(
+            users => users.GetByUsernameAsync(null, Username, It.IsAny<CancellationToken>()),
+            Times.Once());
+        harness.Users.Verify(
+            users => users.UsernameExistsAsync(Username, null, It.IsAny<CancellationToken>()),
+            Times.Once());
+        harness.Users.Verify(
+            users => users.GetByUsernameAsync(
+                It.IsAny<int?>(),
+                It.Is<string>(name => name != Username),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
     }
 
     /// <summary>
@@ -2266,6 +2528,46 @@ public class UserServiceTests
         record.Properties["AccountRemoved"].Should().Be(
             "True",
             "the account belonged to no other tenant, so the row itself went with the membership");
+    }
+
+    /// <summary>
+    /// A committed removal is recorded even when the post-commit cache maintenance fails, because the account
+    /// is gone either way.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE FAILURE THIS PINS IS AN ABSENCE. The record used to be the last statement in the member, behind
+    /// three cache evictions, the last of which was at the time an AWAITED call observing the cancellation
+    /// token and is now the delegated synchronous call the permission contract owns. A
+    /// caller who disconnected in the moment after the commit therefore had the account deleted - permanently,
+    /// with its memberships, assignments, grants and credential - and NOTHING in the trail said so: the token
+    /// was signalled, the eviction threw, the exception left the member and the record was never reached.
+    /// </para>
+    /// <para>
+    /// Deleting an account is the least reversible thing this service does and the likeliest subject of a
+    /// later question, so its record is the last that may depend on the caller still being connected. The
+    /// exception is still allowed to escape, deliberately: cache maintenance that did not happen is a real
+    /// condition and swallowing it would leave stale grants served from memory. What changed is only that the
+    /// history is written first.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task DeleteUser_RecordsTheRemovalEvenWhenThePostCommitCacheMaintenanceFails()
+    {
+        Harness harness = Harness.Ready();
+        harness.GrantCacheEvictionFault = new OperationCanceledException("the caller disconnected");
+
+        Func<Task> deletion = () => harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
+
+        await deletion.Should().ThrowAsync<OperationCanceledException>(
+            "maintenance that did not happen is a real condition and must not be swallowed");
+
+        harness.RemovedUsers.Should().ContainSingle("the deletion was committed before the eviction ran");
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be("USER_DELETED");
+        record.SubjectUserId.Should().Be(UserId);
     }
 
     /// <summary>
@@ -3737,16 +4039,31 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// C-03: a required declaration answered with whitespace is still unanswered.
+    /// C-03: a required declaration answered with whitespace is ANSWERED, and an empty answer is not.
     /// </summary>
     /// <remarks>
-    /// The legacy compared the value against <c>Null.NullString</c>, which is the EMPTY STRING rather than a
-    /// null reference (Rule T7), so it could not distinguish a blank from an absent answer. Treating whitespace
-    /// as an answer would let a single space satisfy a required property.
+    /// <para>
+    /// The legacy rule is <c>ProfileController.vb</c> <c>ValidateProfile</c>:
+    /// <c>If propertyDefinition.Required And propertyDefinition.PropertyValue = Null.NullString</c>, and
+    /// <c>Null.vb</c> declares <c>NullString</c> as the EMPTY STRING (Rule T7). A stored answer of a single
+    /// space is not the empty string, so the legacy rule was satisfied by it and the account signed in.
+    /// </para>
+    /// <para>
+    /// An earlier revision of this fact asserted the opposite and cited the same legacy line for it, reading
+    /// "cannot distinguish blank from absent" as licence to treat whitespace as absent. That is a POLICY
+    /// preference rather than parity, and the cost of imposing it here falls on the accounts least able to
+    /// escape it: an existing account whose stored answer is a space is refused entry to the very form it
+    /// would have to use to correct the answer, and is told nothing about which field is at fault. Whether a
+    /// space is a satisfactory answer belongs to the per-property validation expression the definition already
+    /// carries; this gate only asks whether an answer EXISTS.
+    /// </para>
+    /// <para>
+    /// Both halves are asserted together so the empty case cannot be lost while restoring the whitespace one.
+    /// </para>
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task RequiresProfileCompletion_TreatsWhitespaceAsUnanswered()
+    public async Task RequiresProfileCompletion_TreatsWhitespaceAsAnsweredAndEmptyAsUnanswered()
     {
         Harness harness = Harness.Ready();
         harness.AddMembershipSettingsSource();
@@ -3755,10 +4072,20 @@ public class UserServiceTests
         harness.Definitions.Add(street);
         harness.ValuesByUserId[UserId] = [Value(1, UserId, StreetPropertyId, "   ")];
 
-        Result<bool> outcome = await harness.Service
+        Result<bool> whitespace = await harness.Service
             .RequiresProfileCompletionAsync(PortalId, UserId, CancellationToken.None);
 
-        outcome.Value.Should().BeTrue();
+        whitespace.IsSuccess.Should().BeTrue();
+        whitespace.Value.Should().BeFalse(
+            "the legacy compared the answer against the empty string, and a space is not the empty string");
+
+        harness.ValuesByUserId[UserId] = [Value(1, UserId, StreetPropertyId, string.Empty)];
+
+        Result<bool> empty = await harness.Service
+            .RequiresProfileCompletionAsync(PortalId, UserId, CancellationToken.None);
+
+        empty.IsSuccess.Should().BeTrue();
+        empty.Value.Should().BeTrue("an empty answer is exactly what the legacy rule refused");
     }
 
     /// <summary>
@@ -4745,16 +5072,22 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A required property that was omitted or submitted blank is refused by name, so a profile cannot be
+    /// A required property that was omitted or submitted empty is refused by name, so a profile cannot be
     /// saved incomplete.
     /// </summary>
     /// <param name="submittedValue">The value to submit, or null to omit the property entirely.</param>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The whitespace case used to be a third row here and has moved to its own fact below, because the write
+    /// rule and the sign-in completeness rule must agree and the legacy authority for both is one line -
+    /// <c>ProfileController.vb</c> <c>ValidateProfile</c> comparing the answer against <c>Null.NullString</c>,
+    /// which is the EMPTY STRING. A write rule stricter than the completeness rule refuses an answer that
+    /// would have satisfied sign-in.
+    /// </remarks>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
-    [InlineData("   ")]
-    public async Task UpdateProfile_RefusesAnOmittedOrBlankRequiredProperty(string? submittedValue)
+    public async Task UpdateProfile_RefusesAnOmittedOrEmptyRequiredProperty(string? submittedValue)
     {
         Harness harness = Harness.Ready();
         harness.DefinitionFor(CityPropertyId).IsRequired = true;
@@ -4771,6 +5104,43 @@ public class UserServiceTests
         outcome.Reason!.Message.Should().Be("Profile property \"City\" is required.");
         harness.AddedValues.Should().BeEmpty();
         harness.UpdatedValues.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A required property answered with whitespace is accepted and stored exactly as submitted, matching the
+    /// rule the sign-in completeness gate applies.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// Parity with <c>ProfileController.vb</c> <c>ValidateProfile</c>, which compares the answer against
+    /// <c>Null.NullString</c> - the empty string - so a single space satisfied the legacy rule.
+    /// </para>
+    /// <para>
+    /// The two rules are asserted to agree because disagreement is harmful in EITHER direction. A stricter
+    /// write rule refuses an answer that would have let the account sign in; a laxer one stores an answer that
+    /// will lock the account out on its next sign-in, in front of a form that cannot show it why. Whether a
+    /// space is satisfactory belongs to the property's own validation expression.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateProfile_AcceptsAWhitespaceAnswerForARequiredProperty()
+    {
+        Harness harness = Harness.Ready();
+        harness.DefinitionFor(CityPropertyId).IsRequired = true;
+
+        Result outcome = await harness.Service.UpdateProfileAsync(
+            PortalId,
+            UserId,
+            Profile((StreetPropertyId, "Fleet Street"), (CityPropertyId, "   ")),
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.AddedValues
+            .Should().Contain(value => value.PropertyDefinitionId == CityPropertyId)
+            .Which.PropertyValue.Should().Be(
+                "   ",
+                "the answer is stored exactly as submitted rather than normalised");
     }
 
     /// <summary>
@@ -6241,6 +6611,12 @@ public class UserServiceTests
     /// A successful change applies the submitted shape and discards the catalogue cache.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The submitted visibility is <see langword="false"/> WITH the property left optional, deliberately, so
+    /// this fact measures the visibility the caller asked for. The required-implies-visible coercion is
+    /// asserted by its own fact below; combining the two here would have made this one pass for the wrong
+    /// reason and hidden which rule produced the stored value.
+    /// </remarks>
     [Fact]
     public async Task UpdateProfilePropertyDefinition_AppliesTheShapeAndDiscardsTheCatalogue()
     {
@@ -6248,7 +6624,7 @@ public class UserServiceTests
         harness.LookupDefinition = Definition(StreetPropertyId, "Street");
         UpdateProfilePropertyDefinitionRequest request = DefinitionUpdate("Street Address");
         request.Length = 120;
-        request.Required = true;
+        request.Required = false;
         request.Visible = false;
         request.ViewOrder = 3;
         request.PropertyCategory = "Address";
@@ -6264,12 +6640,59 @@ public class UserServiceTests
         outcome.IsSuccess.Should().BeTrue();
         harness.LookupDefinition!.PropertyName.Should().Be("Street Address");
         harness.LookupDefinition!.Length.Should().Be(120);
-        harness.LookupDefinition!.IsRequired.Should().BeTrue();
+        harness.LookupDefinition!.IsRequired.Should().BeFalse();
         harness.LookupDefinition!.IsVisible.Should().BeFalse();
         harness.LookupDefinition!.ViewOrder.Should().Be(3);
         harness.LookupDefinition!.PropertyCategory.Should().Be("Address");
         harness.LookupDefinition!.ValidationExpression.Should().Be(".+");
         harness.InvalidatedProfileDefinitionsPortalIds.Should().Equal(new[] { PortalId });
+    }
+
+    /// <summary>
+    /// A property submitted as required is stored visible whatever visibility the caller asked for, on both
+    /// the creating and the amending verb.
+    /// </summary>
+    /// <param name="submittedVisibility">The visibility the caller submitted.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// The legacy rule, and both legacy write members opened with it verbatim -
+    /// <c>ProfileController.vb</c> <c>AddPropertyDefinition</c> and <c>UpdatePropertyDefinition</c> each begin
+    /// <c>If definition.Required Then definition.Visible = True</c> - so "required and not visible" was a
+    /// combination neither verb could store.
+    /// </para>
+    /// <para>
+    /// It matters beyond tidiness. The profile form renders the VISIBLE properties, so a required-but-invisible
+    /// property is one the account must answer and is never shown; the completeness gate then refuses every
+    /// sign-in that account attempts, with no field on screen to correct. The <see langword="true"/> case is
+    /// included so the coercion cannot be mistaken for the flag being ignored.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UpdateProfilePropertyDefinition_StoresARequiredPropertyAsVisible(bool submittedVisibility)
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupDefinition = Definition(StreetPropertyId, "Street");
+        UpdateProfilePropertyDefinitionRequest request = DefinitionUpdate("Street Address");
+        request.Required = true;
+        request.Visible = submittedVisibility;
+
+        Result<ProfilePropertyDefinitionDto> outcome = await harness.Service
+            .UpdateProfilePropertyDefinitionAsync(
+                PortalId,
+                StreetPropertyId,
+                request,
+                CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.LookupDefinition!.IsRequired.Should().BeTrue();
+        harness.LookupDefinition!.IsVisible.Should().BeTrue(
+            "the legacy rule promotes visibility for a required property rather than storing a property the "
+            + "account must answer and can never see");
+        outcome.Value.Visible.Should().BeTrue(
+            "the response must publish what was stored, not what was submitted");
     }
 
     /// <summary>
@@ -6372,6 +6795,28 @@ public class UserServiceTests
     /// <param name="raw">The credential that was hashed.</param>
     /// <returns>The stored form.</returns>
     private static string StoredHashFor(string raw) => "hash:" + raw;
+
+    /// <summary>
+    /// Builds the settled tenant facts of an inbound call, as the request pipeline would have settled them.
+    /// </summary>
+    /// <param name="portalId">The tenant the request was addressed to.</param>
+    /// <param name="administratorId">The account the tenant designates, or <see langword="null"/>.</param>
+    /// <returns>An immutable snapshot of the call's tenant facts.</returns>
+    /// <remarks>
+    /// A mock rather than the real accessor because the type implementing this contract is
+    /// <see langword="internal"/> to the Infrastructure assembly by design - no other assembly may construct
+    /// a snapshot, which is what makes the facts of a call unforgeable in production. Only the two members the
+    /// service reads are given values; the rest are left at their defaults, so a service that started reading
+    /// another member would be visible here as a default rather than as a plausible value.
+    /// </remarks>
+    private static IPortalContext TenantFacts(int portalId, int? administratorId)
+    {
+        var facts = new Mock<IPortalContext>(MockBehavior.Loose);
+        facts.SetupGet(context => context.PortalId).Returns(portalId);
+        facts.SetupGet(context => context.AdministratorId).Returns(administratorId);
+
+        return facts.Object;
+    }
 
     /// <summary>
     /// Builds the account fixture the store returns.
@@ -6685,7 +7130,33 @@ public class UserServiceTests
                 .Callback<AuditEvent>(AuditRecords.Add);
 
             Tokens = new Mock<ITokenService>(MockBehavior.Loose);
+            StoreFailures = new Mock<IStoreFailureClassifier>(MockBehavior.Loose);
+
+            // The private diagnostics channel. It is recorded rather than merely stubbed because the
+            // assertions have to prove WHERE the caught exception type went once it stopped going to the
+            // caller: a fix that simply dropped the type would satisfy the caller-facing assertion and
+            // lose the operator's only clue about which store failed.
+            Diagnostics = new Mock<ISecurityDiagnostics>(MockBehavior.Loose);
+            DiagnosedOccurrences = [];
+            Diagnostics
+                .Setup(diagnostics => diagnostics.Record(
+                    It.IsAny<SecurityDiagnosticEvent>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<string?>()))
+                .Callback<SecurityDiagnosticEvent, int?, int?, string?>(
+                    (occurrence, portalId, userId, reasonCode) =>
+                        DiagnosedOccurrences.Add((occurrence, portalId, userId, reasonCode)));
+
             Transaction = new Mock<ITransactionScope>(MockBehavior.Loose);
+
+            // ⚠ UNRESOLVED BY DEFAULT, WHICH IS THE HONEST DEFAULT FOR A UNIT TEST. A unit test runs outside
+            // any request scope, so no middleware has settled the tenant facts - and the holder's contract
+            // says reading Current before that point throws. Every case in this file therefore takes the
+            // persistence fall-back, exactly as it did before the holder existed, and the two cases that
+            // exercise the fast path opt into it explicitly.
+            PortalContext = new Mock<IPortalContextHolder>(MockBehavior.Loose);
+            PortalContext.SetupGet(holder => holder.IsResolved).Returns(false);
 
             // Both account-lifecycle workflows open ONE explicit transaction - creation so that the account
             // row and its external credential are published together, deletion so that the grant cascade,
@@ -6715,8 +7186,11 @@ public class UserServiceTests
                 CurrentUser.Object,
                 Audit.Object,
                 Tokens.Object,
+                StoreFailures.Object,
+                Diagnostics.Object,
                 PasswordPolicy,
-                Caching);
+                Caching,
+                PortalContext.Object);
         }
 
         public UserService Service { get; }
@@ -6769,6 +7243,39 @@ public class UserServiceTests
         /// <summary>Every audit record the service emitted, in the order it emitted them.</summary>
         public List<AuditEvent> AuditRecords { get; }
         public Mock<ITokenService> Tokens { get; }
+
+        /// <summary>
+        /// Classifies a caught failure as the store's. Loose by default, which answers <c>false</c> for every
+        /// exception, so the account-creation guard absorbs nothing unless a test says the store failed - which
+        /// is the shape of the production rule rather than a convenience.
+        /// </summary>
+        public Mock<IStoreFailureClassifier> StoreFailures { get; }
+        /// <summary>
+        /// The tenant-facts holder the detail read consults before falling back to a portal read.
+        /// </summary>
+        /// <remarks>
+        /// Reports itself UNRESOLVED unless a case says otherwise, so the fall-back is the default path and
+        /// the fast path has to be asked for. See <see cref="Harness"/>'s constructor for why.
+        /// </remarks>
+        public Mock<IPortalContextHolder> PortalContext { get; }
+        /// <summary>
+        /// A failure raised by the POST-COMMIT grant-cache eviction, or <see langword="null"/> for none.
+        /// </summary>
+        /// <remarks>
+        /// The eviction is the last step after the commit, so it is the one piece of
+        /// post-commit maintenance a disconnecting caller can make fail. This knob exists so an assertion can
+        /// prove that the audit record of a completed deletion no longer depends on it.
+        /// </remarks>
+        public Exception? GrantCacheEvictionFault { get; set; }
+
+        /// <summary>The private diagnostics recorder.</summary>
+        public Mock<ISecurityDiagnostics> Diagnostics { get; }
+
+        /// <summary>
+        /// Every occurrence the service recorded privately, in the order it recorded them.
+        /// </summary>
+        public List<(SecurityDiagnosticEvent Occurrence, int? PortalId, int? UserId, string? ReasonCode)>
+            DiagnosedOccurrences { get; }
 
 
         /// <summary>
@@ -7636,12 +8143,24 @@ public class UserServiceTests
                     harness.CascadedUserPermissions.Add((portalId, userId));
                     return harness.CascadeResult;
                 });
+            // THE GRANT-CACHE EVICTION IS ALSO WHERE A POST-COMMIT MAINTENANCE FAILURE IS INJECTED, and it is
+            // this call because it is the LAST step after the commit: a fault raised here leaves the deletion
+            // committed and the audit record already written, which is precisely the ordering the delete fact
+            // asserts. The eviction is delegated to the permission contract and is SYNCHRONOUS, so the fault
+            // is thrown from the callback rather than returned on a faulted task - a member that accepts no
+            // cancellation token cannot be made to observe one. The registration is still recorded first, so a
+            // fault does not hide the fact that the eviction was reached.
             harness.Permissions
-                .Setup(p => p.InvalidateUserPermissionCachesAsync(
-                    It.IsAny<int>(),
-                    It.IsAny<CancellationToken>()))
-                .Callback<int, CancellationToken>((portalId, _) => harness.EvictedGrantCaches.Add(portalId))
-                .Returns(Task.CompletedTask);
+                .Setup(p => p.InvalidateUserPermissionCaches())
+                .Callback(() =>
+                {
+                    harness.EvictedGrantCaches.Add(PortalId);
+
+                    if (harness.GrantCacheEvictionFault is not null)
+                    {
+                        throw harness.GrantCacheEvictionFault;
+                    }
+                });
 
             // The cascade opens one scope around all five writes, so the scope has to exist: loose behaviour
             // returns null and the await-using would dereference it.

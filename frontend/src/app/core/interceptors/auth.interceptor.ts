@@ -10,7 +10,6 @@ import type { HttpInterceptorFn, HttpRequest } from '@angular/common/http';
 
 import { isAnonymousAuthEndpoint, isApiRequest } from '../config/api-endpoints';
 import { RETURN_URL_QUERY_KEY, SIGN_IN_ROUTE } from '../config/app-routes.config';
-import { NotificationService } from '../services/notification.service';
 import { TokenStorageService } from '../services/token-storage.service';
 // MIGRATION: the renewal used to be reached through `core/services/auth.service`, which owned the
 //   in-flight slot, the two-request composition and custody of the stored session. That service is
@@ -32,26 +31,18 @@ import { SessionTeardownService } from '../state/session-teardown.service';
  */
 const AUTHORIZATION_HEADER = 'Authorization';
 
-/**
- * What an operator is told when their session ended without them asking.
+/*
+ * MIGRATION: THE SESSION-ENDED SENTENCE IS NOT DECLARED HERE, AND THAT IS THE POINT OF THE
+ * DECLARATION'S ABSENCE. A copy of it lived at this position, read by an announcement this file
+ * raised alongside the one `session-teardown.service.ts` already raises - so the sentence had two
+ * declarations and two publishers, and the comment in `endSession` asserting that it had exactly one
+ * of each was contradicted a few lines further down.
  *
- * MIGRATION: AUTHORED BECAUSE THE LEGACY HAD NOTHING TO PORT. A search of the authentication and
- * security resource files for session, sign-in, logon and expiry wording returns no such string:
- * the legacy portal relied on ASP.NET Forms Authentication, whose expiry redirected the browser to
- * the login page as a plain HTTP response, so the operator's evidence that anything had happened
- * was the login page arriving in place of the page they asked for. A single-page application has no
- * equivalent - the shell never reloads, so an unannounced ejection is indistinguishable from an
- * ordinary in-app navigation - which is why the statement has to exist here even though nothing
- * corresponds to it upstream.
- *
- * Worded as a fact and a next step, with no apology and no diagnostic: an expired session is the
- * expected end of a session, not a fault. It deliberately does NOT promise that unsaved work was
- * kept, because it was not - the screen is torn down with the session. What the ejection preserves
- * is the ADDRESS, so signing in again returns the operator to the screen they were on rather than to
- * the default landing page, and they can see for themselves what did and did not persist. Claiming
- * more than that would be the more damaging failure, since it would stop them checking.
+ * The single declaration is `SESSION_ENDED_MESSAGE` in `core/state/session-teardown.service.ts`,
+ * which carries the authoring rationale for the wording. It is not imported here because nothing in
+ * this file words anything any more: this file DECIDES that a session has ended and delegates both
+ * the wording and the raising, which is what leaves one owner for each.
  */
-const SESSION_ENDED_MESSAGE = 'Your session has ended. Please sign in again to continue.';
 
 /*
  * Where an operator is sent once a session cannot be renewed: `SIGN_IN_ROUTE`, IMPORTED from
@@ -222,7 +213,6 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
   const authStore = inject(AuthStore);
   const router = inject(Router);
   const sessionTeardown = inject(SessionTeardownService);
-  const notifications = inject(NotificationService);
 
   if (isHealthProbe(req.url) || !isApiRequest(req.url) || isAnonymousAuthEndpoint(req.url)) {
     return next(req);
@@ -315,7 +305,7 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
       // discarded WITHOUT a session replacing it. That is why ending the session and
       // navigating is the right response at this point and would have been wrong above.
       if (!hasRenewableSession(tokenStorage)) {
-        endSession(tokenStorage, router, sessionTeardown, notifications);
+        endSession(tokenStorage, router, sessionTeardown);
 
         return throwError(() => error);
       }
@@ -378,7 +368,7 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
             return throwError(() => error);
           }
 
-          endSession(tokenStorage, router, sessionTeardown, notifications);
+          endSession(tokenStorage, router, sessionTeardown);
 
           return throwError(() => error);
         }),
@@ -465,7 +455,7 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
                 return throwError(() => retryError);
               }
 
-              endSession(tokenStorage, router, sessionTeardown, notifications);
+              endSession(tokenStorage, router, sessionTeardown);
 
               /*
                * THE RETRY'S OWN 401 is re-thrown, not the original. Both are 401s, but this one is
@@ -567,7 +557,6 @@ function endSession(
   tokenStorage: TokenStorageService,
   router: Router,
   sessionTeardown: SessionTeardownService,
-  notifications: NotificationService,
 ): void {
   // Cleared FIRST, because clearing advances the session generation that every late
   // callback tests itself against. Purging before the generation moved would leave a read
@@ -596,26 +585,23 @@ function endSession(
   sessionTeardown.purge('renewalRefused');
 
   /*
-   * ⚠ SAID IN WORDS, BECAUSE THIS PATH USED TO SAY NOTHING AT ALL. A session ending here ended
-   * without the operator asking, so unlike a deliberate sign-out there is nothing on screen to
-   * explain why the screen they were working on has been replaced by the sign-in form. Both live
-   * regions were measured empty at zero height on every variant of this ejection, and nothing was
-   * written to the console either — so a submission that failed this way was indistinguishable
-   * from one that succeeded, since a successful create also ends by navigating away.
+   * MIGRATION: THE ANNOUNCEMENT THAT USED TO FOLLOW THIS LINE IS GONE, AND ONLY THE DUPLICATE IS
+   * GONE. The comment above already records the whole argument for why the statement belongs to
+   * `purge('renewalRefused')` rather than to this file — two paths end a session un-asked-for, and a
+   * sentence raised from one of them could not serve the other — but the file went on to raise it
+   * here as well, so the sentence had two homes and the comment saying it had one was contradicted
+   * by the twenty lines beneath it.
    *
-   * `'warning'` and not `'error'`: the session lapsed, which is ordinary and expected, and the
-   * remedy is entirely in the operator's hands. Nothing failed that they need to report.
+   * The duplication was not harmless. `purge` raises SESSION_ENDED_MESSAGE and claims the
+   * navigation exemption; this raised the identical sentence a moment later, which the queue's
+   * immediate-repeat collapse then had to absorb — so the operator's experience depended on a
+   * de-duplication rule holding, rather than on only one party speaking. Anything that perturbed
+   * the identity comparison, a differing retention flag most of all, surfaced the message twice.
    *
-   * The reprieve argument is REQUIRED here rather than incidental. The statement exists to be read
-   * on the sign-in screen, and the navigation below is a change of screen — so without it the
-   * surface would discard this message a moment after it was raised, which is the very fault being
-   * fixed, merely relocated.
-   *
-   * ⚠ NOTHING FROM THE REFUSAL IS QUOTED - no status, no body, no header and above all no
-   * credential. The note above about not writing to a log sink here applies with equal force to a
-   * user-facing surface, and this message is a fixed sentence for that reason.
+   * Nothing is lost by removing it: `purge('renewalRefused')` above raises the same sentence, at the
+   * same severity, with the same one-navigation reprieve, and it is reached on every path that gets
+   * here. What changes is that there is now one owner, and the comment above is true.
    */
-  notifications.warning(SESSION_ENDED_MESSAGE, true);
 
   /*
    * ⚠ THE DESTINATION IS PRESERVED, AND IT IS THE SAME CONTRACT THE ROUTE GATES USE. This

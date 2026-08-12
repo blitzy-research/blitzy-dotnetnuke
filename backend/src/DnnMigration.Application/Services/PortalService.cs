@@ -109,6 +109,17 @@ public sealed class PortalService : IPortalService
     private const string MemberSessionRevocationFailedCode =
         "portal.member.session.revocation_store_unavailable";
 
+    /// <summary>
+    /// Reported when member sessions were ended but the portal removal itself did not become durable.
+    /// </summary>
+    /// <remarks>
+    /// SEC-F7. The session store is not a relational participant, so the two stores cannot roll back
+    /// together. This code exists so that outcome is stated instead of being presented as an ordinary
+    /// server fault: the caller learns that the tenant still exists AND that some members must sign in
+    /// again, which is exactly the state the retry has to be performed against.
+    /// </remarks>
+    private const string PortalRemovalIncompleteCode = "portal.delete.partially_applied";
+
     private const string MemberCredentialRemovalFailedCode =
         "portal.member.credential.removal_store_unavailable";
 
@@ -713,6 +724,12 @@ public sealed class PortalService : IPortalService
             return Result<PortalDetailDto>.Failure(aliasFlush.Reason!);
         }
 
+        // Declared OUTSIDE the staging block below so that the permission-catalogue condition the page stage
+        // discovers survives to the post-commit audit. The condition is found mid-transaction and may only be
+        // REPORTED once the transaction has committed, so something has to carry it across the boundary; a
+        // local that outlives the block is the whole of that mechanism.
+        HomePageStage? page = null;
+
         // MIGRATION: the legacy path had this same shape - insert the portal, create the administrator,
         // create the roles, then call UpdatePortalSetup to stamp the identifiers - and had no transaction
         // over any of it.
@@ -754,7 +771,7 @@ public sealed class PortalService : IPortalService
             // MIGRATION: The page stage can now REFUSE, and the refusal is propagated rather than absorbed:
             // returning here disposes the transaction scope without committing, so the portal, its alias,
             // its three roles, its administrator, the credential and the profile definitions all disappear.
-            Result<Tab> pageStage = await CreateHomePageAsync(portal, administratorsRole, cancellationToken)
+            Result<HomePageStage> pageStage = await CreateHomePageAsync(portal, administratorsRole, cancellationToken)
                 .ConfigureAwait(false);
 
             if (pageStage.IsFailure)
@@ -762,7 +779,8 @@ public sealed class PortalService : IPortalService
                 return Result<PortalDetailDto>.Failure(pageStage.Reason!);
             }
 
-            Tab homePage = pageStage.Value;
+            page = pageStage.Value;
+            Tab homePage = page.Page;
 
             // Commits the definitions and the page, so the identifier the store assigns to the page is
             // readable for the stamp below.
@@ -794,24 +812,22 @@ public sealed class PortalService : IPortalService
         // Everything staged since the transaction was opened becomes durable here, and nothing before it.
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
-        // Reproduces DataCache.ClearHostCache(True) at PortalController.vb, which discarded the
-        // installation-wide entries so the new tenant became reachable, plus the portal's own entry.
-        _cache.InvalidateHost();
-        _cache.InvalidatePortal(portal.PortalId);
-
-        // MIGRATION: the legacy path had a THIRD invalidation here that is not reproduced, and it is
-        // recorded rather than dropped in silence. PortalController.vb is DataCache.RemoveCache("GetRoles"),
-        // evicting a single entry keyed by that bare literal, because creating a portal had just inserted
-        // the three stock roles below and the role cache would otherwise have served a list that predated
-        // them.
-        PortalDetailDto? created = await ReadDetailAsync(portal.PortalId, cancellationToken).ConfigureAwait(false);
-        if (created is null)
-        {
-            return Result<PortalDetailDto>.Failure(
-                CreationFailedCode,
-                "The portal was created but could not be read back.");
-        }
-
+        // MIGRATION: THE AUDIT RECORDS ARE NOW THE FIRST THING AFTER THE COMMIT, AND THE ORDER IS THE FIX.
+        // They used to be the LAST thing in the member, behind two cache invalidations and a read-back that
+        // can legitimately fail: the read-back returns early when it yields nothing, and it observes the
+        // cancellation token, so a caller who disconnected in the millisecond after the commit - or a
+        // read-back that found nothing because a replica had not caught up - produced a portal that exists,
+        // is reachable and has an administrator who can sign in, with NO record anywhere that it was ever
+        // created. That is the one failure an audit trail may not have, because the absence is
+        // indistinguishable from the tenant never having been created, and it is exactly the moment an
+        // investigation needs the record most.
+        //
+        // Everything the records need is already in memory - the tenant's key, the administrator's key and
+        // the request - so nothing about emitting them here weakens them. Nothing between the commit and this
+        // point can fail, and the sink is documented not to throw, so the records are now as durable as the
+        // work they describe. The cache maintenance and the read-back follow, and either may now fail without
+        // erasing the history.
+        //
         // MIGRATION: the legacy path closed with an AUDIT ENTRY that this service now emits through the
         // package-neutral sink; the original shape and the layering reason for the indirection are recorded
         // in full here. PortalController.vb built a Services.Log.EventLog.LogInfo with BypassBuffering set
@@ -858,6 +874,62 @@ public sealed class PortalService : IPortalService
         // The legacy type for the same operation, emitted from the same facts by changing only the name, so
         // the two records cannot drift apart or describe different installations.
         RecordAudit(installed with { EventName = AuditEventNames.HostAlert });
+
+        // MIGRATION: THE PERMISSION-CATALOGUE ALERT, RAISED HERE RATHER THAN FROM THE PAGE STAGE, AND UNDER A
+        // DIFFERENT EVENT NAME THAN BEFORE. Two things were wrong with the record it replaces. It was written
+        // from inside the open transaction, so it could describe a tenant that a later stage then rolled
+        // away; and it was named PORTAL_CREATED with a Failed outcome, which reads as "creating the portal
+        // failed" - the exact opposite of what happened, since the whole point of the branch is that the
+        // portal IS created and only the grants are missing. Anyone filtering the trail for failed portal
+        // creations would have found a successful one, and anyone counting successful ones would have missed
+        // it.
+        //
+        // HOST_ALERT is the truthful name: an incomplete permission catalogue is an INSTALLATION defect that
+        // the host operator must repair - the upgrade scripts own those rows - and HOST_ALERT is the legacy
+        // type for exactly that class of condition (EventLogController.vb). The Failed outcome still applies,
+        // because it is the GRANT that could not be completed, and the failure code and the three properties
+        // are carried over unchanged so nothing an operator needs is lost. The page itself was created, and
+        // whatever the catalogue does declare was granted.
+        if (page is { } stage && (stage.ViewDefinitionMissing || stage.EditDefinitionMissing))
+        {
+            RecordAudit(new AuditEvent(AuditEventNames.HostAlert)
+            {
+                Outcome = AuditOutcome.Failed,
+                PortalId = portal.PortalId,
+                SubjectUserId = administrator.UserId,
+                ResourceType = PortalResourceType,
+                ResourceId = portal.PortalId.ToString(CultureInfo.InvariantCulture),
+                FailureCode = PermissionCatalogueIncompleteCode,
+                Properties = new Dictionary<string, string?>(StringComparer.Ordinal)
+                {
+                    ["PermissionCode"] = TabPermissionScopeCode,
+                    ["MissingViewDefinition"] = stage.ViewDefinitionMissing
+                        .ToString(CultureInfo.InvariantCulture),
+                    ["MissingEditDefinition"] = stage.EditDefinitionMissing
+                        .ToString(CultureInfo.InvariantCulture),
+                },
+            });
+        }
+
+        // Reproduces DataCache.ClearHostCache(True) at PortalController.vb, which discarded the
+        // installation-wide entries so the new tenant became reachable, plus the portal's own entry.
+        _cache.InvalidateHost();
+        _cache.InvalidatePortal(portal.PortalId);
+
+        // MIGRATION: the legacy path had a THIRD invalidation here that is not reproduced, and it is
+        // recorded rather than dropped in silence. PortalController.vb is DataCache.RemoveCache("GetRoles"),
+        // evicting a single entry keyed by that bare literal, because creating a portal had just inserted
+        // the three stock roles below and the role cache would otherwise have served a list that predated
+        // them.
+        PortalDetailDto? created = await ReadDetailAsync(portal.PortalId, cancellationToken).ConfigureAwait(false);
+        if (created is null)
+        {
+            // The tenant exists and the records above already say so, which is the whole reason they are
+            // emitted before this point: this refusal is about the RESPONSE, not about the work.
+            return Result<PortalDetailDto>.Failure(
+                CreationFailedCode,
+                "The portal was created but could not be read back.");
+        }
 
         return Result<PortalDetailDto>.Success(created);
     }
@@ -917,8 +989,25 @@ public sealed class PortalService : IPortalService
 
             PortalMappings.ApplyUpdate(portal, request);
 
-            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (ConcurrencyConflictException)
+            {
+                // The token comparison above closes the window a caller can observe, but it cannot close the
+                // window BETWEEN that comparison and the write: the store can still refuse the update as a
+                // lost update, and under serialisable isolation it can be chosen as a deadlock victim. Both
+                // arrive here as one translated signal and are reported as the same refusal the stale-token
+                // check reports, because they are the same event from the caller's position - the record
+                // moved, nothing was written, reload and re-apply. The two write paths answer this identically
+                // for the reason DescribeConcurrencyConflict records: an operator meets the same sentence on
+                // whichever screen they were using.
+                return Result<PortalDetailDto?>.Failure(
+                    ConcurrencyConflictCode,
+                    DescribeConcurrencyConflict(portalId));
+            }
         }
 
         _cache.InvalidatePortal(portalId);
@@ -926,6 +1015,22 @@ public sealed class PortalService : IPortalService
         PortalDetailDto? detail = await ReadDetailAsync(portalId, cancellationToken).ConfigureAwait(false);
         return Result<PortalDetailDto?>.Success(detail);
     }
+
+    /// <summary>
+    /// Reports whether a failed revocation means the session store could not answer, as opposed to
+    /// answering that it holds no such session.
+    /// </summary>
+    /// <param name="reason">The failure the token service reported.</param>
+    /// <returns><see langword="true"/> when the store itself was the obstacle.</returns>
+    /// <remarks>
+    /// SEC-F2. Matched on the <c>store_unavailable</c> reason token, which is the same token the API's own
+    /// translator classifies as <c>503</c>, so the two readings of a session-store failure cannot drift
+    /// apart. Every other failure means the store answered and held nothing, which for a member who never
+    /// signed in on this instance is the ordinary case and is not an obstacle to removing the tenant.
+    /// </remarks>
+    private static bool IsSessionStoreUnavailable(ResultReason? reason) =>
+        reason is ResultReason failure
+        && failure.Code.Contains("store_unavailable", StringComparison.OrdinalIgnoreCase);
 
     /// <inheritdoc />
     public async Task<Result> DeletePortalAsync(int portalId, CancellationToken cancellationToken = default)
@@ -1007,9 +1112,17 @@ public sealed class PortalService : IPortalService
             .Select(member => member.UserId)
             .ToHashSet();
 
-        // The token store is in process and cannot enlist in the database transaction. The serialisable
-        // transaction is already open because the final-membership decision above has to be protected from
-        // concurrent membership changes, but no relational removal has been staged yet.
+        // SEC-F7. THE TWO STORES CANNOT ROLL BACK TOGETHER, SO THIS DOES NOT PRETEND THEY CAN. The session
+        // store is not a relational participant and cannot enlist in the transaction below, so the ordering
+        // is a deliberate choice between two asymmetric risks. Revoking FIRST means a later failure leaves
+        // sessions ended while the portal survives - an inconvenience, recoverable by signing in again.
+        // Revoking AFTER the commit would mean a failure leaves deleted accounts holding exchangeable
+        // refresh tokens, which is a security hole. The safe order is therefore the one below, and the
+        // residue it can leave is REPORTED rather than hidden: any failure after the first confirmed
+        // revocation returns the partial-removal outcome, which names what was ended and what was not.
+        int confirmedRevocations = 0;
+        int unconfirmedRevocations = 0;
+
         foreach (User account in portalMembers.Where(account => accountIdsToRemove.Contains(account.UserId)))
         {
             Result revoked = await _tokens
@@ -1018,11 +1131,30 @@ public sealed class PortalService : IPortalService
 
             if (revoked.IsFailure)
             {
-                return Result.Failure(
-                    MemberSessionRevocationFailedCode,
-                    FormattableString.Invariant(
-                        $"The sessions held by account {account.UserId} could not be ended.")
-                    + " The portal removal was abandoned before any database row was removed. Try again.");
+                // SEC-F2. AN UNCONFIRMED RETIREMENT AND AN UNREACHABLE STORE ARE NOT THE SAME FAILURE HERE.
+                // The token service now reports success only for a PROVEN retirement, so an account that
+                // never signed in on this instance - the common case for most members of a tenant - answers
+                // "no such family". Abandoning the removal for that would make deleting a portal impossible
+                // in the default single-process topology, and it would abandon it for the safest possible
+                // reason: there was nothing to retire.
+                //
+                // A STORE THAT CANNOT ANSWER is the opposite case and still aborts, because then the
+                // sessions may exist and may still be exchangeable. The distinction is drawn on the failure
+                // code rather than on the mere fact of failure.
+                if (IsSessionStoreUnavailable(revoked.Reason))
+                {
+                    return Result.Failure(
+                        MemberSessionRevocationFailedCode,
+                        FormattableString.Invariant(
+                            $"The sessions held by account {account.UserId} could not be ended.")
+                        + " The portal removal was abandoned before any database row was removed. Try again.");
+                }
+
+                unconfirmedRevocations++;
+            }
+            else
+            {
+                confirmedRevocations++;
             }
         }
 
@@ -1082,9 +1214,43 @@ public sealed class PortalService : IPortalService
 
         await _portals.DeleteAsync(portal.PortalId, cancellationToken).ConfigureAwait(false);
 
-        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        // SEC-F7. THE COMMIT IS GUARDED BECAUSE THE COMPENSATION IS IMPOSSIBLE. Sessions ended above cannot
+        // be reinstated - a revoked family is retired for good, by design - so a failure from here onwards
+        // leaves a state no rollback can restore: the tenant survives and some of its members have been
+        // signed out. That is reported as its own outcome, naming both halves, instead of surfacing as an
+        // unexplained server fault that invites a retry with no idea of what the first attempt did.
+        //
+        // Cancellation is deliberately NOT converted: an abandoned request is not a partial application the
+        // caller is waiting to hear about, and swallowing it would hide a caller disconnect.
+        try
+        {
+            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception error) when (confirmedRevocations > 0)
+        {
+            _audit.Record(new AuditEvent(AuditEventNames.PortalDeleted)
+            {
+                Outcome = AuditOutcome.Failed,
+                PortalId = portalId,
+                ActorUserId = _currentUser.IsAuthenticated ? _currentUser.UserId : null,
+                FailureCode = PortalRemovalIncompleteCode,
+            });
+
+            return Result.Failure(
+                PortalRemovalIncompleteCode,
+                FormattableString.Invariant(
+                    $"Portal {portalId} was NOT removed - every database change was rolled back - but the sessions of ")
+                + FormattableString.Invariant(
+                    $"{confirmedRevocations} member account(s) had already been ended and cannot be reinstated. ")
+                + "Those members must sign in again. Retry the removal; it is safe to repeat. "
+                + FormattableString.Invariant($"Underlying fault: {error.GetType().Name}."));
+        }
 
         _cache.InvalidateTabs(portalId);
         _cache.InvalidatePortal(portalId);
@@ -1147,48 +1313,107 @@ public sealed class PortalService : IPortalService
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        // The settings projection carries no aliases, so this path deliberately avoids loading them. The
-        // general portal update still requests them because its response is the full detail contract.
-        Portal? portal = await _portals
-            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
-            .ConfigureAwait(false);
-        if (portal is null)
+        PortalSettingsDto? stored;
+
+        // MIGRATION: THE OWNERSHIP CHECKS AND THE WRITE ARE ONE SERIALISABLE OPERATION HERE, EXACTLY AS THEY
+        // ARE ON UpdatePortalAsync, and the omission this replaces was a real defect rather than a stylistic
+        // difference. Without the transaction the administrator membership and the four page references were
+        // judged in one statement and the portal row was written in a later one, so a membership could be
+        // withdrawn or a page removed between the two - a time-of-check/time-of-use race that stored exactly
+        // the foreign reference the validation below exists to refuse. Serialisable is the isolation the
+        // sibling path already asks for, and the two must agree: a weaker level here would make the settings
+        // route the cheaper way to win the same race. Recorded in MIGRATION_NOTES.md.
+        await using (ITransactionScope transaction = await _unitOfWork
+            .BeginTransactionAsync(TransactionIsolation.Serializable, cancellationToken)
+            .ConfigureAwait(false))
         {
-            return Result<PortalSettingsDto?>.Success(null);
+            // The settings projection carries no aliases, so this path deliberately avoids loading them. The
+            // general portal update still requests them because its response is the full detail contract.
+            Portal? portal = await _portals
+                .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
+                .ConfigureAwait(false);
+            if (portal is null)
+            {
+                return Result<PortalSettingsDto?>.Success(null);
+            }
+
+            // OPTIMISTIC CONCURRENCY, CHECKED BEFORE ANY OTHER RULE, for the reason given on UpdatePortalAsync: a
+            // caller holding a stale snapshot must be told the record moved under it, not that a field of the
+            // snapshot it is restoring is now refused or now names a page that has since been removed.
+            //
+            // The check is on THIS path as well as on UpdatePortalAsync because both paths hand the same request
+            // interface to the same mapper and replace the same twenty-five columns. Protecting one and leaving
+            // the other would move the lost-update surface to the sibling route rather than remove it, and this
+            // is the route the settings screen uses. The token is derived by one function for both reads, so a
+            // token obtained from either screen verifies here.
+            if (IsWritingOverSomeoneElsesEdit(portal, request))
+            {
+                return Result<PortalSettingsDto?>.Failure(
+                    ConcurrencyConflictCode,
+                    DescribeConcurrencyConflict(portalId));
+            }
+
+            // Both public update resources replace the same stored row and therefore share the same
+            // content-sensitive authorisation and aggregate invariant. Keeping the guards on the shared request
+            // interface prevents the settings route from becoming a less protected way to write the fields
+            // already defended by UpdatePortalAsync.
+            await EnsureHostOnlyFieldsUnchangedAsync(portal, request, cancellationToken).ConfigureAwait(false);
+
+            // ORDERED BEFORE THE SHARED REFERENCE VALIDATION DELIBERATELY. Both members judge the same
+            // condition - a stored administrator that the request would clear - but they report it
+            // differently: this one raises DomainException and the shared validation returns
+            // portal.administrator_invalid. This path has always answered by exception, and callers depend on
+            // that, so the guard keeps its place and the shared validation's equivalent branch is simply
+            // never reached from here.
+            EnsureAdministratorRetained(portal, request);
+
+            // MIGRATION: TENANT-SCOPED REFERENCE VALIDATION NOW RUNS ON THIS PATH TOO. It was absent, and the
+            // absence was exploitable rather than theoretical: every identifier this request carries -
+            // the administrator account and the splash, home, login and user pages - was stored without any
+            // ownership test, so an authenticated administrator of one tenant could name another tenant's
+            // account or another tenant's page and have it written. Neither the schema nor the mapper would
+            // refuse it, because the page columns carry no foreign key in every supported schema and the
+            // mapper copies what it is given. The rule is the one UpdatePortalAsync already applied; it is
+            // reached from here by typing the member on the shared request interface. Recorded in
+            // MIGRATION_NOTES.md.
+            Result references = await ValidateUpdateReferencesAsync(portal, request, cancellationToken)
+                .ConfigureAwait(false);
+            if (references.IsFailure)
+            {
+                return Result<PortalSettingsDto?>.Failure(references.Error!);
+            }
+
+            PortalMappings.ApplyUpdate(portal, request);
+
+            try
+            {
+                await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (ConcurrencyConflictException)
+            {
+                // The token comparison above closes the window a caller can observe, but it cannot close the
+                // window BETWEEN that comparison and the write: the store can still refuse the update as a
+                // lost update, and under serialisable isolation it can be chosen as a deadlock victim. Both
+                // arrive here as one translated signal and are reported as the same refusal the stale-token
+                // check reports, because they are the same event from the caller's position - the record
+                // moved, nothing was written, reload and re-apply. Reporting them as an unexpected fault
+                // would tell a caller that the service failed when in fact it protected them.
+                return Result<PortalSettingsDto?>.Failure(
+                    ConcurrencyConflictCode,
+                    DescribeConcurrencyConflict(portalId));
+            }
+
+            // Projected from the tracked entity inside the scope, so the response describes precisely what
+            // the commit stored rather than requiring a second read.
+            stored = PortalMappings.ToSettings(portal);
         }
-
-        // OPTIMISTIC CONCURRENCY, CHECKED BEFORE ANY OTHER RULE, for the reason given on UpdatePortalAsync: a
-        // caller holding a stale snapshot must be told the record moved under it, not that a field of the
-        // snapshot it is restoring is now refused or now names a page that has since been removed.
-        //
-        // The check is on THIS path as well as on UpdatePortalAsync because both paths hand the same request
-        // interface to the same mapper and replace the same twenty-five columns. Protecting one and leaving
-        // the other would move the lost-update surface to the sibling route rather than remove it, and this
-        // is the route the settings screen uses. The token is derived by one function for both reads, so a
-        // token obtained from either screen verifies here.
-        if (IsWritingOverSomeoneElsesEdit(portal, request))
-        {
-            return Result<PortalSettingsDto?>.Failure(
-                ConcurrencyConflictCode,
-                DescribeConcurrencyConflict(portalId));
-        }
-
-        // Both public update resources replace the same stored row and therefore share the same
-        // content-sensitive authorisation and aggregate invariant. Keeping the guards on the shared request
-        // interface prevents the settings route from becoming a less protected way to write the fields
-        // already defended by UpdatePortalAsync.
-        await EnsureHostOnlyFieldsUnchangedAsync(portal, request, cancellationToken).ConfigureAwait(false);
-        EnsureAdministratorRetained(portal, request);
-
-        PortalMappings.ApplyUpdate(portal, request);
-
-        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         // The settings read bypasses the cache, but other readers do not. Invalidating after the commit
         // prevents the list/detail surfaces from continuing to publish the values this operation replaced.
         _cache.InvalidatePortal(portalId);
 
-        return Result<PortalSettingsDto?>.Success(PortalMappings.ToSettings(portal));
+        return Result<PortalSettingsDto?>.Success(stored);
     }
 
     /// <inheritdoc />
@@ -2001,10 +2226,23 @@ public sealed class PortalService : IPortalService
     /// Each page is tested through <see cref="IPortalRepository.TabBelongsToPortalAsync"/>, whose
     /// false result deliberately covers both absence and another tenant's row.
     /// </para>
+    /// <para>
+    /// MIGRATION: THE PARAMETER IS THE SHARED <see cref="IPortalSettingsUpdateRequest"/> RATHER THAN ONE
+    /// CONCRETE REQUEST, and the reason is that typing it on <see cref="UpdatePortalRequest"/> made this
+    /// rule unreachable from the settings resource. Both public write paths hand the same interface to the
+    /// same mapper and replace the same twenty-five columns, so a rule that only one of them could call was
+    /// a rule the other route could be used to bypass: a caller could post another tenant's page or another
+    /// tenant's account through <c>PUT /portals/{id}/settings</c> and have it stored, because nothing on
+    /// that path tested ownership and the page columns carry no foreign key in every supported schema. The
+    /// interface declares every member this validation reads - the processor reference, the administrator
+    /// and the four page selectors - so widening the parameter changes no comparison and no message; the
+    /// field names in the refusals are taken from the interface and are character-for-character the ones the
+    /// concrete request produced. Recorded in MIGRATION_NOTES.md.
+    /// </para>
     /// </remarks>
     private async Task<Result> ValidateUpdateReferencesAsync(
         Portal portal,
-        UpdatePortalRequest request,
+        IPortalSettingsUpdateRequest request,
         CancellationToken cancellationToken)
     {
         if (request.ProcessorCredentialReference is null)
@@ -2045,12 +2283,15 @@ public sealed class PortalService : IPortalService
                 "A portal must designate an administrator account that belongs to the addressed portal.");
         }
 
+        // The names are read from the SHARED interface rather than from either concrete request, so the two
+        // write paths cannot report the same rejected reference under different field names. Both requests
+        // declare these members with these exact names, so the published text is unchanged.
         (string Field, int? TabId)[] pageReferences =
         [
-            (nameof(UpdatePortalRequest.SplashTabId), request.SplashTabId),
-            (nameof(UpdatePortalRequest.HomeTabId), request.HomeTabId),
-            (nameof(UpdatePortalRequest.LoginTabId), request.LoginTabId),
-            (nameof(UpdatePortalRequest.UserTabId), request.UserTabId),
+            (nameof(IPortalSettingsUpdateRequest.SplashTabId), request.SplashTabId),
+            (nameof(IPortalSettingsUpdateRequest.HomeTabId), request.HomeTabId),
+            (nameof(IPortalSettingsUpdateRequest.LoginTabId), request.LoginTabId),
+            (nameof(IPortalSettingsUpdateRequest.UserTabId), request.UserTabId),
         ];
 
         foreach ((string field, int? tabId) in pageReferences)
@@ -2169,6 +2410,29 @@ public sealed class PortalService : IPortalService
                 : null;
     }
 
+    /// <summary>
+    /// The staged home page, together with whichever page-scope permission definitions the installation's
+    /// catalogue failed to declare.
+    /// </summary>
+    /// <param name="Page">
+    /// The staged page. It has no identifier until the caller's transaction commits.
+    /// </param>
+    /// <param name="ViewDefinitionMissing">
+    /// <see langword="true"/> when the catalogue declares no page-scope VIEW definition, so the page was
+    /// staged without its two view grants.
+    /// </param>
+    /// <param name="EditDefinitionMissing">
+    /// <see langword="true"/> when the catalogue declares no page-scope EDIT definition, so the page was
+    /// staged without its administrator edit grant.
+    /// </param>
+    /// <remarks>
+    /// The two flags exist so that an installation defect discovered mid-transaction can be REPORTED after
+    /// the commit rather than from inside it. Returning the condition as data is what makes the eventual
+    /// audit record a statement about durable state; see the remarks on <see cref="CreateHomePageAsync"/>
+    /// for the failure this replaced.
+    /// </remarks>
+    private sealed record HomePageStage(Tab Page, bool ViewDefinitionMissing, bool EditDefinitionMissing);
+
     /// <summary>The installation defaults a new portal inherits from host configuration.</summary>
     /// <param name="Currency">Default currency code.</param>
     /// <param name="ExpiryDate">
@@ -2271,7 +2535,8 @@ public sealed class PortalService : IPortalService
     /// </param>
     /// <param name="token">Token observed while the page and its grants are staged.</param>
     /// <returns>
-    /// The staged page, whose identifier becomes the tenant's home page once it is committed.
+    /// The staged page, whose identifier becomes the tenant's home page once it is committed, together with
+    /// whichever permission definitions the catalogue failed to declare.
     /// </returns>
     /// <remarks>
     /// <para>
@@ -2280,8 +2545,20 @@ public sealed class PortalService : IPortalService
     /// <para>
     /// MIGRATION: the consequence is stated plainly.
     /// </para>
+    /// <para>
+    /// MIGRATION: THIS MEMBER NO LONGER EMITS AN AUDIT RECORD, AND THE CHANGE IS ABOUT DURABILITY RATHER
+    /// THAN ABOUT WORDING. Everything it stages is inside the caller's open transaction, and a record
+    /// written from here therefore described work that had not yet been committed and might never be: any
+    /// later stage of the sequence can return, which disposes the scope without committing and makes the
+    /// portal, its alias, its roles, its administrator and this page disappear - while the record asserting
+    /// that a permission catalogue was incomplete for portal N stayed in the log, naming a tenant that does
+    /// not exist. An audit trail whose records cannot be trusted to describe durable state is worse than one
+    /// with fewer records, because an operator cannot tell which class a given entry belongs to. The
+    /// condition is therefore returned as DATA and emitted by the caller after the commit, where it is a
+    /// fact rather than an intention.
+    /// </para>
     /// </remarks>
-    private async Task<Result<Tab>> CreateHomePageAsync(
+    private async Task<Result<HomePageStage>> CreateHomePageAsync(
         Portal portal,
         Role administratorsRole,
         CancellationToken token)
@@ -2328,20 +2605,12 @@ public sealed class PortalService : IPortalService
             // proceeding is correct and the failure must still leave a trace" (AuditEvent.cs) - and it is
             // the grant, not the create, that could not be completed. Whatever the catalogue DOES declare
             // is still granted below, so a catalogue missing only EDIT still yields the two VIEW grants.
-            RecordAudit(new AuditEvent(AuditEventNames.PortalCreated)
-            {
-                Outcome = AuditOutcome.Failed,
-                PortalId = portal.PortalId,
-                ResourceType = PortalResourceType,
-                ResourceId = portal.PortalId.ToString(CultureInfo.InvariantCulture),
-                FailureCode = PermissionCatalogueIncompleteCode,
-                Properties = new Dictionary<string, string?>(StringComparer.Ordinal)
-                {
-                    ["PermissionCode"] = TabPermissionScopeCode,
-                    ["MissingViewDefinition"] = (viewDefinition is null).ToString(CultureInfo.InvariantCulture),
-                    ["MissingEditDefinition"] = (editDefinition is null).ToString(CultureInfo.InvariantCulture),
-                },
-            });
+            //
+            // MIGRATION: THE RECORD IS RAISED BY THE CALLER AFTER THE COMMIT, not from here. The reasoning
+            // is on this member's remarks: this branch runs inside an open transaction that any later stage
+            // can still abandon, so a record written here could outlive the tenant it names. The condition
+            // travels back as the two flags below instead, which is what lets the record be emitted once the
+            // work it describes is durable - and lets it be emitted under the event name that is true of it.
         }
 
         if (viewDefinition is not null)
@@ -2358,7 +2627,8 @@ public sealed class PortalService : IPortalService
                 .ConfigureAwait(false);
         }
 
-        return Result<Tab>.Success(homePage);
+        return Result<HomePageStage>.Success(
+            new HomePageStage(homePage, viewDefinition is null, editDefinition is null));
     }
 
     /// <summary>Resolves one page-scope permission definition by the key it grants.</summary>

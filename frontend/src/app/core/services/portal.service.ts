@@ -184,15 +184,26 @@ export class PortalService {
    * data-access abstraction, so the caller's text is transmitted byte for byte:
    * untrimmed, its case unchanged and undecorated.
    *
-   * Note that the legacy pattern and the predicate the repository issues today are NOT
-   * the same test, and a caller that assumes otherwise will mis-describe the field to a
-   * user. The legacy pattern anchored at the start of the name; the repository —
-   * `Repositories/PortalRepository.cs:L141-L142` in the infrastructure project — trims
-   * the text, folds its case and matches it anywhere within the name. Verified against
-   * the running API rather than inferred: a mid-word fragment returns the portals whose
-   * names merely include it, where an anchored predicate would return none. That
-   * difference is the server's to state and to change, and contributing a character
-   * here could only double whatever pattern the repository already builds.
+   * What the server matches, so this field is described to a user correctly: a PREFIX.
+   * `PortalRepository.ListAsync` in the infrastructure project trims the caller's text,
+   * folds its case on both sides and issues `StartsWith`, which is the same anchoring the
+   * legacy pattern had — the trailing wildcard was appended, never a leading one. A
+   * mid-word fragment therefore matches nothing, and the field must be labelled as
+   * "starts with" rather than as a contains-search.
+   *
+   * An earlier revision of this comment said the opposite: that the repository matched
+   * anywhere within the name, that this diverged from the legacy anchoring, and that the
+   * divergence had been verified against a running API. None of the three was true of the
+   * delivered code, and the last was a claim no measurement supported. The repository
+   * states its own reasoning at the predicate — Rule T5 makes equivalence the outcome
+   * wherever it is achievable, and it is achievable here — and the one deliberate
+   * hardening is separate from the anchoring: because the predicate is relational rather
+   * than a concatenated pattern, a caller's own `%` or `_` is DATA and matches itself,
+   * where the legacy concatenation let a single per cent sign match every portal in the
+   * installation.
+   *
+   * Either way the semantics are the server's to state and to change, and contributing a
+   * character here could only double whatever pattern the repository already builds.
    *
    * MIGRATION: the legacy screen's `Expired` pseudo-filter has NO successor and none
    * is invented. `Portals.ascx.vb:L138-L140` compared the filter text against

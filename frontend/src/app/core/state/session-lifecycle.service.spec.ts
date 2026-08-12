@@ -51,6 +51,22 @@ import type { AuthSession } from '../models/auth.model';
 // ---------------------------------------------------------------------------
 
 /**
+ * An expiry comfortably ahead of whenever this suite runs, derived from the clock rather than written
+ * down.
+ *
+ * ⚠ AN ABSOLUTE DATE IS A TEST THAT EXPIRES. This fixture used to carry `2030-01-01T00:00:00Z`,
+ * which holds a session valid by the calendar rather than by anything the specification controls: on the
+ * first of January 2030 every case depending on it begins asserting the opposite of what it was written
+ * to assert, and it does so SILENTLY, because a session read as already expired is a state this
+ * application handles rather than an error it reports.
+ *
+ * One hour is longer than any run of this suite and shorter than any window the application treats as
+ * unusual, and it is computed ONCE per module load so every case in the file shares one instant rather
+ * than racing the clock between them.
+ */
+const FUTURE_SESSION_EXPIRY_UTC: string = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+/**
  * A credential pair, shaped as the sign-in endpoint shapes one.
  *
  * The values are obvious placeholders rather than anything resembling a real token: nothing
@@ -59,7 +75,7 @@ import type { AuthSession } from '../models/auth.model';
 const SESSION_BODY: AuthSession = {
   accessToken: 'operator-a-access-token',
   refreshToken: 'operator-a-refresh-token',
-  expiresAtUtc: '2030-01-01T00:00:00Z',
+  expiresAtUtc: FUTURE_SESSION_EXPIRY_UTC,
   mustChangePassword: false,
   mustUpdateProfile: false,
   passwordExpiring: false,

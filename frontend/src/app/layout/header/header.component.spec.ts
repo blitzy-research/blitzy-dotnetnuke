@@ -149,7 +149,12 @@ describe('HeaderComponent', () => {
    * @param value The value to set it to, before any declared transform.
    */
   function setInput(
-    name: 'applicationName' | 'userName' | 'signingOut' | 'accountServicesLink',
+    name:
+      | 'applicationName'
+      | 'userName'
+      | 'signingOut'
+      | 'accountProfileLink'
+      | 'accountPasswordLink',
     value: unknown,
   ): void {
     fixture.componentRef.setInput(name, value);
@@ -194,6 +199,18 @@ describe('HeaderComponent', () => {
   /** Returns the account affordance, or null when absent. */
   function accountLink(): HTMLAnchorElement | null {
     return host().querySelector<HTMLAnchorElement>('a.app-header__account-link');
+  }
+
+  /**
+   * Returns every account-scoped affordance, in document order.
+   *
+   * The band renders two, so a case about ORDER or about one appearing without the other needs the
+   * whole set rather than the first match.
+   *
+   * @returns the account-scoped anchors the band currently renders.
+   */
+  function accountLinks(): readonly HTMLAnchorElement[] {
+    return Array.from(host().querySelectorAll<HTMLAnchorElement>('a.app-header__account-link'));
   }
 
   /**
@@ -526,17 +543,23 @@ describe('HeaderComponent', () => {
   });
 
   // -------------------------------------------------------------------------
-  // THE ACCOUNT AFFORDANCE
+  // THE ACCOUNT AFFORDANCES
   //
-  // MIGRATION: the ONE account-scoped member of this band, and the console's only route to
-  // the one screen an ordinary account holder operates on its own behalf.
-  // `Website/admin/Users/MemberServices.ascx` was a tab in the account container that an
-  // administrator never saw (`ManageUsers.ascx.vb` L61-L66), reached by the signed-in account
-  // from the portal's own user affordance — a skin object, and skinning is out of scope — so
-  // this band is the target's equivalent surface.
+  // MIGRATION: the TWO account-scoped members of this band, and the console's only routes to
+  // the screens an ordinary account holder operates on its own behalf — every entry in the
+  // navigation rail requires a portal or host administrator.
+  // `ManageUsers.ascx.vb:L439-L456` records that the legacy command bar offered both to an
+  // account viewing itself: `cmdPassword` is hidden only when the viewer is neither an
+  // administrator nor the holder, and `cmdProfile` is never hidden at all.
+  //
+  // A third affordance, to the legacy `cmdServices` panel, was rendered here and is withdrawn
+  // with the route it pointed at: the migration plan freezes the console at twenty-five screens
+  // and declares no member-services address, so the band published a link to an address the
+  // route table does not. Every behavioural rule below was written for that link and is asserted
+  // against the ones that remain, because the rules are the band's and not the link's.
   // -------------------------------------------------------------------------
 
-  describe('account affordance', () => {
+  describe('account affordances', () => {
     it('renders nothing when no address has been supplied', () => {
       setInput('userName', 'The Caller');
 
@@ -546,31 +569,41 @@ describe('HeaderComponent', () => {
     });
 
     it('renders nothing when an address is supplied without a session', () => {
-      setInput('accountServicesLink', '/users/7/services');
+      setInput('accountProfileLink', '/users/7/profile');
 
-      // An address to one account's subscriptions is meaningless without the account that holds
-      // them, and the whole cluster is gated on the session in any case.
+      // An address to one account's own screen is meaningless without the account that holds it,
+      // and the whole cluster is gated on the session in any case.
       expect(accountLink()).toBeNull();
     });
 
-    it('renders a link to the supplied address once both are present', () => {
+    it('renders a link to each supplied address once both are present', () => {
       setInput('userName', 'The Caller');
-      setInput('accountServicesLink', '/users/7/services');
+      setInput('accountProfileLink', '/users/7/profile');
+      setInput('accountPasswordLink', '/users/7/password');
 
-      const link = accountLink();
+      const links = accountLinks();
 
-      expect(link).not.toBeNull();
-      expect(link?.getAttribute('href')).toBe('/users/7/services');
+      expect(links.length).toBe(2);
+      expect(links.map((link) => link.getAttribute('href'))).toEqual([
+        '/users/7/profile',
+        '/users/7/password',
+      ]);
     });
 
-    it('captions the link with the measured legacy tab wording', () => {
+    it('captions each link with the measured legacy command wording', () => {
       setInput('userName', 'The Caller');
-      setInput('accountServicesLink', '/users/7/services');
+      setInput('accountProfileLink', '/users/7/profile');
+      setInput('accountPasswordLink', '/users/7/password');
 
-      // `cmdServices.Text` in `ManageUsers.ascx.resx`. Recovered from the resource file rather
-      // than invented, so the label stays recognisable to an existing operator.
-      expect(accountLink()?.textContent?.trim()).toBe('Manage Services');
-      expect(component.accountServicesLabel).toBe('Manage Services');
+      // `cmdProfile.Text` and `cmdPassword.Text` in `ManageUsers.ascx.resx`. Recovered from the
+      // resource file rather than invented, so the labels stay recognisable to an existing
+      // operator.
+      expect(accountLinks().map((link) => link.textContent?.trim())).toEqual([
+        'Manage Profile',
+        'Manage Password',
+      ]);
+      expect(component.accountProfileLabel).toBe('Manage Profile');
+      expect(component.accountPasswordLabel).toBe('Manage Password');
     });
 
     it('renders an address naming account zero, which is a real key', () => {
@@ -579,23 +612,36 @@ describe('HeaderComponent', () => {
       // not arise naturally for an account, but the band must not reason about identifiers
       // differently from the screens around it — role, page and module keys all seed at zero.
       setInput('userName', 'The Caller');
-      setInput('accountServicesLink', '/users/0/services');
+      setInput('accountProfileLink', '/users/0/profile');
 
-      expect(accountLink()?.getAttribute('href')).toBe('/users/0/services');
+      expect(accountLink()?.getAttribute('href')).toBe('/users/0/profile');
     });
 
     it('treats an address of whitespace as no address at all', () => {
       setInput('userName', 'The Caller');
-      setInput('accountServicesLink', '   ');
+      setInput('accountProfileLink', '   ');
+      setInput('accountPasswordLink', '   ');
 
       // The same emptiness test the caption is given: a blank address would render a link that
       // announces itself and then navigates nowhere.
       expect(accountLink()).toBeNull();
     });
 
+    it('renders each affordance independently of the other', () => {
+      // The two share one presence test but not one condition: a container that resolves only
+      // one address must publish only one link rather than both or neither.
+      setInput('userName', 'The Caller');
+      setInput('accountPasswordLink', '/users/7/password');
+
+      const links = accountLinks();
+
+      expect(links.length).toBe(1);
+      expect(links[0].getAttribute('href')).toBe('/users/7/password');
+    });
+
     it('is a link and not a button, because it is a destination rather than a command', () => {
       setInput('userName', 'The Caller');
-      setInput('accountServicesLink', '/users/7/services');
+      setInput('accountProfileLink', '/users/7/profile');
 
       // The distinction is what assistive technology announces, and it is the same distinction
       // the sign-out control beside it makes in the opposite direction.
@@ -605,7 +651,7 @@ describe('HeaderComponent', () => {
 
     it('does not disable itself while a sign-out is in flight', () => {
       setInput('userName', 'The Caller');
-      setInput('accountServicesLink', '/users/7/services');
+      setInput('accountProfileLink', '/users/7/profile');
       setInput('signingOut', true);
 
       // An anchor cannot be disabled, and nothing here pretends otherwise: the in-flight input

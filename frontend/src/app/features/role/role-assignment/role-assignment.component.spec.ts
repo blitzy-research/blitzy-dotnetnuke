@@ -70,6 +70,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { provideRouter } from '@angular/router';
 
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { RoleAssignmentComponent } from './role-assignment.component';
 import { API_ENDPOINTS } from '../../../core/config/api-endpoints';
@@ -85,7 +86,7 @@ import type { TestRequest } from '@angular/common/http/testing';
 import type { ApiResponse, PagedResponse } from '../../../core/models/paged-result.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { Role, UserRole } from '../../../core/models/role.model';
-import type { MembershipSettings, UserListItem } from '../../../core/models/user.model';
+import type { MembershipSettings, UserChoice } from '../../../core/models/user.model';
 
 /**
  * The tenant the doubled identity reports.
@@ -111,16 +112,27 @@ const ROLES_URL = '/api/v1/roles';
 const USERS_URL = '/api/v1/users';
 
 /**
- * The body-bound account search, which is what this screen's lookup uses.
+ * The account PICKER's address, which every account read on this screen uses.
  *
- * ⚠ THE LOOKUP FILTERS BY USER NAME, WHICH IDENTIFIES A PERSON, so it may not travel in a request
- * target — the browser's history, every proxy's access log, the server's access log and any
- * URL-sampling telemetry all record one, and each of those sits at an END of the encrypted channel
- * rather than in the middle of it. That is CWE-598. The screen does nothing special to obtain this:
- * it calls the shared account transport, which chooses the body whenever the query names somebody,
- * so the property holds here BECAUSE it holds there.
+ * ⚠ THREE READS SHARE IT, AND THAT IS THE POINT. The count probe, the complete-list walk that fills
+ * the drop-down, and the name box's lookup all ask this one address for a key and two captions —
+ * `userId`, `username` and `displayName` — because those three values are all this screen renders.
+ * They used to ask the account LISTING instead, whose row carries a postal address, a telephone
+ * number, an electronic-mail address, a creation instant, a last-login instant and four status flags
+ * besides; on a tenant the drop-down may enumerate, that was up to a thousand accounts' worth of
+ * personal detail moved into browser memory to caption a `<select>`. A performance and privacy
+ * review measured it, and this address is the remedy.
+ *
+ * ⚠ A `GET` IS CORRECT HERE, and it is worth saying why, because the account listing's own search is
+ * deliberately a `POST`. That one filters on an electronic-mail address and on arbitrary
+ * tenant-defined profile values, which identify a person and must not reach a request target — the
+ * browser's history, every proxy's access log, the server's access log and any URL-sampling
+ * telemetry all record one, and each sits at an END of the encrypted channel rather than in the
+ * middle of it (CWE-598). This address takes ONE filter: a prefix of the login name, which is a
+ * value it returns in the response body anyway. There is nothing here that a request target would
+ * record and the body did not already carry.
  */
-const USERS_SEARCH_URL = '/api/v1/users/search';
+const USERS_CHOICES_URL = '/api/v1/users/choices';
 
 /**
  * The role-group collection, addressed by the cases that stand a SIBLING screen's write alongside
@@ -178,6 +190,16 @@ const LOOKUP_PAGE_SIZE = '100';
 const LOOKUP_PAGE_CEILING = 20;
 
 /**
+ * How many pages the complete-account-list walk will request before it refuses.
+ *
+ * Restated rather than imported for the same reason as its two neighbours, and it earns the
+ * restatement more than either: the component DERIVES it from the legacy enumeration threshold, so a
+ * literal here is what proves the derivation still lands where it should. It was one thousand pages —
+ * a hundred thousand accounts — before a performance review measured what that permitted.
+ */
+const ACCOUNT_CHOICE_PAGE_CEILING = 10;
+
+/**
  * The order the lookup asks the account listing for, which is what makes the ordinary case one
  * request.
  *
@@ -198,6 +220,15 @@ const LOOKUP_SORT_DIRECTION = 'Ascending';
  * number is a change to the contract and must be noticed here.
  */
 const USERS_CONTROL_COMBO = 0;
+
+/**
+ * An account count comfortably inside the legacy enumeration threshold.
+ *
+ * Used by every case that asks for the drop-down without being about the threshold, so the mount
+ * answers the count probe with a size that leaves the stored preference standing. Cases that ARE about
+ * the threshold pass their own count.
+ */
+const SMALL_TENANT_ACCOUNT_COUNT = 3;
 const USERS_CONTROL_TEXT_BOX = 1;
 
 // ==================================================================================================
@@ -512,25 +543,21 @@ function membership(overrides: Partial<UserRole> = {}): UserRole {
   };
 }
 
-/** One account the lookup can offer. */
-function account(overrides: Partial<UserListItem> = {}): UserListItem {
+/**
+ * One account the picker can offer.
+ *
+ * ⚠ THREE MEMBERS, AND THE SHORTNESS OF THIS BUILDER IS ITSELF THE ASSERTION. It used to construct a
+ * full account-listing row — sixteen members including a postal address, a telephone number, an
+ * electronic-mail address and two audit instants — because that is what the screen's reads returned.
+ * They now return `UserChoice`, so a fixture cannot supply a field the screen has no business
+ * receiving, and a server that started sending one would be refused by the contract decoder rather
+ * than quietly retained.
+ */
+function account(overrides: Partial<UserChoice> = {}): UserChoice {
   return {
     userId: 42,
-    portalId: -1,
     username: 'ada',
-    firstName: 'Ada',
-    lastName: 'Lovelace',
     displayName: 'Ada Lovelace',
-    address: null,
-    telephone: null,
-    email: 'ada@example.test',
-    createdDate: '2024-01-01T00:00:00.000Z',
-    lastLoginDate: null,
-    isApproved: true,
-    isOnline: false,
-    isSuperUser: false,
-    isLockedOut: false,
-    canDelete: true,
     ...overrides,
   };
 }
@@ -729,6 +756,22 @@ describe('RoleAssignmentComponent', () => {
        * asserted against.
        */
       readonly usersControl?: number | null;
+
+      /**
+       * The tenant account count to answer the probe with when the policy asks for the drop-down.
+       *
+       * ⚠ A STORED DROP-DOWN PREFERENCE NOW PROBES THE COUNT, and this option is how a case says
+       * what the count is. The enumeration threshold is not a default the setting replaces: it is the
+       * size at which enumerating a tenant to fill a `<select>` stops being sensible, and the legacy
+       * framework enforced it by writing the name box back as the tenant's setting the first time the
+       * count exceeded it (`UserModuleBase.vb:L178-L186`). A tenant whose stored preference predates
+       * its growth therefore keeps asking for a drop-down it should no longer be offered, and the
+       * walk that fills it was the one unbounded read on this screen.
+       *
+       * Omitted means a small tenant, so a case that says nothing about size gets the drop-down it
+       * asked for. `null` refuses the probe.
+       */
+      readonly accountCount?: number | null;
     } = {},
   ): void {
     if (context.administratorUserId !== undefined) {
@@ -751,9 +794,22 @@ describe('RoleAssignmentComponent', () => {
     // account control the tenant wants before it offers either one, so a case that left this
     // outstanding would fail the unconditional verification in `afterEach` rather than on its own
     // assertion. It is settled here, in the mount, so no case has to know the read exists.
-    answerAccountPolicy(
-      context.usersControl === undefined ? USERS_CONTROL_TEXT_BOX : context.usersControl,
-    );
+    const policy: number | null =
+      context.usersControl === undefined ? USERS_CONTROL_TEXT_BOX : context.usersControl;
+
+    answerAccountPolicy(policy);
+
+    // ⚠ SETTLED HERE FOR THE SAME REASON THE POLICY READ IS. A stored preference for the drop-down is
+    // measured against the enumeration threshold, so the screen probes the count before it offers
+    // either control — and a case that left that probe outstanding would fail the unconditional
+    // verification in `afterEach` rather than on its own assertion. A stored preference for the NAME
+    // BOX probes nothing, because the threshold can only move a tenant towards the name box and so
+    // cannot change an answer that is already there. A REFUSED policy probes too, but the cases that
+    // exercise that branch answer it themselves, because what the count says is the whole subject of
+    // each of them.
+    if (policy === USERS_CONTROL_COMBO) {
+      answerAccountCount(context.accountCount === undefined ? SMALL_TENANT_ACCOUNT_COUNT : context.accountCount);
+    }
   }
 
   /**
@@ -789,18 +845,18 @@ describe('RoleAssignmentComponent', () => {
    * @param pageIndex The page being answered.
    */
   function answerAccountChoicesPage(
-    accounts: readonly UserListItem[],
+    accounts: readonly UserChoice[],
     totalCount: number = accounts.length,
     pageIndex = 0,
   ): TestRequest {
     // ⚠ THE PAGE SIZE IS PART OF THE MATCH, not decoration. The count probe is also a GET of this
-    // address with no name and page index zero, so a matcher that ignored the size would consume
+    // address with no filter and page index zero, so a matcher that ignored the size would consume
     // whichever request happened to be pending and the two would be indistinguishable.
     const call = httpMock.expectOne(
       (candidate) =>
         candidate.method === 'GET' &&
-        candidate.url === USERS_URL &&
-        candidate.params.get('userName') === null &&
+        candidate.url === USERS_CHOICES_URL &&
+        candidate.params.get('query') === null &&
         candidate.params.get('pageSize') === LOOKUP_PAGE_SIZE &&
         candidate.params.get('pageIndex') === String(pageIndex),
       `the account list, page ${pageIndex}`,
@@ -823,7 +879,7 @@ describe('RoleAssignmentComponent', () => {
     const call = httpMock.expectOne(
       (candidate) =>
         candidate.method === 'GET' &&
-        candidate.url === USERS_URL &&
+        candidate.url === USERS_CHOICES_URL &&
         candidate.params.get('pageSize') === ACCOUNT_COUNT_PROBE_PAGE_SIZE,
       'the account-count probe',
     );
@@ -853,23 +909,34 @@ describe('RoleAssignmentComponent', () => {
   }
 
   /**
-   * The body a lookup transmitted, narrowed by throwing rather than asserted.
+   * The terms a lookup transmitted, read from its query parameters.
    *
-   * The transport types a request body as `unknown` and the workspace forbids the assertion that
-   * would silence that, so absence is narrowed by throwing — which fails the case with a message
-   * naming what was missing instead of hiding the distinction behind a cast.
+   * ⚠ THIS USED TO READ A REQUEST BODY, and the change of location is the change of endpoint. The
+   * lookup once posted to the account listing's search, because that address's filters — an
+   * electronic-mail address, an arbitrary tenant-defined profile value — identify a person and must
+   * not reach a request target (CWE-598). It now asks the account PICKER, whose single filter is a
+   * prefix of the login name: a value the response returns in full, so a target that records it
+   * discloses nothing the body did not already carry. What the move bought is that the response no
+   * longer carries a postal address, a telephone number, an electronic-mail address, two audit
+   * instants and four status flags for every candidate.
    *
-   * @param request The lookup whose body to read.
-   * @returns The body as a keyed record.
+   * A parameter that was never sent reads as `null`, which is what the absence assertions below
+   * expect; nothing is coerced to the empty string, because an absent filter and a blank one are
+   * different requests.
+   *
+   * @param request The lookup whose parameters to read.
+   * @returns The transmitted parameters, absent ones reading as `null`.
    */
-  function lookupBody(request: TestRequest): Readonly<Record<string, unknown>> {
-    const body: unknown = request.request.body;
+  function lookupTerms(request: TestRequest): Readonly<Record<string, string | null>> {
+    const params = request.request.params;
 
-    if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-      throw new Error('the lookup did not transmit a JSON object body');
-    }
-
-    return { ...body };
+    return {
+      query: params.get('query'),
+      pageIndex: params.get('pageIndex'),
+      pageSize: params.get('pageSize'),
+      sortBy: params.get('sortBy'),
+      sortDir: params.get('sortDir'),
+    };
   }
 
   /** Answers the role read. */
@@ -1118,22 +1185,25 @@ describe('RoleAssignmentComponent', () => {
   }
 
   /**
-   * One member of a transmitted search body, or `undefined` when it is absent.
+   * Claims the one outstanding account LOOKUP, distinguished from the picker's other two reads.
    *
-   * Kept deliberately tolerant of a non-object body: this is used inside a request MATCHER, which
-   * every outstanding request is offered, so it must answer rather than raise for a request that is
-   * not a search at all.
+   * ⚠ THE FILTER IS WHAT IDENTIFIES IT. All three account reads on this screen are a `GET` of the
+   * same address: the count probe (one row, no filter), the complete-list walk (a full page, no
+   * filter) and this lookup (a full page WITH a filter). Matching on the presence of the filter is
+   * therefore the precise test, and a matcher that named only the method and the address would
+   * consume whichever of the three happened to be pending.
    *
-   * @param body The request body as transmitted.
-   * @param name The member to read.
-   * @returns The member's value, or undefined.
+   * @param description Named in the failure message when nothing matches.
+   * @returns The outstanding lookup.
    */
-  function searchMember(body: unknown, name: string): unknown {
-    if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-      return undefined;
-    }
-
-    return (body as Record<string, unknown>)[name];
+  function expectLookupRequest(description: string): TestRequest {
+    return httpMock.expectOne(
+      (candidate) =>
+        candidate.method === 'GET' &&
+        candidate.url === USERS_CHOICES_URL &&
+        candidate.params.get('query') !== null,
+      description,
+    );
   }
 
   /**
@@ -1143,8 +1213,8 @@ describe('RoleAssignmentComponent', () => {
    * match set and may stop. A case that wants to prove the walk FOLLOWS pages uses
    * {@link answerLookupPage} instead and reports a larger total.
    */
-  function answerLookup(matches: readonly UserListItem[]): TestRequest {
-    const call = expectRequest('POST', USERS_SEARCH_URL, 'the account lookup');
+  function answerLookup(matches: readonly UserChoice[]): TestRequest {
+    const call = expectLookupRequest('the account lookup');
 
     call.flush(pageOf(matches, matches.length, 0, Number(LOOKUP_PAGE_SIZE)));
     fixture.detectChanges();
@@ -1164,22 +1234,22 @@ describe('RoleAssignmentComponent', () => {
    * @param pageIndex The page being answered.
    */
   function answerLookupPage(
-    matches: readonly UserListItem[],
+    matches: readonly UserChoice[],
     totalCount: number,
     pageIndex: number,
   ): TestRequest {
-    // ⚠ THE BODY, NOT THE QUERY STRING. The lookup searches by ACCOUNT NAME, which identifies a
-    // person, so it is issued as `POST /api/v1/users/search` — a query parameter travels in the
-    // request target, which the browser's history, every proxy's access log, the server's own log
-    // and URL-sampling telemetry all keep, none of which HTTPS protects. The page coordinate and
-    // the name are therefore read out of the transmitted body, exactly as {@link answerLookup}
-    // matches the same address for the single-page case.
+    // ⚠ THE FILTER IS WHAT KEEPS THIS FROM MATCHING THE COMPLETE-LIST WALK, which asks the same
+    // address for the same page size and carries none. Both the filter and the page coordinate are
+    // read out of the query parameters: this address takes one filter, a prefix of the login name,
+    // which is a value it returns in the response body anyway — unlike the account listing's search,
+    // whose electronic-mail and profile-value filters identify a person and therefore travel in a
+    // body (CWE-598).
     const call = httpMock.expectOne(
       (candidate) =>
-        candidate.method === 'POST' &&
-        candidate.url === USERS_SEARCH_URL &&
-        searchMember(candidate.body, 'userName') !== undefined &&
-        String(searchMember(candidate.body, 'pageIndex')) === String(pageIndex),
+        candidate.method === 'GET' &&
+        candidate.url === USERS_CHOICES_URL &&
+        candidate.params.get('query') !== null &&
+        candidate.params.get('pageIndex') === String(pageIndex),
       `the account lookup, page ${pageIndex}`,
     );
 
@@ -1197,7 +1267,7 @@ describe('RoleAssignmentComponent', () => {
    * @param firstId The identifier of the first, so successive pages do not collide.
    * @returns The accounts.
    */
-  function accountRun(prefix: string, count: number, firstId: number): readonly UserListItem[] {
+  function accountRun(prefix: string, count: number, firstId: number): readonly UserChoice[] {
     return Array.from({ length: count }, (_unused, offset) =>
       account({
         userId: firstId + offset,
@@ -1861,33 +1931,33 @@ describe('RoleAssignmentComponent', () => {
 
       lookUp('ada');
 
-      const call = expectRequest('POST', USERS_SEARCH_URL, 'the account lookup');
+      const call = expectLookupRequest('the account lookup');
 
-      // The term is sent RAW: the listing matches on a prefix, so appending a wildcard would search
-      // for the wildcard itself.
-      const sent = lookupBody(call);
+      // The term is sent RAW: the picker matches on a prefix, so appending a wildcard would search
+      // for the wildcard itself — and the server escapes what it is given, so a per-cent sign an
+      // operator typed matches a per-cent sign.
+      const sent = lookupTerms(call);
 
-      expect(sent['userName']).toBe('ada');
-      expect(sent['pageIndex']).toBe(0);
-      expect(sent['pageSize']).toBe(Number(LOOKUP_PAGE_SIZE));
+      expect(sent['query']).toBe('ada');
+      expect(sent['pageIndex']).toBe('0');
+      expect(sent['pageSize']).toBe(LOOKUP_PAGE_SIZE);
 
-      // ⚠ AND NOT IN THE TARGET. The name is the operator's search term and identifies a person;
-      // see {@link USERS_SEARCH_URL}.
-      expect(call.request.urlWithParams)
-        .withContext('a searched name must never reach a request target')
-        .not.toContain('ada');
-
-      // ⚠ AND THE ORDER, which is what makes an exact match reachable in one request. Ascending by
-      // LOGIN NAME over a prefix-matched set puts the shortest match first, and the shortest match
-      // is the typed name itself. The listing's own default orders by DISPLAY name — unrelated to
-      // what was searched for — which is precisely how an exact match ended up unreachable.
-      expect(searchMember(call.request.body, 'sortBy')).toBe(LOOKUP_SORT_FIELD);
-      expect(searchMember(call.request.body, 'sortDir')).toBe(LOOKUP_SORT_DIRECTION);
+      // ⚠ AND IT ASKS THE PICKER, NOT THE ACCOUNT LISTING, which is what keeps a postal address, a
+      // telephone number, an electronic-mail address, two audit instants and four status flags out of
+      // every answer this screen receives. Stated as an address assertion because the address IS the
+      // projection: nothing else about the request distinguishes a three-member answer from a
+      // sixteen-member one.
+      expect(call.request.url)
+        .withContext('the picker answers a key and two captions; the listing answers a grid row')
+        .toBe(USERS_CHOICES_URL);
 
       // ⚠ AND THE ORDER, which is what makes an exact match reachable in one request. Ascending by
       // LOGIN NAME over a prefix-matched set puts the shortest match first, and the shortest match
-      // is the typed name itself. The listing's own default orders by DISPLAY name — unrelated to
-      // what was searched for — which is precisely how an exact match ended up unreachable.
+      // is the typed name itself. The picker's own default orders by DISPLAY name — the caption, not
+      // the value searched for — which is precisely how an exact match ended up unreachable.
+      expect(sent['sortBy']).toBe(LOOKUP_SORT_FIELD);
+      expect(sent['sortDir']).toBe(LOOKUP_SORT_DIRECTION);
+
       call.flush(pageOf([account()], 1, 0, 10));
       fixture.detectChanges();
 
@@ -1925,9 +1995,9 @@ describe('RoleAssignmentComponent', () => {
       // the gate that had to be removed lived in the control.
       lookUp('ada');
 
-      const repeat = expectRequest('POST', USERS_SEARCH_URL, 'the repeated lookup');
+      const repeat = expectLookupRequest('the repeated lookup');
 
-      expect(lookupBody(repeat)['userName']).toBe('ada');
+      expect(lookupTerms(repeat)['query']).toBe('ada');
 
       // And the stale answer was cleared at dispatch rather than left standing while the repeat was
       // in flight, so the screen never shows a refusal beside a search that has not failed.
@@ -2224,7 +2294,7 @@ describe('RoleAssignmentComponent', () => {
       answerLookupPage([account({ username: 'ada' })], 250, 0);
 
       httpMock.expectNone(
-        (candidate) => candidate.method === 'GET' && candidate.url === USERS_URL,
+        (candidate) => candidate.method === 'GET' && candidate.url === USERS_CHOICES_URL,
       );
       expect(component().userMatches()).toHaveSize(1);
     });
@@ -2268,7 +2338,7 @@ describe('RoleAssignmentComponent', () => {
       answerLookupPage([], 99, 1);
 
       httpMock.expectNone(
-        (candidate) => candidate.method === 'GET' && candidate.url === USERS_URL,
+        (candidate) => candidate.method === 'GET' && candidate.url === USERS_CHOICES_URL,
       );
       expect(component().userMatches()).toHaveSize(1);
     });
@@ -2284,7 +2354,7 @@ describe('RoleAssignmentComponent', () => {
       answerLookupPage([account({ username: 'ada' })], 250, 0);
 
       httpMock.expectNone(
-        (candidate) => candidate.method === 'GET' && candidate.url === USERS_URL,
+        (candidate) => candidate.method === 'GET' && candidate.url === USERS_CHOICES_URL,
       );
       expect(component().userMatches()).toHaveSize(1);
     });
@@ -2356,21 +2426,24 @@ describe('RoleAssignmentComponent', () => {
       // than a count: the testing backend marks an abandoned request cancelled and leaves it in its
       // open set. Both are claimed here, in the order they were issued.
       const [abandoned, restarted] = httpMock.match(
-        (candidate) => candidate.method === 'POST' && candidate.url === USERS_SEARCH_URL,
+        (candidate) =>
+          candidate.method === 'GET' &&
+          candidate.url === USERS_CHOICES_URL &&
+          candidate.params.get('query') !== null,
       );
 
       // The superseded walk's page ONE is the request that was in flight, and it is dead.
-      expect(searchMember(abandoned.request.body, 'userName'))
+      expect(lookupTerms(abandoned)['query'])
         .withContext('the superseded term')
         .toBe('sm');
-      expect(String(searchMember(abandoned.request.body, 'pageIndex')))
+      expect(lookupTerms(abandoned)['pageIndex'])
         .withContext('mid-walk')
         .toBe('1');
       expect(abandoned.cancelled).withContext('superseded').toBeTrue();
 
       // And the new walk starts from the beginning rather than continuing the old coordinate.
-      expect(searchMember(restarted.request.body, 'userName')).toBe('smithson');
-      expect(String(searchMember(restarted.request.body, 'pageIndex'))).toBe('0');
+      expect(lookupTerms(restarted)['query']).toBe('smithson');
+      expect(lookupTerms(restarted)['pageIndex']).toBe('0');
       expect(restarted.cancelled).withContext('current').toBeFalse();
 
       restarted.flush(pageOf([account({ username: 'smithson' })], 1, 0, 100));
@@ -2378,7 +2451,10 @@ describe('RoleAssignmentComponent', () => {
 
       // Nothing further is asked: the abandoned walk cannot resume, so no page two of 'sm' appears.
       httpMock.expectNone(
-        (candidate) => candidate.method === 'POST' && candidate.url === USERS_SEARCH_URL,
+        (candidate) =>
+          candidate.method === 'GET' &&
+          candidate.url === USERS_CHOICES_URL &&
+          candidate.params.get('query') !== null,
       );
       expect(component().userMatches()).toHaveSize(1);
     });
@@ -2400,7 +2476,7 @@ describe('RoleAssignmentComponent', () => {
       }
 
       httpMock.expectNone(
-        (candidate) => candidate.method === 'GET' && candidate.url === USERS_URL,
+        (candidate) => candidate.method === 'GET' && candidate.url === USERS_CHOICES_URL,
       );
       expect(textIn(query('.role-assignment__lookup-note')).trim()).toBe(
         `The search examined ${String(LOOKUP_PAGE_CEILING)} of 1000000 matching accounts without ` +
@@ -2610,7 +2686,7 @@ describe('RoleAssignmentComponent', () => {
       expect(nameBox()).withContext('the name box').not.toBeNull();
       expect(choices()).withContext('the dropdown').toBeNull();
       httpMock.expectNone(
-        (candidate) => candidate.method === 'GET' && candidate.url === USERS_URL,
+        (candidate) => candidate.method === 'GET' && candidate.url === USERS_CHOICES_URL,
       );
     });
 
@@ -2632,6 +2708,97 @@ describe('RoleAssignmentComponent', () => {
       answerMemberships(0, []);
 
       expect(nameBox()).withContext('the name box, once the policy arrived').not.toBeNull();
+    });
+
+    it('withholds the dropdown from a tenant above the threshold even when it asks for one', () => {
+      // ⚠ THE FINDING THIS CASE EXISTS FOR. A stored `Security_UsersControl` of `Combo` used to be
+      // taken as the last word, so the screen walked every account the tenant held to fill a
+      // `<select>` — and the only bound on that walk was a page ceiling two orders of magnitude past
+      // the size at which the legacy framework itself stopped offering the control. A performance
+      // review measured it as the one unbounded read on this screen.
+      //
+      // The threshold is not a default a setting replaces. `UserModuleBase.vb:L178-L186` enforced it
+      // by WRITING the name box back as the tenant's setting the first time the count exceeded it, so
+      // a tenant whose stored preference predates its growth is exactly the case the legacy handled
+      // and this screen did not.
+      create('0', { usersControl: USERS_CONTROL_COMBO, accountCount: LEGACY_ACCOUNT_LISTING_CEILING + 1 });
+      answerRole(role(0));
+      answerMemberships(0, []);
+
+      expect(component().usersControlMode()).toBe('lookup');
+      expect(nameBox()).withContext('the name box').not.toBeNull();
+      expect(choices()).withContext('the dropdown').toBeNull();
+
+      // ⚠ AND NOTHING IS WALKED. Bounding the walk would have limited the damage; not walking at all
+      // is the fix, and this is the assertion that tells the two apart.
+      httpMock.expectNone(
+        (candidate) =>
+          candidate.method === 'GET' &&
+          candidate.url === USERS_CHOICES_URL &&
+          candidate.params.get('query') === null &&
+          candidate.params.get('pageSize') === LOOKUP_PAGE_SIZE,
+      );
+    });
+
+    it('honours a stored dropdown preference at the threshold itself, matching the legacy comparison', () => {
+      // ⚠ THE BOUNDARY, AND IT IS THE LEGACY'S OWN. The legacy test was `> 1000`, so a tenant holding
+      // exactly one thousand accounts kept the drop-down. An off-by-one here would take the control
+      // away from a real site that the legacy served.
+      create('0', { usersControl: USERS_CONTROL_COMBO, accountCount: LEGACY_ACCOUNT_LISTING_CEILING });
+      answerRole(role(0));
+      answerMemberships(0, []);
+
+      expect(component().usersControlMode()).toBe('combo');
+
+      answerAccountChoicesPage([account()]);
+
+      expect(choices()).withContext('the dropdown').not.toBeNull();
+    });
+
+    it('offers neither control while the count a stored dropdown preference depends on is outstanding', () => {
+      // The control must not be rendered and then exchanged underneath an operator who has already
+      // started using it. A stored preference for the drop-down now depends on the count, so the field
+      // is held through that read exactly as it is held through the policy read — and the walk waits
+      // too, because a walk started on the optimistic reading would enumerate a tenant the count is
+      // about to disqualify.
+      fixture = TestBed.createComponent(RoleAssignmentComponent);
+      fixture.componentRef.setInput('roleId', '0');
+      fixture.detectChanges();
+
+      answerAccountPolicy(USERS_CONTROL_COMBO);
+      answerRole(role(0));
+      answerMemberships(0, []);
+
+      expect(component().accountPolicyPending()).withContext('while the count is outstanding').toBeTrue();
+      expect(nameBox()).withContext('the name box').toBeNull();
+      expect(choices()).withContext('the dropdown').toBeNull();
+
+      httpMock.expectNone(
+        (candidate) =>
+          candidate.method === 'GET' &&
+          candidate.url === USERS_CHOICES_URL &&
+          candidate.params.get('query') === null &&
+          candidate.params.get('pageSize') === LOOKUP_PAGE_SIZE,
+      );
+
+      answerAccountCount(2);
+
+      expect(component().accountPolicyPending()).withContext('once the count answered').toBeFalse();
+
+      answerAccountChoicesPage([account()]);
+
+      expect(choices()).withContext('the dropdown, once the count allowed it').not.toBeNull();
+    });
+
+    it('bounds the eagerly materialised choice list by the legacy enumeration threshold', () => {
+      // ⚠ THE CEILING IS DERIVED, NOT CHOSEN, and this case pins the derivation. It was one thousand
+      // PAGES — a hundred thousand accounts at the server's maximum page size — which permitted a
+      // thousand sequential requests and a hundred thousand retained rows to fill a control the legacy
+      // stopped offering at one thousand accounts. It is now exactly that threshold expressed in
+      // pages, so the walk can never materialise more than the legacy screen was itself willing to.
+      expect(ACCOUNT_CHOICE_PAGE_CEILING * Number(LOOKUP_PAGE_SIZE)).toBe(
+        LEGACY_ACCOUNT_LISTING_CEILING,
+      );
     });
 
     it('applies the legacy account-count default when the policy cannot be read, offering the DROPDOWN', () => {
@@ -2679,7 +2846,7 @@ describe('RoleAssignmentComponent', () => {
       // ⚠ AND THE LIST IS NEVER WALKED. A site of this size is precisely what the threshold protects,
       // so a walk here would defeat the rule it is implementing.
       httpMock.expectNone(
-        (candidate) => candidate.method === 'GET' && candidate.url === USERS_URL,
+        (candidate) => candidate.method === 'GET' && candidate.url === USERS_CHOICES_URL,
       );
     });
 
@@ -2715,18 +2882,23 @@ describe('RoleAssignmentComponent', () => {
         ACCOUNT_POLICY_UNAVAILABLE,
       );
 
-      // A refusal must not be retried on every notification: the probe fires once.
+      // A refusal must not be retried on every notification: the probe fires once. Any lookup the
+      // blank search dispatched is drained first, so what remains outstanding is only what the effect
+      // itself issued.
       component().onUserSearch('');
       fixture.detectChanges();
       httpMock.match(
-        (candidate) => candidate.method === 'POST',
+        (candidate) =>
+          candidate.method === 'GET' &&
+          candidate.url === USERS_CHOICES_URL &&
+          candidate.params.get('query') !== null,
       ).forEach((call) => call.flush(pageOf([], 0, 0, 100)));
       fixture.detectChanges();
 
       httpMock.expectNone(
         (candidate) =>
           candidate.method === 'GET' &&
-          candidate.url === USERS_URL &&
+          candidate.url === USERS_CHOICES_URL &&
           candidate.params.get('pageSize') === ACCOUNT_COUNT_PROBE_PAGE_SIZE,
       );
     });
@@ -2761,7 +2933,7 @@ describe('RoleAssignmentComponent', () => {
       httpMock.expectNone(
         (candidate) =>
           candidate.method === 'GET' &&
-          candidate.url === USERS_URL &&
+          candidate.url === USERS_CHOICES_URL &&
           candidate.params.get('pageSize') === ACCOUNT_COUNT_PROBE_PAGE_SIZE,
       );
     });
@@ -2818,7 +2990,7 @@ describe('RoleAssignmentComponent', () => {
       answerMemberships(5, []);
 
       httpMock.expectNone(
-        (candidate) => candidate.method === 'GET' && candidate.url === USERS_URL,
+        (candidate) => candidate.method === 'GET' && candidate.url === USERS_CHOICES_URL,
       );
       expect(component().accountChoices()).toHaveSize(1);
     });
@@ -3997,7 +4169,7 @@ describe('RoleAssignmentComponent', () => {
       arrive(0, []);
 
       lookUp('ada');
-      expectRequest('POST', USERS_SEARCH_URL, 'the account lookup').flush(
+      expectLookupRequest('the account lookup').flush(
         problem('users.unavailable', 503, 'The directory is unavailable.'),
         { status: 503, statusText: 'Service Unavailable' },
       );
@@ -4022,11 +4194,11 @@ describe('RoleAssignmentComponent', () => {
 
       lookUp('a');
 
-      const wide = expectRequest('POST', USERS_SEARCH_URL, 'the wide lookup');
+      const wide = expectLookupRequest('the wide lookup');
 
       lookUp('ada');
 
-      const narrow = expectRequest('POST', USERS_SEARCH_URL, 'the narrow lookup');
+      const narrow = expectLookupRequest('the narrow lookup');
 
       expect(wide.cancelled)
         .withContext('the superseded lookup is abandoned, not merely ignored')
@@ -4044,11 +4216,11 @@ describe('RoleAssignmentComponent', () => {
 
       lookUp('a');
 
-      const wide = expectRequest('POST', USERS_SEARCH_URL, 'the wide lookup');
+      const wide = expectLookupRequest('the wide lookup');
 
       lookUp('ada');
 
-      const narrow = expectRequest('POST', USERS_SEARCH_URL, 'the narrow lookup');
+      const narrow = expectLookupRequest('the narrow lookup');
 
       narrow.flush(pageOf([account()], 1, 0, 10));
       fixture.detectChanges();
@@ -4069,7 +4241,7 @@ describe('RoleAssignmentComponent', () => {
 
       lookUp('ada');
 
-      const stale = expectRequest('POST', USERS_SEARCH_URL, 'the lookup under the first role');
+      const stale = expectLookupRequest('the lookup under the first role');
 
       fixture.componentRef.setInput('roleId', '1');
       fixture.detectChanges();
@@ -4502,6 +4674,41 @@ describe('RoleAssignmentComponent', () => {
   // -------------------------------------------------------------------------------------------------
 
   describe('leaving the screen', () => {
+    it('registers an unsaved-entry probe, so a part-completed enrolment is not discarded in silence', () => {
+      /*
+       * ⚠ THIS SCREEN'S ROUTE DECLARES `unsavedChangesGuard`, AND THE DECLARATION USED TO BE
+       * ANSWERED BY REFLECTION over the component's fields. That sweep is gone - it made
+       * `@angular/forms` reachable from the eager import graph of an application whose every form
+       * screen is lazily loaded - so this screen registers a probe of its own. A screen declaring the
+       * gate without one is not merely unprotected: it LOOKS protected in the route table, and the
+       * guard reads it as clean.
+       *
+       * ⚠ WHAT IS AT STAKE ON THIS SCREEN IS MORE THAN A TYPED DATE. Above the enumeration ceiling
+       * the account is reached by typing a login name and waiting on a lookup, so an operator who has
+       * found the right account and set a bound has performed several separate acts of work that the
+       * form is holding and the server knows nothing about.
+       *
+       * The probe reads THIS screen's own in-flight flag rather than the role store's, which is
+       * raised by every role write in the application; reading the store's would let an unrelated
+       * write elsewhere suppress this screen's warning. `isDirty()` is the guard's own public
+       * surface, so this asserts through the very call the guard makes.
+       */
+      const tracker = TestBed.inject(UnsavedChangesTracker);
+
+      arrive(0, []);
+
+      // THE CONTROL: an untouched form must not warn, or a later `true` proves nothing.
+      expect(tracker.isDirty())
+        .withContext('an untouched enrolment form is not unsaved entry')
+        .toBeFalse();
+
+      typeDate(EFFECTIVE_DATE_CONTROL_ID, '2026-03-01');
+
+      expect(tracker.isDirty())
+        .withContext('a set bound with no enrolment in flight is what the guard exists to catch')
+        .toBeTrue();
+    });
+
     /**
      * ⚠ ASSERTED ON EACH REQUEST'S OWN CANCELLED STATE, NOT BY COUNTING WHAT IS LEFT OPEN. Consuming
      * the pending requests in order to count them would REMOVE them from the controller, after which
@@ -4573,7 +4780,7 @@ describe('RoleAssignmentComponent', () => {
 
       lookUp('ada');
 
-      const call = expectRequest('POST', USERS_SEARCH_URL, 'the account lookup');
+      const call = expectLookupRequest('the account lookup');
 
       expect(call.cancelled).toBeFalse();
 
@@ -4592,15 +4799,15 @@ describe('RoleAssignmentComponent', () => {
 
       lookUp('a');
 
-      const first = expectRequest('POST', USERS_SEARCH_URL, 'the first lookup');
+      const first = expectLookupRequest('the first lookup');
 
       lookUp('ann');
 
-      const second = expectRequest('POST', USERS_SEARCH_URL, 'the narrower lookup');
+      const second = expectLookupRequest('the narrower lookup');
 
       expect(first.cancelled).withContext('superseded').toBeTrue();
       expect(second.cancelled).withContext('current').toBeFalse();
-      expect(lookupBody(second)['userName']).toBe('ann');
+      expect(lookupTerms(second)['query']).toBe('ann');
 
       second.flush(pageOf([], 0, 0, 10));
       fixture.detectChanges();
@@ -4938,22 +5145,21 @@ describe('RoleAssignmentComponent (store delegation)', () => {
     fixture.detectChanges();
 
     const lookup = httpMock.expectOne(
-      (request) => request.method === 'POST' && request.url === API_ENDPOINTS.users.search(),
+      (request) => request.method === 'GET' && request.url === API_ENDPOINTS.users.choices(),
     );
 
-    // The term travels RAW, because the listing matches on a prefix and a wildcard would be searched
-    // for literally — and it travels in the BODY, because a searched name identifies a person and a
-    // request target is recorded by the browser, by every proxy and by the server.
-    const sent: unknown = lookup.request.body;
+    // The term travels RAW, because the picker matches on a prefix and a wildcard would be searched
+    // for literally — the server escapes what it is given, so an operator's own per-cent sign matches
+    // a per-cent sign.
+    expect(lookup.request.params.get('query')).toBe('sec');
 
-    if (typeof sent !== 'object' || sent === null || Array.isArray(sent)) {
-      throw new Error('the lookup did not transmit a JSON object body');
-    }
-
-    const sentMembers: Readonly<Record<string, unknown>> = { ...sent };
-
-    expect(sentMembers['userName']).toBe('sec');
-    expect(lookup.request.urlWithParams).not.toContain('sec');
+    // ⚠ AND IT ASKS THE PICKER RATHER THAN THE ACCOUNT LISTING, which is the assertion that keeps a
+    // postal address, a telephone number, an electronic-mail address, two audit instants and four
+    // status flags out of every answer this screen receives. The address IS the projection: nothing
+    // else about the request distinguishes a three-member answer from a sixteen-member one.
+    expect(lookup.request.url)
+      .withContext('the picker answers a key and two captions; the listing answers a grid row')
+      .not.toBe(API_ENDPOINTS.users.collection());
 
     lookup.flush({
       items: [],

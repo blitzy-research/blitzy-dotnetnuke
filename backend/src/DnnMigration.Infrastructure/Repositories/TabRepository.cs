@@ -236,6 +236,36 @@ internal sealed class TabRepository : ITabRepository
 
     /// <inheritdoc />
     /// <remarks>
+    /// <para>
+    /// Both columns are matched as values in ONE predicate, which is what makes this a single seek rather
+    /// than a read followed by a test. The alternative shapes were both worse: reading the page by key and
+    /// then comparing its portal in memory would return a row belonging to another tenant to this process
+    /// before rejecting it, and reading the portal's whole page set and selecting from it does work
+    /// proportional to the tenant when the question concerns one row.
+    /// </para>
+    /// <para>
+    /// Neither key can widen the query. <c>dbo.Tabs.TabID</c> is <c>IDENTITY(0, 1)</c> so zero is a genuine
+    /// page, and -1 and 0 are both genuine portal keys, so no value here is read as "any" or "no" row.
+    /// </para>
+    /// <para>
+    /// No predicate is applied to <c>IsDeleted</c>: a recycled page is returned, exactly as the two sibling
+    /// reads return one, and excluding it is the caller's policy.
+    /// </para>
+    /// </remarks>
+    public Task<Tab?> GetPortalTabAsync(
+        int portalId,
+        int tabId,
+        CancellationToken cancellationToken = default)
+    {
+        return _context.Tabs
+            .AsNoTracking()
+            .FirstOrDefaultAsync(
+                tab => tab.PortalId == portalId && tab.TabId == tabId,
+                cancellationToken);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
     /// Ports <c>GetAllTabs</c>, whose terminal definition carried no portal predicate at all and ordered
     /// by <c>TabOrder, TabName</c> (04.04.00.SqlDataProvider lines 475-480). Host-level pages, whose
     /// portal column is itself null, are therefore included alongside every portal's pages, and the rows
@@ -553,6 +583,14 @@ internal sealed class TabRepository : ITabRepository
     /// caller can navigate to, which is precisely what the legacy flag was asked to report.
     /// </para>
     /// <para>
+    /// MIGRATION: and it is a DIVERGENCE, not a reproduction. The terminal legacy sub-select tested the
+    /// parent relationship alone, so a page whose children had all been recycled still reported
+    /// <c>HasChildren = true</c> and the tree rendered an expander that opened onto nothing. Restoring
+    /// that predicate would restore that defect, so the divergence is accepted - and, because it is
+    /// observable in any listing over a tenant with recycled child pages, it is adjudicated in
+    /// MIGRATION_NOTES.md rather than left as a remark here.
+    /// </para>
+    /// <para>
     /// A <see langword="null"/> portal is an explicit "not restricted" here, and it is available only
     /// because this member returns a derived projection rather than addressing rows by key. A supplied
     /// portal identifier still denotes exactly that portal, with -1 and 0 remaining genuine keys. The
@@ -731,7 +769,8 @@ internal sealed class TabRepository : ITabRepository
     // preference. DbSet.Update decides between Added and Modified by asking whether the key "is set",
     // and it reads a store-generated int key of 0 as unset - it passes
     // forceStateWhenUnknownKey: EntityState.Added internally. dbo.Tabs.TabID is declared
-    // IDENTITY(0, 1) (01.00.00.SqlDataProvider:L140, DnnSchema.sql:146), so 0 is the real FIRST PAGE of
+    // IDENTITY(0, 1) (01.00.00.SqlDataProvider:L140, recorded in Schema/TerminalSchema.manifest), so 0
+    // is the real FIRST PAGE of
     // an installation and never "unset". Update(tab) on a detached page 0 therefore staged an INSERT:
     // the caller's edit was silently lost, a duplicate page appeared, and because the application layer
     // recomputes descendant paths from the page it believes it just saved, a sibling's TabPath was

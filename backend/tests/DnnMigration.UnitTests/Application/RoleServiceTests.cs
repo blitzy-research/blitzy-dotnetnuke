@@ -1292,15 +1292,31 @@ public class RoleServiceApplicationTests
     }
 
     /// <summary>
-    /// A renewal is recorded under the SAME event name as a first assignment, distinguished by a property
-    /// rather than by an event name the legacy vocabulary never contained.
+    /// A renewal is recorded under its OWN event name, because the member already held the role and nothing
+    /// was granted.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: the legacy member was an upsert and raised one key for both arms, so inventing a second
-    /// name would be a fabrication rather than fidelity. The distinguishing property is added instead.
+    /// <para>
+    /// THIS ASSERTION IS INVERTED FROM THE ONE IT REPLACES, which required a renewal to carry the same
+    /// USER_ROLE_CREATED name as a first assignment on the reasoning that "the legacy member was an upsert and
+    /// raised one key for both arms, so inventing a second name would be a fabrication rather than fidelity".
+    /// Fidelity to a legacy limitation is not fidelity to the legacy MEANING: the legacy enumeration declares
+    /// USER_ROLE_CREATED and USER_ROLE_DELETED with nothing between them, so the legacy code had no better
+    /// option, and reproducing its workaround reproduced a false statement rather than a behaviour.
+    /// </para>
+    /// <para>
+    /// The cost was concrete. A trail in which the same account appears to have been granted the same role
+    /// five times cannot be used to count grants, and - the question that actually follows an incident - it
+    /// cannot answer WHEN access was first given, because every renewal is indistinguishable from the original
+    /// grant unless the reader knows to filter on a property they may not know exists.
+    /// </para>
+    /// <para>
+    /// The <c>Renewed</c> property is KEPT rather than replaced, so an existing search on it still matches and
+    /// a reader filtering on either the name or the property sees the same distinction.
+    /// </para>
     /// </remarks>
     [Fact]
-    public async Task AssignUserToRole_Renewal_IsRecordedUnderTheSameEventNameAndFlagged()
+    public async Task AssignUserToRole_Renewal_IsRecordedUnderItsOwnEventNameAndFlagged()
     {
         Harness harness = Harness.Ready();
         harness.LookupRole = TermRole(Frequency.Month, period: 1);
@@ -1311,7 +1327,11 @@ public class RoleServiceApplicationTests
 
         outcome.IsSuccess.Should().BeTrue();
         AuditEvent record = Assert.Single(harness.AuditRecords);
-        record.EventName.Should().Be(AuditEventNames.UserRoleCreated);
+        record.EventName.Should().Be(
+            AuditEventNames.UserRoleUpdated,
+            "the membership already existed, so recording a creation would over-count grants and hide when "
+            + "access was first given");
+        record.EventName.Should().NotBe(AuditEventNames.UserRoleCreated);
         record.Properties.Should().ContainKey("Renewed")
             .WhoseValue.Should().Be(true.ToString(CultureInfo.InvariantCulture));
     }

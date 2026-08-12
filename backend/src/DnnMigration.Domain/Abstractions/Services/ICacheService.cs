@@ -95,6 +95,27 @@ public interface ICacheService
     /// <param name="key">The cache entry key, composed by the caller. Evicting an absent key is not an error.</param>
     void Remove(string key);
 
+    /// <summary>
+    /// Evicts every entry whose key begins with <paramref name="keyPrefix"/>.
+    /// </summary>
+    /// <param name="keyPrefix">The invariant leading part of a key family.</param>
+    /// <remarks>
+    /// <para>
+    /// SEC-F8. This exists so that a caller holding a key FAMILY - one entry per module definition, per
+    /// tenant, per anything - can invalidate the family without first discovering every value the varying
+    /// part has taken. The alternative is what it replaces: a post-commit database read performed purely to
+    /// enumerate cache keys, which made a completed, durable mutation able to fail afterwards.
+    /// </para>
+    /// <para>
+    /// An implementation must evict the whole family and must not throw for a prefix that matches nothing.
+    /// A caller reaches it after its own commit, so it has to be infallible.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="keyPrefix"/> is <see langword="null"/>, empty or white space.
+    /// </exception>
+    void RemoveByPrefix(string keyPrefix);
+
     // MIGRATION: the legacy clears were coarse and recursive - clearing one portal also swept unrelated
     // subject areas and optionally every tab and module beneath it. The eight scoped members below each
     // stand in for exactly one of them, and the recursive flag is gone.

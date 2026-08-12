@@ -51,12 +51,28 @@ const OPERATOR_B: CurrentUser = {
   permissions: ['EDIT'],
 };
 
+/**
+ * An expiry comfortably ahead of whenever this suite runs, derived from the clock rather than written
+ * down.
+ *
+ * ⚠ AN ABSOLUTE DATE IS A TEST THAT EXPIRES. This fixture used to carry `2030-01-01T00:00:00Z`,
+ * which holds a session valid by the calendar rather than by anything the specification controls: on the
+ * first of January 2030 every case depending on it begins asserting the opposite of what it was written
+ * to assert, and it does so SILENTLY, because a session read as already expired is a state this
+ * application handles rather than an error it reports.
+ *
+ * One hour is longer than any run of this suite and shorter than any window the application treats as
+ * unusual, and it is computed ONCE per module load so every case in the file shares one instant rather
+ * than racing the clock between them.
+ */
+const FUTURE_SESSION_EXPIRY_UTC: string = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
 /** A session for one identity, with tokens named after it so a leak is legible. */
 function sessionFor(user: CurrentUser): AuthSession {
   return {
     accessToken: `${user.username}-access-token`,
     refreshToken: `${user.username}-refresh-token`,
-    expiresAtUtc: '2030-01-01T00:00:00Z',
+    expiresAtUtc: FUTURE_SESSION_EXPIRY_UTC,
     mustChangePassword: false,
     mustUpdateProfile: false,
     passwordExpiring: false,
@@ -574,6 +590,70 @@ describe('cross-session isolation', () => {
 
       expect(moduleRead.request.params.has('query')).toBeFalse();
       moduleRead.flush(page([]));
+    });
+  });
+
+  describe('the latch recording that a listing has been read', () => {
+    it('does not carry into the next session, so a write there refreshes nothing unasked', () => {
+      /*
+       * ⚠ THE DEFECT THIS PINS IS A REQUEST THAT MUST NOT EXIST, and it is the one shape of leak the
+       * rest of this file does not cover: not stale DATA carried across the boundary, but a stale
+       * DECISION about what the store is entitled to do.
+       *
+       * `refreshListingIfRead` re-reads the portal listing after a settings write, but ONLY when a
+       * listing has already been read - because refreshing something never read is meaningless, and
+       * because a PORTAL ADMINISTRATOR IS NOT PERMITTED TO READ THE PORTAL LISTING at all. Where the
+       * caller may not read it, the unasked re-read answers 403, the failure interceptor raises "You
+       * do not have access to this content." globally, and it lands on whichever screen the operator
+       * had navigated to by then: a permission complaint about a listing they never requested, on an
+       * unrelated screen, immediately after a save that SUCCEEDED.
+       *
+       * The latch was set by the first operator - who could read the listing - and `reset()` cleared
+       * every other member of the listing slice while leaving it set. So the store told itself "a
+       * listing is in hand" about a page it had just emptied, on behalf of a session that no longer
+       * existed, and the second operator inherited the first operator's entitlement.
+       *
+       * `httpMock.verify()` in `afterEach` is what actually fails on a regression here: an unclaimed
+       * request is a failure, so the assertion is the ABSENCE of a request rather than a count.
+       */
+      holdSessionFor(OPERATOR_A);
+
+      // THE CONTROL, AND IT IS LOAD-BEARING. Without it the case would pass against a store whose
+      // latch is never set at all, which would prove nothing about the clearing.
+      portals.loadPortals();
+      expectOne(PORTALS_URL).flush(page([]));
+
+      portals.refreshListingIfRead();
+      expectOne(PORTALS_URL).flush(page([]));
+
+      session.endSession();
+      signIn(OPERATOR_B);
+
+      // The second operator has read no listing, so this must dispatch NOTHING. Stated as an
+      // emptiness assertion as well, so a failure here names the leak rather than surfacing as an
+      // unrelated verification error in teardown.
+      portals.refreshListingIfRead();
+
+      httpMock.expectNone(() => true);
+    });
+
+    it('is re-armed by the next session reading a listing of its own', () => {
+      // The complement, so the clearing cannot be mistaken for a permanent disabling: an operator who
+      // DOES read a listing gets the coherence re-read that keeps it correct after a write. Without
+      // this, clearing the latch and never setting it again would also pass the case above.
+      holdSessionFor(OPERATOR_A);
+
+      portals.loadPortals();
+      expectOne(PORTALS_URL).flush(page([]));
+
+      session.endSession();
+      signIn(OPERATOR_B);
+
+      portals.loadPortals();
+      expectOne(PORTALS_URL).flush(page([]));
+
+      portals.refreshListingIfRead();
+      expectOne(PORTALS_URL).flush(page([]));
     });
   });
 

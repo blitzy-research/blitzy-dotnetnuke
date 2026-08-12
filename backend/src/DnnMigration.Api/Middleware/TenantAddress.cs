@@ -36,21 +36,10 @@ namespace DnnMigration.Api.Middleware;
 /// </remarks>
 internal static class TenantAddress
 {
-    /// <summary>
-    /// Longest host candidate that may appear in a log entry.
-    /// </summary>
-    /// <remarks>
-    /// A host name's own maximum is 253 characters, so this is shorter than a legitimate one could be. That
-    /// is deliberate: the value exists to identify which alias an operator must add, an operator recognises
-    /// it long before 63 characters, and a bound the caller cannot exceed is worth more here than the
-    /// ability to reproduce an unusually long name in full.
-    /// </remarks>
-    private const int MaximumLoggedHostLength = 63;
-
     /// <summary>Bytes of the address digest that are recorded, giving a 16-character property.</summary>
     private const int FingerprintByteLength = 8;
 
-    /// <summary>Recorded in place of a host candidate or fingerprint that cannot be produced.</summary>
+    /// <summary>Recorded in place of a fingerprint that cannot be produced.</summary>
     private const string AbsentHostMarker = "(absent)";
 
     /// <summary>
@@ -97,64 +86,6 @@ internal static class TenantAddress
         // have sent is dropped, because an alias is never stored with one and "host/child/" and
         // "host/child" address the same tenant.
         return string.Concat(host, path.TrimEnd('/'));
-    }
-
-    /// <summary>
-    /// Reduces an address to the bounded, printable host candidate that may be recorded in a log.
-    /// </summary>
-    /// <param name="address">The address <see cref="Of(HttpContext)"/> produced.</param>
-    /// <returns>
-    /// The host portion, stripped to printable US-ASCII and truncated to
-    /// <see cref="MaximumLoggedHostLength"/> characters, or <c>(absent)</c> when nothing usable remains.
-    /// </returns>
-    /// <remarks>
-    /// <para>
-    /// SEC-B4: THE PATH IS DISCARDED HERE, WHICH IS THE WHOLE PURPOSE. An unresolved address is
-    /// caller-controlled, and the address this type builds deliberately includes the request's FULL path so
-    /// that a child portal can be matched. Recording that in a diagnostic entry let a caller push arbitrary
-    /// text - a mistyped credential, a token pasted into a URL, an e-mail address - into the production log
-    /// simply by addressing the installation from a host name it does not serve. The host candidate is the
-    /// one fact an operator needs in order to add or correct an alias row, so it is what survives.
-    /// </para>
-    /// <para>
-    /// Three properties make the survivor safe to keep. It is TRUNCATED, so no caller can lengthen a log
-    /// line at will. It is stripped to PRINTABLE US-ASCII, which removes carriage return and line feed in
-    /// one test and with them the ability to forge a log line, and also removes anything a terminal would
-    /// interpret. And a value that reduces to nothing is reported as a fixed marker rather than as an empty
-    /// property, so an absent host and a host of blanks read alike.
-    /// </para>
-    /// </remarks>
-    public static string HostCandidateOf(string? address)
-    {
-        if (string.IsNullOrWhiteSpace(address))
-        {
-            return AbsentHostMarker;
-        }
-
-        int separator = address.IndexOf('/', StringComparison.Ordinal);
-        ReadOnlySpan<char> host = separator < 0 ? address : address.AsSpan(0, separator);
-
-        var sanitised = new StringBuilder(Math.Min(host.Length, MaximumLoggedHostLength));
-
-        foreach (char character in host)
-        {
-            if (sanitised.Length == MaximumLoggedHostLength)
-            {
-                break;
-            }
-
-            // Printable US-ASCII only: space through tilde. Every control character, every newline and
-            // every non-ASCII sequence is dropped rather than escaped, because an escaped value still
-            // occupies the log and still has to be read by whoever is diagnosing the alias.
-            if (character is >= ' ' and <= '~')
-            {
-                sanitised.Append(character);
-            }
-        }
-
-        string candidate = sanitised.ToString().Trim();
-
-        return candidate.Length == 0 ? AbsentHostMarker : candidate;
     }
 
     /// <summary>

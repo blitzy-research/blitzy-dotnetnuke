@@ -30,12 +30,11 @@ namespace DnnMigration.Application.Dtos.Common;
 /// collection honours.
 /// </para>
 /// <para>
-/// The reason the two sets differ at all is not arbitrary. The account listing pages in the STORE, so it
-/// cannot order by the three columns the external <c>aspnet_*</c> membership objects supply - they are
-/// filled after the page has been taken, and <c>SortableFields</c> records that reduction. This listing
-/// materialises the role's assignment rows composed with their accounts and pages them in memory, so those
-/// same three values are genuinely present on every row before any page is cut, and ordering by them
-/// orders the collection rather than the page.
+/// SEC-F11. THIS SET NO LONGER CLAIMS THE THREE MEMBERSHIP COLUMNS. Both listings page in the STORE, so
+/// neither can order by the values the external <c>aspnet_*</c> membership objects supply, and the
+/// role-membership projection does not publish them either. The three names were accepted here and silently
+/// discarded by the ordering behind them; they are now refused with a field-keyed <c>400</c>, which is the
+/// honest answer for an ordering nothing can perform.
 /// </para>
 /// <para>
 /// Nothing else about the contract differs, so the query string a caller sends is unchanged and the

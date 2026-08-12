@@ -28,9 +28,11 @@ namespace DnnMigration.Domain.Entities;
 //   belong to ModuleDefinition, DesktopModule and ModuleControl.
 //
 // TERMINAL COLUMN SET - the 11 scalars declared here, and no others
-//   Derived by replaying every CREATE and ALTER TABLE against this table across the 88 upgrade
-//   scripts in Website/Providers/DataProviders/SqlDataProvider, then independently confirmed
-//   against backend/tests/DnnMigration.IntegrationTests/Schema/DnnSchema.sql lines 205-220:
+//   Derived by replaying every CREATE and ALTER TABLE against this table across the upgrade
+//   scripts in Website/Providers/DataProviders/SqlDataProvider, and recorded with a per-column
+//   citation in the eleven Modules records of
+//   backend/tests/DnnMigration.IntegrationTests/Schema/TerminalSchema.manifest. That manifest is
+//   the authority, NOT Schema/DnnSchema.sql, which is a fixture measured against it:
 //     01.00.00:220  CREATE TABLE [dbo].[Modules] - ModuleID, ModuleDefID, ModuleTitle
 //     01.00.04:85   ADD AllTabs bit NOT NULL DEFAULT 0
 //     02.00.00:6567 ADD IsDeleted bit NOT NULL DEFAULT 0
@@ -127,8 +129,9 @@ public sealed class Module : Entity<int>
     /// declares automatically - never by inspecting this value.
     /// </remarks>
     // MIGRATION: dbo.Modules.ModuleID is declared IDENTITY(0, 1) - Website/Providers/
-    // DataProviders/SqlDataProvider/01.00.00.SqlDataProvider line 221, confirmed by
-    // backend/tests/DnnMigration.IntegrationTests/Schema/DnnSchema.sql line 206. Zero is a
+    // DataProviders/SqlDataProvider/01.00.00.SqlDataProvider line 221, recorded in the
+    // Modules.ModuleID record of
+    // backend/tests/DnnMigration.IntegrationTests/Schema/TerminalSchema.manifest. Zero is a
     // legitimate persisted identifier. It must never be read as absent, transient, unsaved or
     // "default", and no `ModuleId == 0`, `ModuleId <= 0` or `default(int)` heuristic may be
     // written against it anywhere in this solution.

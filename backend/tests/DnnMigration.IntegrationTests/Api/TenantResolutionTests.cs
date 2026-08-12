@@ -389,8 +389,8 @@ public sealed class TenantResolutionTests
     }
 
     /// <summary>
-    /// SEC-B4 REGRESSION. The diagnostic entry for an unresolved tenant records a bounded host candidate and
-    /// a fingerprint, and never the caller's own path.
+    /// SEC-B4 REGRESSION. The diagnostic entry for an unresolved tenant records a fingerprint and a closed
+    /// reason code, and never the caller's path OR the host name it addressed.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
@@ -403,13 +403,23 @@ public sealed class TenantResolutionTests
     /// for precisely this reason, and this entry bypassed that protection.
     /// </para>
     /// <para>
+    /// AND WHAT THIS NOW ALSO REVERSES: the entry kept a bounded, sanitised HOST CANDIDATE after that first
+    /// correction, on the argument that an operator needs to know which alias to add. Bounding a value stops
+    /// it forging a log line; it does not stop it disclosing one. The value is still text an unauthenticated
+    /// caller chooses, on a stage that runs for every request, and a real deployment's host names are
+    /// themselves customer identifiers - so it is gone, and the fingerprint plus the reason code are what
+    /// remain. This fact asserts the absence directly, in the message and in every property, because an
+    /// assertion that merely required the fingerprint would keep passing if the host name came back
+    /// alongside it.
+    /// </para>
+    /// <para>
     /// The path below carries both shapes a log must never keep, so a single assertion covers a credential
     /// fragment and a personal identifier. The host is built immediately before the request because a
     /// Serilog logger is process-wide: a fact asserting on records has to own the host that writes them.
     /// </para>
     /// </remarks>
     [Fact]
-    public async Task TenantFailureDiagnosis_RecordsABoundedHostCandidateAndNeverTheCallerPath()
+    public async Task TenantFailureDiagnosis_RecordsAFingerprintAndNeitherTheHostNorTheCallerPath()
     {
         await using var host = new RecordingTenantHost();
         using HttpClient client = host.CreateClient();
@@ -445,12 +455,12 @@ public sealed class TenantResolutionTests
                 "the caller's own path must not reach the log through the tenant diagnosis");
             diagnosis.Message.Should().NotContain(SensitivePathSegment);
 
-            diagnosis.Properties.Should().ContainKey(
-                "AliasCandidate",
-                "the operator needs the host candidate in order to add or correct an alias row");
-            diagnosis.Properties["AliasCandidate"].Should().Be(
+            diagnosis.Message.Should().NotContain(
                 UnconfiguredHost,
-                "the host candidate is the host portion alone, with the path discarded");
+                "the host name the caller addressed is tenant-identifying text and must not be retained");
+            diagnosis.Properties.Should().NotContainKey(
+                "AliasCandidate",
+                "the bounded host candidate was removed outright rather than shortened further");
 
             diagnosis.Properties.Should().ContainKey(
                 "AddressFingerprint",
@@ -459,11 +469,18 @@ public sealed class TenantResolutionTests
                 "^[0-9a-f]{16}$",
                 "the fingerprint is a bounded lower-case digest prefix and nothing else");
 
+            diagnosis.Properties.Should().ContainKey(
+                "ReasonCode",
+                "the reason code is what distinguishes an unknown host from an ambiguous or misconfigured one");
+
             foreach (object? value in diagnosis.Properties.Values)
             {
                 (value as string)?.Should().NotContain(
                     DecodedSensitivePathSegment,
                     "no property may carry the caller's path either");
+                (value as string)?.Should().NotContain(
+                    UnconfiguredHost,
+                    "and no property may carry the host name either, however bounded");
             }
         }
     }

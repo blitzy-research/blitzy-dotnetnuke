@@ -142,17 +142,6 @@
 // with the table rules: sizing the list is the shared data table's concern.
 // =============================================================================
 
-// THE HIDDEN EXPLANATION IN THE COMMAND CELL OF THE ROW THAT OFFERS NO COMMAND.
-//
-// Hidden from sight and kept in the accessibility tree, so the cell renders exactly as the
-// legacy grid rendered it - an invisible server control emitted nothing - while a reader who
-// meets the absence is told why it is there. The design specification's precedence order is what
-// dictates that shape: accessibility is answered THIRD and with zero visual change, so the
-// explanation may not occupy a pixel.
-.portal-alias-list__row-note {
-  @include mx.visually-hidden;
-}
-
 // =============================================================================
 //  Pf-M1 AND Pf-M2 — THE TWO ROW STATES THAT PAINTED NOTHING
 // =============================================================================

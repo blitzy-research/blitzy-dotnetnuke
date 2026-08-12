@@ -178,6 +178,50 @@ public interface ITabRepository
     Task<IReadOnlyList<Tab>> GetByPortalIdAsync(int portalId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Returns the page bearing the supplied identifier ONLY when it belongs to the supplied portal.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The tenant-scoped form of <see cref="GetByIdAsync"/>, and it exists because asking whether ONE named
+    /// page belongs to a portal is a question the set-based member answered far too expensively. A caller
+    /// validating a client-supplied page identifier against a portal had to read every page that portal owns
+    /// and then discard all but one of them - work proportional to the size of the tenant rather than to the
+    /// question, on a request that only ever acts on a single row.
+    /// </para>
+    /// <para>
+    /// ⚠ THE PORTAL IS PART OF THE PREDICATE AND NOT A CHECK APPLIED AFTERWARDS, which is what makes this
+    /// safe to hand a client-supplied identifier. A page belonging to another tenant does not come back and
+    /// is therefore indistinguishable from one that does not exist, so no caller can learn from this member
+    /// that a page exists elsewhere. A member that read the row and then compared its portal would leak
+    /// exactly that, through timing if through nothing else.
+    /// </para>
+    /// <para>
+    /// Host-level pages carry no portal at all, so they are not reachable through this member - the same
+    /// property <see cref="GetByPortalIdAsync"/> has, for the same reason.
+    /// </para>
+    /// <para>
+    /// A recycled page is still a page and is returned here, exactly as <see cref="GetByIdAsync"/> and
+    /// <see cref="GetByPortalIdAsync"/> return one. Whether a recycled page is an acceptable answer is the
+    /// caller's policy, so a caller that must exclude one tests <see cref="Tab.IsDeleted"/> itself. Applying
+    /// that predicate here would make this member disagree with its two siblings about what a page is.
+    /// </para>
+    /// </remarks>
+    /// <param name="portalId">
+    /// The portal the page must belong to. Both -1 and 0 are genuine portal keys in this schema, so each
+    /// denotes that portal and neither widens the query.
+    /// </param>
+    /// <param name="tabId">
+    /// The page key. This identity seeds at 0, so 0 is a real page and is never read as a request for "any"
+    /// or "no" row.
+    /// </param>
+    /// <param name="cancellationToken">Propagates notification that the operation should be abandoned.</param>
+    /// <returns>
+    /// The matching page, or <see langword="null"/> when no row bears that key within that portal - whether
+    /// because no such page exists at all or because it belongs to another tenant.
+    /// </returns>
+    Task<Tab?> GetPortalTabAsync(int portalId, int tabId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Returns every page in the installation, across all portals and including host-level pages.
     /// </summary>
     /// <remarks>

@@ -125,20 +125,6 @@ public interface IModuleDefinitionRepository
     Task<DesktopModule?> GetDesktopModuleByModuleNameAsync(string moduleName, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Returns every installed module package, which is the catalogue a host administrator works
-    /// from when deciding what to grant.
-    /// </summary>
-    /// <remarks>
-    /// Traces to <c>GetDesktopModules</c> (DataProvider.vb:L160), the one member of this block
-    /// that took no argument, and supersedes the untyped non-generic list returned by
-    /// DesktopModuleController.vb:L58. An installation with no packages yields an empty list, never
-    /// <see langword="null"/>.
-    /// </remarks>
-    /// <param name="cancellationToken">Propagates notification that the operation should be cancelled.</param>
-    /// <returns>Every installed package, or an empty list when the installation has none.</returns>
-    Task<IReadOnlyList<DesktopModule>> GetDesktopModulesAsync(CancellationToken cancellationToken = default);
-
-    /// <summary>
     /// Returns the installed module packages that the given portal may use.
     /// </summary>
     /// <remarks>

@@ -482,9 +482,29 @@ public sealed class PortalAliasResolutionMiddleware
     /// who needs the distinction reads it here.
     /// </para>
     /// <para>
-    /// AND WHAT REACHES THE LOG IS BOUNDED. The entry records a sanitised host candidate and a digest of the
-    /// full address, never the address itself, because the address includes the caller's own request path.
-    /// The reason message is authored text from the resolution layer and carries no caller input at all.
+    /// AND NO PART OF THE ADDRESS REACHES THE LOG. The entry records a DIGEST of the full address and a
+    /// closed reason code, and nothing else derived from the request. The reason message is authored text
+    /// from the resolution layer and carries no caller input at all.
+    /// </para>
+    /// <para>
+    /// THE HOST NAME ITSELF USED TO BE RECORDED, AND ITS REMOVAL IS THE FIX FOR A REPORTED DEFECT. A
+    /// bounded, control-character-stripped host candidate was logged here at warning or error level, on the
+    /// reasoning that an operator needs to know WHICH host to add an alias row for. Bounding it prevented
+    /// log forging but not disclosure, and this stage runs before authentication for every request - so an
+    /// unauthenticated caller could put text of its choosing into retained production logs simply by
+    /// choosing a Host header, and a genuine deployment's own host names are themselves customer
+    /// identifiers: <c>acme-legal.example.com</c> names a client, and a mistyped or hostile value can be
+    /// e-mail-shaped or secret-shaped. Neither is data this application's logs should retain, and the
+    /// retention and access policy of those logs sits outside this application's control.
+    /// </para>
+    /// <para>
+    /// WHAT REPLACES IT, AND WHY THAT IS SUFFICIENT. The fingerprint is stable for a given address, so
+    /// repeated failures against the same address remain recognisable as ONE problem and can be counted,
+    /// alerted on and correlated - which is what an operator acts on. Recovering the address itself is a
+    /// question for the request under a support reference, where the correlation identifier joins the
+    /// caller's report to this entry, rather than for a log line every unauthenticated caller can write to.
+    /// The reason code still distinguishes an unknown host from an ambiguous one and from a misconfigured
+    /// portal, which is the distinction that decides what an operator does next.
     /// </para>
     /// </remarks>
     /// <param name="logger">
@@ -495,8 +515,8 @@ public sealed class PortalAliasResolutionMiddleware
     /// while letting the log entry carry the category of whichever stage actually saw it.
     /// </param>
     /// <param name="address">
-    /// The address that failed to resolve. It is NOT logged as supplied: only the bounded host candidate and
-    /// a fingerprint of the whole value are recorded. See the remarks for why.
+    /// The address that failed to resolve. It is NOT logged, in whole or in part: only a fingerprint of it
+    /// is recorded. See the remarks for why.
     /// </param>
     /// <param name="outcome">The failed resolution outcome.</param>
     internal static void LogUnresolved(ILogger logger, string address, Result outcome)
@@ -504,23 +524,26 @@ public sealed class PortalAliasResolutionMiddleware
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(outcome);
 
-        // SEC-B4: THE RAW ADDRESS IS NOT RECORDED, AND THAT IS THE FIX. This entry used to log the whole
-        // address - the host name followed by the request's FULL path - at warning or error level, on a
-        // path that runs before routing and therefore for every request. An unknown host name is
-        // caller-controlled, so a caller could pick any host it liked and then force arbitrary path text
-        // into the production log with it: a mistyped credential, a bearer token pasted into a URL, an
-        // e-mail address or any other personal data that happens to sit in a path segment. That bypassed
-        // the request envelope's own protection, which records the ROUTE TEMPLATE rather than the path for
-        // exactly this reason, and it contradicted the requirement that structured logging exclude
-        // sensitive data.
+        // SEC-B4: THE RAW ADDRESS IS NOT RECORDED. This entry used to log the whole address - the host name
+        // followed by the request's FULL path - at warning or error level, on a path that runs before
+        // routing and therefore for every request. An unknown host name is caller-controlled, so a caller
+        // could pick any host it liked and then force arbitrary path text into the production log with it:
+        // a mistyped credential, a bearer token pasted into a URL, an e-mail address or any other personal
+        // data that happens to sit in a path segment. That bypassed the request envelope's own protection,
+        // which records the ROUTE TEMPLATE rather than the path for exactly this reason, and it
+        // contradicted the requirement that structured logging exclude sensitive data.
         //
-        // What replaces it keeps the diagnosis and drops the exposure. The HOST CANDIDATE is bounded and
-        // stripped to printable US-ASCII, which is the one fact an operator needs in order to add or
-        // correct an alias row, and it cannot carry a control character or an unbounded body. The
-        // FINGERPRINT is a short digest of the whole address, so repeated failures against the same full
-        // address are still recognisable as one problem - and a child portal's path, which is the part an
-        // operator would have wanted the address for, is identified by its digest rather than reproduced.
-        string aliasCandidate = TenantAddress.HostCandidateOf(address);
+        // AND NEITHER IS THE HOST NAME, WHICH IS THE REMAINING HALF OF THE SAME FIX. A bounded, sanitised
+        // HOST CANDIDATE was kept here on the argument that an operator needs it in order to add an alias
+        // row. Bounding a value stops it forging a log line; it does not stop it disclosing one. The value
+        // is still text an unauthenticated caller chooses, on a path that runs for every request, and a
+        // real deployment's host names identify its customers - so both the hostile case and the ordinary
+        // case put data into retained logs that this application should not keep. The remarks on this
+        // method carry the full reasoning and what replaces the capability.
+        //
+        // What remains is the FINGERPRINT: a short digest of the whole address, stable for a given address,
+        // so repeated failures against one address are still recognisable and countable as one problem
+        // without the address, the host or the path being reproduced anywhere.
         string fingerprint = TenantAddress.FingerprintOf(address);
 
         string reasonCode = outcome.Reason?.Code ?? "PORTAL_ALIAS_UNRESOLVED";
@@ -534,9 +557,8 @@ public sealed class PortalAliasResolutionMiddleware
         if (unknownHost)
         {
             logger.LogWarning(
-                "The host name {AliasCandidate} does not identify a configured portal, so this request " +
-                "continues with no tenant. Address fingerprint {AddressFingerprint}. Reason code {ReasonCode}.",
-                aliasCandidate,
+                "The address behind fingerprint {AddressFingerprint} does not identify a configured " +
+                "portal, so this request continues with no tenant. Reason code {ReasonCode}.",
                 fingerprint,
                 reasonCode);
 
@@ -544,11 +566,10 @@ public sealed class PortalAliasResolutionMiddleware
         }
 
         logger.LogError(
-            "The tenant for host name {AliasCandidate} could not be resolved, so this request continues " +
-            "with no tenant. Address fingerprint {AddressFingerprint}. Reason code {ReasonCode}. Detail: " +
-            "{ReasonMessage}. This is an installation configuration defect and every request to this host " +
-            "will be unable to reach tenant-scoped endpoints until it is corrected.",
-            aliasCandidate,
+            "The tenant for the address behind fingerprint {AddressFingerprint} could not be resolved, so " +
+            "this request continues with no tenant. Reason code {ReasonCode}. Detail: {ReasonMessage}. " +
+            "This is an installation configuration defect and every request to that address will be unable " +
+            "to reach tenant-scoped endpoints until it is corrected.",
             fingerprint,
             reasonCode,
             outcome.Reason?.Message ?? "none reported");

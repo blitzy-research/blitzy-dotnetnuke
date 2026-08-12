@@ -186,6 +186,15 @@ public class PermissionEvaluatorTests
     {
         foreach ((Type contract, MethodInfo member) in ContractMembers())
         {
+            // SEC-F8. The one deliberate exception. The cache eviction runs AFTER its caller's commit, so it
+            // must not be able to fail or be cancelled half-done; it performs no input or output at all,
+            // evicting two in-memory key families by name and by prefix. It was a cancellable Task only
+            // because it read every page of the tenant to compose legacy grant keys nothing ever wrote.
+            if (member.Name == nameof(IPermissionService.InvalidateUserPermissionCaches))
+            {
+                continue;
+            }
+
             member.Name.Should().EndWith(
                 "Async",
                 $"{contract.Name}.{member.Name} performs input and output, so its name must say so");

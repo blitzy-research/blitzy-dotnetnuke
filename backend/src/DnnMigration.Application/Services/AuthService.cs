@@ -299,6 +299,19 @@ public sealed class AuthService : IAuthService
     private const string TokenStoreUnavailableCode = "TOKEN_STORE_UNAVAILABLE";
 
     /// <summary>
+    /// Reported when a sign-out could not be confirmed because this instance does not hold the presented
+    /// family.
+    /// </summary>
+    /// <remarks>
+    /// SEC-F2. It is a DISTINCT code from an outage on purpose: the caller must retain its credential and
+    /// retry, exactly as it would for an outage, but an operator reading the trail needs to be able to tell
+    /// "the session store is down" from "the session belongs to another replica". Both carry the
+    /// <c>store_unavailable</c> reason token, so the one shared translator answers both <c>503</c> - which is
+    /// what a client needs to hear, because from outside they are the same condition: try again.
+    /// </remarks>
+    private const string RevocationUnconfirmedCode = "SESSION_REVOCATION_STORE_UNAVAILABLE";
+
+    /// <summary>
     /// Audit-only code recording that a submitted credential did not match. Never returned to a caller.
     /// </summary>
     /// <remarks>
@@ -328,6 +341,18 @@ public sealed class AuthService : IAuthService
     /// Resource type recorded on the credential-maintenance audit event.
     /// </summary>
     private const string CredentialResourceType = "Credential";
+
+    /// <summary>
+    /// Stable failure code recorded when the credential store refuses a replacement write.
+    /// </summary>
+    /// <remarks>
+    /// One code for one condition, which is what an audit column is for: it names the CONDITION - the
+    /// replacement could not be written - and leaves the replacement kind to the record's own properties and
+    /// the exception type to the security-diagnostics channel. Its predecessor was
+    /// <c>exception.GetType().Name</c>, which put one bucket per library version into a column documented to
+    /// hold "the same code the operation reported to its caller".
+    /// </remarks>
+    private const string CredentialReplacementStoreFailureCode = "credential_replacement_store_failure";
 
     /// <summary>
     /// Account name of the shipped tenant administrator, matched by the shipped-default advisory
@@ -433,6 +458,34 @@ public sealed class AuthService : IAuthService
         WorkFactorUpgradeFailed,
         LegacyMigrationFailed,
     }
+
+    /// <summary>
+    /// What a credential-replacement attempt produced, and - when the store itself threw - the TYPE of the
+    /// exception it threw.
+    /// </summary>
+    /// <param name="Outcome">Which of the five replacement outcomes occurred.</param>
+    /// <param name="StoreFailureType">
+    /// The name of the exception type the credential store raised, or <see langword="null"/> when no exception
+    /// occurred. A type NAME only: never a message, never the exception, never anything derived from caller
+    /// input.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// The second member exists so the type name can reach the security-diagnostics channel from the ONE place
+    /// that also holds the tenant. The failure has two shapes - the store threw, or the store answered that no
+    /// row was updated - and both must be recorded once, with the tenant, under the same closed diagnostic
+    /// member. Recording from inside the attempt would lose the tenant; recording from both places would double
+    /// the entry. Returning the type name resolves both.
+    /// </para>
+    /// <para>
+    /// A record struct rather than an out parameter: no target public or private API in this solution reports a
+    /// second result through <c>out</c> or <c>ref</c>, which is one of the VB constructs this migration exists
+    /// to remove.
+    /// </para>
+    /// </remarks>
+    private readonly record struct CredentialReplacement(
+        CredentialReplacementOutcome Outcome,
+        string? StoreFailureType);
 
     private readonly IUserRepository _users;
     private readonly IPortalRepository _portals;
@@ -1011,7 +1064,7 @@ public sealed class AuthService : IAuthService
         // The two arguments are the locals this method already holds: the stored representation read from
         // the membership row, and the verifier's own judgement that the row was legacy AND matched. The
         // helper never re-decides either question.
-        CredentialReplacementOutcome replacement = await TryReplaceCredentialAsync(
+        CredentialReplacement replacement = await TryReplaceCredentialAsync(
             account.UserId,
             request.Password,
             storedValue,
@@ -1019,7 +1072,7 @@ public sealed class AuthService : IAuthService
             now,
             cancellationToken).ConfigureAwait(false);
 
-        if (replacement == CredentialReplacementOutcome.WorkFactorUpgradeFailed)
+        if (replacement.Outcome == CredentialReplacementOutcome.WorkFactorUpgradeFailed)
         {
             // A cost upgrade that could not be stored, which must not fail a sign-in whose credential was
             // correct - see that method for why - but must not vanish either: an installation whose stored
@@ -1027,9 +1080,10 @@ public sealed class AuthService : IAuthService
             _diagnostics.Record(
                 SecurityDiagnosticEvent.CredentialWorkFactorUpgradeFailed,
                 portalId,
-                account.UserId);
+                account.UserId,
+                replacement.StoreFailureType);
         }
-        else if (replacement == CredentialReplacementOutcome.LegacyMigrationFailed)
+        else if (replacement.Outcome == CredentialReplacementOutcome.LegacyMigrationFailed)
         {
             // The legacy credential was proven while the window was open, so refusing the sign-in because
             // the replacement store was temporarily unavailable would add a new failure mode and strand the
@@ -1039,9 +1093,10 @@ public sealed class AuthService : IAuthService
             _diagnostics.Record(
                 SecurityDiagnosticEvent.LegacyCredentialMigrationFailed,
                 portalId,
-                account.UserId);
+                account.UserId,
+                replacement.StoreFailureType);
         }
-        else if (replacement == CredentialReplacementOutcome.LegacyCredentialMigrated)
+        else if (replacement.Outcome == CredentialReplacementOutcome.LegacyCredentialMigrated)
         {
             // The successful migration is an audit event because it changes the credential representation
             // an operator must account for. It carries the account, tenant and former FORMAT only - never the
@@ -1366,24 +1421,66 @@ public sealed class AuthService : IAuthService
             .RevokeRefreshTokenAsync(request.RefreshToken, cancellationToken)
             .ConfigureAwait(false);
 
+        // A store outage travels unchanged, because a sign-out that silently failed to revoke anything
+        // must not be reported as a sign-out. Every other reason means the value was unknown, already
+        // redeemed or already revoked, and each of those is a completed sign-out: the token cannot mint a
+        // successor, which is the whole of what this member promises.
+        //
+        // MIGRATION: THIS TEST NOW PRECEDES THE AUDIT RECORD, AND THE ORDER IS THE FIX. The record used to be
+        // written first and this test evaluated afterwards, so the ONE case in which the sign-out did not
+        // happen was also the case that produced a record saying it had. When the token store was unreachable
+        // the caller correctly received a failure and kept its refresh token - which remains exchangeable for
+        // fresh access tokens - while the trail asserted that the session had ended. That is worse than no
+        // record at all: an investigation asking "was this session terminated" is told yes about a session
+        // that is still live, and the answer is indistinguishable from a genuine termination.
+        //
+        // The idempotence this member documents is untouched. An unknown, already-redeemed or already-revoked
+        // token is not a store failure, so it still falls through, still records and still succeeds - the
+        // promise is that the presented value cannot mint a successor, and for all three of those it cannot.
+        // Only the unreachable-store arm is withheld, and it is withheld from BOTH the caller and the trail,
+        // which is what makes the two agree.
+        if (revoked.IsFailure && IsTokenStoreFailure(revoked.Reason))
+        {
+            return Result.Failure(revoked.Reason!);
+        }
+
         // Recorded from the ALREADY-AUTHENTICATED caller rather than from the presented token, because
         // this member is deliberately silent about whether the token was genuine and must not learn
         // anything from it that it would then record. An anonymous sign-out records an event with no actor,
         // which is the honest reading: something was presented, nothing is now exchangeable, and who did it
         // is unknown. The event carries no token material of any kind.
+        // EVERY UNPROVEN RETIREMENT TRAVELS, NOT JUST AN OUTAGE. This used to report a sign-out as
+        // complete whenever the store answered anything other than "unavailable", on the reading that a
+        // token the store cannot find is a token that can no longer mint a successor. That reading holds
+        // only for a store that sees every replica's families. With process-local state it was wrong in the
+        // one case that matters: replica B, handed a session established on replica A, does not recognise
+        // the token, so this member answered 204 while replica A went on exchanging it - and the client,
+        // told the sign-out succeeded, had already dropped its only copy.
+        //
+        // The token service reports success only for a PROVEN retirement, and both failure shapes are
+        // forwarded so the client keeps the credential and retries. A caller presenting a value this
+        // deployment never issued sees the same answer, which is the correct trade: an unrecognised value
+        // and an unreachable session are indistinguishable from the outside, and treating both as "try
+        // again" is the only reading that never leaves a live session behind.
+        //
+        // ⚠ IT RETURNS BEFORE THE AUDIT RECORD BELOW, DELIBERATELY. The record states that a session
+        // ENDED, and an unconfirmed retirement is precisely the case in which it may not have; writing it
+        // here would put a false statement in the audit trail and leave the caller reading a refusal.
+        if (revoked.IsFailure)
+        {
+            return Result.Failure(
+                RevocationUnconfirmedCode,
+                "The sign-out could not be confirmed, because this instance holds no such session. "
+                + "Retain the refresh token and retry.");
+        }
+
         _audit.Record(new AuditEvent(AuditEventNames.SessionEnded)
         {
             PortalId = _currentUser.IsAuthenticated ? _currentUser.PortalId : null,
             ActorUserId = _currentUser.IsAuthenticated ? _currentUser.UserId : null,
         });
 
-        // A store outage travels unchanged, because a sign-out that silently failed to revoke anything
-        // must not be reported as a sign-out. Every other reason means the value was unknown, already
-        // redeemed or already revoked, and each of those is a completed sign-out: the token cannot mint a
-        // successor, which is the whole of what this member promises.
-        return revoked.IsFailure && IsTokenStoreFailure(revoked.Reason)
-            ? Result.Failure(revoked.Reason!)
-            : Result.Success();
+        return Result.Success();
     }
 
     /// <inheritdoc />
@@ -2378,7 +2475,7 @@ public sealed class AuthService : IAuthService
     /// admitted to the failure audit.
     /// </para>
     /// </remarks>
-    private async Task<CredentialReplacementOutcome> TryReplaceCredentialAsync(
+    private async Task<CredentialReplacement> TryReplaceCredentialAsync(
         int userId,
         string password,
         string storedCredential,
@@ -2388,7 +2485,7 @@ public sealed class AuthService : IAuthService
     {
         if (!verifiedByLegacy && !_passwordHasher.NeedsRehash(storedCredential))
         {
-            return CredentialReplacementOutcome.NotRequired;
+            return new CredentialReplacement(CredentialReplacementOutcome.NotRequired, null);
         }
 
         CredentialReplacementOutcome succeeded = verifiedByLegacy
@@ -2407,27 +2504,43 @@ public sealed class AuthService : IAuthService
                 .SetPasswordHashAsync(userId, _passwordHasher.Hash(password), asOfUtc, cancellationToken)
                 .ConfigureAwait(false);
 
-            return stored ? succeeded : failed;
+            return new CredentialReplacement(stored ? succeeded : failed, null);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             // Recorded at Failed outcome, which the sink raises to warning level, so an operator has the
-            // signal the silence used to withhold. Only the replacement kind and exception TYPE are carried -
+            // signal the silence used to withhold. Only the replacement kind is carried in the properties -
             // a message may quote the value that could not be written.
+            //
+            // MIGRATION: THE FAILURE CODE IS A STABLE CLOSED CODE, and it used to be
+            // exception.GetType().Name. AuditEvent.FailureCode is documented as "the stable failure code ...
+            // the same code the operation reported to its caller, so an audit record and the response the
+            // caller received can be reconciled", and an exception type name is neither of those things: it is
+            // chosen by whichever library threw, it changes when an implementation detail changes, and no
+            // caller ever received it - so an audit query grouping on this column produced one bucket per
+            // library version rather than one per condition, and the reconciliation the column exists for was
+            // impossible. The type name is not discarded; it travels the channel built for exactly this kind
+            // of value. Recorded in MIGRATION_NOTES.md.
             _audit.Record(new AuditEvent(AuditEventNames.PasswordRehashFailure)
             {
                 Outcome = AuditOutcome.Failed,
                 SubjectUserId = userId,
                 ResourceType = CredentialResourceType,
                 ResourceId = userId.ToString(CultureInfo.InvariantCulture),
-                FailureCode = exception.GetType().Name,
+                FailureCode = CredentialReplacementStoreFailureCode,
                 Properties = new Dictionary<string, string?>(StringComparer.Ordinal)
                 {
                     ["ReplacementKind"] = verifiedByLegacy ? "LegacyMigration" : "WorkFactorUpgrade",
                 },
             });
 
-            return failed;
+            // The exception TYPE is returned rather than recorded here, so that it reaches the security
+            // diagnostics channel from the caller - the only place that also holds the tenant, and the place
+            // that already records this condition. Recording it here as well would double the entry and break
+            // the once-per-condition contract the diagnostics facts assert. ISecurityDiagnostics documents its
+            // reasonCode as accepting "a failure code from a Result, or the NAME of an exception type", and it
+            // accepts no message, no exception and no object, so nothing a message could carry can travel it.
+            return new CredentialReplacement(failed, exception.GetType().Name);
         }
     }
 

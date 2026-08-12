@@ -24,15 +24,14 @@ namespace DnnMigration.IntegrationTests.Persistence;
 /// this suite exists to catch.
 /// </para>
 /// <para>
-/// <strong>Two layers, and each catches what the other cannot.</strong> The suite asserts the mapping
-/// twice, from opposite directions, because a single direction leaves a real gap open.
+/// <strong>Three layers, and each catches what the others cannot.</strong> The mapping is asserted from
+/// three directions, because any one of them alone leaves a real gap open.
 /// </para>
 /// <list type="number">
 ///   <item><description>
 ///     <strong>Catalogue assertions</strong> read <c>INFORMATION_SCHEMA</c> and <c>sys.identity_columns</c>
 ///     on the provisioned database, then round-trip rows through the repositories. This compares the model
-///     against the thing it has to agree with, which asserting the model against itself can never do: a
-///     model that is internally consistent and uniformly wrong would satisfy every metadata assertion.
+///     against something outside itself, which asserting the model against its own metadata can never do.
 ///   </description></item>
 ///   <item><description>
 ///     <strong>Model-metadata assertions</strong> read the composed <see cref="IModel"/> directly. These
@@ -45,7 +44,24 @@ namespace DnnMigration.IntegrationTests.Persistence;
 ///     ambient portal-settings composite, cannot be shown absent by querying for a table that was never
 ///     going to be there.
 ///   </description></item>
+///   <item><description>
+///     <strong>Independent-oracle assertions</strong> compare the model with
+///     <c>Schema/TerminalSchema.manifest</c>, which was derived from the legacy upgrade chain and from
+///     nothing this solution emits. This layer exists because layers one and two were not enough: the
+///     database is provisioned from <c>Schema/DnnSchema.sql</c>, which had been scripted FROM the model, so
+///     the catalogue comparison was model against model with two extra steps and a model that was
+///     internally consistent and uniformly WRONG satisfied all of it. Measuring against the manifest found
+///     two such defects immediately - a nullability and a key topology - both of which had passed here for
+///     as long as this file existed. See <see cref="TerminalSchema"/> and
+///     <c>LegacySchemaFidelityTests</c>.
+///   </description></item>
 /// </list>
+/// <para>
+/// The hand-written inventories in this file - the mapped table list, the pinned legacy column spellings,
+/// the identity seeds, the conceptual-only relationships - are each pinned to the manifest by an assertion
+/// of their own, so a list that drifts from the schema it describes fails rather than quietly narrowing
+/// what the rest of the suite checks.
+/// </para>
 /// <para>
 /// <strong>The context type is never named, and nothing here makes it nameable.</strong> The context is
 /// <c>internal</c> to the infrastructure assembly by design, and this project holds no visibility into it -
@@ -515,6 +531,158 @@ public sealed class DnnDbContextTests
         actual.Should().NotContain(
             foreignKey => foreignKey.Name == "FK_Permission_ModuleDefinitions_ModuleDefID"
                 || foreignKey.Name == "FK_ProfilePropertyDefinition_ModuleDefinitions_ModuleDefID");
+    }
+
+    /// <summary>
+    /// The hand-written inventories in this file agree with the independently derived terminal schema.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Four lists in this file describe the schema in prose and in literals: the mapped tables, the legacy
+    /// column spellings worth pinning, the identity seeds and the relationships that are conceptual only.
+    /// Each is valuable as documentation and each is a liability as an oracle, because a list that quietly
+    /// disagrees with the schema does not fail - it just stops asserting the part it has lost.
+    /// </para>
+    /// <para>
+    /// So each is pinned here to <c>Schema/TerminalSchema.manifest</c>, which was derived from the legacy
+    /// upgrade chain rather than from this model. The conceptual-only relationships are the sharpest case:
+    /// they are EXCLUDED from the physical comparison above, so a mistake there would silently exempt a
+    /// constraint from being checked at all. Asserting that the manifest carries no such foreign key turns
+    /// that exclusion from an assumption into a measured fact.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void TheHandWrittenInventories_AgreeWithTheIndependentOracle()
+    {
+        MappedTables.OrderBy(table => table, StringComparer.Ordinal).Should().Equal(
+            TerminalSchema.Tables.Keys.OrderBy(table => table, StringComparer.Ordinal),
+            "the twenty-one mapped tables are the ones the terminal schema declares, not a list that has "
+            + "been maintained alongside it");
+
+        foreach ((string table, string column) in LegacyColumnNames)
+        {
+            TerminalSchema.Columns.Should().ContainKey(
+                FormattableString.Invariant($"{table}.{column}"),
+                "a pinned spelling that the terminal schema does not carry pins nothing");
+        }
+
+        foreach ((string table, int seed) in ExpectedIdentitySeeds)
+        {
+            IReadOnlyList<TerminalColumn> identities = TerminalSchema.ColumnsOf(table)
+                .Where(column => column.Identity is not null)
+                .ToList();
+
+            identities.Should().HaveCount(1, "a legacy table carries at most one identity column");
+            identities[0].Identity!.Value.Seed.Should().Be(
+                seed,
+                "the seeds asserted against the database are the seeds the upgrade chain declares");
+            identities[0].Identity!.Value.Increment.Should().Be(1);
+        }
+
+        foreach (string conceptual in ConceptualOnlyForeignKeys)
+        {
+            TerminalSchema.ForeignKeys.Should().NotContainKey(
+                conceptual,
+                "a relationship excluded from the physical comparison must be one the terminal schema "
+                + "genuinely does not constrain");
+        }
+    }
+
+    /// <summary>
+    /// Each mapped entity binds exactly the columns the terminal schema declares on its table.
+    /// </summary>
+    /// <param name="entity">The entity type.</param>
+    /// <param name="table">The legacy table it binds to.</param>
+    /// <remarks>
+    /// The sibling fidelity suite asserts the same property across the whole model at once, which reports a
+    /// list. This states it per entity so that a failure names the aggregate, and it is a theory rather than
+    /// a loop so that every one of the twenty-one entities is reported independently: a single aggregate
+    /// assertion stops at the first mismatch it renders, and the shape of a mapping defect is usually one
+    /// entity rather than one column.
+    /// </remarks>
+    [Theory]
+    [Trait("Category", "Integration")]
+    [MemberData(nameof(MappedEntities))]
+    public void Model_BindsTheColumnSetTheTerminalSchemaDeclares(Type entity, string table)
+    {
+        IEntityType mapped = MappedTypeOf(entity);
+        StoreObjectIdentifier store = StoreObjectIdentifier.Table(table, mapped.GetSchema());
+
+        IEnumerable<string> columns = mapped.GetProperties()
+            .Select(property => property.GetColumnName(store))
+            .Where(column => !string.IsNullOrEmpty(column))
+            .Select(column => column!)
+            .OrderBy(column => column, StringComparer.Ordinal);
+
+        columns.Should().Equal(
+            TerminalSchema.ColumnsOf(table).Select(column => column.Name)
+                .OrderBy(column => column, StringComparer.Ordinal),
+            "a mapped column the terminal schema does not have fails every query against a real "
+            + "installation, and a terminal column nothing maps is silently never carried");
+    }
+
+    /// <summary>The model declares exactly the non-primary indexes the terminal schema declares.</summary>
+    /// <remarks>
+    /// The inventory comparison above proves the model and the provisioned database agree. On its own that
+    /// proved less than it appeared to, because the database was provisioned from a script emitted from the
+    /// model. This compares the same model inventory with the independent oracle, so the two together
+    /// establish agreement with the legacy schema rather than internal consistency.
+    /// </remarks>
+    [Fact]
+    public void Model_DeclaresExactlyTheTerminalIndexInventory()
+    {
+        IReadOnlyList<IndexMetadata> expected = TerminalSchema.Indexes.Values
+            .Select(index => new IndexMetadata(
+                index.Table,
+                index.Name,
+                string.Join(",", index.Columns),
+                index.IsUnique,
+                null))
+            .OrderBy(index => index.Table, StringComparer.Ordinal)
+            .ThenBy(index => index.Name, StringComparer.Ordinal)
+            .ToList();
+
+        expected.Should().HaveCount(33);
+
+        ReadModelIndexes().Should().Equal(
+            expected,
+            "a filter is part of this comparison and every terminal index carries none: the SQL Server "
+            + "provider attaches one to a unique index over a nullable column unless told otherwise, and "
+            + "under such a predicate the rows with a null are excluded from uniqueness entirely");
+    }
+
+    /// <summary>The model declares exactly the physical foreign keys the terminal schema declares.</summary>
+    /// <remarks>
+    /// The three conceptual-only relationships are excluded, exactly as they are from the physical
+    /// comparison against the database, and <see cref="TheHandWrittenInventories_AgreeWithTheIndependentOracle"/>
+    /// proves the manifest carries none of them.
+    /// </remarks>
+    [Fact]
+    public void Model_DeclaresExactlyTheTerminalPhysicalForeignKeys()
+    {
+        IReadOnlyList<ForeignKeyMetadata> expected = TerminalSchema.ForeignKeys.Values
+            .Select(foreignKey => new ForeignKeyMetadata(
+                foreignKey.Table,
+                foreignKey.Name,
+                string.Join(",", foreignKey.Columns),
+                foreignKey.PrincipalTable,
+                string.Join(",", foreignKey.PrincipalColumns),
+                foreignKey.DeleteAction))
+            .OrderBy(foreignKey => foreignKey.Table, StringComparer.Ordinal)
+            .ThenBy(foreignKey => foreignKey.Name, StringComparer.Ordinal)
+            .ToList();
+
+        expected.Should().HaveCount(29);
+
+        IReadOnlyList<ForeignKeyMetadata> actual = ReadModelForeignKeys()
+            .Where(foreignKey => !ConceptualOnlyForeignKeys.Contains(foreignKey.Name))
+            .ToList();
+
+        actual.Should().Equal(
+            expected,
+            "the constraint name, the column order, the principal and the delete action are all part of the "
+            + "schema this migration binds to: a cascade quietly downgraded to no action strands rows the "
+            + "database currently removes");
     }
 
     /// <summary>

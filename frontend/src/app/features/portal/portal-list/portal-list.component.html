@@ -399,7 +399,7 @@
   CELL TEMPLATES
   =============================================================================
 
-  All FIVE MUST stay at the top level, outside every control-flow block: the component
+  All SEVEN MUST stay at the top level, outside every control-flow block: the component
   resolves them with static view queries so that the column descriptors can be assembled in
   `ngOnInit`, and a template nested inside an @if block is not yet in the view at that
   point. The component reports a missing one by name rather than rendering a blank column.
@@ -408,6 +408,33 @@
   template also takes `let-column="column"`, because it serves TWO columns and the key is what
   tells them apart.
 -->
+
+<!--
+  Row 0: the row TITLE, which is also the record screen's only way in.
+
+  ⚠ MAJOR (reachability) — THE ROUTE `/portals/:portalId` HAD NO INBOUND AFFORDANCE ANYWHERE IN THE
+      APPLICATION. It is part of the frozen route table and it renders the portal RECORD form, but
+      every affordance that named a portal went either to the create form or to the settings child
+      route, so the record screen could be reached only by typing its address. The row's own title is
+      the affordance a person would look for, so it becomes the link.
+
+      NOTHING VISIBLE CHANGES EXCEPT THE LINK ITSELF. The characters are interpolated from the same
+      contract member the bound column read, so the text is identical; the cell is still the row's
+      `<th scope="row">`, because the column descriptor still declares it the row header.
+
+      NO `aria-label` HERE, DELIBERATELY. The title is the link's accessible name, which is what makes
+      it addressable by voice and what WCAG 2.5.3 asks for; a composed label would REPLACE the name
+      with a sentence and a speech-input user saying the portal's name would match nothing. Where the
+      link LEADS is carried as a description instead, so it is announced after the name.
+-->
+<ng-template #portalNameCell let-portal>
+  <a
+    class="portal-list__record-link"
+    [routerLink]="recordLinks()[portal.portalId]"
+    [attr.title]="recordLinkDescription(portal)"
+    >{{ portal.portalName }}</a
+  >
+</ng-template>
 
 <!--
   Row 1: the settings affordance.
@@ -632,6 +659,16 @@
     <span class="portal-list__fee-qualifier">{{ negativeFeeQualifier }}</span>
   } @else {
     {{ hostingFeeText(portal) }}
+  }
+  <!--
+    SEC-F17. THE APPROXIMATION QUALIFIER, ON THE ROWS THAT NEED IT AND NOWHERE ELSE. `Portals.HostFee` is
+    SQL `money` and crosses the wire as a JSON number, so above the exact-cents bound the figure painted
+    above may already differ from the stored one. The cell says so rather than correcting it, because the
+    stored digits are gone before this template runs. The same disclosure exists on the role listing, which
+    is where the guard was first written; this listing formatted to two decimals with no guard at all.
+  -->
+  @if (isHostFeeApproximate(portal)) {
+    <span class="portal-list__fee-qualifier">{{ approximateFeeQualifier }}</span>
   }
 </ng-template>
 

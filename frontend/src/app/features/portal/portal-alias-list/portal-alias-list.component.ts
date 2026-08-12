@@ -389,6 +389,7 @@ import { RouterLink } from '@angular/router';
 import type { OnInit } from '@angular/core';
 import type { AbstractControl, ValidationErrors } from '@angular/forms';
 
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { PortalStore } from '../../../core/state/portal.store';
 import {
@@ -1445,7 +1446,6 @@ type PendingOperation = 'none' | 'list' | 'create' | 'update' | 'delete';
     FormFieldComponent,
     LoadingSpinnerComponent,
     PageHeaderComponent,
-    FocusFirstInvalidDirective,
   ],
   templateUrl: './portal-alias-list.component.html',
   styleUrl: './portal-alias-list.component.scss',
@@ -1646,6 +1646,30 @@ export class PortalAliasListComponent implements OnInit {
   // ---------------------------------------------------------------------------
   //  THE FORM
   // ---------------------------------------------------------------------------
+
+  /**
+   * Reports this screen's unsaved entry to the tracker that guards both ways of leaving it.
+   *
+   * ⚠ THE ROUTE DECLARES `unsavedChangesGuard` AND THIS SCREEN USED TO REGISTER NOTHING, so the gate
+   * was answered by a reflective sweep over this component's fields. That sweep is gone, because it
+   * pulled `@angular/forms` into the eagerly loaded bundle for an application whose every form screen
+   * is lazily loaded, and this registration is what replaces it. Without it the declaration on
+   * `portals/:portalId/aliases` would be inert and a half-typed alias would be discarded silently.
+   *
+   * ⚠ `loading()` COVERS ALL FOUR REQUESTS THIS SCREEN MAKES, not just the write, and that is the
+   * right reading rather than an approximation. It is the store's single alias in-flight flag, raised
+   * by the list read as well as by create, update and delete — and during a list read the form is
+   * either closed or untouched, so the extra coverage costs nothing and the term does what it is
+   * here for: an alias already on its way to the server is not unsaved entry, and prompting about it
+   * would ask the operator to confirm discarding work they have already committed.
+   *
+   * A cancelled editor cannot warn: {@link closeForm} resets the one control this group holds, and a
+   * group whose every control is pristine is itself pristine. The grid's own affordances are not a
+   * form, so removing a row is untouched by this.
+   */
+  private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
+    () => this.form.dirty && this.loading() === false,
+  );
 
   /**
    * The inline create and edit form: one typed, non-nullable control.

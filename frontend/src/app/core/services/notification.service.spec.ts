@@ -209,6 +209,37 @@ describe('NotificationService', () => {
         'error',
       ]);
     });
+
+    it('keeps a repeat that differs in whether it outlives a navigation', () => {
+      // ⚠ THIS MEMBER WAS MISSING FROM THE IDENTITY TEST, AND THE CONSEQUENCE WAS A LOST MESSAGE. It is
+      // stored on the entry and it governs whether the sweep discards it, so two entries agreeing on
+      // every other member are still different reports when one claims the exemption and the other does
+      // not - and collapsing them imposed the FIRST one's opinion on the second. An entry raised to be
+      // READ AFTER A REDIRECT was therefore folded into an identical earlier one that had not claimed the
+      // exemption, and then swept away by the very navigation it existed to survive: the operator was
+      // redirected and the explanation was gone.
+      //
+      // The two shapes genuinely meet in one queue rather than only in a test. A session ending
+      // un-asked-for raises its sentence to survive the redirect that follows, while ordinary refusals
+      // raise wording without any such claim.
+      service.notify('warning', 'the same words', null, false);
+      service.notify('warning', 'the same words', null, true);
+
+      expect(service.notifications().map((entry) => entry.survivesNavigation))
+        .withContext('two lifetimes are two reports, exactly as two references are')
+        .toEqual([false, true]);
+    });
+
+    it('collapses a repeat that agrees on the navigation opinion too', () => {
+      // The narrowing above must not become a licence to keep every repeat. Two entries agreeing on
+      // every stored member are still one report and are still collapsed, which is what keeps a genuinely
+      // duplicated raise from appearing twice.
+      service.notify('warning', 'the same words', null, true);
+      service.notify('warning', 'the same words', null, true);
+
+      expect(service.notifications().length).toBe(1);
+      expect(service.notifications()[0]?.survivesNavigation).toBeTrue();
+    });
   });
 
   describe('severity vocabulary', () => {

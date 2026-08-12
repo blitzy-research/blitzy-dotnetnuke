@@ -700,12 +700,19 @@ export interface PortalDetail {
    * save composed against a revision someone else has since replaced, with
    * `409 portal.concurrency_conflict`, instead of applying it.
    *
-   * **Nullable, and a null must be sent as a null.** An API build that serves no token
-   * must not make a portal undecodable, so absence is tolerated and surfaces as `null`
-   * rather than as a substituted value. A request carrying no token is still applied — it
-   * is a last-writer-wins update — so a screen must never invent one to fill the gap: a
-   * fabricated token that happened to match would defeat the very check it appears to
-   * satisfy.
+   * **REQUIRED ON THE WAY IN, nullable on the way out, and the asymmetry is the server's.**
+   * `PortalDetailDto.ConcurrencyToken` is declared `public string ... = string.Empty` — a
+   * non-nullable member that the mapper always populates — so a response that omits it or
+   * serves a null is a malformed response and the decoder says so rather than absorbing it.
+   * Widening it to `string | null` here was the defect: a null decoded silently, flowed into
+   * {@link UpdatePortalRequest.concurrencyToken}, which the server permits as a
+   * last-writer-wins update, and the optimistic check the token exists to perform was skipped
+   * with nothing anywhere reporting that it had been. The REQUEST member stays nullable, which
+   * is what the server actually permits, so that path is unchanged.
+   *
+   * **Never invented.** The empty string is the server's unset spelling and is carried as
+   * received; a screen must not substitute or fabricate a value, because a fabricated token
+   * that happened to match would defeat the very check it appears to satisfy.
    *
    * **One token serves both portal write paths.** The detail read and the settings read
    * publish the same value for the same unchanged record, so a token obtained from either
@@ -720,7 +727,7 @@ export interface PortalDetail {
    * administrator had opened. The token is the target's answer to that and is recorded as
    * an addition in `MIGRATION_NOTES.md`.
    */
-  readonly concurrencyToken: string | null;
+  readonly concurrencyToken: string;
 }
 
 
@@ -869,8 +876,13 @@ export interface PortalSettings {
    * so the settings screen and the edit screen cannot disagree about which revision they
    * are looking at, and a token read here is honoured by either portal write. Read it,
    * send it back on {@link UpdatePortalSettingsRequest.concurrencyToken}, never invent it.
+   *
+   * REQUIRED, matching `PortalSettingsDto.ConcurrencyToken`, which is declared
+   * `public string ... = string.Empty` and is always populated by the mapper. See the
+   * counterpart's note for why widening it to `string | null` skipped the optimistic check
+   * silently.
    */
-  readonly concurrencyToken: string | null;
+  readonly concurrencyToken: string;
 }
 
 
@@ -1344,12 +1356,15 @@ export const decodePortalListItem: Decoder<PortalListItem> = objectOf<PortalList
  * client simply did not know. `guid` is required and non-nullable: the server generates it
  * at creation and every portal has one.
  *
- * `concurrencyToken` is decoded as a NULLABLE STRING and nothing more. It is deliberately not
+ * `concurrencyToken` is decoded as a REQUIRED STRING and nothing more. It is deliberately not
  * validated for shape, length or encoding: it is the server's own opaque marker, and a
  * decoder that asserted a format would start rejecting valid tokens the moment the server
- * changed how it mints them. Absent is tolerated for the same reason — an API build that
- * serves no token must not make a portal undecodable — and the absence is then visible to
- * the screen as `null` rather than hidden behind a substituted value.
+ * changed how it mints them. What it IS checked for is presence, because
+ * `PortalDetailDto.ConcurrencyToken` is a non-nullable member the mapper always populates, so
+ * a response omitting it is malformed. Tolerating absence was the defect: the null decoded
+ * silently, reached a write the server treats as last-writer-wins, and the optimistic check
+ * was skipped with nothing anywhere saying so. The empty string is the server's own unset
+ * spelling and is carried through as received.
  */
 export const decodePortalDetail: Decoder<PortalDetail> = objectOf<PortalDetail>({
   portalId: decodeInteger,
@@ -1398,7 +1413,12 @@ export const decodePortalDetail: Decoder<PortalDetail> = objectOf<PortalDetail>(
   timeZoneOffset: nullable(decodeInteger),
   homeDirectory: nullable(decodeString),
   aliases: nullable(arrayOf(decodePortalAlias)),
-  concurrencyToken: nullable(decodeString),
+  // ⚠ REQUIRED, NOT NULLABLE, and `nullable(...)` here was the defect. The member is non-nullable on
+  // `PortalDetailDto` and always populated, so a missing or null token is a malformed response: tolerating
+  // it decoded a null that flowed into a write the server treats as last-writer-wins, skipping the
+  // optimistic check with nothing reporting it. The request member stays nullable, which is what the
+  // server permits.
+  concurrencyToken: decodeString,
 });
 
 /**
@@ -1447,5 +1467,6 @@ export const decodePortalSettings: Decoder<PortalSettings> = objectOf<PortalSett
   timeZoneOffset: nullable(decodeInteger),
   homeDirectory: nullable(decodeString),
   guid: decodeString,
-  concurrencyToken: nullable(decodeString),
+  // Required for the same reason as its detail counterpart, and from the same server derivation.
+  concurrencyToken: decodeString,
 });

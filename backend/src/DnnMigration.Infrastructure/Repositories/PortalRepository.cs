@@ -69,6 +69,18 @@ internal sealed class PortalRepository : IPortalRepository
     private const string DefaultSortProperty = "PortalName";
 
     /// <summary>
+    /// Character that removes the special meaning of a <c>LIKE</c> metacharacter in the name pattern
+    /// this repository builds.
+    /// </summary>
+    /// <remarks>
+    /// Declared once and passed explicitly to the <c>LIKE</c> it is used with, because SQL Server has
+    /// no default escape character: without an <c>ESCAPE</c> clause a backslash in a pattern is an
+    /// ordinary literal, so the escaping performed by <see cref="LikePrefixPattern(string)"/> would
+    /// silently do nothing and a caller's own metacharacters would go on acting as pattern syntax.
+    /// </remarks>
+    private const string LikeEscapeCharacter = "\\";
+
+    /// <summary>
     /// The page tally reported for a portal that does not exist or records no administration page.
     /// </summary>
     /// <remarks>
@@ -155,12 +167,34 @@ internal sealed class PortalRepository : IPortalRepository
             //
             // The WILDCARD HARDENING is kept, and it is a separate concern from the predicate's shape.
             // The legacy pattern was string concatenation, so a caller's own `%` or `_` acted as a
-            // pattern and a single per cent sign matched every portal in the installation. Expressed
-            // as a relational StartsWith the caller's text is DATA: those characters match themselves.
-            // Case is folded on both sides so the answer does not depend on the collation the
-            // installation happens to carry, which is what the integration suite asserts.
-            string wanted = nameFilter.Trim().ToLowerInvariant();
-            query = query.Where(p => p.PortalName.ToLower().StartsWith(wanted));
+            // pattern and a single per cent sign matched every portal in the installation. Every
+            // metacharacter in the caller's text is escaped here instead, so those characters match
+            // themselves and the only live wildcard is the one this repository appends.
+            //
+            // ⚠ THE COLUMN IS LEFT UNWRAPPED, AND FOLDING ITS CASE HERE WAS BOTH SLOWER AND LESS
+            // FAITHFUL. The predicate used to read `p.PortalName.ToLower().StartsWith(wanted)`, which
+            // emits `LOWER([PortalName]) LIKE @p`. A function applied to the column makes the
+            // predicate NON-SARGABLE: the server can no longer seek on `PortalName`, so every filtered
+            // read - and the COUNT that shares this query - degrades to a full scan of the tenant
+            // table, and no index a deployment adds can ever be used. An unwrapped column with a
+            // prefix pattern is the one shape SQL Server can seek.
+            //
+            // Faithfulness points the same way, which is what settles it. The terminal legacy
+            // procedure filtered with a bare `WHERE PortalName LIKE @NameToMatch`
+            // (`04.04.00.SqlDataProvider`, `GetPortalsByName`), so the case-insensitivity the legacy
+            // grid exhibited came from the DATABASE COLLATION and from nothing else. Folding both
+            // sides in the application therefore did not preserve legacy behaviour - it replaced a
+            // collation-governed comparison with an invariant-culture one, which answers differently
+            // on a case-SENSITIVE installation: the legacy screen would match nothing there, and the
+            // folded predicate matches everything with the right letters. Deferring to the collation
+            // reproduces whichever answer the installation actually gave. Rule T5.
+            //
+            // The integration suite asserts case-insensitive prefix matching, and it passes because
+            // the test database carries a case-insensitive collation - which is the same reason the
+            // legacy grid behaved that way, now asserted through the same mechanism rather than
+            // around it.
+            string pattern = LikePrefixPattern(nameFilter.Trim());
+            query = query.Where(p => EF.Functions.Like(p.PortalName, pattern, LikeEscapeCharacter));
         }
 
         query = ApplyOrder(query, sortBy, descending);
@@ -732,7 +766,7 @@ internal sealed class PortalRepository : IPortalRepository
         // chooses between Added and Modified by asking whether the key "is set", and it reads an int
         // key of 0 as unset. dbo.Portals.PortalID is declared IDENTITY(-1, 1)
         // (01.00.00.SqlDataProvider:L77, re-declared by the Tmp_Portals rebuild at
-        // 01.00.05.SqlDataProvider:L1366, and mirrored by the fixture at DnnSchema.sql:51), so the
+        // 01.00.05.SqlDataProvider:L1366, and recorded in Schema/TerminalSchema.manifest), so the
         // FIRST TWO tenants of an installation bear -1 and 0 - which means Update(portal) on a detached
         // portal 0 staged an INSERT, silently duplicated the tenant under a freshly generated key and
         // left the addressed row exactly as it was, while still reporting success. Assigning
@@ -831,5 +865,49 @@ internal sealed class PortalRepository : IPortalRepository
                 ? query.OrderByDescending(p => p.PortalName).ThenByDescending(p => p.PortalId)
                 : query.OrderBy(p => p.PortalName).ThenBy(p => p.PortalId),
         };
+    }
+    /// <summary>
+    /// Turns literal filter text into a <c>LIKE</c> pattern that matches it as a prefix.
+    /// </summary>
+    /// <param name="text">The literal text to match at the start of a tenant name.</param>
+    /// <returns>
+    /// A pattern for use with <see cref="LikeEscapeCharacter"/> as the escape character, matching any
+    /// name that begins with <paramref name="text"/>.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Every metacharacter in the caller's text is escaped, so the match is a literal prefix rather than
+    /// a pattern the caller can influence. Only the appended trailing wildcard is left live, which is
+    /// the shape the legacy filter had: the terminal <c>GetPortalsByName</c> received its argument with a
+    /// single trailing wildcard already attached and applied no escaping of its own, so a per cent sign
+    /// typed into the filter box acted as a wildcard and matched every tenant in the installation.
+    /// </para>
+    /// <para>
+    /// The escape character is replaced FIRST, and the order matters rather than being incidental. Were
+    /// it replaced after the others, the backslash this method had just introduced in front of a
+    /// metacharacter would itself be escaped, leaving a literal backslash followed by a still-live
+    /// metacharacter - so escaping would produce precisely the pattern it was meant to prevent.
+    /// </para>
+    /// <para>
+    /// Three metacharacters are escaped and a fourth deliberately is not. <c>%</c> and <c>_</c> are the
+    /// SQL wildcards; <c>[</c> opens a character-class range. A closing <c>]</c> needs no escape because
+    /// it has no meaning unless a range was opened, and escaping the opener is what guarantees none was.
+    /// </para>
+    /// <para>
+    /// Deliberately identical to the account repository's helper of the same name, down to the escape
+    /// order and the escaped set. The two listings share a filter affordance and must answer a typed
+    /// metacharacter the same way; a shared home for it would have to sit in the persistence layer's
+    /// public surface, which is a wider commitment than two private helpers of eight lines.
+    /// </para>
+    /// </remarks>
+    private static string LikePrefixPattern(string text)
+    {
+        string literal = text
+            .Replace(LikeEscapeCharacter, LikeEscapeCharacter + LikeEscapeCharacter, StringComparison.Ordinal)
+            .Replace("%", LikeEscapeCharacter + "%", StringComparison.Ordinal)
+            .Replace("_", LikeEscapeCharacter + "_", StringComparison.Ordinal)
+            .Replace("[", LikeEscapeCharacter + "[", StringComparison.Ordinal);
+
+        return literal + "%";
     }
 }

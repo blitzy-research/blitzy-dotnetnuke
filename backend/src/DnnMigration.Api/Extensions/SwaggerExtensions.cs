@@ -262,8 +262,15 @@ public static class SwaggerExtensions
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The default is off: absent configuration, a blank value, or anything other than a parsable
-    /// <see langword="true"/> all leave the console unpublished. Opting in does not make it public either
+    /// The default is off: absent configuration, an empty value, and a value that parses as
+    /// <see langword="false"/> all leave the console unpublished. A value that is not a boolean at all -
+    /// <c>yes</c>, <c>on</c>, <c>1</c>, whitespace - is a different case and is deliberately NOT tolerated:
+    /// the configuration binder refuses to convert it, so the pipeline never finishes composing and the
+    /// process does not start, naming this key and the offending value. That is the safe direction in both
+    /// senses - no console is published, and an operator who typed <c>yes</c> is told so on start-up rather
+    /// than left to wonder why an opt-in they believe they set has no effect. Treating an unconvertible value
+    /// as consent withheld would make a misconfigured security switch completely silent, which is worse.
+    /// Opting in does not make it public either
     /// - outside development the mounted stages run only for a caller who has already authenticated, and
     /// an anonymous request passes straight through and is refused downstream on exactly the same terms as
     /// any address that matches no endpoint, so the response distinguishes neither a console that is off

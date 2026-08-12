@@ -13,27 +13,32 @@
  * ---------------------------------------------------------------------------
  * WHAT THIS FILE IS ACTUALLY GUARDING AGAINST
  * ---------------------------------------------------------------------------
- * The gate carries no per-screen code, which is its principal virtue and also the source of
- * every way it can silently break. Each of these fails without any compiler complaint and
- * without any other specification noticing:
+ * The gate reads ONE source of truth - the probes mounted screens have registered with
+ * {@link UnsavedChangesTracker} - and each of the following fails without any compiler complaint
+ * and without any other specification noticing:
  *
- *   1. **A form shape going undiscovered.** Three shapes occur in the fourteen screens: a plain
- *      `FormGroup` field, TWO fields where only one is mounted, and a `Signal<FormGroup>` that is
- *      rebuilt during the screen's life. A gate that handled only the first would protect twelve
- *      screens and silently abandon two — and the two it abandoned would be the site-settings
- *      screen and the profile screen, one of which is where the loss was measured.
- *   2. **Invoking arbitrary component methods.** Unwrapping a signal means calling a function.
- *      If the test were `typeof value === 'function'` rather than `isSignal`, the gate would call
- *      every zero-argument method on the component during a navigation. That is not a style
- *      point: it would run business logic as a side effect of leaving a screen.
+ *   1. **A protected route reaching no probe.** The gate is declared on eighteen routes naming
+ *      fourteen components, and a component that declares the gate without registering a probe is
+ *      not merely unprotected: it LOOKS protected in the route table, which is worse than an
+ *      obvious omission. The correspondence is asserted below by walking the real route tables,
+ *      and each of the fourteen components proves its own probe in its own specification.
+ *   2. **Inspecting the deactivating component.** The gate used to reflect over the component's
+ *      fields looking for a dirty `FormGroup`. That is gone, and it must stay gone: it made
+ *      `@angular/forms` reachable from the eager import graph of an application whose every form
+ *      screen is lazily loaded, and it could only ever see dirty state that happened to be a
+ *      `FormGroup` FIELD - so state held in a signal, in a child component or in anything else
+ *      was silently unprotected while appearing covered. The case below proves the component is
+ *      not read at all, which is the property that keeps the eager graph forms-free.
  *   3. **Challenging a departure the application itself initiated.** A save that succeeded and
  *      then navigated away would be met with a prompt offering to discard the work that had just
  *      been saved — turning the fix into a worse defect than the fault. Worse still on the
  *      session-lost path, where a prompt would offer to keep the operator on a screen whose
  *      session no longer exists.
- *   4. **Warning about a search box.** Every listing's filter control is a `FormGroup`, so a
- *      predicate applied indiscriminately would warn about "unsaved changes" for a search term
- *      the operator had typed and already seen applied.
+ *   4. **Warning about a search box.** Every listing's filter control is a `FormGroup`. Under
+ *      reflection that was a live hazard held back by reading `canDeactivate` off the active
+ *      route; under registration it cannot arise, because a listing registers no probe. The route
+ *      reader survives for the correspondence walk, and the negative half of that walk is what
+ *      keeps the four listings observably outside the protected set.
  *   5. **Reversing the confirmation polarity.** `confirm` answers "leave", and the router wants
  *      "may proceed". They happen to agree, which is exactly why an accidental negation would
  *      look plausible and would discard work on every confirmation.
@@ -52,11 +57,12 @@ import {
   UNSAVED_CHANGES_PROMPT,
   UnsavedChangesTracker,
   activeRouteGuardsUnsavedChanges,
-  holdsUnsavedEdits,
   unsavedChangesGuard,
 } from './unsaved-changes.guard';
 
-import type { ActivatedRouteSnapshot, Navigation, RouterStateSnapshot } from '@angular/router';
+import { APP_ROUTES } from '../../app.routes';
+
+import type { ActivatedRouteSnapshot, Navigation, Route, RouterStateSnapshot } from '@angular/router';
 
 describe('unsavedChangesGuard', () => {
   let router: Router;
@@ -133,16 +139,89 @@ describe('unsavedChangesGuard', () => {
     } as Navigation);
   }
 
-  describe('deciding whether a screen holds unsaved edits', () => {
-    it('lets a pristine form leave without asking anything', () => {
+  /**
+   * Registers a probe reporting unsaved entry, exactly as a protected screen does.
+   *
+   * ⚠ THE FIXTURE IS THE CONTRACT NOW. The gate used to be handed a component and reflect over its
+   * fields for a dirty `FormGroup`; it is handed a registration instead, because the screen is the
+   * only party that knows what "unsaved" means for it - which form, whether a save is in flight,
+   * whether the editor is even open. Everything below therefore states dirtiness the way production
+   * states it.
+   *
+   * `runInInjectionContext` because `watch` attaches the release to the caller's `DestroyRef`, the
+   * way a component field initialiser does.
+   */
+  function screenHoldsUnsavedEntry(): void {
+    TestBed.runInInjectionContext(() => {
+      TestBed.inject(UnsavedChangesTracker).watch(() => true);
+    });
+  }
+
+  describe('deciding whether to challenge a departure', () => {
+    it('lets a clean application leave without asking anything', () => {
       expect(runGuard({ form: form(false) })).toBeTrue();
       expect(confirmSpy)
         .withContext('a form nobody has edited must not interrupt a departure')
         .not.toHaveBeenCalled();
     });
 
-    it('lets a screen with no form at all leave without asking anything', () => {
-      expect(runGuard({ heading: 'Portals', rows: [1, 2, 3] })).toBeTrue();
+    it('lets a screen that registered no probe at all leave without asking anything', () => {
+      // The four listing screens. Each holds a filter control that IS a `FormGroup` and is dirty as
+      // soon as a term is typed, and none of them registers a probe - so a typed search term cannot
+      // reach this gate. Under the reflective predicate this was a live misfire held back only by
+      // reading the route table; under registration it is structurally impossible.
+      expect(runGuard({ searchForm: form(true), rows: [1, 2, 3] })).toBeTrue();
+      expect(confirmSpy).not.toHaveBeenCalled();
+    });
+
+    it('challenges once, with the authored sentence, when a mounted screen holds unsaved entry', () => {
+      screenHoldsUnsavedEntry();
+
+      expect(runGuard({})).toBeFalse();
+      expect(confirmSpy).toHaveBeenCalledOnceWith(DISCARD_CHANGES_PROMPT);
+    });
+
+    it('does not read the deactivating component AT ALL, which is what keeps forms out of the eager bundle', () => {
+      /*
+       * ⚠ THE PROPERTY THIS WHOLE CHANGE EXISTS FOR, AND IT IS ASSERTED IN BOTH DIRECTIONS.
+       *
+       * Positively: a component carrying a dirty `FormGroup` under every field name the application
+       * actually uses is NOT challenged, because it registered nothing. Reintroducing a reflective
+       * sweep would fail here immediately.
+       *
+       * Negatively: nothing on the component is touched. The accessors below throw, and a getter
+       * enumerated by a sweep would turn a navigation into an unhandled error rather than a
+       * mis-decision. The counter proves the fields were never reached rather than merely survived.
+       *
+       * The cost of the sweep was not theoretical. `unsaved-changes.guard.ts` is imported by
+       * `app.routes.ts`, which is eager, so a `FormGroup` reference here put `@angular/forms` in the
+       * eager import graph of an application in which every screen holding a form is lazily loaded.
+       */
+      let reads = 0;
+      const component = {
+        get form(): never {
+          reads += 1;
+          throw new Error('the gate must not read the component');
+        },
+        get editForm(): never {
+          reads += 1;
+          throw new Error('the gate must not read the component');
+        },
+        get createForm(): never {
+          reads += 1;
+          throw new Error('the gate must not read the component');
+        },
+        loadEverything: (): never => {
+          reads += 1;
+          throw new Error('the gate must not call component methods');
+        },
+      };
+
+      expect(() => runGuard(component)).not.toThrow();
+      expect(runGuard(component))
+        .withContext('a dirty form the screen did not register is not this gate’s business')
+        .toBeTrue();
+      expect(reads).withContext('no field and no method on the component is reached').toBe(0);
       expect(confirmSpy).not.toHaveBeenCalled();
     });
 
@@ -154,83 +233,41 @@ describe('unsavedChangesGuard', () => {
       expect(confirmSpy).not.toHaveBeenCalled();
     });
 
-    it('challenges a dirty form held as a plain field', () => {
-      expect(runGuard({ form: form(true) })).toBeFalse();
-      expect(confirmSpy).toHaveBeenCalledOnceWith(DISCARD_CHANGES_PROMPT);
-    });
-
-    it('challenges a dirty form whatever the field is called', () => {
-      // No naming convention is relied on, so a screen is protected without having to be
-      // remembered. `editForm` is the real name on the portal screen.
-      expect(runGuard({ editForm: form(true) })).toBeFalse();
-    });
-
-    it('challenges a dirty form held inside a SIGNAL', () => {
+    it('challenges whatever shape the screen holds its entry in, because the screen owns the question', () => {
       /*
-       * The profile screen's shape. Its form is rebuilt when the property definitions arrive, so
-       * a reference captured once would go stale — the gate has to read the signal at the moment
-       * of departure. A gate that ignored signals would leave this screen unprotected, and
-       * nothing else in the suite would notice.
+       * The three shapes that used to need three separate reflective cases - a plain field, two
+       * fields of which one is mounted, and a form rebuilt into a signal during the screen's life -
+       * collapse into this one. A probe is a closure over whatever the screen actually holds, so a
+       * screen keeping its entry in a signal, in a child component, or in something that is not a
+       * `FormGroup` at all is protected on exactly the same terms. That is a widening of coverage
+       * rather than a narrowing: the sweep could only ever see a `FormGroup` field.
        */
-      const held = signal(form(true));
+      const rebuilt = signal(form(false));
 
-      expect(runGuard({ form: held })).toBeFalse();
-      expect(confirmSpy).toHaveBeenCalledOnceWith(DISCARD_CHANGES_PROMPT);
-    });
+      TestBed.runInInjectionContext(() => {
+        TestBed.inject(UnsavedChangesTracker).watch(() => rebuilt().dirty);
+      });
 
-    it('re-reads the signal rather than a value captured earlier', () => {
-      const source = signal(form(false));
-      const component = { form: computed(() => source()) };
+      expect(runGuard({})).withContext('pristine at first').toBeTrue();
 
-      expect(runGuard(component)).withContext('pristine at first').toBeTrue();
+      // The screen replaces its form, as the profile screen does when its definitions arrive.
+      rebuilt.set(form(true));
 
-      // The screen replaces its form, exactly as the profile screen does when its definitions
-      // arrive. The gate must see the replacement, not the group it saw a moment ago.
-      source.set(form(true));
-
-      expect(runGuard(component)).withContext('and dirty once the form is replaced').toBeFalse();
-    });
-
-    it('challenges when EITHER of two forms is dirty', () => {
-      /*
-       * The add-portal and edit-portal screen holds `createForm` and `editForm`, only one of
-       * which is mounted at a time. A gate that stopped at the first form it found would answer
-       * from whichever happened to be enumerated first — half right, and unpredictably so.
-       */
-      expect(runGuard({ createForm: form(false), editForm: form(true) })).toBeFalse();
-      confirmSpy.calls.reset();
-      expect(runGuard({ createForm: form(true), editForm: form(false) })).toBeFalse();
-    });
-
-    it('does not invoke a component method while deciding', () => {
-      /*
-       * ⚠ THE SAFETY PROPERTY. `isSignal` is what separates "a signal I may read" from "any
-       * zero-argument function", and without it the gate would call component methods as a side
-       * effect of leaving a screen. The method here throws so that an invocation cannot be
-       * mistaken for a pass, and the counter proves it was never reached rather than merely
-       * survived.
-       */
-      let invocations = 0;
-      const component = {
-        form: form(false),
-        loadEverything: (): never => {
-          invocations += 1;
-          throw new Error('the gate must not call component methods');
-        },
-      };
-
-      expect(() => runGuard(component)).not.toThrow();
-      expect(invocations)
-        .withContext('a plain function is never called; only a real signal is read')
-        .toBe(0);
+      expect(runGuard({})).withContext('and dirty once the form is replaced').toBeFalse();
     });
   });
 
   describe('honouring the operator’s answer', () => {
+    // Every case in this block needs a screen holding unsaved entry; the answer is what is under
+    // test, not the detection.
+    beforeEach(() => {
+      screenHoldsUnsavedEntry();
+    });
+
     it('allows the departure when the operator chooses to leave', () => {
       confirmSpy.and.returnValue(true);
 
-      expect(runGuard({ form: form(true) })).toBeTrue();
+      expect(runGuard({})).toBeTrue();
     });
 
     it('keeps the operator where they are when they decline', () => {
@@ -239,11 +276,17 @@ describe('unsavedChangesGuard', () => {
       // ⚠ POLARITY. `confirm` answers "leave" and the router wants "may proceed"; they agree, so
       // an accidental negation would read plausibly and would discard work on every
       // confirmation. Both directions are pinned so neither can be flipped unnoticed.
-      expect(runGuard({ form: form(true) })).toBeFalse();
+      expect(runGuard({})).toBeFalse();
     });
   });
 
   describe('telling an application-initiated departure from an operator-initiated one', () => {
+    // Likewise: the screen holds unsaved entry throughout, and what varies is what initiated the
+    // departure.
+    beforeEach(() => {
+      screenHoldsUnsavedEntry();
+    });
+
     it('does not challenge a departure the APPLICATION initiated and replaced', () => {
       /*
        * Every post-success and post-failure departure in this application replaces. Challenging
@@ -256,7 +299,7 @@ describe('unsavedChangesGuard', () => {
        */
       navigationReplaces(true, 'imperative');
 
-      expect(runGuard({ form: form(true) })).toBeTrue();
+      expect(runGuard({})).toBeTrue();
       expect(confirmSpy)
         .withContext('the application moved the operator, so there is nothing to ask them')
         .not.toHaveBeenCalled();
@@ -268,11 +311,11 @@ describe('unsavedChangesGuard', () => {
       // guard reading that flag alone treated every press of Back as a departure the application had asked
       // for. A browser audit measured the result on a dirty `/roles/new`: a sidebar click prompted, and
       // `history.back()` changed the route with no prompt and discarded the edits. `beforeunload` does not
-      // cover it either - it is registered by three parties here and none of them sees a same-document
-      // navigation - so this gate was the only thing standing between the Back button and unsaved work.
+      // cover it either - the tracker registers it once and a same-document navigation does not fire it
+      // at all - so this gate was the only thing standing between the Back button and unsaved work.
       navigationReplaces(true, 'popstate');
 
-      expect(runGuard({ form: form(true) })).toBeFalse();
+      expect(runGuard({})).toBeFalse();
       expect(confirmSpy).toHaveBeenCalledOnceWith(DISCARD_CHANGES_PROMPT);
     });
 
@@ -282,7 +325,7 @@ describe('unsavedChangesGuard', () => {
       // arrives challenged rather than exempt - which is the direction this gate must fail in.
       navigationReplaces(true, 'hashchange');
 
-      expect(runGuard({ form: form(true) })).toBeFalse();
+      expect(runGuard({})).toBeFalse();
       expect(confirmSpy).toHaveBeenCalledOnceWith(DISCARD_CHANGES_PROMPT);
     });
 
@@ -294,14 +337,14 @@ describe('unsavedChangesGuard', () => {
       // popstate case above, which is where the defect actually lived.
       navigationReplaces(false);
 
-      expect(runGuard({ form: form(true) })).toBeFalse();
+      expect(runGuard({})).toBeFalse();
       expect(confirmSpy).toHaveBeenCalledOnceWith(DISCARD_CHANGES_PROMPT);
     });
 
     it('challenges when the navigation states no preference', () => {
       navigationReplaces(undefined);
 
-      expect(runGuard({ form: form(true) })).toBeFalse();
+      expect(runGuard({})).toBeFalse();
     });
 
     it('challenges when no navigation can be read at all', () => {
@@ -309,18 +352,7 @@ describe('unsavedChangesGuard', () => {
       // needed it is the safe direction; the alternative discards work silently.
       spyOn(router, 'getCurrentNavigation').and.returnValue(null);
 
-      expect(runGuard({ form: form(true) })).toBeFalse();
-    });
-  });
-
-  describe('the predicate the browser-exit channel shares', () => {
-    it('answers the same question the gate asks', () => {
-      // The shell's `beforeunload` handler imports this rather than restating it. Two definitions
-      // of "holding unsaved edits" would eventually disagree, and the disagreement would appear
-      // as a screen that warns when you click away but not when you reload.
-      expect(holdsUnsavedEdits({ form: form(true) })).toBeTrue();
-      expect(holdsUnsavedEdits({ form: form(false) })).toBeFalse();
-      expect(holdsUnsavedEdits(null)).toBeFalse();
+      expect(runGuard({})).toBeFalse();
     });
   });
 
@@ -353,6 +385,149 @@ describe('unsavedChangesGuard', () => {
       expect(activeRouteGuardsUnsavedChanges(testRouter))
         .withContext('and a form route must be')
         .toBeTrue();
+    });
+  });
+
+  describe('the correspondence between protected routes and probe-registering screens', () => {
+    /**
+     * Every screen the real route tables protect with this gate.
+     *
+     * ⚠ THIS LIST IS A TRIPWIRE, NOT DOCUMENTATION, and the obligation it enforces is easy to
+     * forget precisely because forgetting it produces no error. A route declaring
+     * `unsavedChangesGuard` whose component registers no probe with {@link UnsavedChangesTracker}
+     * is not merely unprotected - it LOOKS protected in the route table, and the gate will read it
+     * as clean and discard the operator's entry in silence. Under the reflective predicate the
+     * registration was implicit and this could not happen; under registration it can, so it is
+     * asserted.
+     *
+     * ⚠ WHAT TO DO WHEN THIS CASE FAILS. Do not simply add the name. Add, in the component:
+     * `private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(() => <this screen holds
+     * entry>);` - naming ITS form field, which is not always `form`, so reaching for `form` where the
+     * group is called something else would leave the screen unprotected while looking protected. Then
+     * add a case to that component's own specification asserting
+     * `TestBed.inject(UnsavedChangesTracker).isDirty()`, which is how each of these fourteen proves
+     * its own probe. Only then add the name here.
+     *
+     * ⚠ AND IT ALREADY EARNED ITS KEEP IN THE OTHER DIRECTION. The set was briefly fifteen screens
+     * across nineteen routes, the extra pair being the account self-service panel. That screen and its
+     * `:userId/services` address are withdrawn - the route table is frozen at twenty-five screens and
+     * names no member-services address - and this walk is what reported the stale expectation instead
+     * of letting a tripwire quietly guard a screen that no longer exists.
+     *
+     * Sorted, because the walk's order follows the route tables and a reordering there is not a
+     * change in the protected set.
+     */
+    const PROTECTED_SCREENS: readonly string[] = [
+      'MembershipSettingsComponent',
+      'ModuleFormComponent',
+      'ModuleImportComponent',
+      'ModuleSettingsComponent',
+      'PortalAliasListComponent',
+      'PortalFormComponent',
+      'PortalSettingsComponent',
+      'ProfileDefinitionListComponent',
+      'RoleAssignmentComponent',
+      'RoleFormComponent',
+      'RoleGroupFormComponent',
+      'UserFormComponent',
+      'UserPasswordComponent',
+      'UserProfileComponent',
+    ];
+
+    /**
+     * How many routes across every table declare the gate.
+     *
+     * Eighteen rather than nineteen: the account self-service panel and its `:userId/services` address
+     * are withdrawn, so the route that declared the gate for it is gone with it.
+     */
+    const PROTECTED_ROUTE_COUNT = 18;
+
+    /**
+     * The child routes of one route, resolving a lazily loaded feature table.
+     *
+     * @param route The route to descend into.
+     * @returns Its children, or an empty list when it has none.
+     */
+    async function childrenOf(route: Route): Promise<readonly Route[]> {
+      if (route.children !== undefined) {
+        return route.children;
+      }
+
+      if (route.loadChildren === undefined) {
+        return [];
+      }
+
+      const loaded: unknown = await route.loadChildren();
+
+      return Array.isArray(loaded) ? (loaded as readonly Route[]) : [];
+    }
+
+    /**
+     * The class name of the component one route mounts.
+     *
+     * Resolves `loadComponent` for real rather than reading the import path as text, so a route
+     * pointing at the wrong module is a failure here rather than a surprise at run time.
+     *
+     * @param route The route to resolve.
+     * @returns The component's class name, or a marker when the route mounts none.
+     */
+    async function componentNameOf(route: Route): Promise<string> {
+      if (route.component !== undefined) {
+        return route.component.name;
+      }
+
+      if (route.loadComponent === undefined) {
+        return '(route mounts no component)';
+      }
+
+      const loaded: unknown = await route.loadComponent();
+
+      if (typeof loaded === 'function') {
+        return loaded.name;
+      }
+
+      const asDefaultExport = loaded as { default?: { name?: string } };
+
+      return asDefaultExport.default?.name ?? '(unresolvable component)';
+    }
+
+    /**
+     * Walks the whole route tree and collects what the gate is declared on.
+     *
+     * @param routes The routes to walk.
+     * @param found Accumulates the component names and the route count.
+     */
+    async function walk(
+      routes: readonly Route[],
+      found: { names: Set<string>; routes: number },
+    ): Promise<void> {
+      for (const route of routes) {
+        if (route.canDeactivate?.includes(unsavedChangesGuard) === true) {
+          found.routes += 1;
+          found.names.add(await componentNameOf(route));
+        }
+
+        await walk(await childrenOf(route), found);
+      }
+    }
+
+    it('declares the gate only on screens that register an unsaved-entry probe', async () => {
+      const found = { names: new Set<string>(), routes: 0 };
+
+      await walk(APP_ROUTES, found);
+
+      // The count is asserted as well as the set, because two routes can name one component - the
+      // create and edit addresses of a portal, a module, a role and an account all do - so a new
+      // protected route on an ALREADY protected screen would change the count and not the set. It
+      // still deserves a deliberate decision, because the new address may hold its entry
+      // differently.
+      expect(found.routes)
+        .withContext('the number of routes declaring this gate; see PROTECTED_SCREENS on a failure')
+        .toBe(PROTECTED_ROUTE_COUNT);
+
+      expect([...found.names].sort())
+        .withContext('every protected screen must register a probe; see PROTECTED_SCREENS')
+        .toEqual([...PROTECTED_SCREENS].sort());
     });
   });
 });

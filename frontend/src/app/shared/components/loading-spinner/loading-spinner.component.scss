@@ -151,10 +151,10 @@
 // static one are the same drawing.
 @keyframes loading-spinner-rotate {
   from {
-    transform: rotate(0deg);
+    transform: rotate(var(--rotate-none));
   }
 
   to {
-    transform: rotate(360deg);
+    transform: rotate(var(--rotate-full-turn));
   }
 }

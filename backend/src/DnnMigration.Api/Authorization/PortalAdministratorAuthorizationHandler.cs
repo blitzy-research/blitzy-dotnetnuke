@@ -83,9 +83,14 @@ internal sealed class PortalAdministratorAuthorizationHandler
     /// <param name="requirement">The requirement being evaluated.</param>
     /// <returns>A task that completes when evaluation has finished.</returns>
     /// <remarks>
-    /// No cancellation token is available on the authorisation context, so none is passed. The reads the
-    /// evaluator performs are short and indexed, and abandoning them early would only trade a completed
-    /// decision for an abandoned one.
+    /// <para>
+    /// The framework's authorisation context carries no cancellation token, so the token comes from the
+    /// evaluator's <see cref="PortalAdministrationEvaluator.RequestAborted"/> instead - the request's own abort
+    /// token, reached through the accessor the evaluator already holds. Every read this decision makes is
+    /// therefore abandoned when the caller abandons the request, which is the rule the rest of this solution's
+    /// I/O follows; passing no token meant a disconnected caller still paid for a completed authorisation
+    /// decision that nothing would ever read.
+    /// </para>
     /// </remarks>
     protected override async Task HandleRequirementAsync(
         AuthorizationHandlerContext context,
@@ -94,8 +99,9 @@ internal sealed class PortalAdministratorAuthorizationHandler
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(requirement);
 
+        // MIGRATION: the request's abort token, not CancellationToken.None. See the remarks above.
         bool granted = await _evaluator
-            .IsPortalAdministratorAsync(context.User, CancellationToken.None)
+            .IsPortalAdministratorAsync(context.User, _evaluator.RequestAborted)
             .ConfigureAwait(false);
 
         if (granted)
@@ -160,8 +166,10 @@ internal sealed class HostAdministratorAuthorizationHandler
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(requirement);
 
+        // MIGRATION: the request's abort token, not CancellationToken.None - see
+        // PortalAdministrationEvaluator.RequestAborted for why the token is reached through the evaluator.
         bool granted = await _evaluator
-            .IsHostAccountAsync(context.User, CancellationToken.None)
+            .IsHostAccountAsync(context.User, _evaluator.RequestAborted)
             .ConfigureAwait(false);
 
         if (granted)
@@ -273,7 +281,9 @@ internal sealed class AccountOwnerAuthorizationHandler : AuthorizationHandler<Ac
             // the addressed record. A host account is exempt and is answered from the store rather than from
             // any claim the token carries, so an account demoted since sign-in loses the exemption
             // immediately.
-            if (await _evaluator.IsTenantBoundAsync(context.User, CancellationToken.None).ConfigureAwait(false))
+            // MIGRATION: the request's abort token, not CancellationToken.None - see
+            // PortalAdministrationEvaluator.RequestAborted.
+            if (await _evaluator.IsTenantBoundAsync(context.User, _evaluator.RequestAborted).ConfigureAwait(false))
             {
                 context.Succeed(requirement);
                 return;
@@ -289,8 +299,10 @@ internal sealed class AccountOwnerAuthorizationHandler : AuthorizationHandler<Ac
             return;
         }
 
+        // MIGRATION: the request's abort token, not CancellationToken.None - see
+        // PortalAdministrationEvaluator.RequestAborted.
         bool granted = await _evaluator
-            .IsPortalAdministratorAsync(context.User, CancellationToken.None)
+            .IsPortalAdministratorAsync(context.User, _evaluator.RequestAborted)
             .ConfigureAwait(false);
 
         if (granted)

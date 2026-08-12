@@ -13,6 +13,34 @@ import { NotificationService } from './notification.service';
 export type DeferredOutcome = 'pending' | 'succeeded' | 'failed';
 
 /**
+ * How a write that outlived its screen is to be reported when it did NOT succeed.
+ *
+ * ⚠ DELIBERATELY NOT A `ProblemDetails`, AND THE NARROWNESS IS THE POINT. What must not travel to a
+ * screen the operator has moved to is the failure DOCUMENT — its per-field messages have no fields to sit
+ * beside and its `detail` describes a form that is no longer open. What must travel is the two things an
+ * operator can act on anywhere: one sentence saying which operation did not complete, and the reference
+ * they quote when they ask about it. The shape admits nothing else, so a caller cannot widen this into a
+ * second failure surface by handing over a document.
+ */
+export interface DeferredFailureNotice {
+  /**
+   * One self-contained sentence naming the operation that did not complete.
+   *
+   * It has to make sense read on a screen unrelated to the one that attempted the write, so it names the
+   * operation rather than referring to "this form" or "the record above".
+   */
+  readonly message: string;
+
+  /**
+   * The support reference for the failure, or `null` when the failure carried none.
+   *
+   * A transport failure has no document and therefore no reference; `null` is the honest answer and the
+   * notification simply omits it rather than inventing one.
+   */
+  readonly reference: string | null;
+}
+
+/**
  * Reports the outcome of a write whose screen has already gone.
  *
  * ⚠ THE PROBLEM THIS EXISTS FOR IS A LIFETIME, NOT A MESSAGE. Every editing screen in this application
@@ -36,6 +64,14 @@ export type DeferredOutcome = 'pending' | 'succeeded' | 'failed';
  * operator went somewhere ELSE on purpose; the screen's own success path redirects to a listing, and
  * performing that redirect from here would yank them out of the screen they deliberately chose in order
  * to show them a confirmation. The confirmation alone is what was missing.
+ *
+ * ⚠ IT SPEAKS FOR BOTH OUTCOMES, AND IT DID NOT ALWAYS. An earlier revision announced successes and
+ * returned silently on failure, on the reasoning that a failure is a document belonging to the screen
+ * that attempted the write. The document is; the FACT is not. An operator who is told nothing believes
+ * the write committed, and discovers otherwise only when something downstream needs the record that is
+ * not there. The caller therefore supplies a bounded {@link DeferredFailureNotice} - one sentence and a
+ * reference - and the document stays in the store where returning to the screen still presents it in
+ * full. See the failure branch of {@link announceWhenSettled} for the argument in full.
  *
  * ⚠ IT IS NOT A SECOND PUBLISHER. Registration happens only where the screen has established that its
  * own bridge will NOT run - it is going out of existence with a write still outstanding - so exactly one
@@ -68,8 +104,17 @@ export class DeferredOutcomeService {
    * @param describeSuccess Words the confirmation, evaluated only once the verdict is `'succeeded'` so
    *   it may read values that arrive with the response. Returning `null` states the outcome silently,
    *   which is how a caller declines to announce a case it does not want announced.
+   * @param describeFailure Words the refusal, evaluated only once the verdict is `'failed'`, so it may
+   *   read the failure that arrived with the response. Returning `null` states the failure silently,
+   *   which is how a caller declines to relay a case it does not want relayed — a delete that has
+   *   already redirected, for instance. See the remarks on the failure branch for why the notice is
+   *   deliberately a bounded sentence and a reference rather than the failure document.
    */
-  announceWhenSettled(verdict: Signal<DeferredOutcome>, describeSuccess: () => string | null): void {
+  announceWhenSettled(
+    verdict: Signal<DeferredOutcome>,
+    describeSuccess: () => string | null,
+    describeFailure: () => DeferredFailureNotice | null,
+  ): void {
     // ⚠ ONE-SHOT, AND GUARDED TWICE ON PURPOSE. `watcher` releases the effect so it stops consuming the
     // slot it watches, and `reported` is what makes the release SAFE: an effect is scheduled rather than
     // run at creation, so the reference below is assigned before the body can execute - but a body that
@@ -95,13 +140,40 @@ export class DeferredOutcomeService {
           watcher?.destroy();
 
           if (settled === 'failed') {
-            // ⚠ A REFUSAL IS DELIBERATELY NOT RELAYED. Every failure this application presents is a
-            // document - a title, a detail, per-field messages and the support reference an operator
-            // quotes - and its home is the banner ON the screen that attempted the write. That screen is
-            // gone, so there is no field for a field message to sit beside and no form to correct; a
-            // decontextualised sentence thrown at whatever screen the operator has moved to would tell
-            // them something failed without showing them what or letting them fix it. The record is not
-            // lost: the store still holds the failure, so returning to the screen presents it in full.
+            // ⚠ A REFUSAL IS RELAYED, AND THIS IS AN INVERSION OF WHAT THIS BRANCH USED TO DO. It used to
+            // return here without a word, reasoning that every failure this application presents is a
+            // DOCUMENT - a title, a detail, per-field messages, a support reference - whose home is the
+            // banner ON the screen that attempted the write; that screen is gone, so there is no field for
+            // a field message to sit beside and no form to correct, and the store still holds the failure
+            // for anyone who returns.
+            //
+            // Every sentence of that reasoning is true about the DOCUMENT and false as a reason for
+            // silence. The operator submitted a write and moved on, and the outcome was that it did not
+            // happen: they believe the role was created, the account was saved, the change took effect.
+            // Nothing tells them otherwise - the confirmation they were owed simply never arrives, and an
+            // absent confirmation is indistinguishable from one they clicked away from. They discover the
+            // truth when something downstream depends on a record that is not there, which is both later
+            // and more expensive than being told now. "Returning to the screen presents it in full"
+            // presumes they have a reason to return, and the whole premise of this branch is that they do
+            // not know they have one.
+            //
+            // WHAT IS RELAYED IS DELIBERATELY NOT THE DOCUMENT. The caller supplies a bounded notice - one
+            // sentence naming the operation, plus the reference to quote - so nothing field-scoped or
+            // form-scoped travels to a screen where it would be meaningless. The document stays in the
+            // store, exactly as before, and is still presented in full on return. This branch adds the one
+            // fact that was missing and nothing more.
+            const notice: DeferredFailureNotice | null = describeFailure();
+
+            if (notice === null) {
+              return;
+            }
+
+            // Routed through `error` rather than `warning` because the write did not happen, and through
+            // the reference parameter rather than the sentence so the queue renders it the way every other
+            // failure reference is rendered. `survivesNavigation` is not set, for the reason recorded on
+            // the success path below.
+            this.notifications.error(notice.message, notice.reference);
+
             return;
           }
 

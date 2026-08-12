@@ -19,23 +19,22 @@
   </span>
 
   <!--
-    The heading level follows the component's ROLE, which is the caller's to declare.
+    A LEVEL TWO, ALWAYS, because every screen that mounts this component already carries a
+    level-one heading of its own.
 
-    Level two is the default and covers every in-page use: the page-header component owns the
-    page-level heading on those screens, so a level-one heading here would give each of them a
-    second one. The one caller that IS the whole screen - the route table's unmatched-address
-    fallback, which has no page header above it - asks for level one, because a document whose
-    only heading is a level two has a broken outline and a review measured exactly that.
+    Eight screens pair it with the shared page header, which owns the page-level heading, so a
+    level one here would give each of them a second. The ninth is the route table's
+    unmatched-address fallback, and it composes the page header too - so the outline is page
+    `<h1>` then this `<h2>` on every caller without exception, and no caller has to say which
+    kind it is.
 
-    Written as two elements rather than one dynamic tag because a heading level cannot be
-    interpolated; the class and the wording are identical in both branches, so only the level
-    differs and neither branch can drift in appearance from the other.
+    MIGRATION: a `standalone` input briefly selected between an `<h1>` and this `<h2>`, for a
+    caller that turned out not to exist: the fallback screen's component declares no such input,
+    so the route data that set it reached nothing and the `<h1>` branch was unreachable in
+    production. Both are removed rather than wired up, because wiring them would have produced
+    the second page-level heading the default exists to avoid.
   -->
-  @if (standalone) {
-    <h1 class="empty-state__title">Nothing to Display</h1>
-  } @else {
-    <h2 class="empty-state__title">Nothing to Display</h2>
-  }
+  <h2 class="empty-state__title">Nothing to Display</h2>
 
   <!--
     Interpolation escapes by default, which is what makes untrusted wording safe to render here.

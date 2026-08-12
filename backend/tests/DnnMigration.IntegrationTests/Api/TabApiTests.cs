@@ -2117,7 +2117,7 @@ public sealed class TabApiTests
     [Fact]
     public async Task GetTab_EchoesTheSuppliedCorrelationIdExactlyOnce()
     {
-        const string Supplied = "tab-round-trip-4d19ae";
+        string Supplied = ApiTestFixture.NewCorrelationId();
 
         using HttpClient client = await _fixture.CreateHostClientAsync();
         using HttpRequestMessage request = ApiTestFixture.WithCorrelationId(
@@ -2192,7 +2192,7 @@ public sealed class TabApiTests
     [Fact]
     public async Task GetTab_CarriesACorrelationIdOnTheRefusalPath()
     {
-        const string Supplied = "tab-refusal-8b2c07";
+        string Supplied = ApiTestFixture.NewCorrelationId();
 
         int tabId = await CreateTabAsync("ICorrelated" + Suffix());
 

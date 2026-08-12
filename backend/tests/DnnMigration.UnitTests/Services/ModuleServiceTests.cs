@@ -166,6 +166,18 @@ public class ModuleServiceTests
     private const string ModuleDeletedEventName = "MODULE_DELETED";
 
     /// <summary>
+    /// The stable audit event name the removal of ONE PLACEMENT carries. Net-new: the legacy recycle bin
+    /// removed modules rather than placements, so the legacy enumeration has no member to cite.
+    /// </summary>
+    private const string ModulePlacementDeletedEventName = "MODULE_PLACEMENT_DELETED";
+
+    /// <summary>
+    /// The stable audit event name a module RESTORATION carries, reproducing the legacy
+    /// <c>EventLogType.MODULE_RESTORED</c> the recycle bin raised at <c>RecycleBin.ascx.vb:L392</c>.
+    /// </summary>
+    private const string ModuleRestoredEventName = "MODULE_RESTORED";
+
+    /// <summary>
     /// Reported when the caller holds no edit grant on the page a module is being placed on, or on the module
     /// whose content is being replaced. The token <c>forbidden</c> is what makes the shared status translator
     /// answer <c>403</c> rather than <c>400</c>, so the spelling is part of the contract.
@@ -2718,15 +2730,27 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// Withdrawing one placement is recorded as a removal too, and names the placement that went.
+    /// Withdrawing one placement is recorded under its OWN event name, because the module survives it.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// The same event, because the same thing happened to a caller's work; the <c>Operation</c> fact is what
-    /// tells the two apart, so an operator reading the trail can see whether the module survived.
+    /// <para>
+    /// THIS ASSERTION IS INVERTED FROM THE ONE IT REPLACES, which required this arm to carry the same
+    /// MODULE_DELETED name as a whole-module recycling on the reasoning that "the same thing happened to a
+    /// caller's work". It did not. Removing a named placement hard-deletes one <c>TabModules</c> row: the
+    /// module still exists, its content and settings still exist, and every other placement of it still
+    /// renders. The trail asserted a deletion that had not happened, sending anyone investigating to look for
+    /// a module that is still there - and, in the other direction, made a real module removal
+    /// indistinguishable from the far more common act of taking a module off one page, so neither could be
+    /// counted or found without knowing to filter on a property.
+    /// </para>
+    /// <para>
+    /// The <c>Operation</c> fact is KEPT rather than replaced, so an existing search on it still matches and a
+    /// reader filtering on either the name or the fact sees the same distinction.
+    /// </para>
     /// </remarks>
     [Fact]
-    public async Task DeleteModule_RecordsWhichPlacementWasWithdrawn()
+    public async Task DeleteModule_RecordsWhichPlacementWasWithdrawnUnderThePlacementEventName()
     {
         Harness harness = Harness.Ready();
 
@@ -2736,9 +2760,100 @@ public class ModuleServiceTests
         outcome.IsSuccess.Should().BeTrue();
 
         AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
-        record.EventName.Should().Be(ModuleDeletedEventName);
+        record.EventName.Should().Be(
+            ModulePlacementDeletedEventName,
+            "the module survived, so a record naming its deletion would be false");
+        record.EventName.Should().NotBe(ModuleDeletedEventName);
         record.Properties["Operation"].Should().Be("RemovePlacement");
         record.Properties["TabModuleId"].Should().Be(TabModuleId.ToString(CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// Recycling a recycled module and then restoring it are recorded under the two legacy lifecycle names,
+    /// not as plain updates.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE FAILURE THIS PINS WAS A SILENCE, NOT MERELY A MISLABEL. Recycling and restoring are carried on the
+    /// update request as its delete flag, and the update path's audit record was gated on the change having
+    /// "effects" - a relocation, a portal default, a propagated appearance. A recycling has none of those: the
+    /// effect list is empty, the gate stayed shut, and a module could be taken off every page it appeared on,
+    /// or brought back onto them, with NOTHING in the trail at all. The transition is now recorded
+    /// independently of that gate.
+    /// </para>
+    /// <para>
+    /// The two names are asymmetric on purpose and the asymmetry is measured, not arbitrary. A restoration is
+    /// MODULE_RESTORED (RecycleBin.ascx.vb:L392). A recycling is MODULE_DELETED, which is what the legacy
+    /// recycle bin itself raised for a soft-deletion (RecycleBin.ascx.vb:L156) - MODULE_SENT_TO_RECYCLE_BIN is
+    /// declared in the legacy enumeration but no in-scope legacy site raises it, so using it here would invent
+    /// an event rather than port one.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModule_RecordsTheRecycleAndRestoreTransitionsUnderTheirOwnNames()
+    {
+        Harness recycling = Harness.Ready();
+        recycling.LookupModule!.IsDeleted = false;
+
+        Result<ModuleDetailDto?> recycled = await recycling.Service.UpdateModuleAsync(
+            PortalId,
+            ModuleId,
+            UpdateRequestWith(request => request.IsDeleted = true),
+            CancellationToken.None);
+
+        recycled.IsSuccess.Should().BeTrue();
+
+        AuditEvent recycleRecord = recycling.AuditRecords.Should().ContainSingle().Subject;
+        recycleRecord.EventName.Should().Be(ModuleDeletedEventName);
+        recycleRecord.Properties["Operation"].Should().Be("Recycle");
+        recycleRecord.Properties["IsDeleted"].Should().Be(bool.TrueString);
+
+        Harness restoring = Harness.Ready();
+        restoring.LookupModule!.IsDeleted = true;
+
+        Result<ModuleDetailDto?> restored = await restoring.Service.UpdateModuleAsync(
+            PortalId,
+            ModuleId,
+            UpdateRequestWith(request => request.IsDeleted = false),
+            CancellationToken.None);
+
+        restored.IsSuccess.Should().BeTrue();
+
+        AuditEvent restoreRecord = restoring.AuditRecords.Should().ContainSingle().Subject;
+        restoreRecord.EventName.Should().Be(ModuleRestoredEventName);
+        restoreRecord.Properties["Operation"].Should().Be("Restore");
+        restoreRecord.Properties["IsDeleted"].Should().Be(bool.FalseString);
+    }
+
+    /// <summary>
+    /// Repeating the delete flag a module already carries records no lifecycle transition, because no state
+    /// changed.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The narrowing matters as much as the two records above. Keying the event name on the NEW value rather
+    /// than on a transition would have made every ordinary save of an already-recycled module read as a fresh
+    /// recycling, which trades one false reading for another and inflates any count taken from the trail. This
+    /// is the assertion that forbids it.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModule_RecordsNoLifecycleTransitionWhenTheDeleteFlagIsUnchanged()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupModule!.IsDeleted = true;
+
+        Result<ModuleDetailDto?> outcome = await harness.Service.UpdateModuleAsync(
+            PortalId,
+            ModuleId,
+            UpdateRequestWith(request => request.IsDeleted = true),
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        harness.AuditRecords.Should().NotContain(record =>
+            record.EventName == ModuleRestoredEventName
+            || (record.EventName == ModuleDeletedEventName && record.Properties["Operation"] == "Recycle"));
     }
 
     /// <summary>
@@ -4229,11 +4344,20 @@ public class ModuleServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
+    /// <para>
     /// The facts an operator needs are taken from the SERVER wherever they can be - the package's own name
-    /// and installed version, the content type the document was accepted against, the payload length and
-    /// the placement count - and only the document's declared version and the caller's own folder and file
-    /// names come from the request. Those three are recorded under names that say where they came from, so
-    /// a record cannot be read as though the server had vouched for them.
+    /// and installed version, the content type the document was accepted against and the payload length -
+    /// and only the document's declared version comes from the request, recorded under a name that says so,
+    /// so a record cannot be read as though the server had vouched for it.
+    /// </para>
+    /// <para>
+    /// PLACEMENTCOUNT IS ASSERTED ABSENT, WHICH IS AN INVERSION OF WHAT THIS TEST USED TO REQUIRE. Reading it
+    /// meant querying the module's placements, and that query observes the cancellation token - so the record
+    /// could only carry the count by being emitted BEHIND a cancellable read, which is what let a caller
+    /// disconnecting in the moment after the flush have third-party content written into a tenant with no
+    /// record of the import at all. The count described a consequence of the import rather than the import,
+    /// and it was the only fact that could not be had from memory, so it is the one that goes.
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task ImportModule_RecordsTheProvenanceWithoutRecordingTheContent()
@@ -4261,14 +4385,17 @@ public class ModuleServiceTests
         record.Properties["Operation"].Should().Be("Import");
         record.Properties["Version"].Should().Be(PackageVersion);
         record.Properties["PayloadLength"].Should().NotBeNull();
-        record.Properties["PlacementCount"].Should().NotBeNull();
+        record.Properties.Should().NotContainKey(
+            "PlacementCount",
+            "the count could only be obtained from a cancellable placement query, and the record must not "
+            + "depend on a read that a disconnecting caller can abandon");
 
         // The caller's own description of where the document came from is NOT recorded. Both facts were
         // copied verbatim from the request, ModuleImportRequest documents them as accepted-and-unused parity
         // metadata with no length bound, and nothing validated or read them - so a caller could put a secret,
         // a personal identifier, control text or an unbounded high-cardinality value into the audit trail by
-        // naming a file that way. The module, the version, the size and the placement count describe what
-        // actually happened; the caller's description describes only what the caller said. The version that
+        // naming a file that way. The module, the version and the size describe what actually happened; the
+        // caller's description describes only what the caller said. The version that
         // IS recorded is reduced to digits, dots and hyphens within a length bound before it is offered.
         record.Properties.Should().NotContainKey("SourceFileName");
         record.Properties.Should().NotContainKey("SourceFolder");
@@ -4276,6 +4403,51 @@ public class ModuleServiceTests
         record.Properties.Values
             .Where(value => value is not null)
             .Should().NotContain(value => value!.Contains("a-secret-looking-value", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A committed import is recorded even when the post-flush placement maintenance fails, because the
+    /// content is in the module either way.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE FAILURE THIS PINS IS AN ABSENCE. The record used to follow a read of the module's placements - an
+    /// AWAITED query that observes the cancellation token - because it reported how many of them were
+    /// cache-invalidated. A caller who disconnected in the moment after the flush therefore had externally
+    /// supplied content written into a tenant's module, durably, with nothing in the trail to say an import had
+    /// occurred: the token was signalled, the read threw, and the record was never reached.
+    /// </para>
+    /// <para>
+    /// An import is the one module operation that admits third-party content into a tenant, so its record is
+    /// the last that may depend on the caller still being connected. The exception still escapes - placements
+    /// whose caches were not invalidated will serve stale content, which is a real condition - and the placement
+    /// count is gone from the record, which is the price of the order and is asserted by the sibling above.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ImportModule_RecordsTheImportEvenWhenThePostFlushPlacementReadFails()
+    {
+        Harness harness = Harness.Ready();
+        harness.PlacementReadFault = new OperationCanceledException("the caller disconnected");
+
+        Func<Task> import = () => harness.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest
+            {
+                ModuleId = ModuleId,
+                Content = TypedDocumentPrefix + FormattableString.Invariant(
+                    $" version=\"{PackageVersion}\">restored</content>"),
+            },
+            CancellationToken.None);
+
+        await import.Should().ThrowAsync<OperationCanceledException>(
+            "maintenance that did not happen is a real condition and must not be swallowed");
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be(ModuleUpdatedEventName);
+        record.ResourceId.Should().Be(ModuleId.ToString(CultureInfo.InvariantCulture));
+        record.Properties["Operation"].Should().Be("Import");
     }
 
     /// <summary>
@@ -5158,6 +5330,19 @@ public class ModuleServiceTests
     };
 
     /// <summary>
+    /// Builds a valid update request and amends it, so a lifecycle assertion changes exactly the member it is
+    /// about and inherits every other value from the shared shape.
+    /// </summary>
+    /// <param name="amend">The amendment to apply.</param>
+    /// <returns>The amended request.</returns>
+    private static UpdateModuleRequest UpdateRequestWith(Action<UpdateModuleRequest> amend)
+    {
+        UpdateModuleRequest request = ValidUpdateRequest();
+        amend(request);
+        return request;
+    }
+
+    /// <summary>
     /// Assembles the service over nine recording doubles, exposing every answer as mutable state so a test
     /// can change the world after the doubles have been wired.
     /// </summary>
@@ -5464,6 +5649,16 @@ public class ModuleServiceTests
 
         public Dictionary<int, List<TabModule>> PlacementsByModuleId { get; }
 
+        /// <summary>
+        /// A failure raised by the by-module placement read, or <see langword="null"/> for none.
+        /// </summary>
+        /// <remarks>
+        /// On the import path that read is post-flush maintenance and it observes the cancellation token, so
+        /// it is the one step a disconnecting caller can make fail after the content is already durable. This
+        /// knob lets an assertion prove that the record of the import no longer depends on it.
+        /// </remarks>
+        public Exception? PlacementReadFault { get; set; }
+
         public Dictionary<int, List<ModuleSetting>> SettingsByModuleId { get; }
 
         public Dictionary<int, List<TabModuleSetting>> PlacementSettingsByTabModuleId { get; }
@@ -5556,10 +5751,13 @@ public class ModuleServiceTests
                     harness.PlacementsById.TryGetValue(tabModuleId, out TabModule? found) ? found : null);
             harness.Modules
                 .Setup(m => m.GetTabModulesByModuleIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync((int moduleId, CancellationToken _) =>
-                    harness.PlacementsByModuleId.TryGetValue(moduleId, out List<TabModule>? found)
-                        ? (IReadOnlyList<TabModule>)found
-                        : Array.Empty<TabModule>());
+                .Returns((int moduleId, CancellationToken _) =>
+                    harness.PlacementReadFault is { } fault
+                        ? Task.FromException<IReadOnlyList<TabModule>>(fault)
+                        : Task.FromResult(
+                            harness.PlacementsByModuleId.TryGetValue(moduleId, out List<TabModule>? found)
+                                ? (IReadOnlyList<TabModule>)found
+                                : Array.Empty<TabModule>()));
             // The set-based placement read the listing uses. Served from the same placement world as every
             // other placement stub, so the harness describes one reality: the listing asks for many modules
             // in one call so that its cost cannot grow with the number of modules, and answering from a

@@ -210,6 +210,17 @@ const EDIT_COMMAND_LABEL = 'Edit this Portal';
 const EDIT_COMMAND_VISIBLE_LABEL = 'Settings';
 
 /**
+ * Describes where a row's TITLE leads, for the record link's tooltip and description.
+ *
+ * ⚠ MAJOR (reachability) — NET-NEW, because the legacy grid had no such affordance to measure: its
+ * `portals.ascx:L26` title column was a plain bound column with no address at all. The wording states
+ * the destination in the vocabulary the rest of this screen uses - the sibling command paints
+ * "Settings" for the settings screen, so the record screen is named for the record - and it is a
+ * DESCRIPTION rather than a name, so the row title remains the link's accessible name.
+ */
+const RECORD_LINK_DESCRIPTION = 'Open this portal record';
+
+/**
  * Announced beside a negative hosting fee, and never painted.
  *
  * ⚠ MINOR (money differentiation) — the colour and weight this screen gives a negative fee are a
@@ -372,8 +383,29 @@ const HOSTING_FEE_FRACTION_DIGITS = 2;
 
 /**
  * The scheme the alias links carry when the stored host name states none.
+ *
+ * ⚠ MAJOR (CWE-319 cleartext transmission) — HTTPS, AND THE PREVIOUS VALUE WAS `http://`. A bare host
+ * name is the NORMAL stored form on this schema - `PortalAlias.HTTPAlias` holds `localhost`,
+ * `localhost:4200`, `www.example.com`, with no scheme - so the previous value downgraded practically
+ * every link on this screen to cleartext, including from an administration session served over TLS. The
+ * host names being linked are the same tenants whose administration this application performs, so the
+ * downgraded request carries the tenant's own address to an eavesdropper and, on any deployment that
+ * redirects, spends a plaintext round trip getting there.
+ *
+ * An explicit `http://` in the stored value is still honoured exactly as stored - the absolute-address
+ * markers below catch it first - so a deployment that genuinely has no TLS states so once, per alias,
+ * rather than every alias being assumed insecure. That is the no-downgrade direction: secure by default,
+ * insecure only where an operator has said so.
+ *
+ * MIGRATION: this is CLOSER to the legacy helper than `http://` was, not further from it.
+ * `Library/Components/Shared/Globals.vb` chose `https://` whenever
+ * `HttpContext.Current.Request.IsSecureConnection` was true and `http://` otherwise, so the legacy
+ * behaviour on a secure administration session was HTTPS. A component cannot read the inbound request the
+ * way the server did, and reading the document's own protocol is a direct DOM read this feature does not
+ * perform; picking the secure arm unconditionally reproduces the legacy outcome for every TLS-served
+ * deployment and differs only for an insecure one, where the operator can state the scheme.
  */
-const HTTP_SCHEME_PREFIX = 'http://';
+const HTTPS_SCHEME_PREFIX = 'https://';
 
 /**
  * The four fragments whose presence made the legacy helper leave a host name alone.
@@ -692,11 +724,13 @@ const PORTAL_FILTER_OPTIONS: readonly PortalFilterOption[] = buildFilterOptions(
  * names a protocol, a mail address, an application-relative path and a network share are all left exactly as
  * stored.
  *
- * MIGRATION: the scheme is always `http://`, where the legacy helper chose `https://` when
- * `HttpContext.Current.Request.IsSecureConnection` was true. The legacy decision was made on the SERVER from
- * the inbound request; reproducing it in a component would mean reading the document's own protocol, which
- * is a direct DOM read this feature does not perform. A stored host name that should be reached securely can
- * say so - it need only carry its own `https://`, which the exclusion above then preserves untouched.
+ * MIGRATION: the scheme is always `https://`, where the legacy helper chose between `https://` and
+ * `http://` on `HttpContext.Current.Request.IsSecureConnection`. The legacy decision was made on the SERVER
+ * from the inbound request; reproducing it in a component would mean reading the document's own protocol,
+ * which is a direct DOM read this feature does not perform. Taking the secure arm unconditionally matches
+ * the legacy outcome on every TLS-served deployment and never downgrades one. A host name that must be
+ * reached WITHOUT TLS can say so - it need only carry its own `http://`, which the exclusion above then
+ * preserves untouched. See {@link HTTPS_SCHEME_PREFIX}.
  *
  * @param alias The host name exactly as stored.
  * @returns The address to navigate to.
@@ -719,7 +753,7 @@ function toAliasHref(alias: string): string | null {
     }
   }
 
-  return allowedHostAddress(`${HTTP_SCHEME_PREFIX}${alias}`);
+  return allowedHostAddress(`${HTTPS_SCHEME_PREFIX}${alias}`);
 }
 
 /**
@@ -830,6 +864,41 @@ function formatHostingFee(hostFee: number): string {
 }
 
 /**
+ * The largest amount every hundredth of which a double represents exactly.
+ *
+ * SEC-F17. `Portals.HostFee` is SQL `money`, a scaled 64-bit integer with four decimal places, and it
+ * crosses the wire as a JSON number — so it is read into an IEEE-754 double before any code here runs.
+ * Above this bound the double no longer holds every cent exactly, and `toFixed(2)` then paints a figure
+ * whose cents may already have moved. `Number.MAX_SAFE_INTEGER` is the largest integer a double holds
+ * exactly; divided by a hundred it is the largest amount whose every hundredth is exactly representable.
+ * The bound is COMPUTED rather than chosen, and it is the same bound the role listing uses, so the two
+ * money surfaces agree about which amounts are exact.
+ */
+const EXACT_CENTS_BOUND = Number.MAX_SAFE_INTEGER / 100;
+
+/**
+ * The word appended to a fee whose painted figure may differ from the stored one.
+ *
+ * SEC-F17. The loss cannot be undone here — the stored digits are gone by the time this component runs —
+ * so the cell DISCLOSES rather than corrects. Transporting the amount as exact decimal text would recover
+ * them and is a contract change to every consumer of the portal listing, which is beyond this finding.
+ */
+const APPROXIMATE_FEE_DESCRIPTION = 'approximate';
+
+/**
+ * Whether a hosting fee is large enough that its painted cents may differ from the stored ones.
+ *
+ * A non-finite fee never reaches this test — {@link formatHostingFee} paints it as an empty cell — and
+ * neither does zero or any ordinary amount, so the qualifier appears only on the rows that need it.
+ *
+ * @param hostFee The fee as received.
+ * @returns `true` when the painted figure may differ from the stored one.
+ */
+function isFeeApproximate(hostFee: number): boolean {
+  return Number.isFinite(hostFee) && Math.abs(hostFee) >= EXACT_CENTS_BOUND;
+}
+
+/**
  * Matches any run of whitespace, including tabs and line breaks.
  */
 const WHITESPACE_RUN = /\s+/g;
@@ -904,12 +973,13 @@ function stripLeadingBreakTags(message: string): string {
 /**
  * The portal listing screen.
  *
- * The paired template MUST declare these six `ng-template` elements at its TOP LEVEL, outside every
+ * The paired template MUST declare these seven `ng-template` elements at its TOP LEVEL, outside every
  * control-flow block, because the column set is assembled in `ngOnInit` from statically-resolved view
  * queries:
  *
  * | Reference          | Renders                                                             |
  * | ------------------ | ------------------------------------------------------------------- |
+ * | `#portalNameCell`  | the row's title, linking to the record, from `recordLinks()`          |
  * | `#editCommand`     | the row's settings link, indexed from `editSettingsLinks()`          |
  * | `#deleteCommand`   | the row's delete button, guarded by `canDelete(row)`                 |
  * | `#aliasesCell`     | the row's host names, from `aliasLinks(row)`                          |
@@ -1056,6 +1126,17 @@ export class PortalListComponent implements OnInit {
 
   @ViewChild('deleteCommand', { static: true })
   private deleteCommandTemplate?: TemplateRef<DataTableCellContext<PortalListItem>>;
+
+  // THE TITLE CELL
+  //
+  //  ⚠ MAJOR (reachability) — the title was a BOUND column, which paints a string and can carry no
+  //  affordance at all, so the portal RECORD screen at `/portals/:portalId` had no inbound link
+  //  anywhere in the application: it was reachable only by typing its address. The row's own title is
+  //  the natural way in - it is the thing a person would click to open the record they are looking at -
+  //  so the column is rendered through a template that wraps the same characters in a link. The text
+  //  painted is unchanged, and the column stays the row header and stays sortable.
+  @ViewChild('portalNameCell', { static: true })
+  private portalNameCellTemplate?: TemplateRef<DataTableCellContext<PortalListItem>>;
 
   @ViewChild('aliasesCell', { static: true })
   private aliasesCellTemplate?: TemplateRef<DataTableCellContext<PortalListItem>>;
@@ -1915,6 +1996,33 @@ export class PortalListComponent implements OnInit {
     });
 
   /**
+   * The RECORD route of every portal on the page, keyed by identifier.
+   *
+   * ⚠ MAJOR (reachability) — THIS IS THE ONLY INBOUND AFFORDANCE THE PORTAL RECORD SCREEN HAS. The route
+   * `/portals/:portalId` is part of the frozen route table and renders the record form - the title,
+   * description and keywords, with the optimistic revision marker - yet no affordance anywhere in the
+   * application named it, so it was reachable only by typing its address. The row title now links to it.
+   *
+   * DELIBERATELY NOT THE SETTINGS ROUTE, which is what the row's `Settings` command already opens. The two
+   * screens write different resources - the record form writes the three-member update contract, the settings
+   * screen writes the wide settings projection - so one row offers both, and each affordance says which it
+   * is: the title opens the RECORD, the command opens the SETTINGS.
+   *
+   * Precomputed and indexed for exactly the reason {@link PortalListComponent.editSettingsLinks} is, and
+   * the identifier is likewise passed through untouched: `-1` and `0` are both legitimate portal
+   * identifiers here, so no truthiness, magnitude or marker test may be applied to it.
+   */
+  protected readonly recordLinks: Signal<Readonly<Record<number, (string | number)[]>>> = computed(() => {
+    const links: Record<number, (string | number)[]> = {};
+
+    for (const portal of this.portals()) {
+      links[portal.portalId] = [PORTALS_SEGMENT, portal.portalId];
+    }
+
+    return links;
+  });
+
+  /**
    * Whether the row may offer a delete affordance.
    *
    * MIGRATION: the row rule is preserved exactly. `Portals.ascx.vb` bound each row and set
@@ -2002,6 +2110,22 @@ export class PortalListComponent implements OnInit {
   protected readonly editCommandVisibleLabel = EDIT_COMMAND_VISIBLE_LABEL;
 
   /**
+   * The DESCRIPTION of one row's record link - never its name.
+   *
+   * ⚠ MAJOR (reachability) — the row title IS the link's accessible name, which is exactly what WCAG 2.5.3
+   * wants and what makes the affordance addressable by voice, so no `aria-label` is applied to it: one would
+   * REPLACE the title with a composed sentence and a speech-input user saying the portal's name would match
+   * nothing. What the title alone cannot say is where it leads, and this is that, carried as a description
+   * so it is announced after the name and shown as a tooltip rather than substituted for either.
+   *
+   * @param portal The row.
+   * @returns The link's description.
+   */
+  protected recordLinkDescription(portal: PortalListItem): string {
+    return `${RECORD_LINK_DESCRIPTION}: ${nameForAnnouncement(portal.portalName)}`;
+  }
+
+  /**
    * Whether one row's hosting fee is below zero.
    *
    * ⚠ MINOR (money differentiation) — see {@link isNegativeFee} for why only this case is marked.
@@ -2011,6 +2135,21 @@ export class PortalListComponent implements OnInit {
    */
   protected isFeeNegative(portal: PortalListItem): boolean {
     return isNegativeFee(portal.hostFee);
+  }
+
+  /**
+   * Whether the row's hosting fee is painted approximately.
+   *
+   * SEC-F17. The role listing already qualified an amount too large for a double to carry to the cent;
+   * this listing formatted the same kind of value to two decimals with no such guard, so a large legal
+   * legacy amount was painted with incorrect cents and nothing said so. The two screens now apply one
+   * computed bound and one word.
+   *
+   * @param portal The row being drawn.
+   * @returns `true` when the painted figure may differ from the stored one.
+   */
+  protected isHostFeeApproximate(portal: PortalListItem): boolean {
+    return isFeeApproximate(portal.hostFee);
   }
 
   /**
@@ -2030,6 +2169,11 @@ export class PortalListComponent implements OnInit {
 
   /** @see NEGATIVE_FEE_QUALIFIER */
   protected readonly negativeFeeQualifier = NEGATIVE_FEE_QUALIFIER;
+
+  /**
+   * The word appended to an approximately painted fee. SEC-F17.
+   */
+  protected readonly approximateFeeQualifier = APPROXIMATE_FEE_DESCRIPTION;
 
   // THE DELETE FLOW
 
@@ -2246,7 +2390,15 @@ export class PortalListComponent implements OnInit {
         label: TITLE_HEADING,
         headerAlign: 'start',
         bodyAlign: 'start',
-        field: 'portalName',
+        // ⚠ MAJOR (reachability) — A TEMPLATE COLUMN RATHER THAN A BOUND ONE, so the title can carry the
+        //   record screen's only inbound affordance. `field` and `cellTemplate` are mutually exclusive by
+        //   the shared contract, so the binding moves INTO the template, which interpolates the very same
+        //   member: the characters painted are identical and the column keeps its row-header semantics.
+        //   See recordLinks for why the destination is the record and not the settings screen.
+        kind: 'template',
+        cellTemplate: this.requireTemplate(this.portalNameCellTemplate, 'portalNameCell'),
+        // Ordering is unaffected by the change of column kind: the key IS the endpoint's own sort name and
+        // the server orders on the stored title, not on what the cell renders.
         sortable: true,
       },
 

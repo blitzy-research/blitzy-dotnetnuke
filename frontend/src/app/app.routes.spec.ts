@@ -58,10 +58,26 @@ import { USER_ROUTES } from './features/user/user.routes';
 import type { AuthSession } from './core/models/auth.model';
 import type { Route } from '@angular/router';
 
+/**
+ * An expiry comfortably ahead of whenever this suite runs, derived from the clock rather than written
+ * down.
+ *
+ * ⚠ AN ABSOLUTE DATE IS A TEST THAT EXPIRES. This fixture used to carry `2030-01-01T00:00:00Z`,
+ * which holds a session valid by the calendar rather than by anything the specification controls: on the
+ * first of January 2030 every case depending on it begins asserting the opposite of what it was written
+ * to assert, and it does so SILENTLY, because a session read as already expired is a state this
+ * application handles rather than an error it reports.
+ *
+ * One hour is longer than any run of this suite and shorter than any window the application treats as
+ * unusual, and it is computed ONCE per module load so every case in the file shares one instant rather
+ * than racing the clock between them.
+ */
+const FUTURE_SESSION_EXPIRY_UTC: string = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
 const ADMIN_SESSION: AuthSession = {
   accessToken: 'a',
   refreshToken: 'r',
-  expiresAtUtc: '2030-01-01T00:00:00Z',
+  expiresAtUtc: FUTURE_SESSION_EXPIRY_UTC,
   mustChangePassword: false,
   mustUpdateProfile: false,
   passwordExpiring: false,
@@ -113,7 +129,6 @@ const EXPECTED: ReadonlyArray<readonly [string, string]> = [
   ['/users/0', 'UserFormComponent'],
   ['/users/0/profile', 'UserProfileComponent'],
   ['/users/0/password', 'UserPasswordComponent'],
-  ['/users/0/services', 'MemberServicesComponent'],
   ['/roles', 'RoleListComponent'],
   ['/roles/new', 'RoleFormComponent'],
   ['/roles/0', 'RoleFormComponent'],
@@ -413,11 +428,14 @@ describe('APP_ROUTES', () => {
       //
       // Each answer is the address that caller can actually open: the tenant listing for a
       // host, the first rail entry a tenant administrator's authority admits, and the account
-      // holder's own services — whose policy is `AccountOwner`, satisfied by construction
-      // because the identifier comes from the caller's own identity.
+      // holder's own profile — whose policy is `AccountOwnerOrPortalAdministrator`, whose first
+      // arm is satisfied by construction because the identifier comes from the caller's own
+      // identity. The ordinary landing used to be the account's own SERVICES screen; that address
+      // is withdrawn with the twenty-sixth route it belonged to, and the profile is the remaining
+      // screen a non-administrative account is entitled to operate on its own behalf.
       expect(await attemptAs({ isSuperUser: true }, '/')).toBe('/portals');
       expect(await attemptAs(TENANT_ADMINISTRATOR, '/')).toBe('/modules');
-      expect(await attemptAs(ORDINARY, '/')).toBe(`/users/${String(ORDINARY.userId)}/services`);
+      expect(await attemptAs(ORDINARY, '/')).toBe(`/users/${String(ORDINARY.userId)}/profile`);
     });
 
     it('admits an account holder to its OWN profile and credential screens', async () => {
@@ -497,7 +515,8 @@ describe('APP_ROUTES', () => {
         // `api/v1/portals` and `api/v1/modules` each answered 403 auth.remediation_required. So
         // every authority-based landing this redirect can name was unusable, and a caller the
         // server was actively requiring to change their password was sent somewhere they could
-        // not change it.
+        // not change it. The profile screen the ordinary landing now names is refused on exactly
+        // the same terms, which is why the credential test still has to come first.
         expect(await landFrom({ mustChangePassword: true }, ORDINARY)).toBe(
           `/users/${String(ORDINARY.userId)}/password`,
         );
@@ -546,7 +565,7 @@ describe('APP_ROUTES', () => {
         // mirrors the server's own predicate, which reads the other two and not this one.
         expect(await landFrom({ passwordExpiring: true }, TENANT_ADMINISTRATOR)).toBe('/modules');
         expect(await landFrom({ passwordExpiring: true }, ORDINARY)).toBe(
-          `/users/${String(ORDINARY.userId)}/services`,
+          `/users/${String(ORDINARY.userId)}/profile`,
         );
       });
     });
@@ -616,18 +635,27 @@ describe('APP_ROUTES', () => {
     });
 
     it('declares only policies the client gate has registered', () => {
-      // ⚠ ALL EIGHT THE CLIENT GATE REGISTERS — not a convenient subset. `permission.guard.ts` lists
-      // exactly these eight, and every one of them is a policy some route below declares.
+      // ⚠ ALL NINE THE CLIENT GATE REGISTERS — not a convenient subset. `permission.guard.ts` lists
+      // exactly these nine, and every one of them is a policy some route below declares. The client
+      // set and the server set are now IDENTICAL rather than the client being a proper subset.
       //
-      // ⚠ THE API DECLARES ONE MORE, AND ITS ABSENCE HERE IS DELIBERATE.
-      // `Api/Authorization/PolicyNames.cs` also declares `PortalContentEditor`, which guards the
-      // SUPPORTING reads of module placement — the definition catalogue and the tenant's page listing.
-      // No route declares it, because the address it supports is the module create screen and that
-      // screen is deliberately ungated: its endpoint carries no policy either, since the target page
-      // arrives in the request body and no route-reading gate can reach it. Adding the name to the
-      // client union would oblige `permission.guard.ts` to resolve a scope for a policy no route can
-      // name, which is exactly the speculative surface the policy catalogue forbids. The set below is
-      // therefore the CLIENT's registered policies, and the server's set is a proper superset of it.
+      // ⚠ THE NINTH NAME WAS PREVIOUSLY WITHHELD HERE, AND THAT WAS THE DEFECT.
+      // `Api/Authorization/PolicyNames.cs:231` declares `PortalContentEditor`, which guards the
+      // SUPPORTING reads of module placement — the definition catalogue and the tenant's page listing,
+      // `ModuleDefinitionsController.cs:168` and `TabsController.cs:187`, each on the whole class.
+      // This assertion used to argue that no route could declare it because the create screen was
+      // ungated, and that adding it would oblige the gate to resolve a scope for a policy no route
+      // could name. Both halves were wrong. The policy resolves NO scope — the operations it supports
+      // name no item because the item does not exist yet — so there is no scope to resolve. And the
+      // screen it supports cannot be FILLED without those two gated reads, so the authority reaching
+      // it demands is exactly the authority they demand.
+      //
+      // The cost of withholding it was not inert either. With the name absent from the client
+      // vocabulary, the create route could name no policy, so nothing in the application recorded
+      // which callers may reach the screen — and the only link to it sat inside a listing gated on
+      // tenant administration. A caller holding EDIT on a page, whom the server admits, had to guess
+      // the address. Declaring it narrows nothing (no scope to fail closed on, and the gate cannot
+      // plainly refuse it) and is what lets the navigation rail offer the screen to those callers.
       //
       // A previous revision of this assertion listed only five, and the omission was not
       // inert: it made three legitimate policies fail a specification, which in turn
@@ -646,6 +674,7 @@ describe('APP_ROUTES', () => {
         'HostAdministrator',
         'AccountOwner',
         'AccountOwnerOrPortalAdministrator',
+        'PortalContentEditor',
       ];
       const declared = [
         ...APP_ROUTES,
@@ -680,8 +709,11 @@ describe('APP_ROUTES', () => {
       // ⚠ A LOOSER DECLARATION IS AS WRONG AS A STRICTER ONE, WHICH IS WHY EQUALITY IS ASSERTED
       // RATHER THAN AN ORDERING. Too loose walks an operator into a screen the server will refuse;
       // too strict withholds a screen the server would allow, and the credential change managed
-      // both at once. `undefined` is spelled out for the one address that legitimately declares no
-      // policy, so an omission cannot pass as an unlisted case.
+      // both at once. EVERY address now declares a policy, so the tuple's `undefined` arm survives
+      // only as a type: it was spelled out for module creation, which declared none, and that
+      // address now declares the policy its supporting reads carry. The arm is deliberately kept so
+      // that a future address which legitimately declares no policy must still state `undefined`
+      // here rather than passing as an unlisted case.
       const expected: readonly (readonly [readonly Route[], string, string | undefined])[] = [
         // PortalsController.cs — the listing and creation are HOST operations
         // (`[Authorize(Policy = PolicyNames.HostAdministrator)]` on both), while the record
@@ -696,13 +728,23 @@ describe('APP_ROUTES', () => {
         // addresses carry the module-scoped grant.
         [MODULE_ROUTES, '', 'PortalAdministrator'],
         [MODULE_ROUTES, 'import', 'PortalAdministrator'],
-        // Module creation declares no policy BY DESIGN and not by omission. `POST /modules` carries
-        // no policy of its own because the page a module is placed on arrives in the BODY, so no
-        // route-reading policy could reach it and any policy here would fail closed and refuse
-        // everyone. The grant is evaluated by the service after binding. There is therefore no
-        // server-side name for this address to mirror, and the inherited session gate is the whole
-        // of the client-side requirement.
-        [MODULE_ROUTES, 'new', undefined],
+        // ⚠ MODULE CREATION MIRRORS ITS SUPPORTING READS, NOT ITS PRIMARY ENDPOINT, and it is the
+        // one address in this table that does so. `POST /modules` carries no policy of its own
+        // because the page a module is placed on arrives in the BODY, so no route-reading policy
+        // could reach it and the grant is evaluated by the service after binding. This address
+        // previously declared `undefined` on that reasoning, which was safe but hid the authority
+        // that actually governs the screen: it cannot be filled without reading the module
+        // definitions and the tenant's pages, and BOTH of those classes carry
+        // `PortalContentEditor` (`ModuleDefinitionsController.cs:168`, `TabsController.cs:187`).
+        //
+        // Declaring it is not a tightening, which is what makes it the correct entry rather than a
+        // stricter one. The policy resolves NO scope, so it cannot fail closed for want of a route
+        // parameter the way `ModuleEdit` would; and the gate cannot plainly refuse it, because the
+        // advisory permission list is built from grant rows alone and omits `EDIT` for a tenant
+        // administrator whose pages carry no explicit grants. Every caller the session admits is
+        // still admitted. What changes is that the authority now has a NAME here, which is what
+        // lets the navigation rail offer this screen to the page editors who hold it.
+        [MODULE_ROUTES, 'new', 'PortalContentEditor'],
         [MODULE_ROUTES, ':moduleId', 'ModuleEdit'],
         [MODULE_ROUTES, ':moduleId/settings', 'ModuleEdit'],
         [MODULE_ROUTES, ':moduleId/export', 'ModuleEdit'],
@@ -724,11 +766,6 @@ describe('APP_ROUTES', () => {
         [USER_ROUTES, ':userId', 'PortalAdministrator'],
         [USER_ROUTES, ':userId/profile', 'AccountOwnerOrPortalAdministrator'],
         [USER_ROUTES, ':userId/password', 'AccountOwnerOrPortalAdministrator'],
-        // ⚠ THE OTHER `AccountOwner` ADDRESS. All five member-services endpoints declare it with no
-        // administrator arm, which is measured rather than chosen: the legacy panel operated on the
-        // SIGNED-IN account and its container hid the tab from an administrator outright. Widening
-        // this to the union policy would publish an affordance the legacy application refused.
-        [USER_ROUTES, ':userId/services', 'AccountOwner'],
 
         // RolesController.cs gates the CLASS on tenant administration and no action overrides it,
         // so every address in the barrel names that one policy.

@@ -19,20 +19,11 @@ import { environment } from '../../../environments/environment';
 const BRAND_LINK = '/';
 
 /**
- * The caption of the account affordance.
- *
- * `cmdServices.Text` in `Website/admin/Users/App_LocalResources/ManageUsers.ascx.resx`, the
- * caption of the legacy tab whose replacement this affordance reaches. Recovered from the
- * resource file rather than invented, because the migration plan makes those files the
- * authoritative source of wording so that labels stay recognisable to existing operators.
- */
-const ACCOUNT_SERVICES_LABEL = 'Manage Services';
-
-/**
  * The caption of the own-profile affordance.
  *
- * `cmdProfile.Text` in `Website/admin/Users/App_LocalResources/ManageUsers.ascx.resx`, the SAME
- * resource file and the SAME legacy command bar that supplies {@link ACCOUNT_SERVICES_LABEL}.
+ * `cmdProfile.Text` in `Website/admin/Users/App_LocalResources/ManageUsers.ascx.resx`. Recovered
+ * from the resource file rather than invented, because the migration plan makes those files the
+ * authoritative source of wording so that labels stay recognisable to existing operators.
  */
 const ACCOUNT_PROFILE_LABEL = 'Manage Profile';
 
@@ -266,50 +257,30 @@ export class HeaderComponent {
   @Input() userName?: string;
 
   /**
-   * The address of the signed-in account's own subscriptions screen, or `undefined` when
-   * there is none to offer.
-   *
-   * ⚠ SUPPLIED WHOLE BY THE CONTAINER, NEVER COMPOSED HERE. This band is given a caption
-   * rather than an account (see {@link HeaderComponent.userName}), so it holds no account
-   * key and could not build an address even if it wanted to. Composing one here would put
-   * a second opinion about route shape in a component whose only navigational knowledge is
-   * the application root.
-   *
-   * MIGRATION: this is the one ACCOUNT-SCOPED affordance in the console's chrome, and it
-   * exists because the screen it reaches is the only one an ordinary account holder
-   * operates on its own behalf. `Website/admin/Users/MemberServices.ascx` was a tab in the
-   * account container that an administrator never saw
-   * (`ManageUsers.ascx.vb:L61-L66`), reached by the signed-in account from the portal's own
-   * user affordance — a skin object, and skinning is out of scope — so the console's banner
-   * is the target's equivalent surface. Its caption is the measured legacy tab caption
-   * `cmdServices.Text` = "Manage Services" rather than invented wording.
-   *
-   * Rendered only alongside a signed-in session, because an address to one account's
-   * subscriptions is meaningless without the account that holds them.
-   */
-  @Input() accountServicesLink?: string;
-
-  /**
    * The address of the signed-in account's own profile screen, or `undefined`.
    *
    * MIGRATION: THIS AFFORDANCE AND {@link accountPasswordLink} WERE MISSING, AND THEIR ABSENCE
    * STRANDED EVERY NON-ADMINISTRATIVE ACCOUNT. Both destinations are permitted to the account
    * owner - the route table gates them on the owner policy, not on an administrator one - but
    * nothing in the chrome linked either, and every entry in the navigation rail requires a portal
-   * or host administrator. A signed-in member could therefore reach only the brand and "Manage
-   * Services": two screens they are entitled to operate on their own behalf existed and were
-   * addressable only by typing a URL that contains their own numeric account key.
+   * or host administrator. A signed-in member could therefore reach only the brand: two screens
+   * they are entitled to operate on their own behalf existed and were addressable only by typing a
+   * URL that contains their own numeric account key. These two are consequently the WHOLE of the
+   * account-scoped chrome, and the console's route table declares no third self-service address
+   * for a third link to reach.
    *
    * The legacy did not have this gap, and its own command bar is the authority for closing it.
-   * `ManageUsers.ascx.resx` declares FIVE commands and this application had ported exactly one of
-   * them; `ManageUsers.ascx.vb:L439-L456` states their visibility, and for an account viewing
-   * itself both of these were offered: `cmdPassword` is hidden only when the viewer is NEITHER an
-   * administrator NOR the account holder (`If (Not IsAdmin And Not IsUser) Then cmdPassword.Visible
-   * = False`), and `cmdProfile` is never hidden at all - only its enabled state is toggled. So the
-   * measured behaviour for the exact case that was stranded is that both affordances were present.
+   * `ManageUsers.ascx.resx` declares FIVE commands and this application had ported none of them;
+   * `ManageUsers.ascx.vb:L439-L456` states their visibility, and for an account viewing itself both
+   * of these were offered: `cmdPassword` is hidden only when the viewer is NEITHER an administrator
+   * NOR the account holder (`If (Not IsAdmin And Not IsUser) Then cmdPassword.Visible = False`),
+   * and `cmdProfile` is never hidden at all - only its enabled state is toggled. So the measured
+   * behaviour for the exact case that was stranded is that both affordances were present.
    *
-   * Supplied whole by the container for the same reason the services address is: this band holds a
-   * caption rather than an account, so it has no key to compose an address from.
+   * ⚠ SUPPLIED WHOLE BY THE CONTAINER, NEVER COMPOSED HERE. This band is given a caption rather
+   * than an account (see {@link HeaderComponent.userName}), so it holds no account key and could
+   * not build an address even if it wanted to. Composing one here would put a second opinion about
+   * route shape in a component whose only navigational knowledge is the application root.
    */
   @Input() accountProfileLink?: string;
 
@@ -352,16 +323,6 @@ export class HeaderComponent {
    */
   readonly brandLink: string = BRAND_LINK;
 
-  /**
-   * The caption of the account affordance.
-   *
-   * `cmdServices.Text` in `Website/admin/Users/App_LocalResources/ManageUsers.ascx.resx`,
-   * which is the caption of the tab the screen it reaches replaces. Held as a field so the
-   * template introduces no wording of its own and a specification asserts against the same
-   * string the band renders.
-   */
-  readonly accountServicesLabel: string = ACCOUNT_SERVICES_LABEL;
-
   /** The caption of the own-profile affordance. `cmdProfile.Text`. */
   readonly accountProfileLabel: string = ACCOUNT_PROFILE_LABEL;
 
@@ -385,24 +346,16 @@ export class HeaderComponent {
   }
 
   /**
-   * Whether the account affordance has an address to navigate to.
-   *
-   * Presence is decided by an explicit comparison against `undefined` followed by a length
-   * test on the trimmed value, on exactly the terms {@link hasSignedInUser} applies to the
-   * caption: an empty address would render a link that navigates to the current page.
-   *
-   * The session test is repeated rather than assumed, so the affordance cannot appear beside
-   * an absent identity if a container ever supplied one without the other.
-   */
-  protected get hasAccountServicesLink(): boolean {
-    return this.hasUsableLink(this.accountServicesLink);
-  }
-
-  /**
    * Whether the own-profile affordance can be rendered.
    *
-   * Same two conditions as every other account-scoped link here, applied through one shared test
-   * so three affordances cannot come to disagree about what makes an address usable.
+   * Presence is decided by an explicit comparison against `undefined` followed by a length test on
+   * the trimmed value, on exactly the terms {@link hasSignedInUser} applies to the caption: an
+   * empty address would render a link that navigates to the current page. The session test is
+   * repeated rather than assumed, so the affordance cannot appear beside an absent identity if a
+   * container ever supplied one without the other.
+   *
+   * Both account-scoped links share this one test, so the pair cannot come to disagree about what
+   * makes an address usable.
    */
   protected get hasAccountProfileLink(): boolean {
     return this.hasUsableLink(this.accountProfileLink);

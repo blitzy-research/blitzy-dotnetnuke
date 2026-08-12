@@ -20,41 +20,46 @@
   </ItemGroup>
 
   <!--
-    TEST-ONLY project references, and they are the whole of this project's graph.
+    EXACTLY ONE PROJECT REFERENCE, AND IT IS THE WHOLE OF THIS PROJECT'S GRAPH.
 
-    DnnMigration.Application brings Domain with it, so the service, validator, mapper and domain
+    AAP 0.5.2.2 draws this project with a single edge to Application, and that is what is declared
+    below. Domain arrives transitively, so the domain, service, validator, mapper and serialisation
     suites placed here by AAP 0.4.1.1 compile against everything they need.
 
-    DnnMigration.Infrastructure is referenced for the Security and Infrastructure suites, and the
-    reference is a reconciled decision rather than a convenience. AAP 0.5.2.2 draws the unit
-    project with a single edge to Application; AAP 0.5.1.5 places
-    Security/{BcryptPasswordHasher,JwtTokenService,PermissionEvaluator}Tests.cs here and names
-    Infrastructure/Security/*.cs as their subject. Those two statements cannot both be honoured,
-    and the resolution is to keep the edge, because the alternative deletes coverage rather than
-    relocating it: LoggingAuditSink, LegacyCredentialVerifier, JwtTokenService and
-    DatabaseHealthCheck are internal sealed types whose behaviour is asserted here with
-    substituted collaborators and no host at all.
+    WHY THERE IS NO EDGE TO DnnMigration.Infrastructure ANY MORE. There used to be one, kept on the
+    reading that AAP 0.5.1.5 names Infrastructure/Security/*.cs as the subject of suites it places
+    here, and that dropping the edge would delete coverage. Both halves of that argument were wrong.
+    The AAP is frozen and 0.5.2.2 is unambiguous about this project's graph, so an implementation
+    that reinterprets it is a divergence rather than a reconciliation; and no coverage had to be
+    deleted, because the thirteen suites that named an Infrastructure type were RELOCATED to
+    DnnMigration.IntegrationTests - Security/{LoggingAuditSink,AuditLogRendering,
+    LegacyCredentialVerifier,JwtTokenServiceBehavior,DatabaseHealthCheck,RefreshTokenStoreBehavior},
+    Infrastructure/{StoreFailureClassification,ConnectionStringValidation,DuplicateKeyTranslation,
+    DatabaseHealthCheck}, Services/{LoggingAuditSink,ModuleBusinessControllerFactory} and
+    Validation/LegacyCredentialOptions - where the Infrastructure assembly is reachable through that
+    project's own single edge to the API. Every one of them kept its assertions unchanged and gained
+    the [Trait("Category", "Integration")] that project requires.
 
-    The layering guarantee is unaffected. It is a property of what the four PRODUCTION project
-    files reference - Domain declares zero project references, Application cannot see
-    Infrastructure, and either violation is a compile error - and a test project is the outermost
-    consumer of that graph, not a layer within it.
+    WHAT STAYS HERE. Public-contract and shape suites, which is what a project with this graph can
+    honestly assert: the Domain entities and their sentinel boundaries, the Application services
+    against substituted repositories, the FluentValidation rules, the hand-written mappers, the
+    serialisation converters, and the reflected contract shapes of the Domain service abstractions -
+    IPasswordHasher, IClock, ISecurityDiagnostics and their kin. Those files name no implementation
+    type at all, which is why they compile without the removed edge.
 
-    WHAT THIS EDGE DOES NOT LICENCE. A unit test must not reimplement a component and then assert
-    that its own double behaves as specified; that is a tautology which stays green while the
-    shipped type breaks. Suites that need the real thing END TO END resolve it from the composed
-    container in DnnMigration.IntegrationTests/Security/ - the password hasher, the token service,
-    the permission evaluator and the refresh-token store are all proven there, through
-    AddInfrastructure, which asserts the registration as well as the behaviour. Coverage in the
-    two projects is complementary and neither is a substitute for the other.
+    WHAT THIS PROJECT MUST NOT DO. It must not reimplement a component and then assert that its own
+    double behaves as specified; that is a tautology which stays green while the shipped type breaks.
+    A suite that needs the real thing resolves it from the composed container in
+    DnnMigration.IntegrationTests, through AddInfrastructure, which asserts the registration as well
+    as the behaviour.
 
-    Do not add DnnMigration.Api. The Api layer is the integration project's subject, it is where
-    the hosted pipeline and the authorisation policies live, and a unit test that started a host
-    would stop being one.
+    Do not add DnnMigration.Infrastructure back, do not ask for an InternalsVisibleTo grant, and do
+    not add DnnMigration.Api. The Api layer is the integration project's subject, it is where the
+    hosted pipeline and the authorisation policies live, and a unit test that started a host would
+    stop being one.
   -->
   <ItemGroup>
     <ProjectReference Include="..\..\src\DnnMigration.Application\DnnMigration.Application.csproj" />
-    <ProjectReference Include="..\..\src\DnnMigration.Infrastructure\DnnMigration.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

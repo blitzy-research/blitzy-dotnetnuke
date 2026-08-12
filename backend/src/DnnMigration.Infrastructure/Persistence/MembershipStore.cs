@@ -717,9 +717,41 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns><see langword="true"/> when a credential record was deleted.</returns>
     /// <remarks>
-    /// Both the credential row and the membership user row are removed, reproducing what
-    /// <c>aspnet_Users_DeleteUser</c> did across the two tables. The application row is left in place,
-    /// because it is installation-wide and every other account depends on it.
+    /// <para>
+    /// REPRODUCES THE STOCK DELETION ORDER, AND THE ORDER IS THE WHOLE POINT. The membership user row is
+    /// referenced by four other tables through NON-CASCADING foreign keys, so removing it first - or
+    /// removing only it and the credential row - is refused by the store for any account that has ever
+    /// held a membership role, stored a profile or personalised a page. <c>aspnet_Users_DeleteUser</c>
+    /// (<c>Website/Providers/DataProviders/SqlDataProvider/InstallCommon.sql</c> lines 421-541, ALTERed at
+    /// <c>04.00.00.SqlDataProvider</c> lines 475-595) clears the dependants first and in a fixed sequence:
+    /// the credential row, then the role memberships, then the profile, then the personalisation, and only
+    /// then the user row. The same sequence is issued here.
+    /// </para>
+    /// <para>
+    /// EACH DEPENDANT IS GUARDED BY AN EXISTENCE TEST, as the stock procedure guarded each of its blocks -
+    /// it tested for the corresponding view, this tests for the table itself, which is the more direct
+    /// question and is also answerable on an installation whose views were never created. A deployment that
+    /// registered only the membership feature therefore deletes cleanly instead of failing on a table it
+    /// never installed. The credential row and the user row carry no such guard: without them there is no
+    /// credential store to speak of, and <see cref="IsAvailableAsync"/> has already established that both
+    /// are present.
+    /// </para>
+    /// <para>
+    /// THE WHOLE SEQUENCE IS ONE TRANSACTION, and it joins an ambient one rather than nesting inside it.
+    /// A batch that removed a dependant and then failed would leave an account with its role memberships
+    /// gone and its credential intact - the half-cleaned state a later account reusing the identifier
+    /// inherits. The stock procedure opened a transaction only when it was not already inside one
+    /// (<c>IF @@TRANCOUNT = 0</c>) and this does the same, so the account-deletion cascade's own scope
+    /// remains the durability boundary and this batch simply enlists in it. The error handler rolls back
+    /// only a transaction this batch itself opened, and always re-raises, so an enclosing caller decides
+    /// the fate of its own scope.
+    /// </para>
+    /// <para>
+    /// The application row is left in place, because it is installation-wide and every other account
+    /// depends on it. The reported result remains "a credential record was deleted", taken from the
+    /// credential row's own affected count rather than from the dependants: an account with no profile has
+    /// still had its credential removed.
+    /// </para>
     /// </remarks>
     public async Task<bool> DeleteAsync(string userName, CancellationToken cancellationToken = default)
     {
@@ -733,6 +765,7 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
         const string Sql = @"
 DECLARE @membershipUserId uniqueidentifier;
 DECLARE @deleted int = 0;
+DECLARE @opened bit = 0;
 
 SELECT @membershipUserId = au.[UserId]
 FROM [dbo].[aspnet_Users] au
@@ -741,9 +774,36 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;
 
 IF @membershipUserId IS NOT NULL
 BEGIN
-    DELETE FROM [dbo].[aspnet_Membership] WHERE [UserId] = @membershipUserId;
-    SET @deleted = @@ROWCOUNT;
-    DELETE FROM [dbo].[aspnet_Users] WHERE [UserId] = @membershipUserId;
+    IF @@TRANCOUNT = 0
+    BEGIN
+        BEGIN TRANSACTION;
+        SET @opened = 1;
+    END
+
+    BEGIN TRY
+        DELETE FROM [dbo].[aspnet_Membership] WHERE [UserId] = @membershipUserId;
+        SET @deleted = @@ROWCOUNT;
+
+        IF OBJECT_ID(N'[dbo].[aspnet_UsersInRoles]', N'U') IS NOT NULL
+            DELETE FROM [dbo].[aspnet_UsersInRoles] WHERE [UserId] = @membershipUserId;
+
+        IF OBJECT_ID(N'[dbo].[aspnet_Profile]', N'U') IS NOT NULL
+            DELETE FROM [dbo].[aspnet_Profile] WHERE [UserId] = @membershipUserId;
+
+        IF OBJECT_ID(N'[dbo].[aspnet_PersonalizationPerUser]', N'U') IS NOT NULL
+            DELETE FROM [dbo].[aspnet_PersonalizationPerUser] WHERE [UserId] = @membershipUserId;
+
+        DELETE FROM [dbo].[aspnet_Users] WHERE [UserId] = @membershipUserId;
+
+        IF @opened = 1
+            COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @opened = 1 AND XACT_STATE() <> 0
+            ROLLBACK TRANSACTION;
+
+        THROW;
+    END CATCH
 END
 
 SELECT @deleted;";

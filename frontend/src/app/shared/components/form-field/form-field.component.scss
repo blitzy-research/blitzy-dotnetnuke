@@ -256,7 +256,7 @@
 // required, twice over, by mechanisms that do not depend on colour at all.
 .form-field__required {
   margin-inline-start: var(--space-1);
-  color: var(--color-danger-text);
+  color: var(--color-danger);
 }
 
 // The word that gives the marker glyph a meaning for a reader who cannot see it.
@@ -511,7 +511,7 @@
 // red still receives the failure, in text, through the accessibility tree.
 .form-field__error {
   margin: 0;
-  color: var(--color-danger-text);
+  color: var(--color-danger);
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-bold);
   line-height: var(--line-height-base);

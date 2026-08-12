@@ -2039,13 +2039,22 @@ describe('RoleFormComponent', () => {
         .not.toHaveBeenCalled();
     });
 
-    it('says NOTHING when a write that outlived the screen was refused', () => {
-      // ⚠ DELIBERATE ASYMMETRY. A refusal in this application is a document - a title, a detail, per-field
-      // messages and the support reference an operator quotes - and its home is the banner ON this screen.
-      // This screen is gone: there is no field for a field message to sit beside and no form to correct, so
-      // a decontextualised sentence thrown at wherever the operator has moved to would report a problem
-      // without showing it or letting them fix it. The store still holds the failure, so returning here
-      // presents it in full.
+    it('states the refusal when a write that outlived the screen was refused', () => {
+      // ⚠ THIS ASSERTION IS INVERTED FROM THE ONE IT REPLACES, which required silence. The old reasoning
+      // was that a refusal in this application is a DOCUMENT - a title, a detail, per-field messages, a
+      // support reference - whose home is the banner ON this screen; this screen is gone, so there is no
+      // field for a field message to sit beside, and the store still holds the failure for anyone who
+      // returns.
+      //
+      // All of that is true about the document and none of it justifies silence about the FACT. The
+      // operator submitted a role and moved on: they believe it was created. Nothing tells them otherwise -
+      // an absent confirmation is indistinguishable from one they clicked away from - and they find out
+      // when something downstream needs a role that does not exist. "Returning here presents it in full"
+      // presumes they know they have a reason to return, which is exactly what they do not know.
+      //
+      // WHAT IS RELAYED IS STILL NOT THE DOCUMENT. This screen supplies the same sentence its own banner
+      // falls back to, plus the support reference, and nothing field-scoped travels; the document stays in
+      // the store and is still presented in full with its per-field messages on return.
       createMode();
       fillRoleName();
 
@@ -2057,14 +2066,27 @@ describe('RoleFormComponent', () => {
       notifySpy.calls.reset();
 
       call.flush(
-        { type: 'urn:test', title: 'Conflict', status: 409, detail: 'A role of that name exists.' },
+        {
+          type: 'urn:test',
+          title: 'Conflict',
+          status: 409,
+          detail: 'A role of that name exists.',
+          correlationId: '4d19ae7c1b8f4e2a9d6c3f5b7a091e2d',
+        },
         { status: 409, statusText: 'Conflict' },
       );
       TestBed.flushEffects();
 
       expect(notifySpy)
-        .withContext('a refusal without its screen is worse than silence')
-        .not.toHaveBeenCalled();
+        .withContext('the operator is told the write did NOT commit, by the party that outlived the screen')
+        // THREE arguments, not four: the relay goes through the queue's `error` convenience, which states
+        // the reference and leaves BOTH the navigation exemption and the lifetime opinion to their
+        // defaults - so a refusal keeps the severity-derived lifetime every other error has, and an error
+        // is never retired on a timer.
+        .toHaveBeenCalledWith('error', SAVE_FAILED_MESSAGE, '4d19ae7c1b8f4e2a9d6c3f5b7a091e2d');
+      expect(notifySpy.calls.allArgs().map((args) => args[1]))
+        .withContext('the server detail and any per-field message stay with the banner')
+        .not.toContain('A role of that name exists.');
     });
 
     it('announces an update and leaves for the listing when the server accepts it', () => {
@@ -4274,14 +4296,40 @@ describe('RoleFormComponent', () => {
         expect(submittedUpdate(7).concurrencyToken).toBe('revision-from-the-read');
       });
 
-      it('sends null when the API served no token', () => {
-        editMode(role(7, { concurrencyToken: null }));
+      // ⚠ MINOR (client/API contract) — THIS SPECIFICATION WAS REWRITTEN, AND THE REWRITE IS THE FIX.
+      //
+      // It asserted that a read serving NO token produced a token-less update, and called that a
+      // last-writer-wins update. The premise was false: `RoleDetailDto.ConcurrencyToken` is declared
+      // `public string ... = string.Empty` and is always populated by `RoleMappings.ConcurrencyTokenFor`,
+      // so a read serving no token is a MALFORMED response rather than a supported mode. Tolerating it was
+      // the defect — the null decoded, reached a write the server does treat as last-writer-wins, and the
+      // optimistic check was skipped with nothing reporting it, so a lost update presented as a success.
+      //
+      // What survives is the ONLY legitimate null: a creation, which has no prior revision. That case is
+      // asserted immediately below and is unchanged.
+      it('always carries a token on an update, because a read serving none is refused', () => {
+        editMode(role(7, { concurrencyToken: 'revision-2' }));
         type(CONTROL_ID.description, 'Edited');
         press('Update');
 
-        // A last-writer-wins update, exactly as it behaved before the member existed. Nothing is
-        // invented to fill the gap: a fabricated token that happened to match would defeat the check.
-        expect(submittedUpdate(7).concurrencyToken).toBeNull();
+        const sent: string | null = submittedUpdate(7).concurrencyToken;
+
+        expect(typeof sent)
+          .withContext('a marker, never a null this screen invented and never one it omitted')
+          .toBe('string');
+        expect(sent).toBe('revision-2');
+      });
+
+      it('carries the empty string through, because that is the server unset spelling', () => {
+        // The server's member is non-nullable and its declared default IS the empty string, so an
+        // installation that has never derived a marker serves one. It is carried as received rather than
+        // substituted or dropped: substituting would fabricate a marker, and dropping it would opt out of
+        // the very check the round trip exists to perform.
+        editMode(role(7, { concurrencyToken: '' }));
+        type(CONTROL_ID.description, 'Edited');
+        press('Update');
+
+        expect(submittedUpdate(7).concurrencyToken).toBe('');
       });
 
       it('sends no token on a creation, because there is no prior revision', () => {
@@ -4578,10 +4626,16 @@ describe('RoleFormComponent', () => {
       }
 
       /**
-       * ⚠ THE CASE THAT NAMES THE DEFECT. The double-submit guard itself works — runtime testing
-       * confirmed a single POST from five presses — but every one of those presses found the button
-       * enabled, because no change-detection pass had run between them, and the only signal of the
-       * in-flight write was a spinner. Nothing about the state was programmatically determinable.
+       * ⚠ THE CASE THAT NAMES THE DEFECT, AND ITS SUBJECT IS `aria-busy` ALONE. Every one of those
+       * presses found the button enabled, because no change-detection pass had run between them, and
+       * the only signal of the in-flight write was a spinner — nothing about the state was
+       * programmatically determinable. That is what this case fixes and asserts.
+       *
+       * ⚠ IT IS NOT COVERAGE OF `SubmitGuardDirective`, and the earlier wording here implied otherwise
+       * by citing a manual five-press observation as though the guard were proven. A manual observation
+       * is not a test, and nothing below would fail if the directive were deleted. The directive is
+       * asserted against itself, on a host that carries no guard of its own, in
+       * `src/app/shared/directives/submit-guard.directive.spec.ts`.
        */
       it('carries aria-busy from the press until the write settles', () => {
         createMode();

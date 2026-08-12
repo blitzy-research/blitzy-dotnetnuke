@@ -38,6 +38,7 @@ import {
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router } from '@angular/router';
 
+import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { ModuleStore } from '../../../core/state/module.store';
 import { NotificationService } from '../../../core/services/notification.service';
 import { conflictMessage, fieldErrorMessage } from '../../../core/utils/form-errors.util';
@@ -510,7 +511,6 @@ function toModuleChoices(modules: readonly ModuleListItem[]): readonly ModuleImp
     LoadingSpinnerComponent,
     ErrorBannerComponent,
     EmptyStateComponent,
-    FocusFirstInvalidDirective,
   ],
   templateUrl: './module-import.component.html',
   styleUrl: './module-import.component.scss',
@@ -604,6 +604,29 @@ export class ModuleImportComponent {
   // -------------------------------------------------------------------------------------
   // THE FORM
   // -------------------------------------------------------------------------------------
+
+  /**
+   * Reports this screen's unsaved entry to the tracker that guards both ways of leaving it.
+   *
+   * ⚠ THE ROUTE DECLARES `unsavedChangesGuard` AND THIS SCREEN USED TO REGISTER NOTHING, so the gate
+   * was answered by a reflective sweep over this component's fields. The sweep is gone — it pulled
+   * `@angular/forms` into the eagerly loaded bundle for an application whose every form is lazily
+   * loaded — and this registration replaces it. Without it the declaration on `modules/import` would
+   * be inert.
+   *
+   * ⚠ THE LOSS THIS PROTECTS IS UNUSUALLY EXPENSIVE ON THIS SCREEN, which is why it is worth stating
+   * rather than treating as one more form. The chosen document is held in memory as a `File` and
+   * NOTHING on the server knows about it yet, so leaving discards a selection the operator has to
+   * make again from their own file system — and on a large export that is a second read as well as a
+   * second search. The module choice goes the same way.
+   *
+   * `busy()` rather than the store's flag alone: it also covers the local read of the document, which
+   * happens before any request is issued and which the store therefore cannot see. Entry that is
+   * already on its way to the server is not unsaved entry.
+   */
+  private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
+    () => this.form.dirty && this.busy() === false,
+  );
 
   /**
    * The typed form backing both fields.

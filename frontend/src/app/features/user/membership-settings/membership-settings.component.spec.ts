@@ -18,7 +18,7 @@ import type {
 import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { UserStore } from '../../../core/state/user.store';
-import { MembershipSettingsComponent } from './membership-settings.component';
+import { MEMBERSHIP_SETTINGS_TEXT, MembershipSettingsComponent } from './membership-settings.component';
 
 /**
  * Specification for the tenant's account-administration policy screen.
@@ -95,9 +95,11 @@ import { MembershipSettingsComponent } from './membership-settings.component';
  *     four actions therefore belong to the ACCOUNT FORM, and NOT ONE CASE BELOW ASSERTS THEM.
  *   * `Website/admin/Users/MemberServices.ascx` is seventy-seven lines of role subscription — an
  *     invitation-code box, a subscribe command and a seven-column services grid carrying a trial
- *     command. It is implemented by the SIBLING component in this folder, routed at
- *     `/users/{userId}/services` and specified by `member-services.component.spec.ts`, so NO CASE
- *     BELOW COVERS IT — not because the workflow is absent, but because it is not this screen.
+ *     command. Its ENDPOINTS exist on the account resource, but no screen in this workspace
+ *     presents them: the sibling component that did, at `/users/{userId}/services`, is withdrawn
+ *     because AAP 0.4.4 freezes the route table at twenty-five screens and names no
+ *     member-services address among them. NO CASE BELOW COVERS THAT WORKFLOW — it is not this
+ *     screen's, and it is no longer any screen's.
  *     (An earlier revision of this note said those affordances had "NO ENDPOINT in this API at
  *     all", which was true of the API as it then stood and is withdrawn.) The two are separate
  *     screens because they differ in whose data they show and in who may see it: this one
@@ -356,6 +358,50 @@ describe('MembershipSettingsComponent', () => {
       securityDisplayNameFormat: '[FIRSTNAME] [LASTNAME]',
       ...overrides,
     };
+  }
+
+  /**
+   * The policy a tenant with NO SETTINGS SOURCE is answered with.
+   *
+   * ⚠ #5/#6 — THE BRANCH THE SINGLE `isStored: true` FIXTURE MADE UNREACHABLE. A portal holding no
+   * "User Accounts" module instance is answered `200` with the measured legacy defaults and
+   * `isStored: false`, and a write for that same address is refused `409`. The backend authority for
+   * the pair is `backend/tests/DnnMigration.IntegrationTests/Api/UserApiTests.cs`
+   * `MembershipSettings_WithoutAUserAccountsModule_ReadsDefaultsAndRefusesTheWrite`.
+   *
+   * The values are the ones `Library/Components/Users/UserModuleBase.vb` L98-L190 applied for an absent
+   * key, so this is what an unstored tenant really receives rather than the deliberately-contrary set
+   * the sibling builder uses to prove the form was seated from the server.
+   *
+   * @param overrides Members to replace.
+   * @returns The policy.
+   */
+  function unstoredSettings(overrides: Partial<MembershipSettings> = {}): MembershipSettings {
+    return settings({
+      isStored: false,
+      columnFirstName: false,
+      columnLastName: false,
+      columnDisplayName: true,
+      columnAddress: true,
+      columnTelephone: true,
+      columnEmail: false,
+      columnCreatedDate: true,
+      columnLastLogin: false,
+      columnAuthorized: true,
+      displayMode: 2,
+      displaySuppressPager: false,
+      recordsPerPage: 10,
+      profileDefaultVisibility: 2,
+      profileDisplayVisibility: true,
+      profileManageServices: true,
+      redirectAfterLogin: null,
+      redirectAfterRegistration: null,
+      redirectAfterLogout: null,
+      securityRequireValidProfile: false,
+      securityRequireValidProfileAtLogin: true,
+      securityDisplayNameFormat: '',
+      ...overrides,
+    });
   }
 
   function envelope<T>(data: T): ApiResponse<T> {
@@ -1828,21 +1874,25 @@ describe('MembershipSettingsComponent', () => {
         .toHaveSize(0);
     });
 
-    it('explains an absent policy instead of raising an error over it, and draws no form', () => {
+    it('explains an UNSTORED policy instead of raising an error over it, and draws no form', () => {
       /*
-       * ⚠ AN ABSENT POLICY IS NOT A REFUSED READ, and this screen has to present the two differently.
-       * The transport spells both `404` and `403`-shaped refusals with an error status, but absence is
-       * a SUCCESSFUL outcome carrying no value: the tenant simply has no "User Accounts" module, which
-       * is where these settings are stored.
+       * ⚠ #5/#6 — AN UNSTORED POLICY ARRIVES AS A SUCCESSFUL `200`, NOT AS A `404`, and that is the
+       * fact this case exists to pin. The server answers a portal with no "User Accounts" module
+       * instance with the measured legacy defaults and `isStored: false`; the backend authority is
+       * `backend/tests/DnnMigration.IntegrationTests/Api/UserApiTests.cs`
+       * `MembershipSettings_WithoutAUserAccountsModule_ReadsDefaultsAndRefusesTheWrite`. An earlier
+       * revision of this file flushed a `404` here, which is a status this address cannot produce for
+       * this state - so the case passed while the screen's real behaviour on the real response was to
+       * open an editable form over a policy the tenant has nowhere to keep.
        *
-       * ⚠ WHY NO FORM AT ALL, rather than a form with a disabled button as the refusal case above
-       * gets. The two cases differ in whether a save could EVER succeed. After a refused read the
-       * policy exists and a retry may reach it, so the form stays drawn and the entry is preserved.
-       * With no settings source the write is impossible, not merely blocked - measured against the
-       * running API, `PUT /api/v1/users/settings` answers `404
-       * user.membership_settings.source_missing`, "Portal -1 has no \"User Accounts\" module instance
-       * to store membership settings against." Twenty-three controls that provably cannot be saved are
-       * a trap, so they are withheld and the reason is stated instead.
+       * ⚠ AN UNSTORED POLICY IS NOT A REFUSED READ, and this screen has to present the two
+       * differently. The two cases differ in whether a save could EVER succeed. After a refused read
+       * the policy may well exist and a retry may reach it, so the form stays drawn and the entry is
+       * preserved. With no settings source the write is impossible, not merely blocked - measured
+       * against the running API, `PUT /api/v1/users/settings` answers
+       * `409 user.membership-settings.storage-conflict`, "Portal -1 has no \"User Accounts\" module
+       * instance, so there is nowhere to store membership settings." Twenty-three controls that
+       * provably cannot be saved are a trap, so they are withheld and the reason is stated instead.
        *
        * MIGRATION: the wording is net-new because the legacy screen never met this state - the
        * account module was installed with the portal, so `UserSettings.ascx.vb:L106` could assume it.
@@ -1851,10 +1901,7 @@ describe('MembershipSettingsComponent', () => {
        */
       create();
 
-      expectRequest('GET', SETTINGS_URL).flush(
-        problem('resource.not_found', 404, 'The requested resource does not exist.'),
-        { status: 404, statusText: 'Not Found' },
-      );
+      expectRequest('GET', SETTINGS_URL).flush(envelope(unstoredSettings()));
       fixture.detectChanges();
 
       // The alarming presentation is gone: no banner text, and nothing inviting a retry.
@@ -1871,9 +1918,78 @@ describe('MembershipSettingsComponent', () => {
       expect(button(SUBMIT_LABEL))
         .withContext('no form, so no command to withhold')
         .toBeUndefined();
+      // ⚠ AND NO SECOND, CONTRADICTORY SENTENCE. The provenance notice above the chain used to invite
+      // the operator to "press Update to store them" for exactly this state, which is a save the API
+      // refuses; the unconfigured explanation is now the single statement of it.
+      expect(query('.membership-settings__provenance'))
+        .withContext('one statement of this state, not two that disagree')
+        .toBeNull();
       expect(httpMock.match(() => true))
         .withContext('nothing is written against a tenant with nowhere to write')
         .toHaveSize(0);
+    });
+
+    it('discloses the provenance of a STORED policy, and draws the form over it', () => {
+      /*
+       * The counterpart of the case above, and the reason the disclosure exists at all: a control
+       * renders `Records Per Page 25` identically whether somebody chose twenty-five or twenty-five is
+       * a fallback, so the screen states which. `isStored: true` therefore gets the notice AND the
+       * form, and the two together are what an operator needs to edit a policy knowingly.
+       */
+      arrive();
+
+      const notice = query('.membership-settings__provenance');
+
+      expect(notice).withContext('the provenance is disclosed').not.toBeNull();
+      expect(notice?.getAttribute('data-provenance')).toBe('stored');
+      expect(notice?.textContent ?? '').toContain(MEMBERSHIP_SETTINGS_TEXT.storedNotice);
+      expect(query('.membership-settings__unconfigured')).toBeNull();
+      expect(button(SUBMIT_LABEL)?.disabled).withContext('editable').toBeFalse();
+    });
+
+    it('reports the 409 the API answers when a write reaches a tenant with no settings store', async () => {
+      /*
+       * ⚠ THE EXACT REFUSAL, ASSERTED RATHER THAN DESCRIBED IN A COMMENT. The screen withholds the
+       * command for an unstored tenant, so this state is not reachable by pressing anything - which is
+       * precisely why the refusal has to be exercised through the store instead. A tenant can also LOSE
+       * its account module between the read and the write, and then a form drawn over a stored policy
+       * submits into this same refusal.
+       *
+       * `409`, not `404`: the read for this very address answers `200`, so the resource exists and only
+       * its store does not. `UserService` reports it as `user.membership-settings.storage-conflict` and
+       * the shared status table resolves that reason onto a conflict.
+       */
+      arrive();
+
+      const store = TestBed.inject(UserStore);
+
+      store.saveMembershipSettings(settings());
+      fixture.detectChanges();
+
+      const write = expectRequest('PUT', SETTINGS_URL);
+
+      write.flush(
+        problem(
+          'user.membership-settings.storage-conflict',
+          409,
+          'Portal -1 has no "User Accounts" module instance, so there is nowhere to store membership settings. Add the "User Accounts" module to one of this portal\'s pages and try again.',
+        ),
+        { status: 409, statusText: 'Conflict' },
+      );
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      const failure = store.failure();
+
+      expect(failure).not.toBeNull();
+      expect(failure!.problem?.status).toBe(409);
+      // The shared reader folds hyphens onto underscores so that one code has one client-side
+      // spelling however the server punctuates it - which is exactly what the API's own status table
+      // does before classifying a reason. The wire value is the hyphenated one flushed above.
+      expect(failure!.code).toBe('user.membership_settings.storage_conflict');
+      // Surfaced to the operator with the remedy the server named, rather than as a bare status.
+      expect(query('app-error-banner')?.textContent ?? '').toContain('User Accounts');
     });
 
     it('reopens the command once a retried read succeeds', () => {

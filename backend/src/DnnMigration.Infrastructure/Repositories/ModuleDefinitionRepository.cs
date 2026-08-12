@@ -114,33 +114,6 @@ internal sealed class ModuleDefinitionRepository : IModuleDefinitionRepository
     /// <inheritdoc/>
     /// <remarks>
     /// <para>
-    /// Supersedes <c>GetDesktopModules</c> (<c>02.00.00.SqlDataProvider</c>), reached through the
-    /// ArrayList-returning wrapper at <c>DesktopModuleController.vb</c>. The legacy
-    /// <c>order by FriendlyName</c> is reproduced and extended with the key, because
-    /// <c>DesktopModules.FriendlyName</c> carries only a plain index in the terminal schema
-    /// (<c>03.01.00.SqlDataProvider</c>) and duplicates are ordinary - the same script back-fills
-    /// the column - so the legacy clause alone is not a total order.
-    /// </para>
-    /// <para>
-    /// MIGRATION: this member returns <b>every</b> installed package, whereas the legacy procedure
-    /// ended its predicate with <c>where IsAdmin = 0</c> (<c>02.00.00.SqlDataProvider</c>) and so
-    /// hid the administrative ones. The exclusion remains exactly where the question is
-    /// portal-scoped, in <see cref="GetDesktopModulesByPortalIdAsync"/>, which is the member the
-    /// migration record attributes it; a caller wanting the legacy reading filters
-    /// <see cref="DesktopModule.IsAdmin"/> itself, which it can do because the column is mapped.
-    /// </para>
-    /// </remarks>
-    public async Task<IReadOnlyList<DesktopModule>> GetDesktopModulesAsync(CancellationToken cancellationToken = default) =>
-        await _dbContext.DesktopModules
-            .AsNoTracking()
-            .OrderBy(package => package.FriendlyName)
-            .ThenBy(package => package.DesktopModuleId)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-    /// <inheritdoc/>
-    /// <remarks>
-    /// <para>
     /// Reproduces the terminal <c>GetDesktopModulesByPortal</c> (<c>04.05.00.SqlDataProvider</c>)
     /// clause for clause.
     /// </para>

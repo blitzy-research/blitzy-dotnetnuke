@@ -759,6 +759,89 @@ public sealed class ResponseDeclarationContractTests
     }
 
     /// <summary>
+    /// Three further operations whose service reports a status they did not advertise now advertise it.
+    /// </summary>
+    /// <param name="path">The published route template of the operation.</param>
+    /// <param name="verb">The verb, as the explorer names it.</param>
+    /// <param name="status">The status the operation must advertise.</param>
+    /// <param name="reachableBecause">The reason code that makes the status reachable, for the failure text.</param>
+    /// <remarks>
+    /// <para>
+    /// THE SAME CLASS OF DEFECT AS <see cref="TheProfileDefinitionDeletion_AdvertisesTheConflictItCanReport"/>,
+    /// found in three more places, and stated as a table because it is one rule with three instances rather
+    /// than three rules. A status the operation never mentions passes every schema rule above, because there is
+    /// nothing to inspect - so an undeclared reachable status is precisely the gap those rules are blind to,
+    /// and each of these three was reachable through the shared status table while being absent from the
+    /// contract a generated client is built from.
+    /// </para>
+    /// <para>
+    /// PORTAL DELETION, 503. Removing a portal also ends the sessions of the accounts it is the last tenant for
+    /// and removes their credentials from the external membership store. Neither store can enlist in the
+    /// relational transaction, so the service abandons the whole removal and reports a store-unavailability
+    /// code when either refuses. A caller told only about 409 reads the 503 as an unknown fault and has no
+    /// reason to retry - which is exactly what it should do, because nothing was removed.
+    /// </para>
+    /// <para>
+    /// MEMBERSHIP-SETTINGS UPDATE, 409. The write is refused when the tenant has no settings store, reported as
+    /// a conflict rather than as a missing resource because the read at the same address answers 200. The
+    /// detail names the module to add, so this is the one refusal on the path an operator can act on directly.
+    /// </para>
+    /// <para>
+    /// PROFILE UPDATE, 409. One submission naming the same property definition twice is refused as a whole
+    /// rather than at any single member, so it carries the plain problem document and not the validation
+    /// document this operation otherwise advertises - which is why a client with no branch for it would meet
+    /// the unexpected shape as well as the unexpected status.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(
+        "/api/v1/portals/{portalId}",
+        OperationType.Delete,
+        "503",
+        "portal.member.session.revocation_store_unavailable")]
+    [InlineData(
+        "/api/v1/users/settings",
+        OperationType.Put,
+        "409",
+        "user.membership-settings.storage-conflict")]
+    [InlineData(
+        "/api/v1/users/{userId}/profile",
+        OperationType.Put,
+        "409",
+        "user.profile.duplicate-property")]
+    public void AnOperationWhoseServiceReportsAStatus_AdvertisesIt(
+        string path,
+        OperationType verb,
+        string status,
+        string reachableBecause)
+    {
+        _document.Paths.Should().ContainKey(
+            path,
+            "the assertion names the published route template, so a renamed route must fail here rather than "
+            + "silently stop being checked");
+
+        _document.Paths[path].Operations.Should().ContainKey(
+            verb,
+            "the operation must still be published at this address");
+
+        OpenApiOperation operation = _document.Paths[path].Operations[verb];
+
+        operation.Responses.Should().ContainKey(
+            status,
+            $"the service reports {reachableBecause}, which the shared status table answers with {status}, so "
+            + "the status is reachable and must be advertised rather than left for a client to meet "
+            + "unannounced");
+
+        IEnumerable<string> schemas = operation.Responses[status].Content
+            .Select(body => body.Value.Schema?.Reference?.Id ?? string.Empty);
+
+        schemas.Should().OnlyContain(
+            schema => schema == ProblemDocument,
+            "neither an unreachable dependency nor a state conflict names a request member, so both carry the "
+            + "plain problem document");
+    }
+
+    /// <summary>
     /// Reports whether an operation accepts anything a refusal could name, beyond its path.
     /// </summary>
     /// <param name="operation">The operation to inspect.</param>

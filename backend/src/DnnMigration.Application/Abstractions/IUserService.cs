@@ -403,6 +403,59 @@ public interface IUserService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Reads one page of a tenant's accounts as an account PICKER needs them: the key to submit and
+    /// the two captions an option shows, and nothing else.
+    /// </summary>
+    /// <param name="portalId">
+    /// Identifier of the tenant whose accounts are offered. Enforces tenant isolation: an account
+    /// belonging to another tenant is not a choice here, whatever the caller's own standing.
+    /// </param>
+    /// <param name="page">
+    /// Page coordinates, the optional ordering, and the optional name filter carried by the paging
+    /// contract's own free-text member. Bounded by <c>UserChoicePagedRequestValidator</c> at the
+    /// boundary and re-checked here, so a caller reaching this member without passing through
+    /// validation cannot ask for an unbounded page.
+    /// </param>
+    /// <param name="cancellationToken">Token observed while the page is read.</param>
+    /// <returns>
+    /// A successful result carrying the requested page, which is an empty page - never a failure and
+    /// never a <see langword="null"/> value - when no account matches or when the tenant holds none.
+    /// The one documented failure code is <c>user.choices.sort-unsupported</c>, when the request names
+    /// an ordering that is not one of the two captions the choice carries.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ WHY THIS IS NOT <see cref="ListUsersAsync"/> WITH A THINNER PROJECTION. A performance and
+    /// privacy review measured the role-assignment screen filling its account drop-down, and its
+    /// account count probe, from the account LISTING. Every candidate row carried a postal address, a
+    /// telephone number, an electronic-mail address, a creation instant, a last-login instant and the
+    /// approval, lockout, online and super-user flags out of the database and into browser memory so
+    /// that three values could be rendered - and the drop-down is permitted to enumerate a tenant of up
+    /// to a thousand accounts. Being authorised to read the account grid is not a licence to receive
+    /// fields the asking screen has no use for.
+    /// </para>
+    /// <para>
+    /// The saving is not only bytes on the wire. The listing reads the tenant's account-policy settings
+    /// to decide which columns it may publish, reads the tenant's profile-property definitions, issues a
+    /// batched profile-value read for the address and telephone columns, and reads the portal itself to
+    /// learn which account it may not offer for deletion. A picker needs none of those four reads, and
+    /// this member performs none of them.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this is <c>cboUsers</c> on <c>Website/admin/Security/securityroles.ascx</c>, filled by
+    /// <c>UserModuleBase.vb:L178-L186</c>. That code read the tenant's account count first and offered
+    /// the drop-down only at or below one thousand accounts, offering a name box above it - which is why
+    /// the count is worth a request of its own, and why the cheapest possible count request is the one a
+    /// caller should be able to make. Asking this member for a single row and reading the envelope's
+    /// total is that request.
+    /// </para>
+    /// </remarks>
+    Task<Result<PagedResult<UserChoiceDto>>> ListAccountChoicesAsync(
+        int portalId,
+        PagedRequest page,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Reads a single account within a tenant.
     /// </summary>
     /// <param name="portalId">

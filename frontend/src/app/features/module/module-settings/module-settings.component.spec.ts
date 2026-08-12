@@ -372,25 +372,117 @@ describe('ModuleSettingsComponent', () => {
   }
 
   /**
-   * A field's rendered help text.
+   * The shared field region a named control sits inside.
    *
-   * @param fieldName The field name.
-   * @returns The trimmed text, or `null` when the hint is not rendered.
+   * ⚠ FOUND BY WALKING UP FROM THE CONTROL, NEVER BY POSITION OR BY A DERIVED IDENTIFIER. Every field on
+   * this screen is now an `app-form-field`, which owns its own identifier scheme: the help paragraph is
+   * `<for>-help` and the message region is `<for>-error`, both derived from the `for` the caller supplied.
+   * Three fields on this screen supply NO `for` - the read-only definition name, the permissions region
+   * and the visibility group all caption something other than one control - and for those the component
+   * falls back to a per-instance counter, so their identifiers are not predictable from a field name at
+   * all. Walking up from the control works for both kinds and does not depend on field order.
+   *
+   * @param controlId The control's declared identifier.
+   * @returns The enclosing field region.
    */
-  function hintFor(fieldName: string): string | null {
-    const element = q(`#module-settings-${fieldName}-hint`);
-    return element === null ? null : (element.textContent ?? '').trim();
+  function regionOf(controlId: string): HTMLElement | null {
+    return q(`#${controlId}`)?.closest<HTMLElement>('.form-field') ?? null;
   }
 
   /**
-   * A field's rendered validation message.
+   * The shared field region whose caption begins with the given wording.
+   *
+   * For the three fields that name no single control and therefore have no `for` to walk up from. The
+   * caption is the field's visible name, which is the one stable, meaningful handle those fields have.
+   *
+   * @param caption The caption's leading wording.
+   * @returns The enclosing field region.
+   */
+  function regionCaptioned(caption: string): HTMLElement | null {
+    return (
+      qa<HTMLElement>('.form-field').find((region: HTMLElement): boolean =>
+        (region.querySelector('.form-field__label')?.textContent ?? '').trim().startsWith(caption),
+      ) ?? null
+    );
+  }
+
+  /**
+   * A field's rendered help text, revealing it first when it is still collapsed.
+   *
+   * ⚠ THE HELP IS A DISCLOSURE NOW, AND THAT IS A RESTORATION RATHER THAN A REGRESSION. This screen used
+   * to render its hints as always-visible text, which the rest of the application does not: the shared
+   * component keeps help behind a keyboard-reachable toggle and removes the panel from the DOM while it is
+   * closed, which is what `labelcontrol.ascx` did - a help link revealing a bordered panel. So the text is
+   * present only after the affordance is pressed, and this helper presses it.
+   *
+   * @param region The field region to read.
+   * @returns The trimmed text, or `null` when the field declares no help at all.
+   */
+  function hintIn(region: HTMLElement | null): string | null {
+    if (region === null) {
+      return null;
+    }
+
+    const toggle = region.querySelector<HTMLButtonElement>('.form-field__help-toggle');
+
+    if (toggle === null) {
+      return null;
+    }
+
+    if (toggle.getAttribute('aria-expanded') !== 'true') {
+      toggle.click();
+      fixture.detectChanges();
+    }
+
+    const help = region.querySelector('.form-field__help');
+
+    return help === null ? null : (help.textContent ?? '').trim();
+  }
+
+  /**
+   * A field's rendered help text, addressed by the control it describes.
+   *
+   * @param fieldName The field name, which is also its control's identifier stem.
+   * @returns The trimmed text, or `null` when the hint is not rendered.
+   */
+  function hintFor(fieldName: string): string | null {
+    return hintIn(regionOf(`module-settings-${fieldName}`));
+  }
+
+  /**
+   * Every validation message rendered inside one field region, in render order.
+   *
+   * @param region The field region to read.
+   * @returns The messages, or an empty list when the region reports nothing.
+   */
+  function messagesIn(region: HTMLElement | null): readonly string[] {
+    return region === null
+      ? []
+      : Array.from(region.querySelectorAll('.form-field__error')).map((node: Element): string =>
+          (node.textContent ?? '').trim(),
+        );
+  }
+
+  /**
+   * A field's rendered validation messages, addressed by the control they belong to.
+   *
+   * @param fieldName The field name, which is also its control's identifier stem.
+   * @returns The messages, in render order.
+   */
+  function messagesFor(fieldName: string): readonly string[] {
+    return messagesIn(regionOf(`module-settings-${fieldName}`));
+  }
+
+  /**
+   * A field's rendered validation message as one string, for the cases that expect exactly one.
    *
    * @param fieldName The field name.
    * @returns The trimmed text, or `null` when no message is rendered.
    */
   function messageFor(fieldName: string): string | null {
-    const element = q(`#module-settings-${fieldName}-message`);
-    return element === null ? null : (element.textContent ?? '').trim();
+    const messages = messagesFor(fieldName);
+
+    return messages.length === 0 ? null : messages.join(' ');
   }
 
   /**
@@ -959,7 +1051,9 @@ describe('ModuleSettingsComponent', () => {
         'Enter a title for the Module.  This will appear in the Title Bar of the Container for this Module, '
           + 'if supported by the Container.',
       );
-      expect(hintFor('permissions')).toBe(
+      // Addressed by its CAPTION, because the permissions field names a region rather than one control and
+      // therefore declares no `for` for the identifier scheme to derive from.
+      expect(hintIn(regionCaptioned('Permissions'))).toBe(
         'Select the View and Edit permissions by checking/unchecking the boxes in the grid.  The module can '
           + 'inherit its permissions from the Page.  To do this check the Inherit View Permissions checkbox.',
       );
@@ -979,22 +1073,52 @@ describe('ModuleSettingsComponent', () => {
     });
 
     it('renders every declared hint exactly as declared, across every region', () => {
-      // The sweep. Each hint element's identifier names the field it belongs to, so the rendered text is
-      // compared against the declaration rather than against a copy retyped into this test.
+      // The sweep. Every hint is compared against its DECLARATION rather than against a copy retyped into
+      // this test, so a reworded resource cannot pass by matching a stale expectation here.
+      //
+      // ⚠ EVERY HINT IS REVEALED FIRST, because the shared field keeps help behind a disclosure and removes
+      // the panel from the DOM while it is closed. A sweep over rendered help elements would therefore find
+      // NONE before the toggles are pressed, which is why this walks the toggles rather than the panels.
       const declared = component['hints'] as Record<string, string>;
-      let checked = 0;
+      const rendered: string[] = [];
 
-      for (const element of qa('.form-help')) {
-        const key = element.id.replace(/^module-settings-/, '').replace(/-hint$/, '');
-        expect(declared[key]).withContext(`${element.id} must correspond to a declared hint`).toBeDefined();
-        expect((element.textContent ?? '').trim()).toBe(declared[key]);
-        checked += 1;
+      for (const toggle of qa<HTMLButtonElement>('.form-field__help-toggle')) {
+        toggle.click();
+      }
+
+      fixture.detectChanges();
+
+      for (const element of qa('.form-field__help')) {
+        rendered.push((element.textContent ?? '').trim());
       }
 
       // Fifteen of the sixteen declared hints are rendered: the permissions hint serves both the region and
-      // its inherit switch, so inheritViewPermissions has no hint element of its own.
-      expect(checked).toBe(15);
+      // its inherit switch, so inheritViewPermissions has no field of its own to carry one.
+      expect(rendered.length).toBe(15);
       expect(Object.keys(declared).length).toBe(16);
+
+      // Each rendered hint must be one of the declared ones, and the fifteen must be DISTINCT - so a
+      // template that bound the same hint to two fields could not pass by rendering the right count.
+      const declaredValues = new Set<string>(Object.values(declared));
+
+      for (const text of rendered) {
+        expect(declaredValues.has(text)).withContext(`"${text}" must be a declared hint`).toBeTrue();
+      }
+
+      expect(new Set<string>(rendered).size).withContext('no hint is rendered twice').toBe(15);
+
+      // ⚠ THE SIXTEENTH DECLARATION IS A DUPLICATE OF THE FIFTEENTH, WHICH IS WHY FIFTEEN ELEMENTS COVER
+      // SIXTEEN KEYS. `permissions` and `inheritViewPermissions` declare the SAME sentence - the legacy
+      // resource attached one help string to the region and to the switch inside it - and one field now
+      // carries them both, so exactly one element renders that sentence. Asserting the two declarations are
+      // identical is what makes the count of fifteen correct rather than merely convenient: if they ever
+      // diverged, one of the two would be going unrendered and this would fail.
+      expect(declared['inheritViewPermissions'])
+        .withContext('the switch and its region declare one shared sentence')
+        .toBe(declared['permissions']);
+      expect(rendered.filter((text: string): boolean => text === declared['permissions']).length)
+        .withContext('that shared sentence is rendered once, by the field that captions the region')
+        .toBe(1);
     });
   });
 
@@ -1837,15 +1961,30 @@ describe('ModuleSettingsComponent', () => {
       expect(header?.getAttribute('rows')).toBe('6', 'the legacy control declared rows="6"');
     });
 
-    it('names the visibility choice group with a label that claims no control of its own', () => {
-      // for is optional on a label. Pointing it at the first radio would name the group by side effect and
-      // make clicking its title select an option.
-      const label = q<HTMLLabelElement>('#module-settings-visibility-label');
-      expect(label).withContext('visibility must have a visible name').not.toBeNull();
-      expect(label?.hasAttribute('for')).toBeFalse();
+    it('names the visibility choice group with a caption that claims no control of its own', () => {
+      // ⚠ A CAPTION AND NOT A `label`, and the shared field renders it that way BECAUSE this field declares
+      // no `for`: a label names exactly one control, so pointing it at the first radio would name the group
+      // by side effect and make clicking its title select an option. The group is then named from that
+      // caption by reference, which is the only correct way to name a set.
+      const region = regionCaptioned('Visibility');
 
-      const group = q('[role="radiogroup"][aria-labelledby="module-settings-visibility-label"]');
-      expect(group).withContext('visibility must be a named radiogroup').not.toBeNull();
+      expect(region).withContext('visibility must be a rendered field').not.toBeNull();
+
+      const caption = region?.querySelector<HTMLElement>('.form-field__label');
+
+      expect(caption).withContext('visibility must have a visible name').not.toBeNull();
+      expect(caption?.tagName.toLowerCase())
+        .withContext('a caption naming a SET is not a label element')
+        .toBe('span');
+      expect(caption?.hasAttribute('for')).toBeFalse();
+      expect(caption?.id).withContext('the caption must be addressable to be referenced').toBeTruthy();
+
+      const group = region?.querySelector('[role="radiogroup"]');
+
+      expect(group).withContext('visibility must be a radiogroup').not.toBeNull();
+      expect(group?.getAttribute('aria-labelledby'))
+        .withContext('the group is named FROM the caption, by reference')
+        .toBe(caption?.id ?? null);
     });
 
     it('does not render legacy appearance controls that have no read or write contract', () => {
@@ -1855,10 +1994,38 @@ describe('ModuleSettingsComponent', () => {
     });
 
     it('describes every control by its own hint', () => {
+      // ⚠ THE DESCRIPTION IS APPLIED BY THE SHARED FIELD, ONTO THE PROJECTED CONTROL, and it names the help
+      // panel that field owns - `<for>-help`. The screen no longer composes the reference itself, which is
+      // the whole point of the conversion: one component owns the wiring for all 118 fields in the
+      // application instead of this screen owning a second copy of it.
+      //
+      // Asserted against the field's OWN published identifier rather than against a string built here, so a
+      // change to the shared scheme cannot leave this passing against a reference that no longer resolves.
       for (const name of ['moduleTitle', 'cacheTime', 'iconFile', 'header', 'footer']) {
         const control = field<HTMLElement>(name);
+
         expect(control).withContext(`${name} must be rendered`).not.toBeNull();
-        expect(control?.getAttribute('aria-describedby')).toBe(`module-settings-${name}-hint`);
+
+        // ⚠ NOTHING IS NAMED WHILE THE HELP IS CLOSED, AND THAT IS CORRECT RATHER THAN MISSING. The shared
+        // field REMOVES the help panel from the document while collapsed, so naming it then would be a
+        // reference to an element that does not exist - which is worse than no description at all. This
+        // screen's own machinery named the hint unconditionally because its hint was always rendered.
+        expect(control?.getAttribute('aria-describedby'))
+          .withContext(`${name} must name nothing while its help is closed and it is valid`)
+          .toBeNull();
+
+        const region = regionOf(`module-settings-${name}`);
+
+        expect(hintIn(region)).withContext(`${name}'s help must be reachable`).not.toBeNull();
+
+        const described = field<HTMLElement>(name)?.getAttribute('aria-describedby') ?? '';
+
+        expect(described)
+          .withContext(`${name} must be described by its own help panel once revealed`)
+          .toBe(`module-settings-${name}-help`);
+
+        // And the reference RESOLVES. A dangling description is exactly what a scheme change leaves behind.
+        expect(q(`#${described}`)).withContext(`#${described} must exist`).not.toBeNull();
       }
     });
   });
@@ -2039,13 +2206,22 @@ describe('ModuleSettingsComponent', () => {
       openEverything();
     });
 
-    it('names the hint alone while there is nothing to report', () => {
-      const control = field<HTMLElement>('moduleTitle');
-      expect(control).not.toBeNull();
-      expect(control?.getAttribute('aria-describedby')).toBe('module-settings-moduleTitle-hint');
+    it('names only what is rendered while there is nothing to report', () => {
+      // ⚠ THE INVARIANT IS "NO DANGLING REFERENCE", not "always name the hint". Both of this field's
+      // describable regions are absent right now - the help panel is removed while collapsed and the
+      // message region is not emitted while the field is valid - so the control names NEITHER.
+      expect(field<HTMLElement>('moduleTitle')?.getAttribute('aria-describedby')).toBeNull();
 
-      // Named and absent would be a dangling reference, so the region is not emitted at all.
-      expect(qa('#module-settings-moduleTitle-message').length).toBe(0);
+      expect(messagesFor('moduleTitle')).toEqual([]);
+      expect(regionOf('module-settings-moduleTitle')?.querySelector('.form-field__errors')).toBeNull();
+
+      // Revealing the help brings its reference into existence, and only then is it named.
+      expect(hintIn(regionOf('module-settings-moduleTitle'))).not.toBeNull();
+      expect(field<HTMLElement>('moduleTitle')?.getAttribute('aria-describedby'))
+        .toBe('module-settings-moduleTitle-help');
+
+      // A valid field also says so, rather than saying nothing: the state is published in both directions.
+      expect(field<HTMLElement>('moduleTitle')?.getAttribute('aria-invalid')).toBe('false');
 
       drain();
     });
@@ -2054,16 +2230,25 @@ describe('ModuleSettingsComponent', () => {
       submit();
       reject({ ModuleTitle: ['A module title is required.'] });
 
-      const region = q('#module-settings-moduleTitle-message');
-      expect(region).withContext('the refused control must render its message').not.toBeNull();
-      expect(region?.getAttribute('role')).toBe('alert');
-      expect((region?.textContent ?? '').trim()).toBe('A module title is required.');
+      const region = regionOf('module-settings-moduleTitle')?.querySelector('.form-field__errors') ?? null;
 
-      const control = field<HTMLElement>('moduleTitle');
-      expect(control).not.toBeNull();
-      // The hint is named FIRST, so the order of the description does not change when a message appears.
-      expect(control?.getAttribute('aria-describedby'))
-        .toBe('module-settings-moduleTitle-hint module-settings-moduleTitle-message');
+      expect(region).withContext('the refused control must render its message').not.toBeNull();
+      expect(region?.getAttribute('role'))
+        .withContext('a refusal follows the person\u2019s own action, so it is assertive')
+        .toBe('alert');
+      expect(messagesFor('moduleTitle')).toEqual(['A module title is required.']);
+
+      // The message region exists, so it IS named - and it is named on its own while the help panel is
+      // still collapsed and therefore absent.
+      expect(field<HTMLElement>('moduleTitle')?.getAttribute('aria-describedby'))
+        .toBe('module-settings-moduleTitle-error');
+
+      // ⚠ THE HELP IS NAMED FIRST AND THE MESSAGE SECOND once both exist, so the order of the description
+      // does not change as a field moves in and out of refusal - a reader hears the same field described
+      // the same way either side of one, with the reason added rather than the description rebuilt.
+      expect(hintIn(regionOf('module-settings-moduleTitle'))).not.toBeNull();
+      expect(field<HTMLElement>('moduleTitle')?.getAttribute('aria-describedby'))
+        .toBe('module-settings-moduleTitle-help module-settings-moduleTitle-error');
 
       drain();
     });
@@ -2077,11 +2262,18 @@ describe('ModuleSettingsComponent', () => {
 
       for (const name of ['moduleTitle', 'cacheTime']) {
         const control = field<HTMLElement>(name);
+
         expect(control).withContext(`${name} must be rendered`).not.toBeNull();
         expect(control?.getAttribute('aria-describedby'))
-          .withContext(`${name} must name its own message region`)
-          .toBe(`module-settings-${name}-hint module-settings-${name}-message`);
+          .withContext(`${name} must name its OWN message region and not a sibling's`)
+          .toBe(`module-settings-${name}-error`);
+        expect(control?.getAttribute('aria-invalid'))
+          .withContext(`${name} was refused, so it must say it is invalid`)
+          .toBe('true');
       }
+
+      expect(messagesFor('moduleTitle')).toEqual(['A module title is required.']);
+      expect(messagesFor('cacheTime')).toEqual(['Cache duration must not be negative.']);
 
       drain();
     });
@@ -2090,11 +2282,12 @@ describe('ModuleSettingsComponent', () => {
       submit();
       reject({ ModuleTitle: ['A module title is required.', 'Title must be 256 characters or fewer.'] });
 
-      // One region, so one identifier and one description - not one region per message.
-      expect(qa('#module-settings-moduleTitle-message').length).toBe(1);
+      // ONE region, so one identifier and one description - not one region per message. Counted rather
+      // than assumed, because two regions sharing one identifier is exactly the defect that made the
+      // screen's own field machinery ambiguous before it was replaced.
+      expect(qa('#module-settings-moduleTitle-error').length).toBe(1);
 
-      const messages = qa('#module-settings-moduleTitle-message .form-error');
-      expect(messages.map((element) => (element.textContent ?? '').trim())).toEqual([
+      expect(messagesFor('moduleTitle')).toEqual([
         'A module title is required.',
         'Title must be 256 characters or fewer.',
       ]);
@@ -2115,34 +2308,137 @@ describe('ModuleSettingsComponent', () => {
       component['form'].controls.cacheTime.markAsTouched();
       fixture.detectChanges();
 
-      expect(qa('#module-settings-cacheTime-message').length)
+      expect(qa('#module-settings-cacheTime-error').length)
         .withContext('two elements sharing one id is invalid markup and an ambiguous description')
         .toBe(1);
 
-      const messages = qa('#module-settings-cacheTime-message .form-error');
-      expect(messages.map((element) => (element.textContent ?? '').trim())).toEqual([
+      // ⚠ ORDER IS THE ASSERTION. The local reason is produced first and is announced first, which is what
+      // `messagesFor` on the component composes and what the shared field renders without reordering.
+      expect(messagesFor('cacheTime')).toEqual([
         'Invalid Cache Time',
         'Cache duration must not be negative.',
       ]);
 
       const control = field<HTMLElement>('cacheTime');
+
       expect(control).not.toBeNull();
-      expect(control?.getAttribute('aria-describedby'))
-        .toBe('module-settings-cacheTime-hint module-settings-cacheTime-message');
+      expect(control?.getAttribute('aria-describedby')).toBe('module-settings-cacheTime-error');
 
       drain();
     });
 
-    it('describes the permission switch by its region hint and its own message key', () => {
+    it('reports the permission switch under its own key, in the region that captions it', () => {
       submit();
       reject({ InheritViewPermissions: ['The inherit flag could not be applied.'] });
 
       const control = field<HTMLElement>('inheritViewPermissions');
+
       expect(control).withContext('the inherit switch must be rendered').not.toBeNull();
-      // The switch sits in the permissions region and is described by THAT hint, but the server reports it
-      // under its own control name - so the two identifiers deliberately differ.
-      expect(control?.getAttribute('aria-describedby'))
-        .toBe('module-settings-permissions-hint module-settings-inheritViewPermissions-message');
+
+      // ⚠ THE TWO-FIELD INDIRECTION IS GONE, AND ITS ABSENCE IS THE ASSERTION. The switch used to be
+      // described by the PERMISSIONS hint while reporting failures under its OWN control name, so the
+      // description had to be composed from two different field keys and no single identifier stem
+      // described the field. The shared component owns one region per field, so both the help and the
+      // message now belong to the same field and share one stem - and because that field declares no
+      // `for`, the stem is the component's own per-instance one rather than a name derived here.
+      const region = regionCaptioned('Permissions');
+
+      expect(region).withContext('the permissions field must be rendered').not.toBeNull();
+      expect(messagesIn(region)).toEqual(['The inherit flag could not be applied.']);
+
+      // Revealed first, so BOTH of the field's regions exist and both must be named.
+      expect(hintIn(region)).withContext('the permissions help must be reachable').not.toBeNull();
+
+      const described = (
+        field<HTMLElement>('inheritViewPermissions')?.getAttribute('aria-describedby') ?? ''
+      )
+        .split(' ')
+        .filter(Boolean);
+
+      expect(described.length)
+        .withContext('the switch is described by its field\u2019s help AND its message')
+        .toBe(2);
+
+      // Both references RESOLVE, and both resolve INSIDE this field rather than into a sibling.
+      for (const id of described) {
+        const target = q(`#${id}`);
+
+        expect(target).withContext(`#${id} must exist`).not.toBeNull();
+        expect(region?.contains(target as Node))
+          .withContext(`#${id} must belong to the permissions field`)
+          .toBeTrue();
+      }
+
+      // And the control now states its invalidity, which it never did before: the region was referenced
+      // through `aria-errormessage` while nothing ever said the object was invalid.
+      expect(control?.getAttribute('aria-invalid')).toBe('true');
+
+      drain();
+    });
+
+    it('states invalidity on every control that can be refused, not only the reference', () => {
+      // ⚠ THE ACCESSIBILITY DEFECT THIS BLOCK EXISTS TO CLOSE. Nine controls and groups on this screen used
+      // to publish a reference to their error region and never publish `aria-invalid`, so assistive
+      // technology was handed a message with nothing to attach it to - the object it described never said it
+      // was invalid. Every error-capable control now states it, and states it from the SAME failure state
+      // the message is rendered from, so the two cannot disagree.
+      submit();
+      reject({
+        ModuleTitle: ['A module title is required.'],
+        TabId: ['That page does not exist.'],
+        AllTabs: ['The all-pages flag could not be applied.'],
+        Header: ['The header could not be stored.'],
+        Footer: ['The footer could not be stored.'],
+        IconFile: ['That icon is outside the portal.'],
+        Visibility: ['That visibility state is not defined.'],
+        DisplayTitle: ['The container flag could not be applied.'],
+        InheritViewPermissions: ['The inherit flag could not be applied.'],
+      });
+
+      for (const name of [
+        'moduleTitle',
+        'tabId',
+        'allTabs',
+        'header',
+        'footer',
+        'iconFile',
+        'displayTitle',
+        'inheritViewPermissions',
+      ]) {
+        expect(field<HTMLElement>(name)?.getAttribute('aria-invalid'))
+          .withContext(`${name} was refused, so it must say it is invalid`)
+          .toBe('true');
+      }
+
+      // The choice group states it on every radio, because a radio is the object a reader lands on and
+      // there is no single element for the set that assistive technology examines instead.
+      const radios = qa<HTMLInputElement>('[role="radiogroup"] input[type="radio"]');
+
+      expect(radios.length).withContext('the visibility group must be rendered').toBe(3);
+
+      for (const radio of radios) {
+        expect(radio.getAttribute('aria-invalid'))
+          .withContext(`${radio.id} belongs to a refused group`)
+          .toBe('true');
+      }
+
+      drain();
+    });
+
+    it('withdraws invalidity when the refusal is gone, rather than leaving it asserted', () => {
+      // The other direction, and the one a one-way binding gets wrong. A control left asserting invalidity
+      // after its reason has been withdrawn is worse than one that never asserted it: a reader is told the
+      // value is refused with nothing anywhere saying why.
+      submit();
+      reject({ TabId: ['That page does not exist.'] });
+
+      expect(field<HTMLElement>('tabId')?.getAttribute('aria-invalid')).toBe('true');
+
+      submit();
+      answer('PUT', '/api/v1/modules/0', ECHO);
+
+      expect(messagesFor('tabId')).toEqual([]);
+      expect(field<HTMLElement>('tabId')?.getAttribute('aria-invalid')).toBe('false');
 
       drain();
     });

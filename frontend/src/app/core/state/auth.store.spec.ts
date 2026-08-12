@@ -3547,7 +3547,12 @@ describe('AuthStore', () => {
     it('completes the sign-out and reports the revocation as outstanding when it is refused', async () => {
       const warning = spyOn(notifications, 'warning').and.callThrough();
 
-      for (const status of [400, 429, 503]) {
+      // SEC-F14. 400 IS NO LONGER IN THIS SET, AND ITS REMOVAL IS THE POINT. A malformed or unknown
+      // credential is TERMINAL: the server has said the value can never name a session, so there is no
+      // residue to report and no retry that could help - reporting one would leave a notice nothing could
+      // ever clear. A 429 or a 503 may still have left the session live, so both are still reported and the
+      // credential is retained for `retryOutstandingRevocation`.
+      for (const status of [429, 503]) {
         warning.calls.reset();
 
         await signIn();

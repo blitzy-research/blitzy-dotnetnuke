@@ -1230,7 +1230,6 @@ const WITHHELD_TERM_CAPTIONS = Object.freeze({
     ErrorBannerComponent,
     LoadingSpinnerComponent,
     ConfirmDialogComponent,
-    FocusFirstInvalidDirective,
   ],
   templateUrl: './role-form.component.html',
   styleUrl: './role-form.component.scss',
@@ -2274,9 +2273,11 @@ export class RoleFormComponent {
    * operation is the one we were waiting for. Anything else is somebody else's write and reads as
    * pending, which leaves the watch in place for our own.
    *
-   * A refusal is deliberately relayed as a failure and therefore said nothing about; see the service for
-   * why a decontextualised refusal is worse than silence. Returning to this screen still presents it in
-   * full, because the store kept it.
+   * A REFUSAL IS RELAYED, and this screen supplies the wording for it. The sentence is the same one this
+   * screen's own banner falls back to - `MUTATION_FAILURE_MESSAGE[awaited]`, which names the operation
+   * rather than referring to a form - so the operator reads the same statement whether the screen was
+   * still mounted or not. Only the sentence and the support reference travel; the failure DOCUMENT stays
+   * in the store, and returning to this screen still presents it in full with its per-field messages.
    */
   private handOverPendingWrite(): void {
     const awaited = this.awaitedMutation();
@@ -2296,7 +2297,21 @@ export class RoleFormComponent {
       return settled.failure !== null && settled.operation === awaited ? 'failed' : 'succeeded';
     });
 
-    this.deferredOutcome.announceWhenSettled(verdict, () => MUTATION_SUCCESS_MESSAGE[awaited]);
+    this.deferredOutcome.announceWhenSettled(
+      verdict,
+      () => MUTATION_SUCCESS_MESSAGE[awaited],
+      () => {
+        // Read at announce time from the record for THIS write, which is the same slot the verdict
+        // resolved from - so the reference belongs to the refusal being reported and not to a
+        // concurrent command's.
+        const settled = this.roleStore.mutation();
+
+        return {
+          message: MUTATION_FAILURE_MESSAGE[awaited],
+          reference: settled?.failure?.summary.supportReference ?? null,
+        };
+      },
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -3113,9 +3128,12 @@ export class RoleFormComponent {
       // before a save — doing so would obtain the CURRENT revision and the check would then always
       // pass, defeating itself while looking watertight.
       //
-      // `null` in create mode, where there is no prior revision to be in conflict with, and `null` when
-      // the API served no token — in which case the update is unconditional, exactly as it was before
-      // this member existed. Nothing is invented to fill the gap.
+      // `null` in create mode ONLY, where there is no prior revision to be in conflict with. That is now
+      // the sole path to a null here: the read contract declares the marker REQUIRED, because the server's
+      // own member is non-nullable and always populated, so a response serving none is malformed and never
+      // decodes into a `loadedRole()` at all. The coalesce therefore no longer stands in for "the API
+      // served no token", which it previously did and which silently turned every such response into an
+      // unconditional whole-entity overwrite. Nothing is ever invented to fill the gap.
       concurrencyToken: loaded?.concurrencyToken ?? null,
     };
   }

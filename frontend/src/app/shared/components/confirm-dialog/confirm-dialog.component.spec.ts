@@ -1973,14 +1973,18 @@ describe('ConfirmDialogComponent', () => {
       const danger = getComputedStyle(confirmButton).color;
       const ordinary = getComputedStyle(cancelButton).color;
 
-      // ⚠ THE LABEL READS IN THE DANGER *TEXT* TOKEN, AND THE BORDER READS IN THE DANGER TOKEN.
-      // The two are deliberately different values. `--color-danger` is the legacy portal's own red and
-      // it is kept for non-text accents like the border below, where contrast ratios do not apply; at
-      // this size it fails the 4.5:1 minimum as ink, so text carries `--color-danger-text` instead,
-      // which clears it. The property this case exists to prove is unchanged - the destructive label
+      // ⚠ THE LABEL AND THE BORDER READ IN ONE TOKEN, AND ONE IS ALL THE VOCABULARY HAS. A darkened
+      // sibling for danger TEXT was declared briefly and is withdrawn: the colour vocabulary is closed
+      // at the nine values the design specification enumerates, design-system compliance is the first
+      // precedence rule, and accessibility is the third and is asked for "with zero visual change" - so
+      // a new hue is precisely what may not be admitted on accessibility grounds. `--color-danger` is
+      // the legacy portal's own measured red, its residual text contrast is stated on its own
+      // declaration, and the non-colour cues this dialog carries - the bold weight, the label reading
+      // "Delete", the red border and the alert dialog itself - are what state severity to a reader the
+      // hue does not reach. The property this case exists to prove is unchanged: the destructive label
       // states its severity in colour, in a colour that is neither the link colour nor the ordinary
-      // button's - and it is now proven against the token that is actually legible.
-      expect(danger).withContext('#B80000, the danger TEXT token').toBe('rgb(184, 0, 0)');
+      // button's.
+      expect(danger).withContext('#FF0000, the vocabulary\'s only danger value').toBe('rgb(255, 0, 0)');
       expect(danger)
         .withContext('and NOT #25569A, which is the hover token this rule used to name')
         .not.toBe('rgb(37, 86, 154)');

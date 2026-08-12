@@ -1443,6 +1443,44 @@ public class RoleServiceTests
     }
 
     /// <summary>
+    /// A role that cannot be read back is still recorded as created, because the row exists whether or not the
+    /// response could be composed.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE FAILURE THIS PINS IS AN ABSENCE, and the sibling assertion above is the arrangement that produced
+    /// it. The record used to sit behind the read-back, which returns early when it yields nothing - so a role
+    /// that had been inserted and committed, but that the read-back could not find, came into being with no
+    /// trace of its creation. A role is a permission grouping; an untraced one is exactly the grant a trail
+    /// exists to account for, and a read-back failing says nothing about whether the insert happened.
+    /// </para>
+    /// <para>
+    /// WAITING FOR THE READ-BACK BOUGHT NOTHING. The stated reason was that its identifier is the one the
+    /// database assigned - but the change tracker writes the store-generated identity back onto the tracked
+    /// entity during the flush, so the identifier is already known. The previous code proved it by passing
+    /// that same identifier as the read-back's own argument.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreateRole_RecordsTheCreationEvenWhenTheStoredRowCannotBeReadBack()
+    {
+        Harness harness = Harness.Ready();
+        harness.EchoCreatedRole = false;
+        harness.LookupRole = null;
+
+        Result<RoleDetailDto> outcome = await harness.Service
+            .CreateRoleAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue("the caller asked for a representation and did not receive one");
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be("ROLE_CREATED");
+        record.PortalId.Should().Be(PortalId);
+        record.ResourceType.Should().Be("Role");
+    }
+
+    /// <summary>
     /// Updating a role requires a request.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
@@ -1845,6 +1883,105 @@ public class RoleServiceTests
     }
 
     /// <summary>
+    /// The designation read, the token comparison, the rename guard and the write are one serialisable
+    /// transaction, and it commits.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The isolation is asserted rather than merely the presence of a scope, because the level is the whole
+    /// point: this is a read-modify-write of the row it judged, and its rename guard asks a question about the
+    /// tenant's other roles whose answer must still hold when the write lands. The sibling removal path
+    /// deliberately asks for the default level and records why, so a test that accepted any level would let
+    /// the two paths drift into agreeing by accident.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateRole_JudgesAndWritesInOneSerialisableTransaction()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = StoredRole();
+
+        Result<RoleDetailDto> outcome = await harness.Service.UpdateRoleAsync(
+            PortalId,
+            RoleId,
+            ValidUpdateRequest(),
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        RecordingTransactionScope scope = harness.OpenedTransactions.Should().ContainSingle().Subject;
+        scope.Isolation.Should().Be(TransactionIsolation.Serializable);
+        scope.Committed.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A refusal raised before the write leaves the scope abandoned rather than committed, so nothing the
+    /// judged sequence read or staged becomes durable.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The duplicate-name refusal is used because it is the LAST guard before the mapping, so it proves the
+    /// rollback covers the whole judged sequence rather than only its opening reads.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateRole_WhenRefused_AbandonsTheTransaction()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = StoredRole();
+
+        // The harness answers a taken name with a row bearing a DIFFERENT identifier, which is the shape the
+        // exclusion must not absorb - the same setup the dedicated duplicate-name fact above uses.
+        harness.NameTaken = true;
+        UpdateRoleRequest request = ValidUpdateRequest();
+        request.RoleName = "Contributors";
+
+        Result<RoleDetailDto> outcome = await harness.Service.UpdateRoleAsync(
+            PortalId,
+            RoleId,
+            request,
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be(RoleNameDuplicateCode);
+        harness.OpenedTransactions.Should().ContainSingle().Which.RolledBack.Should().BeTrue();
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+        harness.Cache.Verify(c => c.InvalidatePortal(It.IsAny<int>()), Times.Never);
+    }
+
+    /// <summary>
+    /// A write the store itself refuses as a lost update is reported as the same conflict a stale
+    /// concurrency token reports, and nothing is evicted.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The token comparison closes the window a caller can OBSERVE; it cannot close the window between that
+    /// comparison and the write, and under serialisable isolation this participant can also be aborted as a
+    /// deadlock victim. Both are the same event from the caller's position - the record moved and nothing was
+    /// written - so both must produce the refusal the stale token produces rather than a server fault.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateRole_ReportsAStoreRefusedLostUpdateAsAConcurrencyConflict()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = StoredRole();
+        harness.UnitOfWork
+            .Setup(unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(ConcurrencyConflictException.ForLostUpdate(null));
+
+        Result<RoleDetailDto> outcome = await harness.Service.UpdateRoleAsync(
+            PortalId,
+            RoleId,
+            ValidUpdateRequest(),
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be("role.concurrency_conflict");
+        outcome.Error.Message.Should().Contain(
+            "changed by someone else",
+            "the store-refused loser reads the same sentence the stale-token loser reads");
+        harness.OpenedTransactions.Should().ContainSingle().Which.RolledBack.Should().BeTrue();
+        harness.Cache.Verify(c => c.InvalidatePortal(It.IsAny<int>()), Times.Never);
+    }
+
+    /// <summary>
     /// The answer is projected from the tracked row rather than from a second read of the store.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
@@ -2019,9 +2156,7 @@ public class RoleServiceTests
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
         harness.Cache.Verify(c => c.InvalidatePortal(PortalId), Times.Once);
         harness.Permissions.Verify(
-            permissions => permissions.InvalidateUserPermissionCachesAsync(
-                PortalId,
-                It.IsAny<CancellationToken>()),
+            permissions => permissions.InvalidateUserPermissionCaches(),
             Times.Once);
 
         // Not evicted directly, because the delegated member evicts it - a direct call as well would be a
@@ -2073,9 +2208,11 @@ public class RoleServiceTests
                 "roles.delete",
                 "unitOfWork.save",
                 "transaction.commit",
+                "audit.ROLE_DELETED",
                 "permissions.evict",
             ],
-            "the grants go before the role, both inside one scope, and the eviction follows the commit");
+            "the grants go before the role, both inside one scope; the record is the FIRST thing after the "
+            + "commit, so it cannot be lost to the cancellable eviction that follows it");
 
         RecordingTransactionScope scope = harness.OpenedTransactions.Should().ContainSingle().Subject;
         scope.Committed.Should().BeTrue();
@@ -2114,9 +2251,7 @@ public class RoleServiceTests
         scope.RolledBack.Should().BeTrue("the grants and the role stand or fall together");
 
         harness.Permissions.Verify(
-            permissions => permissions.InvalidateUserPermissionCachesAsync(
-                It.IsAny<int>(),
-                It.IsAny<CancellationToken>()),
+            permissions => permissions.InvalidateUserPermissionCaches(),
             Times.Never);
 
         harness.AuditRecords.Should().BeEmpty(
@@ -2203,6 +2338,45 @@ public class RoleServiceTests
         record.ResourceType.Should().Be("Role");
         record.ResourceId.Should().Be(RoleId.ToString(CultureInfo.InvariantCulture));
         record.Properties.Should().NotContainKey("RoleName");
+    }
+
+    /// <summary>
+    /// A committed removal is recorded even when the post-commit grant-cache eviction fails, because the role
+    /// and every assignment to it are gone either way.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE FAILURE THIS PINS IS AN ABSENCE. The record used to be the last statement in the member, behind the
+    /// grant-cache eviction, which at the time was an AWAITED call observing the cancellation token and is now
+    /// the delegated synchronous call the permission contract owns. A caller who disconnected
+    /// in the moment after the commit therefore had the role removed, along with the assignments that
+    /// cascaded with it, and nothing in the trail said so. Removing a role revokes whatever that role granted
+    /// to everyone who held it, so a silent removal is precisely the event a trail exists to account for.
+    /// </para>
+    /// <para>
+    /// The exception still escapes: an eviction that did not happen means stale grants may be served from
+    /// memory, which is a real condition and must not be swallowed. Only the ORDER changed.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task DeleteRole_RecordsTheRemovalEvenWhenThePostCommitEvictionFails()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = StoredRole();
+        harness.GrantCacheEvictionFault = new OperationCanceledException("the caller disconnected");
+
+        Func<Task> removal = () => harness.Service.DeleteRoleAsync(PortalId, RoleId, CancellationToken.None);
+
+        await removal.Should().ThrowAsync<OperationCanceledException>(
+            "maintenance that did not happen is a real condition and must not be swallowed");
+
+        harness.OpenedTransactions.Should().ContainSingle().Which.Committed.Should().BeTrue(
+            "the removal was committed before the eviction ran");
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be("ROLE_DELETED");
+        record.ResourceId.Should().Be(RoleId.ToString(CultureInfo.InvariantCulture));
     }
 
     /// <summary>
@@ -2445,9 +2619,6 @@ public class RoleServiceTests
     [InlineData("LastName")]
     [InlineData("DisplayName")]
     [InlineData("Email")]
-    [InlineData("CreatedDate")]
-    [InlineData("LastLoginDate")]
-    [InlineData("IsApproved")]
     [InlineData("IsSuperUser")]
     public async Task ListRoleUsers_AcceptsEveryFieldItsOwnOrderingHonours(string field)
     {
@@ -4620,14 +4791,22 @@ public class RoleServiceTests
                     return Task.FromResult(GrantSweep);
                 });
 
+            // THE GRANT-CACHE EVICTION IS ALSO THE INJECTION POINT FOR A POST-COMMIT MAINTENANCE FAILURE, and
+            // it is this call rather than an earlier one because it is the LAST step after the commit: a fault
+            // raised here leaves the removal committed and the audit record already written, which is exactly
+            // the ordering the delete facts assert. The eviction is delegated and SYNCHRONOUS - the permission
+            // contract owns the key set - so the fault is thrown from the callback rather than returned on a
+            // faulted task; a member that takes no cancellation token cannot be made to observe one.
             Permissions
-                .Setup(permissions => permissions.InvalidateUserPermissionCachesAsync(
-                    It.IsAny<int>(),
-                    It.IsAny<CancellationToken>()))
-                .Returns(() =>
+                .Setup(permissions => permissions.InvalidateUserPermissionCaches())
+                .Callback(() =>
                 {
                     Steps.Add("permissions.evict");
-                    return Task.CompletedTask;
+
+                    if (GrantCacheEvictionFault is not null)
+                    {
+                        throw GrantCacheEvictionFault;
+                    }
                 });
 
             // The acting operator is fixed so that every audit assertion below can name the actor it
@@ -4638,7 +4817,15 @@ public class RoleServiceTests
             AuditRecords = [];
             Audit
                 .Setup(sink => sink.Record(It.IsAny<AuditEvent>()))
-                .Callback<AuditEvent>(AuditRecords.Add);
+                .Callback<AuditEvent>(record =>
+                {
+                    // Logged as an ordered step as well as captured, so the sequence assertions can pin WHERE
+                    // in the sequence a record is emitted rather than only that it was. Where a record sits
+                    // relative to the commit and to the cancellable maintenance either side of it is the
+                    // whole of whether the trail can be trusted.
+                    Steps.Add("audit." + record.EventName);
+                    AuditRecords.Add(record);
+                });
 
             Service = new RoleService(
                 Roles.Object,
@@ -4666,9 +4853,20 @@ public class RoleServiceTests
         public List<RecordingTransactionScope> OpenedTransactions { get; }
 
         /// <summary>
-        /// The ordered sequence of transaction, sweep, delete, commit and eviction steps the service took.
+        /// The ordered sequence of transaction, sweep, delete, commit, audit and eviction steps the service
+        /// took.
         /// </summary>
         public List<string> Steps { get; }
+
+        /// <summary>
+        /// A failure raised by the POST-COMMIT grant-cache eviction, or <see langword="null"/> for none.
+        /// </summary>
+        /// <remarks>
+        /// The eviction is the last step after the commit, so it is the one piece of
+        /// post-commit maintenance a disconnecting caller can make fail. This knob lets an assertion prove
+        /// that the record of a completed removal no longer depends on it.
+        /// </remarks>
+        public Exception? GrantCacheEvictionFault { get; set; }
 
         /// <summary>The answer the permission contract gives when asked to sweep a role's grants.</summary>
         public Result GrantSweep { get; set; }

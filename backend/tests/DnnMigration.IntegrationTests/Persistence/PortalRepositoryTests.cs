@@ -269,6 +269,73 @@ public sealed class PortalRepositoryTests
         }
     }
 
+    /// <summary>
+    /// A wildcard character typed into the filter matches ITSELF, so it cannot broaden what is returned.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THE HARDENING THE LEGACY DID NOT HAVE, AND THE REASON THE ESCAPE CLAUSE IS NOT OPTIONAL. The legacy
+    /// pattern was assembled by string concatenation at the call site
+    /// (<c>Website/admin/Portal/Portals.ascx.vb</c> line 142, <c>Filter + "%"</c>) and applied unchanged, so a
+    /// caller who typed a single per cent sign matched every tenant in the installation. Every metacharacter
+    /// in the caller's text is escaped here and the pattern carries an explicit <c>ESCAPE</c> clause -
+    /// SQL Server has no default escape character, so without that clause the escaping would silently do
+    /// nothing and the widening would return.
+    /// </para>
+    /// <para>
+    /// All three metacharacters the helper escapes are exercised: <c>%</c> matches any run, <c>_</c> matches
+    /// any single character, and <c>[</c> opens a character class. Each is typed as the leading character of
+    /// the filter, so a live one would match the control portal - which shares the marker but not the
+    /// metacharacter - and the single-item assertions would fail.
+    /// </para>
+    /// <para>
+    /// This fact is what stops the predicate being "simplified" back to a raw unescaped <c>LIKE</c> while
+    /// leaving the column unwrapped. Both properties are wanted together: the column must stay unwrapped so
+    /// the predicate can be seeked, and the pattern must stay escaped so the caller's text is data.
+    /// </para>
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListAsync_WithAMetacharacterInTheFilter_MatchesItLiterally()
+    {
+        string marker = Suffix();
+
+        // Each of these NAMES contains the metacharacter, so a literal match finds it. The control shares the
+        // marker and carries no metacharacter at all, so a LIVE metacharacter would match the control too.
+        int percentId = await CreatePortalAsync(FormattableString.Invariant($"%{marker} Percent"));
+        int underscoreId = await CreatePortalAsync(FormattableString.Invariant($"_{marker} Underscore"));
+        int bracketId = await CreatePortalAsync(FormattableString.Invariant($"[{marker} Bracket"));
+        int controlId = await CreatePortalAsync(FormattableString.Invariant($"{marker} Control"));
+
+        try
+        {
+            using IServiceScope scope = _fixture.Services.CreateScope();
+            IPortalRepository portals = scope.ServiceProvider.GetRequiredService<IPortalRepository>();
+
+            PagedResult<Portal> percent = await portals.ListAsync(0, 0, "%" + marker, null, descending: false);
+            PagedResult<Portal> underscore = await portals.ListAsync(0, 0, "_" + marker, null, descending: false);
+            PagedResult<Portal> bracket = await portals.ListAsync(0, 0, "[" + marker, null, descending: false);
+
+            percent.Items.Should().ContainSingle().Which.PortalId.Should().Be(percentId);
+            underscore.Items.Should().ContainSingle().Which.PortalId.Should().Be(underscoreId);
+            bracket.Items.Should().ContainSingle().Which.PortalId.Should().Be(bracketId);
+
+            // Stated directly as well as implied by the single-item assertions, because this is the widening
+            // the escaping exists to prevent: a live per cent sign would return all four of these tenants.
+            percent.Items.Should().NotContain(portal => portal.PortalId == controlId);
+            percent.TotalCount.Should().Be(
+                1,
+                "the count reads off the same filtered query, so it must be escaped identically");
+        }
+        finally
+        {
+            await RemovePortalAsync(controlId);
+            await RemovePortalAsync(bracketId);
+            await RemovePortalAsync(underscoreId);
+            await RemovePortalAsync(percentId);
+        }
+    }
+
     [Fact]
     public async Task ListAsync_WithAnUnmatchableFilter_ReturnsAnEmptyPage()
     {

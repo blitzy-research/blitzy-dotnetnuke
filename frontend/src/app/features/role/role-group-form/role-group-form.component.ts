@@ -499,7 +499,6 @@ function controlMessages(
     FormFieldComponent,
     ErrorBannerComponent,
     LoadingSpinnerComponent,
-    FocusFirstInvalidDirective,
   ],
   templateUrl: './role-group-form.component.html',
   styleUrl: './role-group-form.component.scss',

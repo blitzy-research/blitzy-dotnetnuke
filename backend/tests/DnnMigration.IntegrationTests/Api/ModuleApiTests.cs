@@ -928,6 +928,123 @@ public sealed class ModuleApiTests
         placementsOnSource.Should().Be(1, "a refused relocation writes nothing");
     }
 
+    /// <summary>
+    /// A page sitting in the recycle bin cannot receive a module, even though it belongs to the tenant.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// ⚠ ONE OF THE THREE EXCLUSIONS THAT DEFINE "A CONTENT PAGE OF THIS PORTAL", and the one most easily
+    /// lost. The page repository deliberately returns recycled pages - the legacy read applied no predicate to
+    /// <c>IsDeleted</c> and projected the column instead, so the exclusion is the caller's policy - and the
+    /// destination check now reads ONE page rather than filtering the tenant's whole page set. A single-row
+    /// read that forgot to test the column would accept a recycled page as a destination and move a module
+    /// into the recycle bin, where no operator would find it.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModule_NamingARecycledPageAsTheDestination_ReportsADestinationProblem()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+
+        int recycledTabId = await _fixture.Database.ScalarAsync<int>(
+            """
+            INSERT INTO [dbo].[Tabs]
+                ([TabOrder], [PortalID], [TabName], [IsVisible], [ParentId], [Level], [DisableLink],
+                 [Title], [IsDeleted], [TabPath], [IsSecure])
+            VALUES (98, @portalId, @tabName, 1, NULL, 0, 0, @tabName, 1, N'//' + @tabName, 0);
+            SELECT CAST(SCOPE_IDENTITY() AS int);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["portalId"] = _fixture.Seed.PortalId,
+                ["tabName"] = "Recycled " + Suffix(),
+            });
+
+        var request = new UpdateModuleRequest
+        {
+            TabId = _fixture.Seed.RootTabId,
+            MoveToTabId = recycledTabId,
+            ModuleTitle = created.ModuleTitle,
+        };
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("module.move_destination_invalid");
+
+        int placementsOnSource = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[TabModules] WHERE [ModuleID] = @moduleId AND [TabID] = @tabId;",
+            new Dictionary<string, object?>
+            {
+                ["moduleId"] = created.ModuleId,
+                ["tabId"] = _fixture.Seed.RootTabId,
+            });
+
+        placementsOnSource.Should().Be(1, "a refused relocation writes nothing");
+    }
+
+    /// <summary>
+    /// A page belonging to ANOTHER tenant cannot receive this tenant's module, and is refused as a
+    /// destination problem rather than reported as existing elsewhere.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// ⚠ THE TENANT IS PART OF THE LOOKUP AND NOT A TEST APPLIED AFTERWARDS, which is what this pins. The
+    /// destination is now read with a single seek on both the page key and the portal, so a page owned by a
+    /// neighbouring tenant does not come back at all and is indistinguishable from one that does not exist.
+    /// A member that read the page by key and then compared its portal would be equally correct in its answer
+    /// and would have pulled another tenant's row into this process to get there.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModule_NamingAnotherTenantsPageAsTheDestination_ReportsADestinationProblem()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+
+        int foreignTabId = await _fixture.Database.ScalarAsync<int>(
+            """
+            DECLARE @otherPortalId int =
+                (SELECT MIN([PortalID]) FROM [dbo].[Portals] WHERE [PortalID] <> @portalId);
+
+            IF @otherPortalId IS NULL
+            BEGIN
+                INSERT INTO [dbo].[Portals] ([PortalName], [ExpiryDate], [AdministratorId])
+                VALUES (@portalName, NULL, NULL);
+                SET @otherPortalId = CAST(SCOPE_IDENTITY() AS int);
+            END
+
+            INSERT INTO [dbo].[Tabs]
+                ([TabOrder], [PortalID], [TabName], [IsVisible], [ParentId], [Level], [DisableLink],
+                 [Title], [IsDeleted], [TabPath], [IsSecure])
+            VALUES (99, @otherPortalId, @tabName, 1, NULL, 0, 0, @tabName, 0, N'//' + @tabName, 0);
+            SELECT CAST(SCOPE_IDENTITY() AS int);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["portalId"] = _fixture.Seed.PortalId,
+                ["portalName"] = "Neighbour " + Suffix(),
+                ["tabName"] = "Foreign " + Suffix(),
+            });
+
+        var request = new UpdateModuleRequest
+        {
+            TabId = _fixture.Seed.RootTabId,
+            MoveToTabId = foreignTabId,
+            ModuleTitle = created.ModuleTitle,
+        };
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("module.move_destination_invalid");
+    }
+
     /// <summary>An unresolved request host cannot select a module collection.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -3985,7 +4102,7 @@ public sealed class ModuleApiTests
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
-        string supplied = "module-suite-" + Suffix();
+        string supplied = ApiTestFixture.NewCorrelationId();
 
         using var read = new HttpRequestMessage(
             HttpMethod.Get,
@@ -4002,7 +4119,7 @@ public sealed class ModuleApiTests
             .Should()
             .ContainSingle("the header is overwritten rather than appended to, so exactly one value travels");
 
-        string refusedId = "module-refusal-" + Suffix();
+        string refusedId = ApiTestFixture.NewCorrelationId();
 
         using var refused = new HttpRequestMessage(
             HttpMethod.Get,
