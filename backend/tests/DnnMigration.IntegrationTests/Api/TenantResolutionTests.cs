@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Reflection;
+using System.Text.Json;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -60,6 +61,7 @@ public sealed class TenantResolutionTests
 {
     /// <summary>A host name that matches no alias row, and cannot, because it is reserved for examples.</summary>
     private const string UnconfiguredHost = "no-such-tenant.example";
+
 
     /// <summary>Problem type carried by the refusal, built from the shared failure-code convention.</summary>
     private const string TenantUnresolvedProblemType = "urn:dnnmigration:error:portal.tenant_unresolved";
@@ -663,6 +665,206 @@ public sealed class TenantResolutionTests
             builder.ConfigureServices(services =>
                 services.AddSingleton<ILogEventSink>(RecordedLogs.Sink));
         }
+    }
+
+    /// <summary>
+    /// A child portal addressed beneath a PATH SEGMENT of the shared host is resolved from that segment, is
+    /// routed as though the segment were not there, and answers with the child's own rows.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// SEC: THE END-TO-END HALF OF THE CHILD-PORTAL CONTRACT. The legacy product let a child portal be
+    /// reached at <c>domain/segment</c> - the signup screen composes and stores exactly that
+    /// (<c>Website/admin/Portal/Signup.ascx.vb</c> L232-L236) - and three components must agree for the same
+    /// address to work here: the browser has to PUT the segment on the request, the reverse proxy has to
+    /// FORWARD it rather than falling through to the application document, and this API has to resolve the
+    /// tenant from it and then rebase the path so the routes still match. The first two are asserted where
+    /// they live (<c>frontend/src/app/core/config/tenant-path.spec.ts</c> and the proxy's own configuration);
+    /// this fact asserts the third against a real request, which no unit test of the middleware could do,
+    /// because what is under test is resolution AND routing together.
+    /// </para>
+    /// <para>
+    /// THE ASSERTION IS WHOSE ROWS COME BACK, not merely that a 200 arrives. A status alone would pass if the
+    /// segment were silently ignored and the PARENT resolved, which is exactly the defect the contract exists
+    /// to prevent. The child is created through the API and therefore carries its own administrator and
+    /// registered roles, so its role listing is disjoint from the parent's stock role names; the same route
+    /// WITHOUT the prefix is read in the same case and answers the parent's rows, so no single tenant can
+    /// explain both readings.
+    /// </para>
+    /// <para>
+    /// ⚠ THE CHILD IS CREATED THROUGH THE API RATHER THAN BY INSERT, and that is a requirement rather than a
+    /// convenience. Resolution refuses a portal that designates no administrator account, no administrator
+    /// role or no registered-user role, and refuses one whose designated roles do not exist - see
+    /// <c>PortalContextHolder</c>. A hand-inserted <c>Portals</c> row satisfies none of that, so it would
+    /// resolve to nothing and this fact would pass or fail for a reason unrelated to path rebasing. Only the
+    /// ALIAS is inserted, because an alias carrying a path segment is not something the creation endpoint
+    /// composes.
+    /// </para>
+    /// <para>
+    /// The caller is a HOST account, deliberately: it is the one principal entitled to both tenants, so a
+    /// difference between the two answers cannot be explained by authorisation, and its token names the
+    /// SEEDED portal rather than the child - which is what shows the arrival tenant is taken from the address
+    /// rather than from the credential.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ChildPortalAddressedBeneathAPathSegment_ResolvesFromThePathAndRoutesAsRebased()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        string suffix = Guid.NewGuid().ToString("N")[..8];
+        string childSegment = "child-" + suffix;
+        string childAlias = ApiTestFixture.TestHost + "/" + childSegment;
+        string childPortalName = "Child Tenant " + suffix;
+
+        using HttpResponseMessage created = await client.PostAsJsonAsync(
+            new Uri("/api/v1/portals", UriKind.Relative),
+            new
+            {
+                portalName = childPortalName,
+                portalAlias = "child-tenant-" + suffix + ".local",
+                homeDirectory = string.Empty,
+                templateFile = "admin.template",
+                isChildPortal = false,
+                administratorFirstName = "Child",
+                administratorLastName = "Administrator",
+                administratorUsername = "child_admin_" + suffix,
+                administratorPassword = ApiTestFixture.KnownPassword,
+                administratorEmail = "child." + suffix + "@example.com",
+            },
+            ApiTestFixture.Json);
+
+        created.StatusCode.Should().Be(
+            HttpStatusCode.Created,
+            "the child tenant has to be a fully designated portal before it can resolve at all");
+
+        using JsonDocument document = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+        int childPortalId = document.RootElement.GetProperty("data").GetProperty("portalId").GetInt32();
+
+        // The one thing the creation endpoint does not compose: an alias carrying a PATH segment beneath the
+        // shared host, which is the shape the legacy signup screen stored.
+        await _fixture.Database.ExecuteAsync(
+            """
+            INSERT INTO [dbo].[PortalAlias] ([PortalID], [HTTPAlias]) VALUES (@portalId, @alias);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["@portalId"] = childPortalId,
+                ["@alias"] = childAlias,
+            });
+
+        string childOnlyRoleName = "Child Only " + suffix;
+
+        await _fixture.Database.ExecuteAsync(
+            """
+            INSERT INTO [dbo].[Roles]
+                ([PortalID], [RoleName], [Description], [ServiceFee], [BillingPeriod], [BillingFrequency],
+                 [TrialFee], [TrialPeriod], [TrialFrequency], [IsPublic], [AutoAssignment])
+            VALUES (@portalId, @roleName, N'Seeded in the child tenant only', 0, 0, 'N', 0, 0, 'N', 0, 0);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["@portalId"] = childPortalId,
+                ["@roleName"] = childOnlyRoleName,
+            });
+
+        // The SAME route in both requests; only the tenant segment differs. The routes are written against
+        // /api/v1/..., so a 200 for the prefixed address is itself evidence that the segment was moved into
+        // the path base rather than matched as part of the path.
+        using HttpResponseMessage viaChild = await client.GetAsync(
+            new Uri($"/{childSegment}/api/v1/roles", UriKind.Relative));
+
+        viaChild.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "a request beneath the child's own segment must route as though the segment were absent");
+
+        string childBody = await viaChild.Content.ReadAsStringAsync();
+
+        childBody.Should().Contain(
+            childOnlyRoleName,
+            "the arrival tenant is taken from the path, so the child's own rows answer");
+
+        using HttpResponseMessage viaHost = await client.GetAsync(
+            new Uri("/api/v1/roles", UriKind.Relative));
+
+        viaHost.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        string hostBody = await viaHost.Content.ReadAsStringAsync();
+
+        hostBody.Should().NotContain(
+            childOnlyRoleName,
+            "the bare host still resolves the parent, which is what makes the reading above a difference");
+
+        // ⚠ THE POSITIVE HALF IS ASSERTED BY IDENTIFIER RATHER THAN BY READING THE LISTING, and that is a
+        // correction rather than a preference. It began as "the parent's listing contains the parent's
+        // stock role", which passed when this class ran alone and FAILED in a full run: the listing is
+        // paged ten at a time and ordered by name, the suite as a whole leaves the parent holding roles
+        // enough to fill five pages, and the stock role fell off page one. Asserting on a page of a table
+        // every other class writes to is an assertion about the order of the run.
+        //
+        // Reading ONE identifier at both addresses is stronger as well as stable. The seeded
+        // administrators role belongs to the parent, and the by-identifier read is portal-scoped and
+        // reports a role from another portal as absent, so the pair below can only be explained by the two
+        // requests having resolved different tenants. It also exercises the identity seed deliberately:
+        // Roles.RoleID is IDENTITY(0, 1), so this identifier is legitimately 0 and neither answer may
+        // treat it as missing.
+        int parentRoleId = _fixture.Seed.AdministratorRoleId;
+
+        using HttpResponseMessage parentRoleViaHost = await client.GetAsync(
+            new Uri($"/api/v1/roles/{parentRoleId}", UriKind.Relative));
+
+        parentRoleViaHost.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the bare host resolves the parent, which is the tenant that owns this role");
+        (await parentRoleViaHost.Content.ReadAsStringAsync()).Should().Contain(
+            IntegrationSeed.AdministratorsRoleName,
+            "and it answers with the parent's own row rather than an empty envelope");
+
+        using HttpResponseMessage parentRoleViaChild = await client.GetAsync(
+            new Uri($"/{childSegment}/api/v1/roles/{parentRoleId}", UriKind.Relative));
+
+        parentRoleViaChild.StatusCode.Should().Be(
+            HttpStatusCode.NotFound,
+            "the same identifier beneath the child's segment names nothing, because the arrival tenant "
+                + "came from the path and the role belongs to the parent");
+    }
+
+    /// <summary>
+    /// A path that merely SHARES A PREFIX with a stored child segment is not rebased onto that tenant.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The legacy alias resolution matched with <c>like '%alias%'</c>, so an alias that was a substring of
+    /// another resolved the wrong tenant - a defect recorded in <c>MIGRATION_NOTES.md</c> and closed here by
+    /// exact, whole-segment matching. This fact pins that boundary from the outside.
+    /// </para>
+    /// <para>
+    /// THE OUTCOME IS 404 RATHER THAN A TENANT REFUSAL, and the difference is worth stating because it is the
+    /// pipeline's shape rather than an accident. Nothing resolves for such an address, so the path is NOT
+    /// rebased; the unrebased path matches no route, and routing answers before any tenant-dependent endpoint
+    /// is reached. A caller therefore learns that the address does not exist rather than which tenants do,
+    /// which is the stronger of the two answers.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task APathThatMerelySharesAPrefixWithAChildSegment_IsNotRebasedOntoIt()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri("/childish/api/v1/roles", UriKind.Relative));
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.NotFound,
+            "a substring of a stored alias is not that alias, so nothing is rebased and no route matches");
+
+        ProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull("even an unmatched address answers in the contract the client parses");
+        problem!.Status.Should().Be(StatusCodes.Status404NotFound);
     }
 
     /// <summary>Selects the tenant-optional marks out of a set of attributes, by name.</summary>

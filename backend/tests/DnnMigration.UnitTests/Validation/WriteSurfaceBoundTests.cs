@@ -211,15 +211,33 @@ public class WriteSurfaceBoundTests
     public void RoleUpdateTextFields_AreBoundedByTheirColumnWidth(string member, int width)
     {
         new UpdateRoleRequestValidator()
-            .Validate(RoleUpdateWith(member, new string('a', width)))
+            .Validate(RoleUpdateWith(member, FillerFor(member, width)))
             .IsValid.Should().BeTrue(member + " must accept a value that exactly fills its column");
 
         new UpdateRoleRequestValidator()
-            .Validate(RoleUpdateWith(member, new string('a', width + 1)))
+            .Validate(RoleUpdateWith(member, FillerFor(member, width + 1)))
             .Errors.Should().Contain(
                 failure => failure.PropertyName == member,
                 member + " must be refused one character past its column");
     }
+
+    /// <summary>
+    /// Builds a value of an exact length that satisfies every rule on the named member EXCEPT its width.
+    /// </summary>
+    /// <param name="member">The member the value is for.</param>
+    /// <param name="length">The length the value must have.</param>
+    /// <returns>A value of exactly that length.</returns>
+    /// <remarks>
+    /// A width fact has to vary the width and nothing else, so the filler has to be chosen per member rather
+    /// than shared. The invitation code carries an authoring-strength rule requiring two character classes, so
+    /// a value made of one repeated character would be refused for a strength reason at the width the fact
+    /// expects to be accepted - failing for the wrong rule and reporting the wrong message. Every other member
+    /// here has no such rule, so a repeated character remains the clearest filler for them.
+    /// </remarks>
+    private static string FillerFor(string member, int length)
+        => member == nameof(UpdateRoleRequest.RsvpCode)
+            ? string.Concat(Enumerable.Range(0, length).Select(index => index % 2 == 0 ? 'a' : '1'))
+            : new string('a', length);
 
     /// <summary>
     /// A frequency outside the domain enumeration is refused on the role update path.

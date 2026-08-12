@@ -328,12 +328,24 @@ public class CreateRoleRequestValidator : AbstractValidator<CreateRoleRequest>
             .Must(TextIntegrityRules.IsMultiLineSafe)
             .WithMessage(TextIntegrityRules.MultiLineMessage);
 
-        // No validator was declared on the invitation code either, and nothing in the schema makes
-        // it unique, so a clash is not a conflict and only the width applies.
+        // No validator was declared on the invitation code, and nothing in the schema makes it unique, so a
+        // clash is not a conflict and the column width is the only ported bound.
+        //
+        // SEC: THE STRENGTH RULE IS NET-NEW, AND IT APPLIES TO AUTHORING ONLY. An invitation code is a shared
+        // secret that grants role membership - including a private, paid or permission-bearing role, because a
+        // code IS the bypass for a service that is not published - and it was bounded only above, so a
+        // one-character code was accepted and thereafter redeemable by anybody who submitted that character.
+        // The rule refuses a newly authored value that is too easily guessed; it deliberately does NOT reach
+        // the redemption contract, because codes the legacy application already stored are weak by
+        // construction and refusing them there would make a code an account was legitimately given
+        // unredeemable. That asymmetry is the migration path and is recorded in MIGRATION_NOTES.md per Rule
+        // T5. An absent or empty value still passes: clearing the code is how an issuer withdraws one.
         RuleFor(request => request.RsvpCode)
             .MaximumLength(RoleTermsRules.RsvpCodeMaximumLength)
             .Must(TextIntegrityRules.IsSingleLineSafe)
-            .WithMessage(TextIntegrityRules.SingleLineMessage);
+            .WithMessage(TextIntegrityRules.SingleLineMessage)
+            .Must(RoleTermsRules.IsStrongAuthoredRsvpCode)
+            .WithMessage(RoleTermsRules.RsvpCodeTooWeakMessage);
 
         // Column width, plus the net-new containment rule annotated above. The containment check
         // itself moved to IconReferenceRules so that the role UPDATE and the page update apply the

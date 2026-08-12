@@ -29,21 +29,27 @@
  * tab is a functional reduction rather than a re-arrangement, which is why it is recorded
  * here instead of being left to be inferred from an absence.
  *
- * ⚠ `cmdServices` IS DROPPED TOO, AND THE ROUTE IT BRIEFLY HELD IS WITHDRAWN. An
- * intermediate revision mounted the legacy self-service panel at `:userId/services`,
- * reasoning that the account resource had grown the five endpoints the panel needed and so
- * the earlier omission could be lifted. The endpoints are real and they stay published, but
- * the address was not this barrel's to add: the migration plan freezes the console's route
- * table at twenty-five screens and enumerates seven of them for accounts —
- * `/users`, `/users/new`, `/users/:userId`, `/users/:userId/profile`,
- * `/users/:userId/password`, `/settings/membership` and `/settings/profile-definitions` —
- * with no member-services address among them, and it maps
- * `Website/admin/Users/MemberServices.ascx.vb` into the membership-settings folder as one of
- * three legacy screens consolidated rather than as a screen of its own. A twenty-sixth leaf
- * is a specification change, and the console the plan describes is an ADMINISTRATION
- * console: self-service subscription management is a different product surface. The five
- * endpoints and their typed client wrappers remain in place for it, so restoring the screen
- * is a route declaration plus a component and not a contract change.
+ * ⚠ `cmdServices` HAS NO ROUTE HERE, AND THE CAPABILITY IS NOT DROPPED — IT IS MOUNTED
+ * ELSEWHERE. An intermediate revision published the legacy self-service panel at
+ * `:userId/services`, reasoning that the account resource had grown the five endpoints the
+ * panel needed. The endpoints are real and stay published, but the address was not this
+ * barrel's to add: the migration plan freezes the console's route table at twenty-five
+ * screens and enumerates seven of them for accounts — `/users`, `/users/new`,
+ * `/users/:userId`, `/users/:userId/profile`, `/users/:userId/password`,
+ * `/settings/membership` and `/settings/profile-definitions` — with no member-services
+ * address among them, and it maps `Website/admin/Users/MemberServices.ascx.vb` into the
+ * membership-settings folder as one of three legacy screens CONSOLIDATED rather than as a
+ * screen of its own. A twenty-sixth leaf is a specification change.
+ *
+ * ⚠ A LATER REVISION DELETED THE PANEL ALTOGETHER, and that was the wrong correction to the
+ * same problem: it left five endpoints, five typed client wrappers and five store operations
+ * with no consumer anywhere in the workspace, which is a capability the plan requires being
+ * absent rather than an address being withdrawn. The panel is now MOUNTED as the last section
+ * of `MembershipSettingsComponent` at `/settings/membership`, which is the screen the plan's
+ * transformation table names — so the capability ships, this barrel still declares five
+ * children, and the route table still holds twenty-five addresses. What the consolidation
+ * costs is recorded on that component and in `MIGRATION_NOTES.md`; nothing about it belongs
+ * in a route table, which is why this note points at it rather than restating it.
  *
  * Declaration order is load-bearing. The router matches in declaration order and takes the first match, and
  * `:userId` matches ANY single segment - including the literal `new`. `'new'` must therefore stay above

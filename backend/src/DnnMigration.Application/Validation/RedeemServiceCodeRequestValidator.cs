@@ -85,6 +85,18 @@ public class RedeemServiceCodeRequestValidator : AbstractValidator<RedeemService
         // silent. The length rule carries the framework's own message, matching every sibling width rule
         // in this folder - the role editor's own invitation-code rule at
         // UpdateRoleRequestValidator.cs:L156-L157 declares the same bound the same way.
+        //
+        // SEC: NO STRENGTH RULE IS DECLARED HERE, AND ITS ABSENCE IS THE MIGRATION PATH RATHER THAN AN
+        // OVERSIGHT. Guessing an invitation code is bounded by how fast a caller may try and by how large
+        // the space is. The rate is bounded at the endpoint, by a limiter of its own partitioned on the
+        // account and the client address (RateLimitingExtensions.RedemptionPolicyName). The space is bounded
+        // on the WRITE path, where RoleTermsRules.IsStrongAuthoredRsvpCode refuses a newly authored or
+        // rotated code that is short or drawn from one character class. Repeating that rule HERE would bound
+        // nothing further - a caller guessing a short code is guessing one that already exists in the store -
+        // and it would refuse the legitimate members of every role whose code was issued before the rule
+        // existed. Existing codes therefore stay redeemable and the editor requires a stronger one the next
+        // time the role is saved. Both directions are pinned by
+        // RedeemServiceCodeRequestValidatorTests.Code_StillRedeemsWhenItIsWeakerThanTheEditorWouldNowAuthor.
         RuleFor(request => request.Code)
             .NotEmpty()
             .WithMessage(CodeRequiredMessage)

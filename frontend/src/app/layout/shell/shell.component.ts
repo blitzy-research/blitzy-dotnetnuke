@@ -8,6 +8,7 @@ import {
   inject,
   signal,
 } from '@angular/core';
+import { Location } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { NavigationEnd, Router, RouterOutlet } from '@angular/router';
 
@@ -371,6 +372,25 @@ export class ShellComponent {
   private readonly router = inject(Router);
 
   /**
+   * Turns a router-internal address into the address a browser can be handed.
+   *
+   * ⚠ THE TWO ARE NOT THE SAME ADDRESS WHEN THIS TENANT IS ADDRESSED BENEATH A PATH SEGMENT,
+   * and that is the whole reason this is injected. `Router.url` is INTERNAL — it is expressed
+   * relative to the application's base href, so a child portal served at `/acme/` reports
+   * `/roles` for the screen whose real address is `/acme/roles`. Handing that internal form to
+   * an `href` publishes an address belonging to a DIFFERENT TENANT: `roles` is a reserved
+   * top-level segment, so `core/config/tenant-path.ts` derives an empty prefix from it and
+   * `/roles` resolves against the bare host, which is the PARENT portal.
+   *
+   * `Location.prepareExternalUrl` is the same conversion `routerLink` performs when it writes
+   * its own `href`, reached through the `APP_BASE_HREF` this application provides
+   * ({@link ../../app.config.ts}). Using it is what keeps the one hand-composed address in the
+   * workspace agreeing with the several hundred the router composes. At the root deployment the
+   * base href is `/` and the conversion is the identity, so nothing about that deployment moves.
+   */
+  private readonly location = inject(Location);
+
+  /**
    * Bounds the sign-out subscription to this component's lifetime.
    *
    * The command is cold and the service behind it is root-provided, so it would never end
@@ -408,6 +428,11 @@ export class ShellComponent {
    * Declared ABOVE the subscription that writes it because field initialisers run in
    * declaration order, so the reverse would write to an undefined member on the first
    * navigation that completed.
+   *
+   * ⚠ AND BELOW BOTH MEMBERS ITS INITIALISER READS, for the same reason in the other
+   * direction: {@link composeSkipLinkHref} reaches through `router` AND `location`, so moving
+   * this line above either injection would evaluate a member that is still `undefined` and
+   * throw while the shell is being constructed — before any screen has rendered.
    */
   private readonly skipLinkHref = signal<string>(this.composeSkipLinkHref());
 
@@ -722,12 +747,24 @@ export class ShellComponent {
    * result is root-relative and resolves against the ORIGIN rather than against the base
    * href - which is the whole point of composing it.
    *
-   * @returns The current path, query string included, ending in the main region's fragment.
+   * ⚠ THE ROUTER'S ADDRESS IS PUT THROUGH THE BASE HREF BEFORE IT IS PUBLISHED, and that is a
+   * correction rather than a refinement. `Router.url` is internal, so under a child portal's
+   * `/acme/` base href the roles screen reported `/roles` and this method published exactly
+   * that — an address that resolves against the bare host and therefore names the PARENT
+   * tenant. Runtime testing measured it: every one of the shell's routerLink hrefs read
+   * `/acme/...` while this one alone read `/roles#main-content`. Ordinary keyboard activation
+   * hid the defect, because {@link focusMainRegion} cancels the default action and moves focus
+   * instead, but the raw attribute is what a middle-click, an "open in new tab", a "copy link
+   * address" or a scripting-disabled context consumes — and each of those would have carried
+   * the operator out of the tenant they were administering.
+   *
+   * @returns The current path as a browser may be handed it — base href applied, query string
+   * included — ending in the main region's fragment.
    */
   private composeSkipLinkHref(): string {
     const [pathAndQuery] = this.router.url.split('#');
 
-    return `${pathAndQuery}${SKIP_LINK_FRAGMENT}`;
+    return `${this.location.prepareExternalUrl(pathAndQuery)}${SKIP_LINK_FRAGMENT}`;
   }
 
   protected focusMainRegion(event: Event): void {

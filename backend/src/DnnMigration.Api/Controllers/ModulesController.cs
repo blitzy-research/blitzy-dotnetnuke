@@ -293,11 +293,26 @@ public sealed class ModulesController : ControllerBase
     //            refuse everyone. The edit grant on the target page is therefore evaluated by the service, after
     //            binding, against the portal resolved from the request host.
     //            Stated as a limitation rather than a reassurance: because no policy applies, this action falls
-    //            back to the bare authenticated-user requirement, so it is the service's page-belongs-to-portal
-    //            check and its grant evaluation that carry the tenant boundary here on their own. That the
-    //            evaluation happens is pinned by tests on all three of its outcomes - refused without a grant and
-    //            nothing written, admitted with one, refused again once a deny is recorded beside it - because a
-    //            denial alone could not distinguish a consulted grant from a route closed to everybody.
+    //            back to the bare authenticated-user requirement, so it is the service's own gates that carry the
+    //            tenant boundary here. That the grant evaluation happens is pinned by tests on all three of its
+    //            outcomes - refused without a grant and nothing written, admitted with one, refused again once a
+    //            deny is recorded beside it - because a denial alone could not distinguish a consulted grant from
+    //            a route closed to everybody.
+    // SEC: WHAT AN ITEM POLICY DOES FOR EVERY OTHER MUTATION, THIS ACTION'S SERVICE NOW DOES FOR ITSELF, AND IT
+    //      DID NOT ALWAYS. A named policy reconciles three tenant identities before its action runs: the tenant
+    //      the token was minted for, the tenant the request arrived through, and the tenant the operation
+    //      targets. This action's fall-back to bare authentication reconciled the last two only - the portal
+    //      below is resolved from the request-scoped tenant facts, so arrival and target agree by construction -
+    //      while the token's own tenant went unexamined, and the grant reads cannot supply it: they ask what
+    //      authority the ACCOUNT holds, and an installation-wide account holds authority in several portals at
+    //      once. A token minted in portal B could therefore be presented against A's host name and A's page, and
+    //      the module was created because the account's A grants are genuine. IModuleService.CreateModuleAsync
+    //      now opens by comparing the token's portal against this one, with a store-backed host-account
+    //      exemption, mirroring Authorization/PortalAdministrationEvaluator.IsTenantBoundAsync arm for arm; a
+    //      mismatch is refused 403 with module.tenant_forbidden before any definition, page or grant is read.
+    //      The same method requires portal administration before honouring an all-pages placement - a
+    //      restriction the legacy screen applied to that very control, and which until now only the UPDATE path
+    //      enforced.
     [HttpPost]
     [ProducesResponseType(typeof(ApiResponse<ModuleDetailDto>), StatusCodes.Status201Created)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]

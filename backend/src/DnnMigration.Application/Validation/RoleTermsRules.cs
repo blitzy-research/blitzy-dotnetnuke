@@ -266,4 +266,110 @@ internal static class RoleTermsRules
         // SAME way. This member survives as the name the role validators already use and delegates, so the
         // rule cannot be changed on one surface and missed on another.
         => IconReferenceRules.IsContained(iconFile);
+
+    /// <summary>
+    /// Shortest invitation code an AUTHORED or ROTATED value may be: 12 characters.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// SEC: AN INVITATION CODE IS A SHARED SECRET THAT GRANTS ROLE MEMBERSHIP, and it was bounded only above.
+    /// A one-character code was accepted, stored, and thereafter redeemable by anybody who submitted that
+    /// character - a role grant, including a private, paid or permission-bearing role, reachable by
+    /// enumerating an alphabet. Twelve characters over a mixed alphabet is beyond exhaustive submission at any
+    /// rate a bounded endpoint permits, and it is well inside the column's fifty.
+    /// </para>
+    /// <para>
+    /// It is deliberately not larger. The value is typed by a person from something they were handed, and a
+    /// bound that makes an issuer paste a long opaque string invites them to reuse one code everywhere
+    /// instead - which is the failure this rule exists to avoid, arrived at from the other direction.
+    /// </para>
+    /// </remarks>
+    internal const int RsvpCodeMinimumAuthoredLength = 12;
+
+    /// <summary>
+    /// Reported when a newly authored or rotated invitation code is too easily guessed.
+    /// </summary>
+    /// <remarks>
+    /// The sentence states the rule rather than the reason: an issuer correcting a refusal needs to know what
+    /// to type, and explaining that a short code can be enumerated tells an attacker reading the same message
+    /// what the endpoint's weakness used to be. It names the field the way the field is labelled, as the
+    /// redemption refusal does.
+    /// </remarks>
+    internal const string RsvpCodeTooWeakMessage =
+        "An RSVP Code must be at least 12 characters long and must mix letters with digits or punctuation.";
+
+    /// <summary>
+    /// Determines whether an invitation code is strong enough to be AUTHORED, accepting an absent or empty
+    /// value.
+    /// </summary>
+    /// <param name="rsvpCode">The submitted code, which may be <see langword="null"/> or empty.</param>
+    /// <returns>
+    /// <see langword="true"/> when the value is absent, empty, or at least
+    /// <see cref="RsvpCodeMinimumAuthoredLength"/> characters carrying at least two of the three character
+    /// classes; <see langword="false"/> otherwise.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// AN ABSENT OR EMPTY VALUE PASSES, and that is the rule rather than a gap in it. The column is nullable
+    /// and the legacy screen left the box empty for a service that is not invitation-only, so clearing the
+    /// code is how an issuer WITHDRAWS one - refusing an empty value would make an existing code impossible
+    /// to remove. The legacy string sentinel was itself the empty string, so a caller sending <c>null</c> and
+    /// a caller sending <c>""</c> mean the same thing and both mean "no code".
+    /// </para>
+    /// <para>
+    /// ⚠ THIS RULE APPLIES TO AUTHORING ONLY, AND REDEMPTION IS DELIBERATELY LEFT ALONE. Codes already stored
+    /// by the legacy application are short and weak by construction - it declared no rule at all - and
+    /// tightening the REDEMPTION contract would make every one of them unredeemable, which is a functional
+    /// regression for accounts holding a code they were legitimately given. The asymmetry IS the migration
+    /// path: existing codes keep working until an issuer next edits the role, at which point the new value
+    /// must be a strong one. The divergence is recorded in <c>MIGRATION_NOTES.md</c> per Rule T5.
+    /// </para>
+    /// <para>
+    /// TWO OF THREE CLASSES RATHER THAN ALL THREE, and length carrying most of the weight. Requiring every
+    /// class of character produces codes people mistype and issuers work around; the length bound is what
+    /// makes the value unguessable, and the class requirement exists only to refuse the degenerate cases a
+    /// length bound alone admits - twelve repetitions of one letter, or a twelve-digit number that is somebody
+    /// 's telephone number. Expressed as character tests rather than through a pattern-matching engine, so
+    /// this rule cannot become a pattern whose evaluation time depends on caller-supplied input.
+    /// </para>
+    /// </remarks>
+    internal static bool IsStrongAuthoredRsvpCode(string? rsvpCode)
+    {
+        if (string.IsNullOrEmpty(rsvpCode))
+        {
+            return true;
+        }
+
+        if (rsvpCode.Length < RsvpCodeMinimumAuthoredLength)
+        {
+            return false;
+        }
+
+        bool hasLetter = false;
+        bool hasDigit = false;
+        bool hasOther = false;
+
+        foreach (char character in rsvpCode)
+        {
+            if (char.IsLetter(character))
+            {
+                hasLetter = true;
+            }
+            else if (char.IsDigit(character))
+            {
+                hasDigit = true;
+            }
+            else
+            {
+                hasOther = true;
+            }
+        }
+
+        // A letter alone, a digit alone or punctuation alone is one class and is refused; any two of the three
+        // together pass. Counted rather than tested pairwise so a fourth class could never be added to the
+        // loop above and quietly leave this expression describing three.
+        int classes = (hasLetter ? 1 : 0) + (hasDigit ? 1 : 0) + (hasOther ? 1 : 0);
+
+        return classes >= 2;
+    }
 }

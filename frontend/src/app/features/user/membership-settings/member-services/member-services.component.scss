@@ -1,0 +1,247 @@
+// Component stylesheet for the account holder's own subscriptions, mounted as a SECTION of the
+// tenant's account-policy screen at /settings/membership. The panel is not routed: AAP 0.4.4
+// freezes the console's route table and names no member-services address, and AAP 0.5.1.8 maps
+// the legacy control into this feature folder. The paired class records the arrangement.
+//
+// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with this
+// component's own content attribute, so a class name that drifts does not error - it silently
+// matches nothing and the region renders unstyled. The paired template emits exactly this
+// vocabulary, and every entry is bound here to the element that actually carries it:
+//
+//     .member-services                   the <section> wrapper
+//     .member-services__heading          its <h2>
+//     .member-services__notice           a <p>, for the two states with nothing to list
+//     .member-services__help             a <p>, the legacy help paragraph
+//     .member-services__code             the <form>
+//     .member-services__code-input       its <input>
+//     .member-services__code-submit      its submit <button>
+//     .member-services__report           a <div role="status">
+//     .member-services__report-text      its <p>
+//     .member-services__report-list      its <ul>
+//     .member-services__report-dismiss   its dismiss <button>
+//     .member-services__row-action       both row command <button> elements
+//     .member-services__unavailable      a <span>, where a paid service offers no command
+//
+// WHAT THIS FILE DELIBERATELY DOES NOT DECLARE. Each is already owned elsewhere, and a second
+// declaration here would at best be dead and at worst outrank and break its owner.
+//   * The grid itself - its frame, its heading row, its zebra striping, its waiting row and its
+//     empty row all belong to the shared table component. Nothing here reaches inside it.
+//   * The label, the help disclosure and the error line of the code field. The shared field
+//     component owns all three.
+//   * The control chrome of the input and the base chrome of every button, including their
+//     disabled state. `_forms.scss` owns them.
+//   * A focus indicator. The global reset applies the shared focus-ring mixin to every anchor,
+//     button and input, so every focusable element here already shows a ring. Nothing below
+//     suppresses one.
+//   * The page width cap, which `_layout.scss` owns on `.layout-container`.
+//
+// ZERO HARDCODED VALUES. Every colour, length, family, size and weight resolves to a token from
+// _tokens.scss. The only literals are `0` and the structural keywords that name a layout
+// mechanism rather than a design decision.
+
+@use '../../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  ROOT
+// -----------------------------------------------------------------------------
+// A custom element defaults to `display: inline` and would not contain its block-level children,
+// so a box-generating display is stated regardless of layout. The rhythm is a grid `gap` because
+// the host's children are a page header, a failure banner and then one of three mutually
+// exclusive regions - a set whose membership changes at run time, which a margin-based rhythm
+// cannot space without a rule to unwind for the first and last members.
+:host {
+  display: grid;
+
+  // THE EXPLICIT FLUID TRACK. See the note on the same declaration in
+  // `portal-list.component.scss` for the measured failure: an implicit single-column track takes
+  // an automatic `min-content` minimum, the shared grid's `min-inline-size: 40rem` therefore
+  // sizes the track, and every region on the screen is stretched past the column its parent
+  // offered - so the page header, the failure banner and the action row all overflowed the
+  // document rather than the table, and the table container's own `overflow-x: auto` had nothing
+  // left to clip. The token's zero floor lets the track yield completely.
+  grid-template-columns: var(--grid-track-fluid);
+
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// -----------------------------------------------------------------------------
+//  THE SECTION AND ITS HEADING
+// -----------------------------------------------------------------------------
+// The panel is a section of the screen that mounts it rather than a page of its own, so the
+// wrapper repeats the host's own grid rhythm for its children instead of relying on flow
+// margins - the same reason the root above states a gap.
+//
+// The heading's own flow margins are cleared for that reason too, and its scale is the section
+// scale rather than the page scale: the host emits the level-one heading and this is the level
+// below it. A border above separates the panel from the policy form it follows, expressed as a
+// token border rather than a rule element, exactly as the host screen separates its own
+// sections.
+.member-services {
+  display: grid;
+  grid-template-columns: var(--grid-track-fluid);
+  gap: var(--space-4);
+  padding-block-start: var(--space-5);
+  border-block-start: var(--border-width) var(--border-style) var(--color-border);
+}
+
+.member-services__heading {
+  margin: 0;
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+// -----------------------------------------------------------------------------
+//  THE TWO PROSE PARAGRAPHS
+// -----------------------------------------------------------------------------
+// The flow margin a user agent gives a paragraph is cleared because the host's gap is the single
+// source of this screen's rhythm; the reset normalises only the body margin and leaves paragraph
+// margins intact, so a grid item bringing one of its own would be spaced twice.
+//
+// The measure is capped for the reason the shared page header caps its own: a sentence run the
+// full width of a desktop viewport is measurably harder to read than one that wraps. The help
+// paragraph is long - it is the legacy value, four sentences of it - which is what makes the cap
+// worth stating rather than incidental.
+.member-services__help,
+.member-services__notice {
+  margin: 0;
+  max-inline-size: mx.breakpoint('md');
+  line-height: var(--line-height-base);
+}
+
+// The notice replaces a whole screen's worth of content, so it is set apart from the ordinary
+// body ink rather than left to look like a first paragraph of something longer.
+.member-services__notice {
+  color: var(--color-text-muted);
+}
+
+// -----------------------------------------------------------------------------
+//  THE INVITATION CODE
+// -----------------------------------------------------------------------------
+// MIGRATION: the legacy affordance sat inside a fixed 350-pixel table of two 175-pixel cells
+// (`MemberServices.ascx` L10-L17). Not one of those measurements is reproduced: the shared table
+// rejects pixel widths outright and the workspace expresses arrangement through Grid and
+// Flexbox, so the field and its command are a wrapping flex row whose gap is a token.
+//
+// `flex-end` alignment rather than `center`, because the field is a label above a control and
+// its command must sit on the control's line rather than floating beside the label.
+.member-services__code {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: flex-end;
+}
+
+// The box is allowed to grow from zero within the row rather than being given a width: the
+// legacy value was 100 pixels for a fifty-character code, which is narrower than the value it
+// holds. A basis of zero with a cap keeps it comfortable on a phone and stops it running the
+// full width of a desktop viewport.
+.member-services__code-input {
+  flex: var(--flex-fill-from-zero);
+  max-inline-size: mx.breakpoint('sm');
+}
+
+// The command is the row's primary action, and the emphasis is WEIGHT rather than FILL.
+//
+// ⚠ AN EARLIER REVISION FILLED IT WITH THE BRAND COLOUR, and that made it the only solid
+// primary-coloured button in the entire application - measured across every screen. Two things were
+// wrong with it. It had no legacy ancestor: the legacy portal styled its form buttons
+// `.StandardButton` (`Website/Portals/_default/default.css` L475-L481), which declares inset,
+// weight and size and NO fill, and no legacy rule anywhere fills a control with the brand colour.
+// And it disagreed with the application's own emphasis convention, which is a bold label on an
+// otherwise ordinary control - the form action row on the module screen states its primary action
+// exactly that way. One filled control among twenty-one bordered ones reads as a different KIND of
+// control rather than as the same control emphasised.
+//
+// Everything else about the button - chrome, inset, hover, pressed and disabled treatment - comes
+// from `_forms.scss`, so this rule states the emphasis and nothing more.
+.member-services__code-submit {
+  font-weight: var(--font-weight-bold);
+}
+
+// -----------------------------------------------------------------------------
+//  THE REDEMPTION REPORT
+// -----------------------------------------------------------------------------
+// A bounded surface rather than a bare paragraph, because it reports the outcome of a gesture
+// and has to be distinguishable from the help text above it. The border is the frame the rest of
+// the console gives a grouped region; the corner radius and the raised surface are net additions
+// over a square-cornered legacy portal, recorded as such in the migration notes.
+//
+// ⚠ THE SURFACE IS `--color-surface`, NOT A PALE ADVISORY HINT, AND THE DIFFERENCE MATTERS
+// BECAUSE THE HINT IS NOT IN THE VOCABULARY. An earlier revision bound `--color-surface-hint`
+// here — the legacy `.Help` yellow measured at `default.css` L438. That member was WITHDRAWN
+// from `src/styles/_tokens.scss`, which records why at length: the colour vocabulary is closed
+// at the nine values the design specification enumerates, and #FFFF99 is not one of them. A
+// custom property that no `:root` declares is not a compile error and not a build warning — the
+// declaration is simply invalid at computed-value time and the background falls back to
+// unset — so binding a withdrawn name here would have left this region silently indistinguishable
+// from the page. `--color-surface` is what the tokens file names as the replacement for every
+// advisory region, and it is what the rest of the console already uses for a grouped surface.
+.member-services__report {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width) var(--border-style) var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface);
+}
+
+.member-services__report-text {
+  margin: 0;
+  line-height: var(--line-height-base);
+}
+
+// The joined roles. A list, because one code may join several roles at once - the legacy walk
+// had no early exit - and a comma-run would read as one name to a screen reader.
+.member-services__report-list {
+  margin: 0;
+  padding-inline-start: var(--space-5);
+  font-weight: var(--font-weight-bold);
+}
+
+// A tertiary control: it dismisses a message and changes nothing, so it takes no fill and sits
+// at the start of its own line rather than stretching across the surface.
+.member-services__report-dismiss {
+  justify-self: start;
+}
+
+// -----------------------------------------------------------------------------
+//  THE ROW COMMANDS
+// -----------------------------------------------------------------------------
+// MIGRATION: the legacy commands were link buttons carrying the command-button class - anchors
+// that posted back. These are real buttons, because each performs an action rather than
+// navigating, and a button is what assistive technology should announce for one.
+//
+// The chrome is deliberately minimal so a grid of seven columns does not become a grid of
+// buttons: no fill, no border, the primary ink, and the underline the console gives every other
+// in-place command. Padding is kept small in the inline axis and to a token in the block axis so
+// the target still clears a comfortable height inside a table cell.
+.member-services__row-action {
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  background: none;
+  color: var(--color-primary);
+  font-family: inherit;
+  font-size: inherit;
+  text-decoration: underline;
+  white-space: nowrap;
+
+  &:hover:not(:disabled) {
+    color: var(--color-primary-hover);
+  }
+}
+
+// Where a paid service offers no command at all.
+//
+// Muted and small, because it is a statement rather than an affordance and must not read as a
+// disabled button - a disabled button implies the command exists and is momentarily
+// unavailable, whereas this command does not exist on this site at all.
+.member-services__unavailable {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+}

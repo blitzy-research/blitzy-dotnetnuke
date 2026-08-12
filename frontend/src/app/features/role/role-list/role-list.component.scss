@@ -207,16 +207,21 @@
   display: grid;
   gap: var(--space-2);
 
-  // ⚠ THE BANNER STRETCHES; ONLY THE COMMAND IS HELD TO ITS CONTENT WIDTH. This region
-  // used to declare `justify-items: start`, which achieved the second of those and broke
-  // the first: a start-aligned grid item is sized to its content, so the shared error
-  // banner shrank to the width of its longest line - measured at 228px against the 1072px
-  // the identical component occupies on a screen that renders it outside a grid. One
-  // component was therefore rendering at two widths for no reason a reader could see, and
-  // a framed surface that stops short of the content it belongs to reads as a stray box
-  // rather than as the screen's error state. Alignment now belongs to the ONE item that
-  // needed it and is declared on that item, so another item added to this region cannot
-  // silently inherit a width constraint that was never meant for it.
+  // ⚠ ONLY THE COMMAND IS HELD TO ITS CONTENT WIDTH, AND THE CONSTRAINT IS DECLARED ON IT.
+  // This region used to declare `justify-items: start`, which sized every item to its
+  // content - including the shared error banner, which then shrank to the width of its
+  // longest line, measured at 228px against the 1072px the identical component occupies on a
+  // screen that renders it outside a grid. One component rendering at two widths for no
+  // reason a reader could see, and a framed surface that stops short of the content it
+  // belongs to, reads as a stray box rather than as the screen's error state. Alignment
+  // therefore belongs to the ONE item that needs it and is declared on that item, so an item
+  // added here cannot silently inherit a width constraint that was never meant for it.
+  //
+  // The banner itself no longer sits in this region at all: it is mounted unconditionally
+  // above it, because the live region has to survive between failures rather than be created
+  // with its first message. This region now holds the VISIBLE recovery affordance alone,
+  // which is what the gap above separates when a second command joins it, and the rule above
+  // is retained because it is the reason the command still declares its own alignment.
 }
 
 // -----------------------------------------------------------------------------

@@ -593,6 +593,253 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
+    /// A create presented with a credential minted for ANOTHER tenant is refused, and nothing is persisted -
+    /// even though the account holds administration of the tenant the request reaches.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE REGRESSION TEST FOR THE ONE MUTATION WITHOUT AN ITEM POLICY. Every other module mutation names its
+    /// module in the route, so its named policy reconciles three tenant identities before the action runs: the
+    /// tenant the token was minted for, the tenant the request arrived through, and the tenant the operation
+    /// targets. Creation names its target page in the BODY, so it carries no such policy and fell back to the
+    /// bare authentication requirement plus the service's grant reads - and those reads cannot supply the
+    /// missing identity, because they ask what authority the ACCOUNT holds and an installation-wide account
+    /// holds authority in several portals at once.
+    /// </para>
+    /// <para>
+    /// ONE ACCOUNT IN TWO PORTALS, WHICH IS THE REPORTED SHAPE AND NOT AN APPROXIMATION. The member account
+    /// is provisioned into a second, genuinely existing tenant and presents a token minted for THAT tenant
+    /// against the seed tenant's host name and page. A token naming a portal the installation does not have
+    /// would not reach this action at all - the restricted-session stage cannot evaluate a remediation state
+    /// for a tenant that does not exist and refuses first with its own code - so the second tenant has to be
+    /// real for the comparison under test to be the one that answers.
+    /// </para>
+    /// <para>
+    /// The account is given the page EDIT grant in the SEED tenant for the duration, so every grant the
+    /// operation consults answers yes and the only remaining reason for refusal is the credential's own
+    /// tenant: without the comparison this create would succeed. The stored count is asserted as well as the
+    /// status, because a refusal that had already staged the module would depend on nobody committing
+    /// afterwards.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreateModule_WithATokenMintedForAnotherTenant_ReturnsForbiddenAndWritesNothing()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        (int foreignPortalId, _, _) = await CreateForeignPortalAsync(host);
+
+        // Membership of the OTHER tenant, so the session's own remediation state can be evaluated there and
+        // the request reaches the action rather than being refused by the pipeline.
+        await _fixture.Database.ExecuteAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM [dbo].[UserPortals] WHERE [UserId] = @userId AND [PortalId] = @portalId)
+                INSERT INTO [dbo].[UserPortals] ([UserId], [PortalId], [CreatedDate], [Authorised])
+                VALUES (@userId, @portalId, SYSUTCDATETIME(), 1);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["userId"] = _fixture.Seed.MemberUserId,
+                ["portalId"] = foreignPortalId,
+            });
+
+        await GrantTabPermissionAsync(
+            _fixture.Seed.ChildTabId,
+            _fixture.Seed.TabEditPermissionId,
+            _fixture.Seed.RegisteredRoleId,
+            allowAccess: true);
+
+        CreateModuleRequest request = NewModuleRequest(_fixture.Seed.ChildTabId);
+
+        try
+        {
+            using HttpClient client = _fixture.CreateClientFor(
+                _fixture.Seed.MemberUserId,
+                IntegrationSeed.MemberUserName,
+                foreignPortalId,
+                isSuperUser: false,
+                roles: [IntegrationSeed.RegisteredUsersRoleName]);
+
+            using HttpResponseMessage response = await client.PostAsJsonAsync(
+                ModulesRoute(_fixture.Seed.PortalId),
+                request,
+                ApiTestFixture.Json);
+
+            response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+            await AssertTenantRefusalAsync(response, request.ModuleTitle);
+        }
+        finally
+        {
+            // The grant is portal-wide state that other suites read, so it is removed however this ends.
+            await RevokeTabPermissionAsync(
+                _fixture.Seed.ChildTabId,
+                _fixture.Seed.TabEditPermissionId,
+                _fixture.Seed.RegisteredRoleId);
+        }
+    }
+
+    /// <summary>
+    /// Asserts that a refusal came from the service's tenant comparison and that it wrote nothing.
+    /// </summary>
+    /// <param name="response">The refusal to examine.</param>
+    /// <param name="moduleTitle">The title the refused request carried.</param>
+    /// <returns>A task representing the assertions.</returns>
+    /// <remarks>
+    /// THE PROBLEM TYPE IS ASSERTED, NOT JUST THE STATUS, because this route can answer 403 for more than
+    /// one reason: the pipeline refuses an unresolvable arrival tenant, and a restricted session, each with
+    /// its own code and before the action runs. A status-only assertion would therefore pass whether or not
+    /// the comparison inside the service exists at all, which is precisely the defect being pinned. The type
+    /// is the code in URI-shaped form, and the code's <c>forbidden</c> token is what makes the status 403 -
+    /// spelled <c>tenant_mismatch</c> the same refusal would have reached the caller as a 400.
+    /// </remarks>
+    private async Task AssertTenantRefusalAsync(HttpResponseMessage response, string? moduleTitle)
+    {
+        using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        document.RootElement.TryGetProperty("type", out JsonElement type).Should().BeTrue();
+        type.GetString().Should().Contain(
+            "module.tenant_forbidden",
+            "the refusal must come from the service's tenant comparison rather than from another 403");
+
+        int written = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[Modules] WHERE [ModuleID] IN "
+            + "(SELECT [ModuleID] FROM [dbo].[TabModules] WHERE [ModuleTitle] = @title);",
+            new Dictionary<string, object?> { ["title"] = moduleTitle });
+
+        written.Should().Be(0, "a credential from another tenant must leave no module and no placement behind");
+    }
+
+    /// <summary>
+    /// A page editor asking for an ALL-PAGES placement is refused, and nothing is persisted - while the same
+    /// caller may still place the module on the one page it administers.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE REGRESSION TEST FOR THE ALL-PAGES ESCALATION ON CREATION. The legacy settings screen disabled
+    /// <c>chkAllTabs</c> outright for any caller outside the portal administrator role, and the UPDATE path
+    /// has gated that field on stored authority since the four portal-wide fields were grouped. CREATION
+    /// applied none of it, so a caller holding the edit grant on ONE page could place a module across every
+    /// content page of the tenant: the fan-out reads the portal's content pages directly and consults no
+    /// grant for the pages it adds.
+    /// </para>
+    /// <para>
+    /// The edit grant on the addressed page is GRANTED throughout, which is what makes the refusal
+    /// attributable to the portal-wide request rather than to the page - and the admitted single-page create
+    /// in the same test proves the gate refuses the EFFECT rather than the caller.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreateModule_AllPagesWithoutPortalAdministration_ReturnsForbiddenAndWritesNothing()
+    {
+        using HttpClient client = await MemberClientAsync();
+
+        await GrantTabPermissionAsync(
+            _fixture.Seed.ChildTabId,
+            _fixture.Seed.TabEditPermissionId,
+            _fixture.Seed.RegisteredRoleId,
+            allowAccess: true);
+
+        try
+        {
+            CreateModuleRequest everywhere = NewModuleRequest(_fixture.Seed.ChildTabId);
+            everywhere.AllTabs = true;
+
+            using HttpResponseMessage refused = await client.PostAsJsonAsync(
+                ModulesRoute(_fixture.Seed.PortalId),
+                everywhere,
+                ApiTestFixture.Json);
+
+            refused.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+            int written = await _fixture.Database.ScalarAsync<int>(
+                "SELECT COUNT(*) FROM [dbo].[Modules] WHERE [ModuleID] IN "
+                + "(SELECT [ModuleID] FROM [dbo].[TabModules] WHERE [ModuleTitle] = @title);",
+                new Dictionary<string, object?> { ["title"] = everywhere.ModuleTitle });
+
+            written.Should().Be(0, "a refused all-pages create must leave no module and no placement behind");
+
+            // The same caller, the same page, the same grant - only the portal-wide instruction withdrawn.
+            using HttpResponseMessage admitted = await client.PostAsJsonAsync(
+                ModulesRoute(_fixture.Seed.PortalId),
+                NewModuleRequest(_fixture.Seed.ChildTabId),
+                ApiTestFixture.Json);
+
+            admitted.StatusCode.Should().Be(HttpStatusCode.Created);
+        }
+        finally
+        {
+            // The grant is portal-wide state that other suites read, so it is removed however this ends.
+            await RevokeTabPermissionAsync(
+                _fixture.Seed.ChildTabId,
+                _fixture.Seed.TabEditPermissionId,
+                _fixture.Seed.RegisteredRoleId);
+        }
+    }
+
+    /// <summary>
+    /// A portal administrator asking for an ALL-PAGES placement is admitted, which is the counterpart that
+    /// keeps the gate above from being satisfied by refusing everybody.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The page edit grant is recorded against the ADMINISTRATOR role for the duration, because the two gates
+    /// ask different questions and administering a tenant does not by itself produce a grant row: the
+    /// permission service reads stored grants, and a tenant administrator whose pages carry no explicit grant
+    /// holds no page EDIT. Granting it is what isolates this test to the portal-wide gate - without it the
+    /// create would be refused by the page gate and the assertion would pass or fail for the wrong reason.
+    /// </remarks>
+    [Fact]
+    public async Task CreateModule_AllPagesAsPortalAdministrator_IsAdmittedAndPlacedOnEveryContentPage()
+    {
+        using HttpClient client = await _fixture.CreateAdministratorClientAsync();
+
+        await GrantTabPermissionAsync(
+            _fixture.Seed.RootTabId,
+            _fixture.Seed.TabEditPermissionId,
+            _fixture.Seed.AdministratorRoleId,
+            allowAccess: true);
+
+        try
+        {
+            CreateModuleRequest request = NewModuleRequest(_fixture.Seed.RootTabId);
+            request.AllTabs = true;
+
+            using HttpResponseMessage response = await client.PostAsJsonAsync(
+                ModulesRoute(_fixture.Seed.PortalId),
+                request,
+                ApiTestFixture.Json);
+
+            response.StatusCode.Should().Be(HttpStatusCode.Created);
+
+            // JOINED RATHER THAN CORRELATED, because the title is a column of [Modules] and not of
+            // [TabModules]: an unqualified reference to it inside a subquery over the placement table
+            // resolves against the enclosing query instead, which is a correlated read that answers a
+            // different question. Every column here is therefore qualified.
+            int placements = await _fixture.Database.ScalarAsync<int>(
+                """
+                SELECT COUNT(*)
+                FROM [dbo].[TabModules] AS placement
+                INNER JOIN [dbo].[Modules] AS module ON module.[ModuleID] = placement.[ModuleID]
+                WHERE module.[ModuleTitle] = @title;
+                """,
+                new Dictionary<string, object?> { ["title"] = request.ModuleTitle });
+
+            placements.Should().BeGreaterThan(
+                1,
+                "an administrator's all-pages placement still reaches every content page of the tenant");
+        }
+        finally
+        {
+            // The grant is portal-wide state that other suites read, so it is removed however this ends.
+            await RevokeTabPermissionAsync(
+                _fixture.Seed.RootTabId,
+                _fixture.Seed.TabEditPermissionId,
+                _fixture.Seed.AdministratorRoleId);
+        }
+    }
+
+    /// <summary>
     /// A create with a negative cache period is accepted and the value is persisted exactly as submitted,
     /// because no legacy rule and no schema constraint forbids it.
     /// </summary>

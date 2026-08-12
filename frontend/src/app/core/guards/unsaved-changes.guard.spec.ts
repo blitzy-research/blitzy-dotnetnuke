@@ -409,10 +409,18 @@ describe('unsavedChangesGuard', () => {
      * its own probe. Only then add the name here.
      *
      * ⚠ AND IT ALREADY EARNED ITS KEEP IN THE OTHER DIRECTION. The set was briefly fifteen screens
-     * across nineteen routes, the extra pair being the account self-service panel. That screen and its
-     * `:userId/services` address are withdrawn - the route table is frozen at twenty-five screens and
-     * names no member-services address - and this walk is what reported the stale expectation instead
-     * of letting a tripwire quietly guard a screen that no longer exists.
+     * across nineteen routes, the extra pair being the account self-service panel at
+     * `:userId/services`. That ADDRESS is withdrawn - the route table is frozen at twenty-five
+     * screens and names no member-services address - and this walk is what reported the stale
+     * expectation rather than letting a tripwire quietly guard an address that no longer exists.
+     *
+     * ⚠ THE PANEL ITSELF IS NOT WITHDRAWN AND IS DELIBERATELY NOT IN EITHER COUNT. It is mounted as
+     * the last section of `MembershipSettingsComponent`, which is in the set and whose route declares
+     * the gate, so leaving it is already guarded - by the HOST's probe, over the policy form. The
+     * panel registers no probe of its own, and that is a decision rather than an omission: its only
+     * entry is an invitation code being submitted, not an edit to a record, and asking a reader to
+     * confirm leaving because they typed a code and thought better of it would be new behaviour. The
+     * legacy screen protected nothing at all.
      *
      * Sorted, because the walk's order follows the route tables and a reordering there is not a
      * change in the protected set.
@@ -437,8 +445,10 @@ describe('unsavedChangesGuard', () => {
     /**
      * How many routes across every table declare the gate.
      *
-     * Eighteen rather than nineteen: the account self-service panel and its `:userId/services` address
-     * are withdrawn, so the route that declared the gate for it is gone with it.
+     * Eighteen rather than nineteen: the `:userId/services` address is withdrawn, so the route that
+     * declared the gate for it is gone with it. The panel that address served is still shipped and is
+     * mounted inside a screen whose own route is one of these eighteen, so restoring the capability
+     * changed neither count - which is precisely what AAP 0.4.4's frozen route table requires.
      */
     const PROTECTED_ROUTE_COUNT = 18;
 

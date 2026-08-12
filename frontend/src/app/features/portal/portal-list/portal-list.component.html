@@ -194,22 +194,31 @@
     fault; the banner carries its own live region and decides its own severity from the
     status. The retry and dismiss affordances sit beside it rather than inside it, because
     the shared banner projects nothing.
+
+    ONE presentation for every failure, with no fallback branch. The store composes a problem
+    document for the two modes that carry none - a request that never reached the server, and
+    a response whose body is not a problem document - so the banner always has a severity
+    word, a title and a detail to render. The `@else` that used to sit here rendered a bare
+    `<p role="status">` carrying one sentence, and runtime measurement found it byte-identical
+    for both modes: an operator could not tell "the server refused this" from "the request
+    never left the browser".
+
+    ⚠ THE BANNER IS MOUNTED UNCONDITIONALLY, AND ITS `@if` WAS THE DEFECT. This screen used to
+    create the element only once a failure existed, which put the live region and its first
+    message into the document in the SAME change - the one announcement a screen-reader user
+    most needs to hear, and the one that browsers announce least reliably when the region is
+    born with its content. The shared component states that contract on itself: the `@if` lives
+    INSIDE its region, the region carries no padding, border or background, and both inputs
+    default to null, so an empty banner paints nothing and resolves to zero height. Sixteen
+    sibling templates already mounted it this way; this one, the role listing, the account
+    listing and the account form did not. What stays conditional is only the VISIBLE recovery
+    chrome below - a `Try again` for a failure that has not happened is an offer with no
+    referent, and it carries no announcement semantics to preserve.
   -->
+  <app-error-banner [problem]="listProblem()" />
+
   @if (hasListFailure()) {
     <div class="portal-list__status">
-      <!--
-        ONE presentation for every failure, with no fallback branch. The store composes a
-        problem document for the two modes that carry none - a request that never reached
-        the server, and a response whose body is not a problem document - so the banner
-        always has a severity word, a title and a detail to render. The `@else` that used to
-        sit here rendered a bare `<p role="status">` carrying one sentence, and runtime
-        measurement found it byte-identical for both modes: an operator could not tell "the
-        server refused this" from "the request never left the browser".
-      -->
-      @if (listProblem(); as problem) {
-        <app-error-banner [problem]="problem" />
-      }
-
       <div>
         <!--
           THE WORDING IS "Try again", NOT "Retry", AND IT IS SHARED. Three list screens offer

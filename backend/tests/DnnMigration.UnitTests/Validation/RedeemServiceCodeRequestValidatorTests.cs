@@ -17,9 +17,15 @@
 // nicety, and the service repeats it so it holds for a caller that reached it without this pipeline.
 //
 // MIGRATION: the length bound is the stored column's own width, Roles.RSVPCode nvarchar(50) NULL
-// (03.02.03.SqlDataProvider L45), taken from the shared role-terms constants - the same bound the role
-// editor applies to the value when it is WRITTEN, which is what keeps a redeemable code and a storable one
-// the same set.
+// (03.02.03.SqlDataProvider L45), taken from the shared role-terms constants - the same CEILING the role
+// editor applies when the value is WRITTEN, which is what keeps a redeemable code and a storable one the same
+// set at the top end.
+//
+// SEC: the two paths are deliberately NOT symmetrical at the bottom end. The role editor now also refuses to
+// AUTHOR a code that is short or single-class, because the size of the space is half of what makes guessing
+// expensive; redemption keeps accepting such a code, because installations already hold them and refusing the
+// submission would lock out the members they were issued to rather than protecting anything. See
+// Code_StillRedeemsWhenItIsWeakerThanTheEditorWouldNowAuthor, which pins both directions of that path.
 //
 // MIGRATION: what is deliberately NOT declared. No pattern rule, because the legacy screen declared none and
 // an invitation code is tenant-authored free text. No trimming and no case folding, here or in the service:
@@ -27,6 +33,7 @@
 // file, so it was ordinal and untrimmed, and widening it would let a code match a role its issuer did not
 // intend. Whether any role bears the code is a question about state and is answered by the service, so this
 // validator takes no collaborator and its message reveals nothing about which codes exist.
+using DnnMigration.Application.Dtos.Role;
 using DnnMigration.Application.Dtos.User;
 using DnnMigration.Application.Validation;
 using FluentAssertions;
@@ -150,5 +157,43 @@ public class RedeemServiceCodeRequestValidatorTests
         _validator.CreateDescriptor().GetMembersWithValidators()
             .Select(member => member.Key)
             .Should().Equal(CodeMember);
+    }
+
+    /// <summary>
+    /// A code that the role editor would now REFUSE to author is still accepted for redemption, and that
+    /// asymmetry is deliberate.
+    /// </summary>
+    /// <param name="legacyCode">A code of the shape installations already hold.</param>
+    /// <remarks>
+    /// <para>
+    /// SEC: THE STRENGTH RULE BELONGS ON THE WRITE PATH ONLY. Guessing an invitation code is bounded by how
+    /// fast an attacker may try and by how large the space is, so the write path now refuses a short or
+    /// single-class code and the endpoint bounds the rate. Applying the same strength rule HERE would bound
+    /// nothing further - an attacker guessing a short code is guessing a code that already exists in the
+    /// store, and refusing the submission would simply make that role unreachable to the members it was
+    /// issued to.
+    /// </para>
+    /// <para>
+    /// The upgrade path is therefore: existing codes keep working, and the next time an issuer saves the role
+    /// the editor requires a stronger one. The two assertions here are what pin that path in place - drop the
+    /// first and legacy members are locked out, drop the second and weak codes can be authored again.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("JOIN")]
+    [InlineData("JOIN2008")]
+    [InlineData("abcdefghijk")]
+    [InlineData("Founders")]
+    public void Code_StillRedeemsWhenItIsWeakerThanTheEditorWouldNowAuthor(string legacyCode)
+    {
+        _validator.Validate(new RedeemServiceCodeRequest { Code = legacyCode }).IsValid
+            .Should().BeTrue("a code already issued must stay redeemable by the members who hold it");
+
+        ValidationResult authored = new UpdateRoleRequestValidator().Validate(
+            new UpdateRoleRequest { RoleName = "Subscribers", RsvpCode = legacyCode });
+
+        authored.IsValid.Should().BeFalse("the same value may no longer be authored or rotated in");
+        authored.Errors.Should().ContainSingle()
+            .Which.PropertyName.Should().Be(nameof(UpdateRoleRequest.RsvpCode));
     }
 }

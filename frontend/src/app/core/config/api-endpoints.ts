@@ -1,4 +1,5 @@
 import { environment } from '../../../environments/environment';
+import { tenantPathBase } from './tenant-path';
 
 /**
  * The single place REST route templates are declared for this application.
@@ -231,10 +232,43 @@ const SEGMENT = {
  * @returns The absolute-or-root-relative URL to request.
  */
 export function apiUrl(path: string): string {
-  const base = environment.apiBaseUrl.replace(/\/+$/, '');
+  const base = configuredApiBase();
   const suffix = path.replace(/^\/+/, '');
 
   return suffix.length === 0 ? base : `${base}/${suffix}`;
+}
+
+/**
+ * The API base for THIS document: the configured base, carrying the tenant path prefix the
+ * document was served under when there is one.
+ *
+ * ⚠ THE PREFIX IS WHAT MAKES A CHILD PORTAL REACHABLE, AND IT IS COMPOSED HERE RATHER THAN
+ * CONFIGURED. The legacy product addressed a child portal by a path segment beneath a shared
+ * host - `Website/admin/Portal/Signup.ascx.vb` L232-L236 stores exactly `domain/segment` - and
+ * the API reproduces that by resolving the tenant from the host AND the path before routing
+ * runs (`TenantPathBaseMiddleware`). A caller who opens `https://host/child` is served this
+ * same bundle, so without the prefix every request it makes is addressed to `/api/v1/...` at
+ * the root and the API resolves the BARE-HOST tenant instead of the child - authenticating
+ * against the wrong portal and operating in the wrong arrival context thereafter. The
+ * configured value stays the relative `/api/v1` that AAP 0.4.1.2 and 0.5.2.5 require; the
+ * prefix is composed with it, once, here.
+ *
+ * ⚠ AN ABSOLUTE CONFIGURED BASE IS LEFT ALONE. The development base names a host of its own,
+ * and a document served from a development server carries no tenant prefix to honour; prefixing
+ * an absolute URL's path would address a tenant the developer never asked for. The test is the
+ * FORM of the configured value rather than the environment flag, so a deployment that
+ * configures an absolute base gets the same treatment for the same reason.
+ *
+ * @returns The base with no trailing slash.
+ */
+function configuredApiBase(): string {
+  const configured = environment.apiBaseUrl.replace(/\/+$/, '');
+
+  if (!configured.startsWith('/')) {
+    return configured;
+  }
+
+  return `${tenantPathBase()}${configured}`;
 }
 
 /**
@@ -420,14 +454,23 @@ function resolveAgainstDocument(url: string): URL | null {
  *
  * - an empty base, or one made entirely of slashes;
  * - a base whose resolved path is the site root, which is the absolute spelling of
- *   the same degenerate case — `https://host` and `/` both claim every path;
+ *   the same degenerate case — `https://host` and `/` both claim every path. A
+ *   tenant-prefixed base is NOT this case: `/child/api/v1` claims exactly the paths
+ *   beneath it, which is the discrimination this predicate exists to make;
  * - a base that resolves to an opaque origin, for which origin equality is not a
  *   meaningful test because every opaque origin compares equal to every other.
  *
  * @returns The resolved base, or null when no safe comparison is possible.
  */
 function resolveApiBase(): URL | null {
-  const configured = environment.apiBaseUrl.replace(/\/+$/, '');
+  // ⚠ THE SAME BASE {@link apiUrl} COMPOSES, INCLUDING THE TENANT PATH PREFIX, AND THAT
+  // IDENTITY IS LOAD-BEARING. This is what {@link isApiRequest} compares against, and that
+  // predicate is what the authentication and correlation interceptors use to decide whether a
+  // request belongs to this API. Resolving the base WITHOUT the prefix while the URL builder
+  // composes it WITH one would make every request under a child portal fail the comparison:
+  // the bearer token would be dropped from every call and the console would answer 401 to a
+  // signed-in operator, with nothing in the build to say why.
+  const configured = configuredApiBase();
 
   if (configured.length === 0) {
     return null;

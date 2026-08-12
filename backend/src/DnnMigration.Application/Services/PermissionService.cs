@@ -592,6 +592,31 @@ public sealed class PermissionService : IPermissionService
 
     /// <inheritdoc />
     /// <remarks>
+    /// The account is read portal-scoped first and then unscoped, which is the same two-step
+    /// <see cref="IsPortalAdministratorAsync"/> and <c>ResolveCallerAsync</c> perform: a host account belongs
+    /// to no tenant, so a portal-scoped read alone would not find it, while trying the scoped read first
+    /// keeps the ordinary case - a member of this tenant - to one query. An account that is not found is not
+    /// a host account, and an anonymous caller is not one either; both are answers rather than faults, so
+    /// neither is reported as a failure.
+    /// </remarks>
+    public async Task<Result<bool>> IsHostAccountAsync(
+        int portalId,
+        int? userId,
+        CancellationToken cancellationToken = default)
+    {
+        if (userId is not int callerId)
+        {
+            return Result<bool>.Success(false);
+        }
+
+        User? account = await _users.GetAsync(portalId, callerId, cancellationToken).ConfigureAwait(false)
+            ?? await _users.GetAsync(portalId: null, callerId, cancellationToken).ConfigureAwait(false);
+
+        return Result<bool>.Success(account?.IsSuperUser ?? false);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
     /// The two filters compose conjunctively, so supplying neither returns the whole catalogue. The scope
     /// code is deliberately matched as free text rather than against an enumeration, because the column it
     /// lives in is free text and an installation carrying a code this codebase has never seen must still

@@ -4370,8 +4370,26 @@ public sealed class PermissionEvaluatorTests
     /// by consulting any new kind of grant row. It was added because some operations cannot be scoped to a
     /// resource at all: module creation names no page, since the target arrives in the request body, so a
     /// caller has to be admitted to the form before any page identifier exists to scope a permission to.
-    /// Anyone adding a fifth decision here should be able to say which of these three kinds it is - one
-    /// resource, tenant authority, or capability - and if it is none of them it probably does not belong.
+    /// </para>
+    /// <para>
+    /// THE FIFTH IS AN ACCOUNT CLASSIFICATION, WHICH IS A FOURTH KIND, and it is named here rather than
+    /// admitted silently. <c>IsHostAccountAsync</c> asks what the ACCOUNT IS - installation-wide or not -
+    /// rather than what it may do, and it reads one column of the account row rather than reducing any grant.
+    /// It is published because the Application layer needs the same store-backed host exemption the api
+    /// layer's tenant-binding evaluator applies: a write whose target arrives in the request BODY carries no
+    /// route-reading policy, so <c>IModuleService.CreateModuleAsync</c> has to reconcile the credential's
+    /// tenant itself, and a host account belongs to no tenant and therefore holds no portal claim that could
+    /// ever equal a target portal's identifier. It lives on THIS contract because this service already
+    /// resolves exactly that fact internally - <c>IsPortalAdministratorAsync</c> admits a host account before
+    /// reading any role - so publishing it reuses the one implementation instead of creating a second one
+    /// elsewhere. It is deliberately NOT interchangeable with tenant authority as an exemption: using the
+    /// administration question would exempt an administrator OF THE TARGET tenant from the comparison, which
+    /// is the very mismatch that comparison exists to close.
+    /// </para>
+    /// <para>
+    /// Anyone adding a sixth decision here should be able to say which of these four kinds it is - one
+    /// resource, tenant authority, capability, or account classification - and if it is none of them it
+    /// probably does not belong.
     /// </para>
     /// </remarks>
     [Fact]
@@ -4389,10 +4407,13 @@ public sealed class PermissionEvaluatorTests
                 nameof(IPermissionService.HasTabPermissionAsync),
                 nameof(IPermissionService.HasAnyTabPermissionInPortalAsync),
                 nameof(IPermissionService.IsPortalAdministratorAsync),
+                nameof(IPermissionService.IsHostAccountAsync),
             },
             "two grant scopes exist - module and page - tenant authority is a separate question answered "
-            + "from the portal's own administrator designation rather than from a permission row, and the "
-            + "tenant-wide capability question is the page scope disjoined rather than a third grant scope");
+            + "from the portal's own administrator designation rather than from a permission row, the "
+            + "tenant-wide capability question is the page scope disjoined rather than a third grant scope, "
+            + "and the host-account question is a classification of the account itself rather than any kind "
+            + "of grant");
 
         foreach (MethodInfo decision in decisions)
         {

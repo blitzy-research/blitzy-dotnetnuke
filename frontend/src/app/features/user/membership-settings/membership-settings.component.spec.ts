@@ -17,6 +17,7 @@ import type {
 } from '../../../core/models/user.model';
 import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
+import { TokenStorageService } from '../../../core/services/token-storage.service';
 import { UserStore } from '../../../core/state/user.store';
 import { MEMBERSHIP_SETTINGS_TEXT, MembershipSettingsComponent } from './membership-settings.component';
 
@@ -194,6 +195,17 @@ describe('MembershipSettingsComponent', () => {
   // discrepancy is reported rather than absorbed.
 
   const SETTINGS_URL = '/api/v1/users/settings';
+
+  /** The account the seated session names, and therefore the subject of the mounted panel. */
+  const CALLER_ACCOUNT_ID = 42;
+
+  /**
+   * The catalogue address the mounted subscription panel reads.
+   *
+   * Spelled out rather than imported from the endpoint map, exactly as the policy address above
+   * is, so that a wrong route template cannot agree with itself.
+   */
+  const CALLER_SERVICES_URL = `/api/v1/users/${String(CALLER_ACCOUNT_ID)}/services`;
   const USERS_URL = '/api/v1/users';
 
   /**
@@ -464,6 +476,12 @@ describe('MembershipSettingsComponent', () => {
 
     httpMock = TestBed.inject(HttpTestingController);
 
+    // The stored session outlives a single injector, so it is cleared before every case as well
+    // as after one. It matters here because this screen now MOUNTS the subscription panel, and
+    // that panel reads a catalogue as soon as a session names an account: a leaked identity
+    // would make an unrelated case fail on an unexpected request rather than on its own subject.
+    TestBed.inject(TokenStorageService).clear();
+
     const notifications = TestBed.inject(NotificationService);
 
     notifySpy = spyOn(notifications, 'notify').and.callThrough();
@@ -473,6 +491,7 @@ describe('MembershipSettingsComponent', () => {
 
   afterEach(() => {
     httpMock.verify();
+    TestBed.inject(TokenStorageService).clear();
   });
 
   // ---------------------------------------------------------------------------------------------------
@@ -2287,30 +2306,46 @@ describe('MembershipSettingsComponent', () => {
   // ---------------------------------------------------------------------------------------------------
 
   describe('the rendered document', () => {
-    it('emits no landmark and exactly one heading level below the page title', () => {
+    it('emits no shell landmark, and one heading per section below the page title', () => {
       arrive();
 
-      // ⚠ THE SHELL OWNS EACH LANDMARK EXACTLY ONCE. A screen emitting its own would nest a
-      // landmark inside the same landmark and give assistive technology two of something there
-      // must be one of. All four are asserted, not just the two that are easy to forget.
+      // ⚠ THE SHELL OWNS EACH OF THESE LANDMARKS EXACTLY ONCE. A screen emitting its own would
+      // nest a landmark inside the same landmark and give assistive technology two of something
+      // there must be one of. All four are asserted, not just the two that are easy to forget.
       expect(queryAll('header')).withContext('the shell owns the banner').toHaveSize(0);
       expect(queryAll('main')).withContext('the shell owns the main region').toHaveSize(0);
       expect(queryAll('nav')).withContext('the shell owns navigation').toHaveSize(0);
       expect(queryAll('footer')).withContext('the shell owns the footer').toHaveSize(0);
-      // THE OUTLINE, ASSERTED BY LEVEL. One level-two section heading directly under the page
-      // heading, and one level-three heading for the column switches NESTED inside that section.
-      // This spec previously required the screen to expose a single heading, which was the defect
-      // a review raised: a form of several field sets exposed one heading inside the main region,
-      // so heading navigation could reach the page and then nothing. The field set legends now
-      // carry headings - a legend may contain one, and its accessible name still comes from its
-      // text content, so no field set was renamed.
-      expect(queryAll('h2')).withContext('the accounts section').toHaveSize(1);
+      // THE OUTLINE, ASSERTED BY LEVEL. TWO level-two headings, one per section of this screen -
+      // the account policy and the consolidated subscription panel - and one level-three heading
+      // for the column switches NESTED inside the first of them.
+      //
+      // This spec previously required exactly ONE level-two heading, when the policy was the whole
+      // of the screen. The panel AAP 0.5.1.8 consolidates into this feature is a second section
+      // with a different subject, so it carries a heading of its own at the same level; a panel
+      // mounted without one would be reachable by heading navigation only as part of the section
+      // above it, which is the defect this level of assertion exists to catch. An earlier revision
+      // of the spec required a single heading FULL STOP, which a review raised for the same
+      // underlying reason.
+      expect(queryAll('h2')).withContext('the accounts section and the services panel').toHaveSize(2);
       expect(queryAll('h3')).withContext('the nested column switches').toHaveSize(1);
       // NO LEVEL IS SKIPPED, in either direction. The page heading is the screen's own - it
       // arrives from the shared page-header component, unlike the four landmarks above, which
       // the shell owns - so the chain h1 -> h2 -> h3 is complete within this one document.
       expect(queryAll('h4')).toHaveSize(0);
       expect(queryAll('h1')).withContext('the page heading, from page-header').toHaveSize(1);
+
+      // ⚠ THE PANEL'S REGION IS NAMED, DELIBERATELY. A `<section>` is exposed as a region only
+      // when it carries an accessible name, so naming it is what lets a reader jump straight to
+      // the subscriptions instead of walking the policy form to reach them. It is NOT one of the
+      // four landmarks above and does not duplicate any of them: those may appear once per
+      // document, a region may not.
+      const panel = query<HTMLElement>('section.member-services');
+
+      expect(panel).withContext('the panel is a section of this page').not.toBeNull();
+      expect(panel?.getAttribute('aria-labelledby'))
+        .withContext('named by its own heading, so the region is deliberate')
+        .toBe('member-services-heading');
     });
 
     it('renders no table, because there is no grid on this screen', () => {
@@ -2323,6 +2358,12 @@ describe('MembershipSettingsComponent', () => {
       // and lists nothing, so the shared data table has no business here either.
       expect(host().querySelectorAll('table')).withContext('no table of any kind').toHaveSize(0);
       expect(queryAll('app-data-table')).withContext('and no grid component').toHaveSize(0);
+      // ⚠ THE CLAIM IS ABOUT THIS SCREEN'S OWN MARKUP, and it holds only while no session names
+      // an account: the consolidated subscription panel this screen mounts DOES render the shared
+      // grid, for the seven-column services catalogue the legacy panel carried. No session is
+      // seated in this case, so the panel renders its transient notice and no grid. The grid
+      // itself is the panel's to prove, in `member-services.component.spec.ts`.
+      expect(queryAll('app-member-services')).withContext('the panel is still mounted').toHaveSize(1);
     });
 
     /**
@@ -2602,6 +2643,116 @@ describe('MembershipSettingsComponent', () => {
       expect(live?.getAttribute('role')).toBe('alert');
       expect(live?.getAttribute('aria-live')).toBe('assertive');
       expect(query('.error-banner__title')).withContext('and says nothing').toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // THE CONSOLIDATED SUBSCRIPTION PANEL
+  // ---------------------------------------------------------------------------------------------------
+  //
+  // MIGRATION: `Website/admin/Users/MemberServices.ascx` is the third of the three legacy controls
+  // AAP 0.5.1.8 consolidates into this feature, and AAP 0.4.4 freezes the console's route table at
+  // twenty-five addresses with no member-services address among them - so it is MOUNTED here rather
+  // than routed. These cases assert the mounting and the account it is given, and nothing about what
+  // the panel then does: that is `member-services.component.spec.ts`, and asserting it twice would
+  // leave two authorities for one fact.
+  //
+  // The negative case is the valuable one. An intermediate revision published the panel at its own
+  // address and a later one deleted it outright, leaving five endpoints, five typed client wrappers
+  // and five store operations with no consumer in the workspace. Nothing failed - which is exactly
+  // why the mounting is pinned here.
+  describe('the consolidated subscription panel', () => {
+    /** Seats the caller's identity, which is what gives the panel a subject account. */
+    function seatSession(userId: number): void {
+      TestBed.inject(TokenStorageService).store({
+        accessToken: 'not-a-real-token.not-a-real-payload.not-a-real-signature',
+        expiresAtUtc: '2099-12-31T23:59:59.000Z',
+        refreshToken: 'not-a-real-refresh-token',
+        mustChangePassword: false,
+        mustUpdateProfile: false,
+        passwordExpiring: false,
+        user: {
+          userId,
+          portalId: -1,
+          portalName: 'Baseline Portal',
+          username: 'administrator',
+          displayName: 'The Administrator',
+          email: 'administrator@example.test',
+          isSuperUser: false,
+          isPortalAdministrator: true,
+          roles: ['Administrators'],
+          permissions: [],
+        },
+      });
+    }
+
+    it('mounts the panel and gives it the account the caller holds', () => {
+      seatSession(CALLER_ACCOUNT_ID);
+      arrive();
+
+      expect(query('app-member-services'))
+        .withContext('the consolidated panel is rendered by this screen')
+        .not.toBeNull();
+      expect(query('section.member-services h2'))
+        .withContext('as a section of this page, not a page of its own')
+        .not.toBeNull();
+
+      // The account is not asserted through a component instance: the OBSERVABLE consequence of
+      // binding it is the address the panel reads, which is what a browser would show.
+      expectRequest('GET', CALLER_SERVICES_URL, "the panel's catalogue read").flush({
+        data: [],
+        meta: null,
+      });
+      fixture.detectChanges();
+    });
+
+    it('issues no subscription request while the session names no account', () => {
+      // No session is seated, so the caller's account is not yet known. The panel is still
+      // mounted - it renders its own transient notice - and reads nothing, which teardown's
+      // verification is what proves.
+      arrive();
+
+      expect(query('app-member-services')).not.toBeNull();
+      expect(httpMock.match(() => true))
+        .withContext('nothing was requested for an unknown account')
+        .toHaveSize(0);
+    });
+
+    it("leaves a subscription failure to the panel instead of announcing it twice", () => {
+      seatSession(CALLER_ACCOUNT_ID);
+      arrive();
+
+      const problem: ProblemDetails = {
+        type: 'urn:dnnmigration:error:user.services_disabled',
+        title: 'Forbidden',
+        status: 403,
+        detail: 'This site does not offer self-service subscription management.',
+      };
+
+      expectRequest('GET', CALLER_SERVICES_URL).flush(problem, {
+        status: 403,
+        statusText: 'Forbidden',
+      });
+      fixture.detectChanges();
+
+      // ⚠ ONE FAILURE, ONE ANNOUNCEMENT. The store holds a single failure slot shared by every
+      // account command, so without the operation filter on both surfaces this refusal would
+      // appear at the top of the screen that did not perform it AND inside the panel that did.
+      const banners = queryAll<HTMLElement>('app-error-banner');
+      const inPanel = queryAll<HTMLElement>('section.member-services app-error-banner');
+
+      expect(banners.length).withContext('two surfaces, two regions').toBeGreaterThan(1);
+      expect(inPanel).withContext('the panel carries one of them').toHaveSize(1);
+      expect(inPanel[0].textContent ?? '')
+        .withContext("the panel says it, in the server's words")
+        .toContain('self-service subscription management');
+
+      const screenBanners = banners.filter((banner) => !inPanel.includes(banner));
+
+      expect(screenBanners.length).withContext('and the screen carries the other').toBe(1);
+      expect(screenBanners[0].textContent?.trim() ?? '')
+        .withContext('which says nothing about an operation it did not perform')
+        .toBe('');
     });
   });
 });

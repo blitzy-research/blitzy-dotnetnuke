@@ -368,7 +368,7 @@ const PROBLEM_TITLE: Readonly<Record<number, string>> = {
  *   * `not_found` ⇒ 404 — `module.not_found`, `module.definition_not_found`,
  *     `module.tab_not_found`, `module.placement_not_found`, `module.portal_not_found`
  *   * `forbidden` / `protected` ⇒ 403 — `module.edit_forbidden`,
- *     `module.administrator_forbidden`, `module.settings_protected`
+ *     `module.administrator_forbidden`, `module.tenant_forbidden`, `module.settings_protected`
  *   * `export_failed` / `upgrade_failed` ⇒ 500
  *   * everything else ⇒ 400 — `module.content_invalid`, `module.content_type_mismatch`,
  *     `module.not_portable`, `module.setting_invalid`, `module.request_invalid`

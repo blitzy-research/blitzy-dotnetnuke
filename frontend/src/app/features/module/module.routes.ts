@@ -139,6 +139,19 @@ export const MODULE_ROUTES: Routes = [
      * too, because it is a rule about one field of the request rather than about reaching
      * this address.
      *
+     * ⚠ THAT LAST CLAIM WAS TRUE OF THE UPDATE PATH ONLY WHEN THIS NOTE WAS WRITTEN, AND IS
+     * NOW TRUE OF BOTH. `IModuleService.UpdateModuleAsync` had gated the four portal-wide
+     * fields on portal administration; `CreateModuleAsync` applied none of them, so a caller
+     * admitted here by `PortalContentEditor` could submit `allTabs: true` and have the module
+     * placed on every content page of the tenant - the fan-out reads the portal's pages
+     * directly and consults no grant for the pages it adds. Creation now asks the same
+     * question before anything is staged, and it also reconciles the tenant the caller's
+     * token was minted for against the tenant the request arrived through, which the item
+     * policies do for every other mutation and this body-scoped exception could not.
+     * The create screen additionally withholds the all-pages switch from a caller the session
+     * does not report as an administrator - an affordance that mirrors the legacy page load,
+     * not a substitute for the server's decision.
+     *
      * `ModuleEdit` would still be wrong here twice over — it would narrow exactly as the
      * server's commentary forbids, AND it would fail closed regardless, since this route
      * carries no `:moduleId` for the gate to resolve a scope from, making the screen

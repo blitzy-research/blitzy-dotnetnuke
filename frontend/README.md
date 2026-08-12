@@ -119,6 +119,25 @@ public/               static assets served by nginx
 `http://localhost:8080/api/v1` for `npm start`; `angular.json` performs that swap
 through the `development` configuration's `fileReplacements`.
 
+### Child portals: the tenant prefix is added at run time
+
+A child portal is addressed beneath a **path segment** of a shared host — `host/acme` — which
+is the shape the legacy signup screen stored (`Website/admin/Portal/Signup.ascx.vb` L232-L236),
+and the API identifies the tenant from that segment. One built bundle serves every tenant, so
+the prefix cannot be configured; `src/app/core/config/tenant-path.ts` derives it from the
+address the document was served at, and `api-endpoints.ts` composes it with the configured base
+in the two places that resolve a base — the URL builder AND the predicate the auth and
+correlation interceptors classify requests with. Both must see the same value: a builder that
+prefixed while the predicate did not would drop the bearer token from every call under a child
+portal.
+
+The same value is supplied as the router's `APP_BASE_HREF` (`app.config.ts`), so in-application
+links keep the prefix. `index.html` keeps `<base href="/">`: the hashed assets are served from
+the server root for every tenant, and a per-tenant document base would send the browser looking
+for them beneath the tenant's segment. One segment of prefix is honoured, matching the proxy's
+own matcher; a segment that spells one of the console's own top-level route names is read as the
+console's, which is recorded in [`../MIGRATION_NOTES.md`](../MIGRATION_NOTES.md).
+
 ## Notes
 
 - Every deliberate behavioural divergence from the legacy application is recorded in

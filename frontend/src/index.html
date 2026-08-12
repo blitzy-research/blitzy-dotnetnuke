@@ -58,6 +58,18 @@
       Those two facts together are what allow a deep link such as /portals/0/settings to be
       opened directly instead of only reached by navigating out from the root - and they are
       why this element must survive into the built document, not merely exist in the source.
+
+      ⚠ IT STAYS AT THE ROOT EVEN THOUGH A CHILD PORTAL IS ADDRESSED BENEATH A PATH SEGMENT,
+      and the two facts do not conflict. This one document is served for every tenant of the
+      deployment - the same bytes for `https://host/` and for `https://host/child` - so a
+      per-tenant value cannot be written here at all. It must stay `/` for a second reason:
+      the built assets are served from the server root by the static location, so a base of
+      `/child/` would make the browser resolve every script and stylesheet beneath the
+      tenant's segment, where nothing is served. The ROUTER's base is supplied separately,
+      from the address the document was actually served at - see the APP_BASE_HREF provider
+      in `src/app/app.config.ts` and the derivation in
+      `src/app/core/config/tenant-path.ts`, which is also what puts the tenant's prefix back
+      onto every API request.
     -->
     <base href="/">
 

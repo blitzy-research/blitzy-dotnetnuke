@@ -88,6 +88,32 @@ public sealed class ModuleService : IModuleService
     private const string AdministratorForbiddenCode = "module.administrator_forbidden";
 
     /// <summary>
+    /// Reported when the tenant the caller's credential was minted for is not the tenant the request
+    /// is acting on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A code of its own, and neither of the two above it would do. This refusal is not about a grant
+    /// at all - the caller may well hold every grant the operation needs, in a DIFFERENT tenant - so
+    /// reporting it as a missing edit grant or as missing portal administration would send a client
+    /// looking for authority it already has.
+    /// </para>
+    /// <para>
+    /// THE <c>forbidden</c> TOKEN IS LOAD-BEARING RATHER THAN DESCRIPTIVE. The shared status translator
+    /// classifies a refusal by scanning its code for a known token, so a code spelled
+    /// <c>tenant_mismatch</c> would carry no token, fall to the default arm and reach the caller as a
+    /// <c>400</c> - telling it to correct a request that has nothing wrong with it. The spelling is
+    /// therefore part of the contract, exactly as it is for the two codes above.
+    /// </para>
+    /// <para>
+    /// The message names no tenant on either side of the comparison. Telling a caller which portal
+    /// its credential belongs to is harmless, but telling it which portal it has just reached names a
+    /// tenant to somebody who has demonstrated no authority in it.
+    /// </para>
+    /// </remarks>
+    private const string TenantForbiddenCode = "module.tenant_forbidden";
+
+    /// <summary>
     /// Reported when the named definition does not exist or is not available to the portal.
     /// </summary>
     private const string DefinitionNotFoundCode = "module.definition_not_found";
@@ -606,6 +632,49 @@ public sealed class ModuleService : IModuleService
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        // SEC: THE CREDENTIAL'S TENANT MUST BE THE TENANT THIS REQUEST ACTS ON, AND THIS IS THE FIRST
+        // THING ASKED. Every other mutating module endpoint names its module in the route, so a
+        // route-reading policy reconciles the three tenant identities - the tenant the token was minted
+        // for, the tenant the request arrived through, and the tenant the operation targets - before the
+        // action runs. This one cannot: its target page arrives in the BODY, so it carries no item policy
+        // and used to fall back to the bare authenticated-user requirement plus the grant reads below.
+        // That left the token's tenant unexamined, and the grant reads cannot supply it: they ask what
+        // authority the ACCOUNT holds in the arrival portal, and an installation-wide account belonging to
+        // portals A and B holds authority in both. A token minted in B could therefore be presented
+        // against A's host name and A's page, and the module would be created because the account's A
+        // grants are genuine - the credential's own tenant never entered the decision.
+        //
+        // The arrival tenant and the target tenant are ALREADY the same identifier here: the controller
+        // resolves this parameter from the request-scoped tenant facts rather than from the route, so
+        // nothing in the body can name a different portal. What remains is the token, and it is compared
+        // before any grant is read so that a mismatched credential is refused without disclosing whether
+        // the definition, the page or the grant exists.
+        if (await EnsureTenantBoundAsync(portalId, cancellationToken).ConfigureAwait(false)
+            is ResultReason unbound)
+        {
+            return Result<ModuleDetailDto>.Failure(unbound);
+        }
+
+        // SEC: PLACING A MODULE ON EVERY PAGE REQUIRES ADMINISTERING THE PORTAL, and that is asked here
+        // rather than after the reads for the same reason the comparison above is. The legacy settings
+        // screen disabled chkAllTabs outright for any caller outside the portal administrator role
+        // (ModuleSettings.ascx.vb, under the comment that tab administrators can only manage their own
+        // tab), and the update path has enforced it since the four portal-wide fields were gated - but
+        // CREATION did not, so the restriction was documented in the request contract, in the route table
+        // and in the controller while being enforced on one of the two paths that can produce the effect.
+        // A caller holding the edit grant on ONE page could fan a module out across every content page of
+        // the tenant, including every page on which they hold no grant at all: the fan-out below reads the
+        // portal's content pages directly and never consults a grant for the pages it adds.
+        //
+        // Refused BEFORE anything is staged, so a refusal cannot leave a module or a placement on the
+        // tracked graph for a later commit to pick up.
+        if (request.AllTabs
+            && await EnsureAdministersPortalAsync(portalId, cancellationToken).ConfigureAwait(false)
+                is ResultReason notAdministrator)
+        {
+            return Result<ModuleDetailDto>.Failure(notAdministrator);
+        }
 
         IReadOnlyList<ModuleDefinition> definitions =
             await _definitions.GetModuleDefinitionsByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
@@ -2016,6 +2085,72 @@ public sealed class ModuleService : IModuleService
     }
 
     /// <summary>
+    /// Confirms that the tenant the caller's credential was minted for is the tenant the request acts on.
+    /// </summary>
+    /// <param name="portalId">
+    /// The tenant the request arrived through and acts on. The controller resolves it from the
+    /// request-scoped tenant facts, so the arrival tenant and the target tenant are one identifier and this
+    /// member has only the credential's own tenant left to reconcile.
+    /// </param>
+    /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
+    /// <returns>The reason the caller is not bound to this tenant, or <see langword="null"/> when it is.</returns>
+    /// <remarks>
+    /// <para>
+    /// WHY THE APPLICATION LAYER OWNS A COPY OF THIS RULE AT ALL. The api layer reconciles the same three
+    /// tenant identities in <c>Authorization/PortalAdministrationEvaluator.IsTenantBoundAsync</c>, and every
+    /// tenant-scoped POLICY asks it there. A policy can only ask it for a target the ROUTE names, and module
+    /// creation names its target page in the request body - so the one mutating endpoint that cannot carry an
+    /// item policy is also the one that most needs the reconciliation. The reference graph forbids the
+    /// Application layer from reaching the api layer, so the rule is reproduced here rather than shared; the
+    /// three arms below are the evaluator's arms, in its order, and any change to one belongs in both.
+    /// </para>
+    /// <para>
+    /// AN ANONYMOUS CALLER IS BOUND, WHICH IS THE EVALUATOR'S ANSWER TOO. Such a caller presents no portal
+    /// claim, no roles and no grants, so it carries no authority from any tenant that could travel to this
+    /// one - which is the whole of the harm this member prevents. Whether it may proceed is decided by the
+    /// grant reads that follow, exactly as it is for every other operation; answering "not bound" here would
+    /// refuse anonymous access the target tenant itself published rather than close anything.
+    /// </para>
+    /// <para>
+    /// A HOST ACCOUNT IS THE ONE EXEMPTION, and it is read from STORED STATE through
+    /// <see cref="IPermissionService.IsHostAccountAsync"/> rather than from the token's own super-user claim,
+    /// so an account demoted since sign-in loses the exemption on its next request. It has to be exempt: a
+    /// host account belongs to no tenant, so it holds no portal claim that could ever equal a target
+    /// portal's identifier, and every other layer of this solution already answers a host account
+    /// affirmatively. A decision that could not be reached is treated as a refusal, because a question about
+    /// authority that could not be answered must never be answered "yes".
+    /// </para>
+    /// <para>
+    /// AN ABSENT CLAIM IS A REFUSAL. Every token this installation mints carries the portal claim, so an
+    /// authenticated caller without one is either foreign or a defect, and neither should confer authority.
+    /// </para>
+    /// </remarks>
+    private async Task<ResultReason?> EnsureTenantBoundAsync(
+        int portalId,
+        CancellationToken cancellationToken)
+    {
+        if (!_currentUser.IsAuthenticated)
+        {
+            return null;
+        }
+
+        Result<bool> host = await _permissions
+            .IsHostAccountAsync(portalId, _currentUser.UserId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (host.IsSuccess && host.Value)
+        {
+            return null;
+        }
+
+        return _currentUser.PortalId == portalId
+            ? null
+            : new ResultReason(
+                TenantForbiddenCode,
+                "The presented credential was issued for a different portal than the one this request acts on.");
+    }
+
+    /// <summary>
     /// Confirms that the caller administers the portal, which is what the four portal-wide fields
     /// of an update require.
     /// </summary>
@@ -2051,8 +2186,13 @@ public sealed class ModuleService : IModuleService
             ? null
             : new ResultReason(
                 AdministratorForbiddenCode,
+                // ONE SENTENCE FOR BOTH PATHS, because one gate serves both. Creation reaches this member
+                // for a single reason - a request to place the new module on every page - while an update
+                // reaches it for any of five. The wording therefore names the class of effect rather than
+                // enumerating the update's fields alone, which is what it used to do and which read as a
+                // refusal about some other operation when a creation was what had been refused.
                 FormattableString.Invariant(
-                    $"Changing a module's page, its portal-wide placement, or either propagation instruction requires administering portal {portalId}."));
+                    $"Placing a module on every page of a portal, moving one between pages, or propagating its settings reaches beyond the page in front of the caller and requires administering portal {portalId}."));
     }
 
     /// <summary>

@@ -149,10 +149,19 @@
   exists to port; legacy feedback was per-field and inline only.
 
   The banner owns its own live region, so no competing one is declared anywhere below.
+
+  ⚠ IT IS MOUNTED UNCONDITIONALLY, AND THE `@if` THAT USED TO WRAP IT WAS THE DEFECT. Wrapping
+  it created the live region and its first message in the same change, which is the case screen
+  readers announce least reliably - on a form, that first message is the outcome of a save the
+  operator just asked for, so it is the one announcement that must not be missed. The shared
+  component owns the contract and satisfies it on its own: its `@if` sits INSIDE the region, the
+  region declares no padding, border or background, and `problem` defaults to null, so an empty
+  banner paints nothing and occupies no height. Sixteen sibling templates already mounted it this
+  way; this form and three listings did not. Nothing else needs to become conditional in its
+  place, because this screen offers no retry or dismiss affordance beside it - the save command
+  is the retry.
 -->
-@if (problem()) {
-  <app-error-banner [problem]="problem()" />
-}
+<app-error-banner [problem]="problem()" />
 
 <!--
   THE ONE-TIME CREDENTIAL HAND-OVER.

@@ -520,6 +520,45 @@ public interface IPermissionService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Reports whether the caller is an installation-wide host account, read from stored state.
+    /// </summary>
+    /// <param name="portalId">
+    /// The portal the question is asked within. It scopes the FIRST read only; a host account belongs to no
+    /// tenant, so the portal-scoped read is followed by an unscoped one, exactly as
+    /// <see cref="IsPortalAdministratorAsync"/> does.
+    /// </param>
+    /// <param name="userId">The caller, or <see langword="null"/> for an anonymous caller.</param>
+    /// <param name="cancellationToken">Token that cancels the read.</param>
+    /// <returns>
+    /// A task producing a successful <see cref="Result{T}"/> whose value is the decision. An anonymous
+    /// caller and an unknown caller both answer <see langword="false"/> rather than failing, because each
+    /// is a legitimate question with a negative answer rather than a fault.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS IS PUBLISHED SEPARATELY FROM THE ADMINISTRATION QUESTION, which already admits a host
+    /// account first. The two are not interchangeable as an EXEMPTION. A write whose authority arrives in
+    /// the request body has to reconcile the tenant its credential was minted for against the tenant it is
+    /// acting on, and the one caller that cannot satisfy such a comparison is a host account: it belongs to
+    /// no portal, so it carries no portal claim that could ever equal a target portal's identifier. Using
+    /// the administration question as the exemption instead would exempt an administrator OF THE TARGET
+    /// PORTAL from the comparison, which is precisely the mismatch being closed - a credential minted in
+    /// one tenant would pass because the account holds authority in another.
+    /// </para>
+    /// <para>
+    /// <b>Decided from STORED STATE, never from a claim.</b> The super-user column on the account row is the
+    /// authority, so an account demoted since its token was minted loses the exemption on its next request.
+    /// This mirrors <c>Api/Authorization/PortalAdministrationEvaluator</c>, which answers the same question
+    /// the same way for the route-reading policies; publishing it here is what lets the Application layer
+    /// reach the identical decision without depending on the api layer, which the reference graph forbids.
+    /// </para>
+    /// </remarks>
+    Task<Result<bool>> IsHostAccountAsync(
+        int portalId,
+        int? userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Removes every module- and page-scoped grant made directly to one user within one portal, as a
     /// self-contained operation that commits on its own.
     /// </summary>

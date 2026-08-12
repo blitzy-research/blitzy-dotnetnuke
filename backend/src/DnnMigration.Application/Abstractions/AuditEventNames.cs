@@ -347,4 +347,35 @@ public static class AuditEventNames
     /// </para>
     /// </remarks>
     public const string ModuleExported = "MODULE_EXPORTED";
+
+    /// <summary>An invitation code was submitted against an account and did not match any service.</summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: NET-NEW, and the enumeration has no member to cite: the legacy handler answered a failed
+    /// redemption with an on-screen message (<c>MemberServices.ascx.vb:L427</c>) and wrote no record at all,
+    /// so an installation could be guessed at indefinitely and leave nothing behind. The name follows the
+    /// legacy <c>*_FAILURE</c> convention so it reads alongside <c>LOGIN_FAILURE</c>, which is the event it
+    /// most resembles - a secret was submitted and did not match.
+    /// </para>
+    /// <para>
+    /// ⚠ THE SUBMITTED CODE IS NEVER A PROPERTY OF THIS EVENT, AND THAT IS THE POINT OF RECORDING THE EVENT
+    /// AT ALL. The trail exists so that a burst of failures from one account is visible to an operator; a
+    /// trail that carried the guesses would itself become a list of near-miss codes for whoever can read it,
+    /// which is a worse exposure than the silence it replaced. What is recorded is that an attempt failed and
+    /// how many services the tenant offers under a code, never the value submitted and never which codes
+    /// exist.
+    /// </para>
+    /// </remarks>
+    public const string ServiceCodeRedemptionFailure = "SERVICE_CODE_REDEMPTION_FAILURE";
+
+    /// <summary>An invitation code was redeemed and granted at least one service.</summary>
+    /// <remarks>
+    /// MIGRATION: NET-NEW for the same reason as <see cref="ServiceCodeRedemptionFailure"/> - the legacy
+    /// handler recorded nothing on success either, so a role grant obtained by code left no trace of how it
+    /// had been obtained. This is a MEMBERSHIP GRANT, which is the kind of change the legacy register audits
+    /// everywhere else, and it is recorded in addition to the per-role assignment records rather than instead
+    /// of them: those name the roles, this names the mechanism. It carries the number of services granted and
+    /// never the code that granted them.
+    /// </remarks>
+    public const string ServiceCodeRedeemed = "SERVICE_CODE_REDEEMED";
 }

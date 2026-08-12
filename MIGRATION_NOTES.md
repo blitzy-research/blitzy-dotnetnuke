@@ -17249,14 +17249,15 @@ from the role, inviting the operator to save the stale choice back over their ow
 
 ## QA remediation: the services an account could hold and never manage
 
-⚠ THE SCREEN THIS SECTION DESCRIBES IS WITHDRAWN. A later acceptance review established that the console's
-route table is frozen at twenty-five addresses and declares none for member services, so the route, the
-component and the banner link to it are gone; see *"The console's route table is closed at twenty-five
-screens, and the member-services panel is withdrawn"* at the end of this file for that decision and its
-consequences. Everything below still describes the ENDPOINTS accurately — they exist, they are gated as
-stated, and their typed client wrappers and store operations remain under test — so it is kept as the record
-of the contract a future self-service surface would build on, and only the claim that a screen reaches it is
-superseded.
+⚠ THE ADDRESS THIS SECTION DESCRIBES IS WITHDRAWN; THE PANEL ITSELF IS NOT. An acceptance review
+established that the console's route table is frozen at twenty-five addresses and declares none for member
+services, so the route and the banner link to it are gone. A subsequent review found that the response to
+that — deleting the panel outright — had left the whole capability without an operator surface, and the panel
+is now MOUNTED as the last section of the tenant's account-policy screen at `/settings/membership`. Read
+*"The member-services panel is mounted rather than routed, and the deletion of it is withdrawn"* at the end
+of this file for the current arrangement and what it costs. Everything below still describes the ENDPOINTS
+accurately — they exist, they are gated as stated, and their typed client wrappers and store operations
+remain under test — and only the ADDRESS it names is superseded.
 
 Membership Settings carried a note stating that role subscription, invitation codes and trials had no
 endpoint in this API at all, "so there is nothing for a screen to call". The note was true when it was
@@ -21441,3 +21442,285 @@ identifier.
 `frontend/src/app/core/services/notification.service.ts`,
 `frontend/src/app/layout/notifications/notification-list.component.ts`.
 
+
+
+### Module creation binds the credential's tenant to the tenant the request arrives at
+
+Creating a module named a tenant twice over: once in the alias the request arrived through, which the
+portal-alias middleware resolves, and once in the credential the caller presented, which names the tenant
+the account belongs to. The create path read only the first. It therefore accepted a caller holding a
+credential for one tenant and creating content in another, provided the caller held a page-edit grant that
+the second tenant's own permission read happened to satisfy — and because a grant read is scoped by page
+rather than by credential, satisfying it across a tenant boundary is not hypothetical.
+
+The two identities are now reconciled BEFORE any grant is read and before anything is staged. The rule is
+the same one the update and delete paths already applied through the API layer's tenant evaluator, restated
+where the Application layer can enforce it: an anonymous caller is bound (it has no tenant to contradict),
+an account the store classifies as host-level is bound (host authority is deliberately cross-tenant), and
+every other caller's credential tenant must equal the tenant it is writing to. A mismatch is refused with
+`module.tenant_forbidden` and nothing is written.
+
+TWO DETAILS OF THE REFUSAL ARE LOAD-BEARING. The refusal CODE's spelling decides its HTTP status: the
+global exception handler maps a reason to 403 by scanning it for the tokens `forbidden` and `protected`, so
+a code reading `tenant_mismatch` would have surfaced as a 400 and told the caller its request was
+malformed rather than refused. And the host exemption is answered by a STORE read rather than by asking
+whether the caller administers the target tenant — an administrator OF the target tenant would otherwise be
+exempted from the very comparison being closed, which is the reverse of the intent. That decision is
+published as `IPermissionService.IsHostAccountAsync`, a fourth kind of question on that interface alongside
+one-resource grants, tenant authority and capability, and it is an account classification rather than a
+grant.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/ModuleService.cs`,
+`backend/src/DnnMigration.Application/Abstractions/IPermissionService.cs`,
+`backend/src/DnnMigration.Application/Services/PermissionService.cs`,
+`backend/src/DnnMigration.Api/Controllers/ModulesController.cs`.
+
+
+### All-pages module placement is a portal-administrator act, and it is now enforced where it is decided
+
+A module created with `AllTabs` set appears on every page of the tenant, and the legacy screen treated that
+as an authority a page administrator does not hold. `ModuleSettings.ascx.vb` L214-L219 disabled `chkAllTabs`
+for a caller who was not a portal administrator — with the comment that tab administrators can only manage
+their own tab — and L332-L338 re-applied that disabling on postback, so a disabled control could not be
+reached by replaying the form. The second half is the interesting one: the legacy authors already
+understood that hiding a control is not enforcing a rule.
+
+The migrated create path had the first half and not the second. `CreateModuleRequest.AllTabs` was
+documented as though the write path enforced the distinction, the route note said the same, and no code
+did: a page editor holding EDIT on one page could set the flag and place a module across the entire tenant.
+The flag is now refused unless the caller administers the tenant, checked BEFORE any definition or page read
+and before anything is staged, and the two prose claims have been corrected to describe the rule that
+actually runs. The browser affordance mirrors it — the control is disabled for a caller who does not
+administer the tenant, with a hint saying so — but the affordance is a courtesy and the server rule is the
+enforcement, which is exactly the relationship the legacy postback guard implied.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/ModuleService.cs`,
+`backend/src/DnnMigration.Application/Dtos/Module/CreateModuleRequest.cs`,
+`backend/src/DnnMigration.Api/Controllers/ModulesController.cs`,
+`frontend/src/app/features/module/module-form/module-form.component.ts`,
+`frontend/src/app/features/module/module.routes.ts`.
+
+
+### Invitation codes: newly authored codes must be strong, already-issued codes keep working, and redemption is bounded
+
+Redeeming an invitation code compares one submitted secret against every role of the tenant — published or
+not, free or not — and grants membership of every role that bears it. The legacy screen was reachable only
+by a signed-in member and answered a miss with a sentence on the page; nothing bounded how often a member
+could ask, and nothing constrained what an issuer could type into the code box. Carried forward unchanged,
+that is an online oracle for obtaining a private or paid role, and the missing browser screen did not
+disable it because the endpoint was live regardless.
+
+Three changes bound it, and each closes a different half of the same cost calculation.
+
+THE RATE. The endpoint now carries a limiter of its own — five submissions per window against thirty for a
+credential request — rather than sharing the credential budget, so guessing traffic cannot suppress
+sign-in and cannot be paid for out of somebody else's window. The partition composes the observable client
+address with the account the request names, because an address-only key lets a pool of accounts behind one
+address share the guessing out and an account-only key lets one account spread it over as many addresses as
+it can reach. The account half is read from the ROUTE rather than from the caller's claims, and that is
+forced rather than preferred: the limiter is deliberately registered before authentication so a flood is
+charged before any credential work is done on its behalf, so no authenticated principal exists when the
+partition is chosen, and reading the presented token without validating it would hand a guesser one fresh
+budget per subject it invented. The route value is caller-chosen too, and it is sound here because the
+action is owner-only — the only route value that can reach the redemption logic is the caller's own
+account, so extra partitions bought by varying the segment contain nothing but refusals.
+
+THE SPACE. A code of four characters stays enumerable at any rate that leaves the feature usable, so the
+role editor now refuses to AUTHOR or rotate in a code shorter than twelve characters or drawn from a single
+character class. This is a tightening with no legacy ancestor: the legacy screen declared no validator on
+that box at all. An absent or empty value is still accepted, because clearing the box is how an issuer
+WITHDRAWS a code and refusing empty would make an existing code impossible to remove.
+
+THE UPGRADE PATH. Redemption is deliberately NOT held to the authoring rule. Installations already hold
+short codes, and refusing to redeem one would lock out the members it was issued to while protecting
+nothing — an attacker guessing a short code is guessing a code that already exists. Existing codes
+therefore keep working, and the next time an issuer saves the role the editor requires a stronger one.
+Both directions of that asymmetry are pinned by a test, because either half alone is a defect.
+
+WHAT WAS NOT CHANGED, AND WHY. A miss is still distinguishable from a match: a member who mistypes a code
+is told so, exactly as the legacy screen told them. Making the two outcomes identical would make the
+feature unusable to close an oracle that the rate limit and the code space already close. Both outcomes are
+now recorded on the audit trail — a failure with how many of the tenant's roles are reachable by code at
+all, a success with how many services were granted — and NEITHER record contains the submitted code. Putting
+the guess in the trail would turn the trail into a list of near-miss codes for whoever can read it, which
+is a worse exposure than the silence it replaces.
+
+**Annotated in code at.** `backend/src/DnnMigration.Api/Extensions/RateLimitingExtensions.cs`,
+`backend/src/DnnMigration.Api/Controllers/UsersController.cs`,
+`backend/src/DnnMigration.Application/Validation/RoleTermsRules.cs`,
+`backend/src/DnnMigration.Application/Validation/CreateRoleRequestValidator.cs`,
+`backend/src/DnnMigration.Application/Validation/UpdateRoleRequestValidator.cs`,
+`backend/src/DnnMigration.Application/Validation/RedeemServiceCodeRequestValidator.cs`,
+`backend/src/DnnMigration.Application/Services/UserService.cs`,
+`backend/src/DnnMigration.Application/Abstractions/AuditEventNames.cs`.
+
+
+### The member-services panel is mounted rather than routed, and the deletion of it is withdrawn
+
+**What this file said before.** Two entries above describe the same capability arriving and then leaving. The
+first — *"the services an account could hold and never manage"* — brought the legacy self-service panel back
+once the account resource grew the five endpoints it needed, and published it at `/users/{userId}/services`
+gated on account ownership. The second — *"the console's route table is closed at twenty-five screens, and
+the member-services panel is withdrawn"* — removed that address AND the component behind it, on the correct
+observation that the migration plan freezes the route table at twenty-five addresses and names no
+member-services address among them.
+
+**What changed, and why the second correction over-reached.** The address was indeed not the console's to
+add. But deleting the panel with it left five published endpoints, five typed client wrappers and five store
+operations — the catalogue, subscribe or renew, cancel, trial and invitation-code redemption — with no
+consumer anywhere in the workspace, and nothing failed: the transport graph stayed type-correct and simply
+terminated in unused store commands. An operator could no longer list the services a tenant offers,
+subscribe, renew, cancel, take a trial or redeem an invitation code by any means the application provides.
+That is a capability the plan requires being absent, which is a larger divergence than the extra address it
+was meant to correct — and the plan says where the capability belongs in the same breath as it closes the
+route table: `Website/admin/Users/MemberServices.ascx.vb` is mapped into the membership-settings feature as
+one of THREE LEGACY SCREENS CONSOLIDATED, not as a screen of its own.
+
+The panel is therefore restored and MOUNTED as the last section of `MembershipSettingsComponent`, the screen
+that mapping names, at `/settings/membership`. No address is added, no address is changed, and the route
+table still holds twenty-five screens. The panel takes its subject account as an INPUT from that host rather
+than from a route segment; the host supplies the account the session resolved, which is the caller's own.
+
+**Why an input, rather than the account the host is administering.** Because that is what the legacy panel
+did, measured rather than assumed. `MemberServices.ascx.vb` passes `UserInfo.UserID` on every one of its four
+commands — DataBind at L150, Subscribe at L106, UseTrial at L125 and `cmdRSVP_Click` at L413 — and
+`PortalModuleBase.vb` L319-L323 resolves that as `UserController.GetCurrentUserInfo`, the SIGNED-IN account.
+The identifier its container assigned at `ManageUsers.ascx.vb` L517 is never read. The container agreed:
+`DisplayServices` at L61-L66 is the tenant's `Profile_ManageServices` setting AND NOT (`IsEdit` OR
+`User.IsSuperUser`), and `IsEdit` (`UserModuleBase.vb` L329-L340) is the administrative `ctl=Edit` entry
+point — so the tab appeared on an account's OWN screen and never on an administrative edit of somebody
+else's. Supplying the caller's own account is the legacy semantic, not a simplification of it.
+
+**Why the arrangement is coherent and not merely permitted.** The tenant switch that governs all five of
+those endpoints — `Profile_ManageServices` — is a field on the very screen that now hosts the panel. Policy
+and behaviour are read and exercised in one place, and a tenant that clears the switch does not hide the
+panel: each of its requests is refused by the server, with its own reason, which the panel renders in the
+server's words.
+
+**Operational consequences, stated rather than absorbed.**
+
+- The panel is reachable by a caller admitted to `/settings/membership`, which is gated on tenant
+  administration, and by nobody else. EVERY address in the closed route table that could have hosted it is
+  gated the same way, so this is a consequence of the frozen table rather than a choice made here. A
+  self-service surface for ordinary members is a different product surface and is not in the plan.
+- What such a caller manages is strictly its OWN subscriptions. All five endpoints remain gated on ACCOUNT
+  OWNERSHIP server-side, and the panel additionally declines to issue a request for an account the caller
+  does not hold rather than provoking five refusals it can predict.
+- A signed-in account with no administrative authority still lands on its own PROFILE at the application
+  root, exactly as the withdrawal entry describes. Nothing about that changes: the panel has no address to
+  land on.
+- The application banner still carries two account-scoped links rather than three, for the same reason —
+  there is no address to link to.
+- Administrators continue to reach the same underlying rows through role membership at
+  `/roles/:roleId/users`, with its effective and expiry dates. The two surfaces write through the same
+  primitives, so neither can drift from the other.
+- The panel emits no page header and no level-one heading: it opens at level two, and the screen's outline
+  is one level-one heading with one level-two heading per section. Its `<section>` is named by that heading,
+  so a reader can jump straight to the subscriptions instead of walking the policy form to reach them.
+- The store holds ONE failure slot for every account command, so both surfaces filter it by operation: the
+  host announces the policy write, the panel announces its own five, and one refusal is announced once.
+- The panel registers no unsaved-entry probe. Its only entry is an invitation code on its way to being
+  submitted rather than an edit to a record, and the legacy screen protected nothing at all.
+- What remains genuinely excluded is the payment-processor redirect the legacy screen performed for a
+  fee-bearing role, which the plan places out of scope. The catalogue still reports such a service and says
+  that payment is required; the write endpoints refuse it with a stable code.
+
+**Annotated in code at.** `frontend/src/app/features/user/membership-settings/member-services/member-services.component.ts`,
+`frontend/src/app/features/user/membership-settings/member-services/member-services.component.html`,
+`frontend/src/app/features/user/membership-settings/member-services/member-services.component.scss`,
+`frontend/src/app/features/user/membership-settings/membership-settings.component.ts`,
+`frontend/src/app/features/user/membership-settings/membership-settings.component.html`,
+`frontend/src/app/features/user/user.routes.ts`,
+`frontend/src/app/core/guards/unsaved-changes.guard.spec.ts`.
+
+
+### A child portal's path segment is restored by the browser, forwarded by the proxy, and rebased by the API
+
+**What the legacy product did.** A child portal was addressed by a PATH SEGMENT beneath a shared
+host name. `Website/admin/Portal/Signup.ascx.vb` L232-L236 composes and stores exactly
+`domain/segment`, `Globals.GetDomainName` walked the request path building the value it compared,
+and every request beneath that segment belonged to the child. Preserving multi-tenant addressing
+is a named requirement of this migration, and a child alias is one of the two shapes it takes.
+
+**What was delivered, and where it broke.** The API side was complete and correct:
+`PortalContextHolder` builds a candidate chain from host plus path, most specific first, and
+`TenantPathBaseMiddleware` moves the matched segment out of the routable path into the request's
+path base before routing runs — so `/child/api/v1/roles` resolves the CHILD and still matches the
+route written as `/api/v1/roles`, and `ApiResults.Created` composes a `Location` that names the
+child rather than the parent. None of it was reachable from a browser. The proxy matched only
+`location /api/`, so `/child/api/v1/...` fell through to the SPA document fallback and an API call
+was answered with HTML; and the client composed every URL from the configured root-relative
+`/api/v1`, so even through a widened proxy it would have addressed the bare host. The visible
+result was the worst available shape: opening `https://host/child` served the application, both
+containers reported healthy, and every request resolved the PARENT tenant — sign-in authenticated
+against the wrong portal and every later request operated in the wrong arrival context.
+
+**What changed, hop by hop.** Three components now carry the segment, and each is bounded
+identically so no two of them can disagree.
+
+- **The browser restores it.** `frontend/src/app/core/config/tenant-path.ts` derives the prefix at
+  RUN TIME from the address the document was served at, and `api-endpoints.ts` composes it with the
+  configured base in the TWO places that resolve one: the URL builder, and the predicate the
+  authentication and correlation interceptors use to decide whether a request belongs to this API.
+  The second is the one that would have been missed — a builder that prefixed while the predicate
+  did not would drop the bearer token from every call under a child portal and answer a signed-in
+  operator 401, with nothing in the build to say why. `APP_BASE_HREF` is provided from the same
+  value, so the router matches and emits prefixed addresses.
+- **The proxy forwards it.** `docker/api-proxy.conf` now matches `^(?:/[^/]+)?/api/` and still
+  passes `$request_uri` — the caller's own target — through unchanged. The segment is deliberately
+  NOT stripped: stripping it would route correctly and resolve the wrong tenant, which is the
+  original defect reintroduced one hop later and harder to see.
+- **The API was already right** and is unchanged.
+- **The one hand-composed address in the console was corrected.** Every address the console
+  publishes is written by `routerLink`, which converts the router's internal address through the
+  base href for you — except one. The shell's "Skip to main content" link composes its own `href`
+  from `Router.url`, because a bare fragment resolves against the document base and would have
+  named a different document, and `Router.url` is INTERNAL: beneath `/acme/` it reports `/roles` for
+  the screen whose address is `/acme/roles`. The published attribute therefore named the PARENT
+  tenant. Runtime testing measured exactly that — every routerLink href read `/acme/...` while this
+  one read `/roles#main-content`. It is now put through `Location.prepareExternalUrl`, the same
+  conversion `routerLink` performs. Worth recording that ordinary use never revealed it: the shell
+  cancels the anchor's default action and moves focus instead, so the wrong address was consumed
+  only by a middle-click, an "open in new tab", a "copy link address" or a scripting-disabled
+  context — which is precisely the class of defect a specification pinned at the root deployment
+  cannot see, because there the conversion is the identity.
+
+**What is deliberately NOT changed.**
+
+- `environment.ts` still configures the relative `/api/v1`. The AAP fixes that value, one bundle
+  serves every tenant, and a per-tenant build value cannot exist. The prefix is composed with the
+  configured base rather than replacing it.
+- `index.html` still declares `<base href="/">`. The hashed assets are served from the server root
+  for every tenant, so a per-tenant document base would send the browser looking for them beneath
+  the tenant's segment. The ROUTER's base is supplied separately, which is the only part that has
+  to change.
+
+**The two limits of the browser's rule, recorded because they cannot be fixed on that side.**
+
+1. A tenant whose segment SPELLS one of the console's own top-level route names — `login`,
+   `portals`, `modules`, `users`, `roles`, `role-groups`, `settings` — is read as the console's own
+   screen. The document that would tell the two apart is the same document for both, and the rule
+   runs before any request has been made. The reserved set is asserted against the route table
+   itself by `tenant-path.spec.ts`, so it cannot silently fall out of step with it.
+2. ONE segment of prefix is honoured on both the browser side and the proxy side. That is what the
+   legacy signup screen could compose; a deeper stored alias would need both matchers widened
+   together, and being generous on one side alone would only move the disagreement.
+
+**Two operational requirements, both discovered by running it.**
+
+- The alias must be stored exactly as `host[:port]/segment` and is matched whole-segment: a
+  substring is not a match, so `/childish/...` resolves nothing and is answered 404 by routing
+  rather than being rebased onto `/child`.
+- A child portal must be created through `POST /api/v1/portals` rather than by inserting a
+  `Portals` row. Resolution refuses a portal that designates no administrator account, no
+  administrator role or no registered-user role, and refuses one whose designated roles do not
+  exist — so a hand-inserted row resolves to nothing and every address beneath it answers 404.
+
+**Annotated in code at.** `frontend/src/app/core/config/tenant-path.ts`,
+`frontend/src/app/core/config/api-endpoints.ts`,
+`frontend/src/app/app.config.ts`,
+`frontend/src/app/layout/shell/shell.component.ts`,
+`frontend/src/index.html`,
+`docker/api-proxy.conf`,
+`docker/nginx.conf`,
+`backend/tests/DnnMigration.IntegrationTests/Api/TenantResolutionTests.cs`.

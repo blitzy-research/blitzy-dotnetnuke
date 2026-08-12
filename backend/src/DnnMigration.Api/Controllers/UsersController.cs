@@ -1446,6 +1446,9 @@ public sealed class UsersController : ControllerBase
     /// <response code="401">No valid credential was presented.</response>
     /// <response code="403">The route names another account, or the tenant does not offer self-service subscription.</response>
     /// <response code="404">No such account in this portal.</response>
+    /// <response code="429">
+    /// Too many redemption attempts from this account and client address within the window.
+    /// </response>
     /// <remarks>
     /// <para>
     /// MIGRATION: replaces <c>cmdRSVP_Click</c>
@@ -1476,14 +1479,34 @@ public sealed class UsersController : ControllerBase
     /// This endpoint therefore does not refuse a fee-bearing role: no payment was taken on the legacy path
     /// either.
     /// </para>
+    /// <para>
+    /// SEC: THIS IS A CREDENTIAL SUBMISSION AND IS BOUNDED AS ONE, WHICH IT WAS NOT. The body carries a
+    /// secret the caller either knows or does not; the search spans every role of the tenant, published or
+    /// not, free or not; a match grants membership; and the two answers are distinguishable by construction -
+    /// <c>200</c> naming what was granted against <c>400</c> for a miss. Unbounded, that is an online
+    /// guessing oracle for a role grant, and nothing bounded it: the action declared no limiter policy, and
+    /// the fall-back classifier that catches an unmarked credential endpoint matched a closed word list that
+    /// named nothing in this route. It now declares
+    /// <see cref="RateLimitingExtensions.RedemptionPolicyName"/> - its own window, partitioned by the
+    /// ACCOUNT THIS ROUTE NAMES and the caller's observable address together, because neither key alone
+    /// bounds a determined guesser - and it carries the credential mark, which brings it under the
+    /// process-wide concurrency bound and the body limit as well. The account half is read from the route
+    /// rather than from the caller's claims because the limiter runs before authentication, and it is sound
+    /// here because <see cref="PolicyNames.AccountOwner"/> admits a caller only to its own account: a caller
+    /// varying the segment buys partitions in which every request is refused before a code is compared. The
+    /// refusal is <c>429</c>, and it is declared above so the published contract states it.
+    /// </para>
     /// </remarks>
     [HttpPost("{userId:int}/services/redemptions")]
     [Authorize(Policy = PolicyNames.AccountOwner)]
+    [EnableRateLimiting(RateLimitingExtensions.RedemptionPolicyName)]
+    [CredentialEndpoint]
     [ProducesResponseType(typeof(ApiResponse<RedeemServiceCodeResultDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status429TooManyRequests)]
     public async Task<ActionResult<ApiResponse<RedeemServiceCodeResultDto>>> RedeemServiceCodeAsync(
         int userId,
         [FromBody] RedeemServiceCodeRequest request,

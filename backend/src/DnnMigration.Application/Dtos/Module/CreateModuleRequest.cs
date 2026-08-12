@@ -241,10 +241,24 @@ public sealed class CreateModuleRequest
     // MIGRATION: 5.8 - THIS FIELD WAS ADMINISTRATOR-ONLY IN THE LEGACY SCREEN, AND THAT IS ENFORCED
     //   ON THE WRITE PATH RATHER THAN BY THIS MEMBER. The legacy page load disabled this checkbox,
     //   the two behaviour flags and the page picker outright for anyone not in the administrator
-    //   role. The target expresses that with policy-based authorisation at the API layer: the
+    //   role. The target expresses that with authorisation rather than with validation: the
     //   contract still ACCEPTS the value, and authorisation decides whether the write may proceed.
     //   It is deliberately NOT a validator rule and deliberately NOT a second member, because a
     //   permission is not a property of the submitted state.
+    // SEC: WHERE THAT ENFORCEMENT ACTUALLY LIVES, because this note used to leave it to be assumed
+    //   and the assumption was wrong for creation. No route-reading policy can carry it: the page a
+    //   module is placed on arrives in this body, so the api layer's item policies have nothing to
+    //   resolve a scope from and the create action deliberately declares none. The rule is therefore
+    //   applied by IModuleService.CreateModuleAsync, which requires portal administration - decided
+    //   from stored state, host accounts admitted first - whenever this member is true, and refuses
+    //   with module.administrator_forbidden before anything is staged. Until that gate existed the
+    //   restriction was recorded here, in the route table and in the controller while being enforced
+    //   only on the UPDATE path, so a caller holding the edit grant on ONE page could place a module
+    //   across every content page of the tenant, including every page it holds no grant on: the
+    //   fan-out reads the portal's content pages directly and consults no grant for the pages it
+    //   adds. The browser also withholds the control from a caller the session does not report as an
+    //   administrator, which is an affordance and not the enforcement - this member remains
+    //   acceptable on the wire from anyone, and the service is what refuses it.
     public bool AllTabs { get; set; }
 
     /// <summary>

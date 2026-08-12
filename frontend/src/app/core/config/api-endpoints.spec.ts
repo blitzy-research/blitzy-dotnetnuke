@@ -135,3 +135,87 @@ describe('isApiRequest', () => {
     expect(isApiRequest('http://[invalid-host')).toBeFalse();
   });
 });
+
+describe('a child portal addressed beneath a path segment', () => {
+  /*
+   * WHY THIS SUITE EXISTS.
+   *
+   * The legacy product let a child portal be reached at `domain/segment` - the signup screen
+   * composes and stores exactly that (`Website/admin/Portal/Signup.ascx.vb` L232-L236) - and the
+   * API reproduces it: `TenantPathBaseMiddleware` resolves the tenant from the host AND the path
+   * before routing runs, then moves the segment into the request's path base so
+   * `/child/api/v1/portals` routes to the same action as `/api/v1/portals` while resolving the
+   * CHILD.
+   *
+   * The prefixed target has to ARRIVE for any of that to happen, and one built bundle is served
+   * to every tenant, so the browser is the only place it can be restored. Before it was, a caller
+   * who opened `https://host/child` was served this application and every request it made was
+   * addressed to the ROOT - so the API resolved the bare-host tenant, sign-in authenticated
+   * against the wrong portal, and every later request operated in the wrong arrival context.
+   * Nothing failed visibly: the document loads and both containers report healthy.
+   *
+   * ⚠ BOTH HALVES ARE ASSERTED, AND THE SECOND IS THE ONE THAT WOULD BE MISSED. Composing the
+   * prefixed URL is not enough: the same base is what `isApiRequest` compares against, and that
+   * predicate is what the authentication and correlation interceptors use to decide whether a
+   * request belongs to this API. A builder that prefixed while the predicate did not would drop
+   * the bearer token from every call under a child portal, and a signed-in operator would be
+   * answered 401 with nothing in the build to say why.
+   */
+
+  const originalUrl = window.location.href;
+
+  beforeEach(() => {
+    // The platform's own history API, so the module under test reads a genuinely different
+    // address rather than a substitute for one.
+    history.replaceState({}, '', '/child/portals');
+  });
+
+  afterEach(() => {
+    // Mandatory: the address outlives a single case, and a leaked prefix would silently change
+    // every URL asserted by every suite that runs after this one.
+    history.replaceState({}, '', originalUrl);
+  });
+
+  it('composes every generated address beneath the tenant prefix', () => {
+    expect(apiUrl('portals')).toBe('/child/api/v1/portals');
+    expect(API_ENDPOINTS.portals.collection()).toBe('/child/api/v1/portals');
+    expect(API_ENDPOINTS.portals.byId(-1))
+      .withContext('the sentinel-valued identifier is still interpolated unchanged')
+      .toBe('/child/api/v1/portals/-1');
+    expect(API_ENDPOINTS.users.byId(0)).toBe('/child/api/v1/users/0');
+    expect(API_ENDPOINTS.roles.forCurrentPortal.members(0)).toBe(
+      '/child/api/v1/roles/0/users',
+    );
+  });
+
+  it('leaves the address root-relative, carrying no origin', () => {
+    const address = API_ENDPOINTS.modules.collection();
+
+    expect(address.startsWith('/child/api/v1/')).toBeTrue();
+    expect(/^[a-z][a-z0-9+.-]*:/i.test(address)).toBeFalse();
+    expect(address.startsWith('//')).toBeFalse();
+  });
+
+  it('classifies a prefixed API path as this API, so the bearer token is still attached', () => {
+    expect(isApiRequest('/child/api/v1/portals')).toBeTrue();
+    expect(isApiRequest('/child/api/v1')).toBeTrue();
+    expect(isApiRequest(API_ENDPOINTS.users.collection())).toBeTrue();
+  });
+
+  it('classifies the ROOT API path as somebody else, because it addresses another tenant', () => {
+    // `/api/v1/...` under a child document is the PARENT tenant's API. Nothing in this
+    // application composes it - every URL comes from this module - so declining to recognise it
+    // costs nothing, and recognising it would mean this session's credential travelled to a
+    // tenant the caller did not ask for.
+    expect(isApiRequest('/api/v1/portals')).toBeFalse();
+  });
+
+  it('still refuses a foreign origin that spells the same prefixed path', () => {
+    expect(isApiRequest('https://attacker.example/child/api/v1/users')).toBeFalse();
+  });
+
+  it('still requires a segment boundary after the version beneath the prefix', () => {
+    expect(isApiRequest('/child/api/v10/users')).toBeFalse();
+    expect(isApiRequest('/child/api/v1-preview/users')).toBeFalse();
+  });
+});

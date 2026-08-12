@@ -86,6 +86,13 @@ public sealed class CredentialRateLimitTests
     /// <summary>Permit count of the profile-write policy.</summary>
     private const int ProfileWritePermitLimit = 20;
 
+    /// <summary>Permit count of the invitation-code redemption policy.</summary>
+    /// <remarks>
+    /// Stated here as the number the production policy declares, so a change to that number fails this fact
+    /// rather than passing quietly with a looser bound than the one that was reviewed.
+    /// </remarks>
+    private const int RedemptionPermitLimit = 5;
+
     private readonly ApiTestFixture _fixture;
 
     /// <summary>Initialises a new instance of the <see cref="CredentialRateLimitTests"/> class.</summary>
@@ -208,6 +215,152 @@ public sealed class CredentialRateLimitTests
     }
 
     /// <summary>
+    /// Invitation-code redemption is bounded, on a window OF ITS OWN, so guessing cannot spend the budget
+    /// sign-in needs and cannot buy itself a fresh budget by exhausting somebody else's.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// SEC: THE REGRESSION TEST FOR AN UNBOUNDED ROLE-GRANT ORACLE. The action takes a secret, compares it
+    /// against every role of the tenant - published or not, free or not - grants membership of every role that
+    /// bears it, and answers a match and a miss differently. Nothing bounded it: it declared no policy, and
+    /// the fall-back path classifier matched a closed word list naming nothing in this route, so an
+    /// authenticated account could guess without limit.
+    /// </para>
+    /// <para>
+    /// BOTH HALVES ARE ASSERTED, and one alone proves neither. That the window refuses once spent is what
+    /// shows the endpoint is bounded at all; that it takes FIVE attempts rather than the two this host allows
+    /// a credential request is what shows the budget is its OWN rather than a share of the credential window -
+    /// which is the property that stops guessing traffic suppressing sign-in.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Redemption_IsRateLimitedOnItsOwnBudget()
+    {
+        using (ApiTestFixture.OverrideEnvironment(_fixture.HostConfiguration()))
+        {
+            await using var host = new TightlyLimitedHost();
+            using HttpClient client = host.CreateClient();
+            var route = new Uri("/api/v1/users/1/services/redemptions", UriKind.Relative);
+
+            for (int permitted = 0; permitted < RedemptionPermitLimit; permitted++)
+            {
+                using HttpResponseMessage allowed = await client.PostAsJsonAsync(
+                    route,
+                    new { code = "guess-attempt" },
+                    ApiTestFixture.Json);
+
+                allowed.StatusCode.Should().Be(
+                    HttpStatusCode.Unauthorized,
+                    "the redemption limiter runs before authentication and charges each attempted submission, "
+                    + "and five are permitted where a credential request would have been refused after two");
+            }
+
+            using HttpResponseMessage rejected = await client.PostAsJsonAsync(
+                route,
+                new { code = "guess-attempt" },
+                ApiTestFixture.Json);
+
+            rejected.StatusCode.Should().Be(HttpStatusCode.TooManyRequests);
+            rejected.Headers.RetryAfter.Should().NotBeNull();
+        }
+    }
+
+    /// <summary>
+    /// The redemption window keys on the ACCOUNT as well as on the client address, so one account exhausting
+    /// its budget does not refuse another account reaching the API from the same address.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// SEC: THE PARTITION IS THE OTHER HALF OF THE BOUND. An address-only key would let one account spread its
+    /// guessing over as many addresses as it can reach; an account-only key would let a pool of accounts behind
+    /// one address share the work out. This fact proves the account half is present, and the fact above proves
+    /// the window is enforced - together they say a fresh budget costs a fresh account AND a fresh address. The
+    /// client address is identical for both callers here, because the test server presents no peer address at
+    /// all, so the account half is the only thing that can separate them.
+    /// </para>
+    /// <para>
+    /// The account half is read from the ROUTE, because the limiter runs before authentication and there is no
+    /// authenticated principal to read when the partition is chosen. Each caller here therefore names its own
+    /// account twice - in the route it posts to and in the credential it presents - which is the only
+    /// combination the action's <c>AccountOwner</c> policy admits, and is why a caller cannot usefully invent
+    /// route values to mint itself extra budgets: every request in such a partition is refused before a code is
+    /// compared.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task RedemptionWindow_PartitionsOnTheAccount()
+    {
+        using (ApiTestFixture.OverrideEnvironment(_fixture.HostConfiguration()))
+        {
+            await using var host = new TightlyLimitedHost();
+            using HttpClient first = host.CreateClient();
+            using HttpClient second = host.CreateClient();
+
+            first.DefaultRequestHeaders.Authorization = BearerFor(_fixture.Seed.MemberUserId);
+            second.DefaultRequestHeaders.Authorization = BearerFor(_fixture.Seed.AdminUserId);
+
+            var firstRoute = new Uri(
+                $"/api/v1/users/{ApiTestFixture.Route(_fixture.Seed.MemberUserId)}/services/redemptions",
+                UriKind.Relative);
+            var secondRoute = new Uri(
+                $"/api/v1/users/{ApiTestFixture.Route(_fixture.Seed.AdminUserId)}/services/redemptions",
+                UriKind.Relative);
+
+            for (int spent = 0; spent <= RedemptionPermitLimit; spent++)
+            {
+                using HttpResponseMessage _ = await first.PostAsJsonAsync(
+                    firstRoute,
+                    new { code = "guess-attempt" },
+                    ApiTestFixture.Json);
+            }
+
+            using HttpResponseMessage exhausted = await first.PostAsJsonAsync(
+                firstRoute,
+                new { code = "guess-attempt" },
+                ApiTestFixture.Json);
+
+            exhausted.StatusCode.Should().Be(
+                HttpStatusCode.TooManyRequests,
+                "the first account has spent its own window");
+
+            using HttpResponseMessage other = await second.PostAsJsonAsync(
+                secondRoute,
+                new { code = "guess-attempt" },
+                ApiTestFixture.Json);
+
+            other.StatusCode.Should().NotBe(
+                HttpStatusCode.TooManyRequests,
+                "a second account from the same address holds a budget of its own");
+        }
+    }
+
+    /// <summary>
+    /// Mints a bearer credential for one seeded account, so each caller acts as the account its route names.
+    /// </summary>
+    /// <param name="userId">The account the credential names.</param>
+    /// <returns>The authorisation header to present.</returns>
+    /// <remarks>
+    /// Minted rather than obtained by signing in, because signing in is itself a credential-bearing request
+    /// and would spend the very budget these facts measure - the sign-in window is set to two permits while
+    /// they run, so two sign-ins would exhaust it before the fact under test began. The token names the
+    /// seeded tenant so the request resolves an arrival tenant and reaches the action's own authorisation,
+    /// which is what makes each caller a genuine owner of the account it posts to rather than a stranger
+    /// bouncing off authorisation.
+    /// </remarks>
+    private AuthenticationHeaderValue BearerFor(int userId)
+        => new(
+            "Bearer",
+            AuthenticatedClientFactory.CreateToken(
+                ApiTestFixture.SigningSecret,
+                ApiTestFixture.Issuer,
+                ApiTestFixture.Audience,
+                userId,
+                userName: "rate-limit-partition-" + userId.ToString(CultureInfo.InvariantCulture),
+                _fixture.Seed.PortalId));
+
+    /// <summary>
     /// The set of actions declaring themselves credential endpoints is exactly the reviewed inventory.
     /// </summary>
     /// <remarks>
@@ -234,6 +387,13 @@ public sealed class CredentialRateLimitTests
             "PortalsController.CreateAsync",
             "UsersController.ChangePasswordAsync",
             "UsersController.CreateAsync",
+            // SEC: REDEMPTION IS IN THE INVENTORY, AND ITS ABSENCE WAS THE DEFECT. The action does not hash a
+            // credential, which is why it was not here, but it SUBMITS a secret - an invitation code that
+            // grants role membership when it matches - and its two answers are distinguishable, so it is an
+            // online guessing oracle in substance. The mark brings it under the process-wide concurrency bound
+            // and the body limit; the window it draws on is its own, declared on the action, because guessing
+            // must not be able to spend the budget sign-in needs.
+            "UsersController.RedeemServiceCodeAsync",
             "UsersController.ResetPasswordAsync",
         };
 

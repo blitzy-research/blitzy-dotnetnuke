@@ -442,20 +442,32 @@
           <!--
             SHOW THE MODULE ON EVERY PAGE. `chkAllTabs` (L59-L60).
 
-            MIGRATION: NOT LOCKED CLIENT-SIDE, and that is a reasoned refusal rather than an omission.
-            `Page_Load:L215-L220` disabled this switch, the two portal-wide instructions below and the
-            page picker for a caller who was not a portal administrator, testing
+            MIGRATION: `Page_Load:L215-L220` disabled this switch, the two portal-wide instructions
+            below and the page picker for a caller who was not a portal administrator, testing
             `PortalSecurity.IsInRoles(PortalSettings.AdministratorRoleName)` - a per-portal SETTING,
-            not a fixed role name. Nothing in this screen's declared dependencies can answer that
-            question: the identity contract exposes a super-user flag and a role list, neither of which
-            is it. Inventing a client-side rule, or comparing against a literal role name, would be
-            worse than deferring, so the four controls render enabled and the server answers 403. That
+            not a fixed role name. THIS SWITCH NOW FOLLOWS THAT RULE AGAIN. An earlier revision of this
+            note declined to reproduce it, on the grounds that nothing among this screen's dependencies
+            could answer the question - the identity contract exposed a super-user flag and a role list,
+            and comparing against a literal role name would have been a weaker second copy of a server
+            rule that keys on a column. The session store now publishes the server's own derived answer,
+            host arm included, so the control's state follows the authority that will actually decide the
+            write. The paired class disables the control rather than removing it, so the label and its
+            help text stay legible and the form's shape does not change between callers.
+
+            ⚠ THE OTHER THREE CONTROLS STAY ENABLED, DELIBERATELY. The page picker must remain usable:
+            on the create route it is how a page administrator names the one page they administer, and
+            withholding it would make this screen useless to exactly the callers the legacy application
+            admitted. The two propagation instructions are edit-mode-only and carry their own refusal.
+
+            ⚠ THIS IS AN AFFORDANCE AND NOT THE ENFORCEMENT. The service requires portal administration
+            for an all-pages placement on BOTH the create and the update path, decided from stored state,
+            so a submission that never rendered this control is refused with a 403 all the same. That
             refusal surfaces at WARNING severity, on the precedent of the legacy access-denied screen,
             which used its yellow warning in both branches.
           -->
           <app-form-field
             [label]="labels.allTabs"
-            [help]="hints.allTabs"
+            [help]="administersPortal() ? hints.allTabs : allTabsWithheldHint"
             [error]="errorsFor('allTabs')"
             for="module-form-all-tabs"
           >

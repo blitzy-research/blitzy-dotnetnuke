@@ -162,11 +162,20 @@ public class UpdateRoleRequestValidator : AbstractValidator<UpdateRoleRequest>
             .WithMessage(TextIntegrityRules.MultiLineMessage);
 
         // No validator was declared on the invitation code either, and nothing in the schema makes
-        // it unique, so a clash is not a conflict and only the width applies.
+        // it unique, so a clash is not a conflict and the column width is the only ported bound.
+        //
+        // SEC: THE STRENGTH RULE APPLIES HERE TOO, AND IT MUST. This verb is how a code is ROTATED, so a rule
+        // present on creation and absent here would let an issuer replace a strong code with a one-character
+        // one and leave the same column just as guessable - the same "closes on both write verbs or on
+        // neither" property the icon containment rule above exists to keep. Redemption is still deliberately
+        // untightened, so a legacy code keeps working until the role is next edited; see the note on the
+        // creation validator and MIGRATION_NOTES.md.
         RuleFor(request => request.RsvpCode)
             .MaximumLength(RoleTermsRules.RsvpCodeMaximumLength)
             .Must(TextIntegrityRules.IsSingleLineSafe)
-            .WithMessage(TextIntegrityRules.SingleLineMessage);
+            .WithMessage(TextIntegrityRules.SingleLineMessage)
+            .Must(RoleTermsRules.IsStrongAuthoredRsvpCode)
+            .WithMessage(RoleTermsRules.RsvpCodeTooWeakMessage);
 
         // The column width plus the containment rule. THIS is the rule the update path was missing:
         // the creation validator declared it and this one did not, so the same column accepted a

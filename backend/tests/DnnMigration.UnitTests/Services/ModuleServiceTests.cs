@@ -185,6 +185,21 @@ public class ModuleServiceTests
     private const string EditForbiddenCode = "module.edit_forbidden";
 
     /// <summary>
+    /// Reported when a caller asks for an effect that reaches beyond the page in front of it without
+    /// administering the portal. The <c>forbidden</c> token decides the status, as above.
+    /// </summary>
+    private const string AdministratorForbiddenCode = "module.administrator_forbidden";
+
+    /// <summary>
+    /// Reported when the tenant the caller's credential was minted for is not the tenant the request acts
+    /// on. A code of its own because the caller may hold every grant the operation needs - in a different
+    /// tenant - so neither of the two refusals above describes it. The <c>forbidden</c> token is what makes
+    /// the shared status translator answer 403; spelled <c>tenant_mismatch</c> the same refusal would reach
+    /// the caller as a 400, which is why the spelling is asserted here rather than only the behaviour.
+    /// </summary>
+    private const string TenantForbiddenCode = "module.tenant_forbidden";
+
+    /// <summary>
     /// The module contract exposes exactly these twelve asynchronous operations and nothing else.
     /// </summary>
     /// <remarks>
@@ -1564,6 +1579,205 @@ public class ModuleServiceTests
 
         harness.AddedModules.Single().TabModules.Should().ContainSingle().Which.TabId.Should().Be(TabId);
         harness.InvalidatedTabIds.Should().Equal(new[] { TabId });
+    }
+
+    /// <summary>
+    /// A credential minted for one tenant cannot create a module in another, however much authority the
+    /// account itself holds there.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// THE REGRESSION TEST FOR THE BODY-SCOPED AUTHORISATION EXCEPTION. Every other module mutation names
+    /// its module in the route, so a named policy reconciles three tenant identities before the action runs:
+    /// the tenant the token was minted for, the tenant the request arrived through, and the tenant the
+    /// operation targets. Creation names its target page in the BODY, carries no such policy, and used to
+    /// fall back to the bare authenticated-user requirement plus the grant reads - which cannot supply the
+    /// missing identity, because they ask what authority the ACCOUNT holds and an installation-wide account
+    /// holds authority in several portals at once.
+    /// </para>
+    /// <para>
+    /// The caller here is deliberately given EVERYTHING except a matching credential: the edit grant on the
+    /// target page and administration of the portal both answer yes. That is what makes the refusal
+    /// attributable to the credential's tenant rather than to a missing grant, and it is the exact shape of
+    /// the reported defect - one account belonging to two portals, presenting the second portal's token
+    /// against the first portal's host name and page.
+    /// </para>
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreateModule_RefusesACredentialMintedForAnotherTenant()
+    {
+        Harness harness = Harness.Ready();
+        harness.SignIn(tokenPortalId: OtherPortalId);
+
+        Result<ModuleDetailDto> outcome = await harness.Service
+            .CreateModuleAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(TenantForbiddenCode);
+        outcome.Reason!.Message.Should()
+            .Be("The presented credential was issued for a different portal than the one this request acts on.");
+
+        // NOT ONE ROW, AND NOT ONE READ EITHER. The comparison is made before the definition, the page and
+        // the grant are looked at, so a mismatched credential learns nothing about which identifiers exist.
+        harness.AddedModules.Should().BeEmpty();
+        harness.AddedPlacements.Should().BeEmpty();
+        harness.UnitOfWork.Verify(
+            work => work.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+        harness.Permissions.Verify(
+            permissions => permissions.HasTabPermissionAsync(
+                It.IsAny<int>(),
+                It.IsAny<int?>(),
+                It.IsAny<int>(),
+                It.IsAny<PermissionKey>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// A credential minted for the tenant the request acts on is accepted, which is the counterpart that
+    /// keeps the comparison from being satisfied by refusing everybody.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreateModule_AdmitsACredentialMintedForThisTenant()
+    {
+        Harness harness = Harness.Ready();
+        harness.SignIn(tokenPortalId: PortalId);
+
+        Result<ModuleDetailDto> outcome = await harness.Service
+            .CreateModuleAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.AddedModules.Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// A host account is exempt from the comparison, because it belongs to no tenant and therefore holds no
+    /// portal claim that could ever equal one.
+    /// </summary>
+    /// <remarks>
+    /// The exemption is read from STORED state rather than from the credential's own super-user claim, so an
+    /// account demoted since sign-in loses it on its next request. The credential here names another tenant
+    /// AND the account is reported as a host account, which is the combination the exemption exists for.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreateModule_ExemptsAHostAccountFromTheTenantComparison()
+    {
+        Harness harness = Harness.Ready();
+        harness.SignIn(tokenPortalId: OtherPortalId);
+        harness.HostAccount(isHost: true);
+
+        Result<ModuleDetailDto> outcome = await harness.Service
+            .CreateModuleAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.AddedModules.Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// An authenticated credential carrying no portal at all is refused, because there is nothing for the
+    /// tenant to agree with.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreateModule_RefusesAnAuthenticatedCallerWhoseCredentialNamesNoTenant()
+    {
+        Harness harness = Harness.Ready();
+        harness.SignIn(tokenPortalId: null);
+
+        Result<ModuleDetailDto> outcome = await harness.Service
+            .CreateModuleAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(TenantForbiddenCode);
+        harness.AddedModules.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// An unanswerable host-account question is a refusal rather than an admission, when the credential names
+    /// another tenant.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreateModule_TreatsAnUnanswerableHostQuestionAsARefusal()
+    {
+        Harness harness = Harness.Ready();
+        harness.SignIn(tokenPortalId: OtherPortalId);
+        harness.Permissions
+            .Setup(permissions => permissions.IsHostAccountAsync(
+                It.IsAny<int>(),
+                It.IsAny<int?>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<bool>.Failure("store.unreachable", "The account store could not be read."));
+
+        Result<ModuleDetailDto> outcome = await harness.Service
+            .CreateModuleAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(TenantForbiddenCode);
+        harness.AddedModules.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Placing a module on every page requires administering the portal, and a page editor who asks for it is
+    /// refused with nothing written.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// THE REGRESSION TEST FOR THE ALL-PAGES ESCALATION. The legacy settings screen disabled
+    /// <c>chkAllTabs</c> outright for any caller outside the portal administrator role, and the UPDATE path
+    /// has gated the four portal-wide fields on that authority since they were grouped; CREATION applied
+    /// none of it. A caller holding the edit grant on ONE page could therefore fan a module out across every
+    /// content page of the tenant, including every page it holds no grant on - the fan-out reads the
+    /// portal's content pages directly and consults no grant for the pages it adds.
+    /// </para>
+    /// <para>
+    /// The edit grant on the addressed page is deliberately left GRANTED, so the refusal is attributable to
+    /// the portal-wide request rather than to the page.
+    /// </para>
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreateModule_RefusesAllPagesFromACallerWhoDoesNotAdministerThePortal()
+    {
+        Harness harness = Harness.Ready();
+        harness.AdministerPortal(administers: false);
+        CreateModuleRequest request = ValidCreateRequest();
+        request.AllTabs = true;
+
+        Result<ModuleDetailDto> outcome = await harness.Service
+            .CreateModuleAsync(PortalId, request, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(AdministratorForbiddenCode);
+        harness.AddedModules.Should().BeEmpty();
+        harness.AddedPlacements.Should().BeEmpty();
+        harness.InvalidatedTabIds.Should().BeEmpty();
+        harness.UnitOfWork.Verify(
+            work => work.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// The same caller may still create a module on the one page it administers, so the gate refuses the
+    /// portal-wide EFFECT rather than the operation.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreateModule_AdmitsASinglePagePlacementFromACallerWhoDoesNotAdministerThePortal()
+    {
+        Harness harness = Harness.Ready();
+        harness.AdministerPortal(administers: false);
+
+        Result<ModuleDetailDto> outcome = await harness.Service
+            .CreateModuleAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        Module stored = harness.AddedModules.Should().ContainSingle().Which;
+        stored.TabModules.Select(placement => placement.TabId).Should().BeEquivalentTo(new[] { TabId });
     }
 
     /// <summary>
@@ -5439,6 +5653,12 @@ public class ModuleServiceTests
             // leaving the other alone is exactly how that separation is proved.
             AdministerPortal(administers: true);
 
+            // The host-account question answers NO by default, which is the closed answer and the one that
+            // makes the tenant comparison meaningful in every fact that does not deliberately exempt itself
+            // from it. Declared explicitly rather than left to the loose mock, because the mock's default for
+            // a Result-returning member is a null outcome, and a null outcome is not a decision.
+            HostAccount(isHost: false);
+
             // The audit sink records what it is handed so the facts below can assert on the trail without
             // reaching a log store. A loose mock would swallow the calls silently; capturing them is what
             // lets a fact prove that a record was written, that it was written only once, and - the rule
@@ -5597,6 +5817,47 @@ public class ModuleServiceTests
                     It.IsAny<int?>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Result<bool>.Success(administers));
+
+        /// <summary>
+        /// Presents an AUTHENTICATED caller whose credential was minted for one particular tenant.
+        /// </summary>
+        /// <param name="tokenPortalId">
+        /// The portal the credential names, which the service reconciles against the portal the request acts
+        /// on. Pass <see langword="null"/> to present an authenticated caller whose credential carries no
+        /// portal at all.
+        /// </param>
+        /// <remarks>
+        /// The baseline caller this harness builds is ANONYMOUS - a loose mock reports
+        /// <c>IsAuthenticated</c> as false - which is what keeps every fact written before the tenant
+        /// comparison existed exercising the behaviour it was written for: an anonymous caller carries no
+        /// authority from any tenant, so there is nothing for the comparison to refuse. A fact about the
+        /// comparison therefore signs a caller in explicitly, and says which tenant it signed in to.
+        /// </remarks>
+        public void SignIn(int? tokenPortalId)
+        {
+            CurrentUser.SetupGet(caller => caller.IsAuthenticated).Returns(true);
+            CurrentUser.SetupGet(caller => caller.UserId).Returns(CallerUserId);
+            CurrentUser.SetupGet(caller => caller.PortalId).Returns(tokenPortalId);
+        }
+
+        /// <summary>
+        /// Decides whether the store reports the caller as an installation-wide host account.
+        /// </summary>
+        /// <param name="isHost">The answer the store is to give.</param>
+        /// <remarks>
+        /// Answered <see langword="false"/> by default, like the loose mock it replaces, so the exemption is
+        /// only ever in play in a fact that asks for it. The question is deliberately separate from portal
+        /// administration: a host account is exempt from the tenant comparison because it belongs to no
+        /// tenant, whereas an administrator OF THE TARGET tenant must still present a credential minted for
+        /// it.
+        /// </remarks>
+        public void HostAccount(bool isHost)
+            => Permissions
+                .Setup(permissions => permissions.IsHostAccountAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Result<bool>.Success(isHost));
 
         /// <summary>
         /// Makes tenant authority unanswerable, as an unreachable store would.

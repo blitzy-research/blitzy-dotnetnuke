@@ -50,6 +50,7 @@ import { ModuleVisibility } from '../../../core/models/module.model';
 import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { ModuleStore } from '../../../core/state/module.store';
+import { TokenStorageService } from '../../../core/services/token-storage.service';
 import { ModuleFormComponent } from './module-form.component';
 
 import type {
@@ -62,6 +63,7 @@ import type {
   ValidationProblemDetails,
 } from '../../../core/models/problem-details.model';
 import type { TabListItem } from '../../../core/models/tab.model';
+import type { AuthSession, CurrentUser } from '../../../core/models/auth.model';
 
 // =====================================================================================================
 // ADDRESSES
@@ -2288,12 +2290,16 @@ describe('ModuleFormComponent', () => {
       //     chkAllModules -> applyToAllModules      (copy this appearance to every module)
       //     cboTab        -> tabId                  (move the placement to another page)
       //
-      // MIGRATION: NONE OF THE FOUR IS LOCKED CLIENT-SIDE. Nothing among this screen's declared
-      //   dependencies can answer whether the caller is a PORTAL ADMINISTRATOR - the identity contract
-      //   exposes a super-user flag and a role-name list, and neither is that question - so a
-      //   client-side copy of the rule would either compare a role name against a literal or guess.
-      //   The refusal is left to the server, which answers `403` for any of the four, and the answer
-      //   is presented identically whichever one provoked it.
+      // MIGRATION: ONE OF THE FOUR IS NOW WITHHELD CLIENT-SIDE, AND THE OTHER THREE ARE NOT. An earlier
+      //   revision of this note recorded that none of them could be: the identity contract exposed a
+      //   super-user flag and a role-name list, and neither answers whether the caller is a PORTAL
+      //   ADMINISTRATOR, so a client-side copy would have compared a role name against a literal. The
+      //   session store now publishes the server's own derived answer, so the all-pages switch follows
+      //   it - see the affordance cases below. The page picker stays enabled deliberately, because a page
+      //   administrator needs it to name the one page they administer, and the two propagation
+      //   instructions stay enabled too. The refusal for any of the four is still the SERVER's, which
+      //   answers `403`, and the answer is presented identically whichever one provoked it - a withheld
+      //   control is an affordance and never the enforcement.
       //
       // The measured authority for the severity is `Website/admin/Security/AccessDenied.ascx.vb`: a
       // fifty-line page that performs NO permission check of its own and renders BOTH of its
@@ -2745,6 +2751,125 @@ describe('ModuleFormComponent', () => {
       expect(queryAll('fieldset').length).toBeGreaterThan(0);
       expect(queryAll('legend').length).toBe(queryAll('fieldset').length);
       expect(queryAll('[role="radiogroup"]').length).toBe(1);
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // THE ALL-PAGES SWITCH, AND WHO IS OFFERED IT
+  // ---------------------------------------------------------------------------------------------------
+  //
+  // `Page_Load:L215-L220` disabled `chkAllTabs` for any caller outside the portal administrator role.
+  // These cases pin the affordance to the SERVER'S OWN derived answer rather than to a role name: the
+  // administrator designation is a per-tenant column (`Portals.AdministratorRoleId`), so a role-name
+  // comparison is right about the word and wrong about the portal.
+  //
+  // ⚠ NEITHER CASE STANDS IN FOR THE ENFORCEMENT. The service requires portal administration for an
+  // all-pages placement on both the create and the update path, decided from stored state, so a
+  // submission that never rendered this control is refused with a 403 all the same.
+  describe('the all-pages switch', () => {
+    /** A caller snapshot, with tenant administration as the one variable. */
+    function callerWith(administersPortal: boolean): CurrentUser {
+      return {
+        userId: 3,
+        // MINUS ONE is a real tenant here, as it is throughout this file: it is the identity seed of
+        // `dbo.Portals` and simultaneously the legacy absent-integer marker, so a truthiness test
+        // anywhere on this path would discard the tenant the measured baseline actually uses.
+        portalId: -1,
+        portalName: 'Runtime Portal',
+        username: 'runtime_operator',
+        displayName: 'Runtime Operator',
+        email: 'operator@runtime.test',
+        // A host account is a SEPARATE arm of the same question and is deliberately left false, so each
+        // case is honest about which arm admitted it.
+        isSuperUser: false,
+        isPortalAdministrator: administersPortal,
+        roles: administersPortal ? ['Administrators'] : [],
+        permissions: [],
+      };
+    }
+
+    /** Stores a live session for that caller, which is what the identity store projects from. */
+    function signIn(administersPortal: boolean): void {
+      const session: AuthSession = {
+        accessToken: 'access-token-placeholder',
+        expiresAtUtc: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        refreshToken: 'refresh-token-placeholder',
+        mustChangePassword: false,
+        mustUpdateProfile: false,
+        passwordExpiring: false,
+        user: callerWith(administersPortal),
+      };
+
+      TestBed.inject(TokenStorageService).store(session);
+    }
+
+    /**
+     * Reveals a field's help disclosure and returns the text it shows.
+     *
+     * The shared field keeps its help text behind a toggle, so the sentence is not in the document until
+     * a person presses that toggle. Pressing it is therefore part of reading the sentence rather than a
+     * convenience, and doing it here keeps the assertion about what a caller is TOLD instead of about
+     * which constant a binding happens to name.
+     *
+     * @param controlId The identifier of the control the field labels.
+     * @returns The revealed help text.
+     */
+    function revealedHelpFor(controlId: string): string {
+      const field = requiredControl<HTMLElement>(controlId).closest('app-form-field');
+
+      expect(field).withContext(`#${controlId} sits inside a shared field`).not.toBeNull();
+
+      const toggle = (field as HTMLElement).querySelector<HTMLButtonElement>(
+        '.form-field__help-toggle',
+      );
+
+      expect(toggle).withContext(`#${controlId} offers its help disclosure`).not.toBeNull();
+
+      (toggle as HTMLButtonElement).click();
+      fixture.detectChanges();
+
+      return (field as HTMLElement).querySelector('.form-field__help')?.textContent ?? '';
+    }
+
+    it('is withheld from a caller the session does not report as an administrator', () => {
+      signIn(false);
+      arriveInCreateMode();
+      // The session names a tenant, so the page list is read; answering it keeps the verification in
+      // `afterEach` honest about which requests this screen makes.
+      answerTabs();
+
+      const control = requiredControl<HTMLInputElement>('module-form-all-tabs');
+
+      expect(control.disabled)
+        .withContext('the legacy page load disabled this control for exactly this caller')
+        .toBeTrue();
+
+      // The label stays legible and the help text EXPLAINS the refusal rather than describing a control
+      // the caller cannot use. Read through the disclosure, because the shared field keeps its help text
+      // behind a toggle and it is therefore absent from the document until revealed - the same gesture a
+      // person makes.
+      expect(revealedHelpFor('module-form-all-tabs'))
+        .toContain('available only to an administrator of this site');
+
+      // ⚠ AND THE PAGE PICKER IS STILL USABLE. Withholding it as well would make this screen useless to
+      // the page administrators the legacy application admitted, which is the narrowing the
+      // behaviour-preservation obligation forbids.
+      expect(requiredControl<HTMLSelectElement>('module-form-tab').disabled)
+        .withContext('a page administrator must still be able to name their page')
+        .toBeFalse();
+    });
+
+    it('is offered to a caller the session reports as an administrator', () => {
+      signIn(true);
+      arriveInCreateMode();
+      answerTabs();
+
+      expect(requiredControl<HTMLInputElement>('module-form-all-tabs').disabled)
+        .withContext('the counterpart, so the affordance is not simply withheld from everybody')
+        .toBeFalse();
+      // And the legacy sentence is the one shown, rather than the withheld explanation.
+      expect(revealedHelpFor('module-form-all-tabs'))
+        .toContain('appear in the same location on all pages');
     });
   });
 });

@@ -1152,6 +1152,29 @@ describe('RoleListComponent', () => {
         .toHaveSize(1);
     });
 
+    it('keeps the announcing region mounted before anything has failed', () => {
+      // ⚠ THE REGION MUST PRE-EXIST THE MESSAGE IT ANNOUNCES. A `role="alert"` region inserted in the
+      // same change as its first text is announced inconsistently across screen readers, and the first
+      // failure is the one an operator most needs to hear. This screen used to create the banner
+      // element only once `loadProblem()` was non-null; it is now bound unconditionally, and the shared
+      // component keeps its own `@if` inside the region so an empty banner paints nothing and occupies
+      // no height. Only the retry command stays conditional.
+      arrive();
+
+      expect(query('app-error-banner'))
+        .withContext('the region is present on a healthy screen')
+        .not.toBeNull();
+      expect(query('app-error-banner [role="alert"]')?.getAttribute('aria-live'))
+        .withContext('with its announcement semantics already declared')
+        .toBe('assertive');
+      expect(query('app-error-banner .error-banner'))
+        .withContext('and nothing painted inside it')
+        .toBeNull();
+      expect(query('.role-list__failure-retry'))
+        .withContext('while the recovery command is offered only for a failure that happened')
+        .toBeNull();
+    });
+
     it('renders an account that holds NO role as an empty grid, not as the tenant listing', () => {
       // ⚠ THE COUNTERPART TO THE CASE ABOVE. An empty ANSWER is a successful answer and must be
       // rendered as one; only a failed or mismatched read falls back.

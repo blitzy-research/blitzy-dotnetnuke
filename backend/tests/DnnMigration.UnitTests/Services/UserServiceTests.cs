@@ -6054,6 +6054,112 @@ public class UserServiceTests
         harness.DelegatedAssignments.Should().HaveCount(1, "the walk stops at the first refusal");
     }
 
+    /// <summary>
+    /// A failed redemption leaves a record, and the record does not contain the code that was submitted.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// SEC: BOTH HALVES OF THIS ARE THE FIX. The legacy handler answered a miss with an on-screen sentence and
+    /// wrote nothing at all (<c>MemberServices.ascx.vb:L427</c>), so an installation could be guessed at
+    /// indefinitely and leave no trace for an operator to notice; a bounded window limits the RATE of guessing
+    /// but a bounded-and-patient attempt is still invisible without this record. The second half matters just
+    /// as much: writing the guess into the trail would turn the trail into a list of near-miss codes for
+    /// whoever can read it, which is a worse exposure than the silence it replaces. The assertion therefore
+    /// sweeps every key, every value and the resource identifier rather than naming one field, so a later
+    /// property carrying the submission fails here rather than shipping.
+    /// </remarks>
+    [Fact]
+    public async Task RedeemServiceCode_RecordsAFailedAttemptAndNeverTheSubmittedCode()
+    {
+        Harness harness = Harness.Ready();
+        harness.PublishPrivateInvitationOnlyService();
+        harness.PublishFreeService();
+
+        Result<RedeemServiceCodeResultDto> outcome = await harness.Service.RedeemServiceCodeAsync(
+            PortalId,
+            UserId,
+            new RedeemServiceCodeRequest { Code = "not-the-code" },
+            CancellationToken.None);
+
+        outcome.Error!.Code.Should().Be(ServiceCodeNotMatchedCode);
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be("SERVICE_CODE_REDEMPTION_FAILURE");
+        record.PortalId.Should().Be(PortalId);
+        record.SubjectUserId.Should().Be(UserId);
+        record.ResourceType.Should().Be("User");
+        record.Properties.Should().ContainKey("CodedServiceCount")
+            .WhoseValue.Should().Be("1", "one of the two published roles carries a code");
+
+        AssertCarriesNoCode(record, "not-the-code");
+        AssertCarriesNoCode(record, InvitationCode);
+    }
+
+    /// <summary>
+    /// A successful redemption leaves a record naming the MECHANISM, and it does not contain the code either.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// A role obtained by code is a membership grant, which is the kind of change the legacy register audits
+    /// everywhere else; without this record the only trace of HOW a membership arrived was the assignment
+    /// itself, which looks identical to one an administrator made. The count is recorded because one code
+    /// legitimately grants several services - the legacy loop had no early exit - and the code that granted
+    /// them is withheld here for exactly the reason it is withheld on the failure path.
+    /// </remarks>
+    [Fact]
+    public async Task RedeemServiceCode_RecordsTheGrantAndNeverTheSubmittedCode()
+    {
+        Harness harness = Harness.Ready();
+        Role privateRole = harness.PublishPrivateInvitationOnlyService();
+        Role paid = harness.PublishPaidServiceWithFreeTrial();
+        paid.RsvpCode = InvitationCode;
+
+        Result<RedeemServiceCodeResultDto> outcome = await harness.Service.RedeemServiceCodeAsync(
+            PortalId,
+            UserId,
+            new RedeemServiceCodeRequest { Code = InvitationCode },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Roles.Select(role => role.RoleId)
+            .Should().BeEquivalentTo(new[] { privateRole.RoleId, paid.RoleId });
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle(
+            candidate => candidate.EventName == "SERVICE_CODE_REDEEMED").Subject;
+        record.PortalId.Should().Be(PortalId);
+        record.SubjectUserId.Should().Be(UserId);
+        record.Properties.Should().ContainKey("GrantedServiceCount")
+            .WhoseValue.Should().Be("2", "one code enrolled the account in two services");
+
+        AssertCarriesNoCode(record, InvitationCode);
+    }
+
+    /// <summary>
+    /// Asserts that a record carries a code in no field a reader of the trail can see.
+    /// </summary>
+    /// <param name="record">The record to sweep.</param>
+    /// <param name="code">The code that must not appear.</param>
+    /// <remarks>
+    /// Swept rather than named field by field, because the exposure being prevented is the code REACHING the
+    /// trail at all - through a property added later, through the resource identifier, or through a key rather
+    /// than a value. The comparison is case-insensitive so a normalised copy is caught as well as a verbatim
+    /// one.
+    /// </remarks>
+    private static void AssertCarriesNoCode(AuditEvent record, string code)
+    {
+        record.ResourceId.Should().NotContain(code, "the resource identifier names the account, not the guess");
+
+        foreach (KeyValuePair<string, string?> property in record.Properties)
+        {
+            property.Key.Should().NotContainEquivalentOf(
+                code,
+                "a property NAME carrying the submission exposes it exactly as a value would");
+            (property.Value ?? string.Empty).Should().NotContainEquivalentOf(
+                code,
+                "the trail must not become a list of codes for whoever can read it");
+        }
+    }
+
     /// <summary>Account creation and deletion each own exactly one outer transaction.</summary>
     /// <remarks>
     /// The two paths open that scope through DIFFERENT members, and the difference is the point. Creation

@@ -2076,9 +2076,25 @@ describe('PortalListComponent', () => {
         .toContain('could not be reached');
 
       // Dismissing clears the surface without issuing a request.
+      //
+      // ⚠ THE BANNER ELEMENT STAYS IN THE DOCUMENT AND ONLY ITS CONTENTS GO. Asserting its absence
+      // is what this expectation used to do, and that assertion pinned the defect rather than the
+      // behaviour: the element was created with its first message and destroyed with its last, so
+      // the assertive live region was born together with the text it had to announce - the case
+      // screen readers announce least reliably. What is asserted now is the contract the shared
+      // component declares on itself: the region persists, and the painted banner inside it is what
+      // appears and disappears.
       invoke<void>('onFailureDismissed');
       fixture.detectChanges();
-      expect(host().querySelector<HTMLElement>('app-error-banner')).toBeNull();
+      expect(host().querySelector<HTMLElement>('app-error-banner'))
+        .withContext('the live region persists between failures')
+        .not.toBeNull();
+      expect(host().querySelector<HTMLElement>('app-error-banner [role="alert"]'))
+        .withContext('and it keeps its announcement semantics while empty')
+        .not.toBeNull();
+      expect(host().querySelector<HTMLElement>('app-error-banner .error-banner'))
+        .withContext('while the painted banner is gone')
+        .toBeNull();
     });
 
     it('reports a failed listing through the shared banner and can retry', () => {
@@ -2104,7 +2120,14 @@ describe('PortalListComponent', () => {
       http.expectOne((candidate) => candidate.url === PORTALS_URL).flush(pageOf([portalRow()]));
       fixture.detectChanges();
 
-      expect(host().querySelector('app-error-banner')).toBeNull();
+      // The successful re-read empties the banner; the live region it lives in is permanent. See the
+      // note on the dismissal expectation above for why absence is the wrong thing to assert.
+      expect(host().querySelector('app-error-banner'))
+        .withContext('the live region survives the recovery')
+        .not.toBeNull();
+      expect(host().querySelector('app-error-banner .error-banner'))
+        .withContext('and paints nothing once the read succeeds')
+        .toBeNull();
     });
   });
 
@@ -2656,6 +2679,25 @@ describe('PortalListComponent', () => {
       expect(caption).not.toBeNull();
       expect(caption?.textContent?.trim().length).toBeGreaterThan(0);
       expect(caption?.hasAttribute('data-visually-hidden')).toBeTrue();
+    });
+
+    it('keeps the announcing region mounted before anything has failed', () => {
+      // ⚠ THE REGION MUST PRE-EXIST THE MESSAGE IT ANNOUNCES. A `role="alert"` region inserted in
+      // the same change as its first text is announced inconsistently across screen readers, and the
+      // first failure is the one an operator most needs to hear. This screen used to create the
+      // banner element only once a failure existed; it is now bound unconditionally, and the shared
+      // component keeps its own `@if` inside the region so an empty banner paints nothing.
+      settleFirstPage([portalRow()]);
+
+      expect(host().querySelector('app-error-banner'))
+        .withContext('the region is present on a healthy screen')
+        .not.toBeNull();
+      expect(host().querySelector('app-error-banner [role="alert"]')?.getAttribute('aria-live'))
+        .withContext('with its announcement semantics already declared')
+        .toBe('assertive');
+      expect(host().querySelector('app-error-banner .error-banner'))
+        .withContext('and nothing painted inside it')
+        .toBeNull();
     });
 
     it('announces a reported failure through a live region', () => {

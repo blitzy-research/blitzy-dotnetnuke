@@ -185,21 +185,28 @@
   <p class="user-list__policy-notice">{{ policyDegradedNotice }}</p>
 }
 
+<!--
+  Both inputs are bound, and they are ORDERED rather than alternatives. A failure that carries a
+  problem document shows the server's own explanation; a failure that carries none — which is what
+  a contract-violating `200` produces, because the decoders run downstream of the interceptor —
+  shows the store's authored summary instead. Before the second input existed, that class of
+  failure rendered nothing at all and the grid simply stayed empty with no diagnostic anywhere.
+
+  ⚠ THE BANNER IS MOUNTED UNCONDITIONALLY, WHICH IS THE SECOND HALF OF THAT SAME CORRECTION. An
+  earlier revision gated it on the problem document alone, which made a document-less failure
+  unreachable; gating it on the UNION of the two inputs fixed which failures were reported and left
+  the region itself being created with its first message, which is the case screen readers announce
+  least reliably. The element is therefore always in the document and only its contents change. The
+  shared component satisfies that safely: its own `@if` sits INSIDE the region, the region declares
+  no padding, border or background, and both inputs default to null, so an empty banner paints
+  nothing and occupies no height. `hasReadFailure` — the union — remains, and now governs only the
+  VISIBLE recovery chrome below, which is what it should have governed all along: a `Try again` for
+  a failure that has not happened is an offer with no referent.
+-->
+<app-error-banner [problem]="readFailure()" [fallbackMessage]="readFailureSummary()" />
+
 @if (hasReadFailure()) {
   <div class="user-list__failure">
-    <!--
-      Both inputs are bound, and they are ORDERED rather than alternatives. A failure that carries a
-      problem document shows the server's own explanation; a failure that carries none — which is what
-      a contract-violating `200` produces, because the decoders run downstream of the interceptor —
-      shows the store's authored summary instead. Before the second input existed, that class of
-      failure rendered nothing at all and the grid simply stayed empty with no diagnostic anywhere.
-
-      ⚠ THE BLOCK IS OPENED BY THE UNION OF THE TWO, NOT BY THE DOCUMENT. Gating on the document alone
-      is what made the document-less failure unreachable: the input was bound correctly and the block
-      containing it never opened. See `hasReadFailure` on the paired class.
-    -->
-    <app-error-banner [problem]="readFailure()" [fallbackMessage]="readFailureSummary()" />
-
     <button
       type="button"
       class="user-list__failure-retry"

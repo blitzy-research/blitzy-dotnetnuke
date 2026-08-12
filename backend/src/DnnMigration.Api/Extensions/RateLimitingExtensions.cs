@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Threading.RateLimiting;
+using DnnMigration.Api.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.AspNetCore.RateLimiting;
@@ -206,6 +207,47 @@ public static class RateLimitingExtensions
     public const string ProfileWritePolicyName = "profile-write";
 
     /// <summary>
+    /// Policy name for invitation-code redemption:
+    /// <c>POST /users/{userId}/services/redemptions</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// SEC: REDEMPTION IS A CREDENTIAL SUBMISSION IN EVERYTHING BUT NAME, AND IT WAS UNBOUNDED. The action
+    /// takes a secret the caller either knows or does not, compares it against every role of the tenant, and
+    /// grants membership of every role that bears it - a private, paid or permission-carrying role included,
+    /// because an invitation code IS the bypass for a service that is not published. Its answers are
+    /// distinguishable by construction: a match is <c>200</c> naming the services granted, a miss is
+    /// <c>400</c>. That is an online guessing oracle for a role grant, which is exactly the shape the
+    /// credential window exists to bound - and neither the window nor the mark reached it. The path-segment
+    /// classifier that catches an unmarked credential endpoint matches on a closed word list that named
+    /// <c>password</c>, <c>token</c> and their siblings and nothing that appears in this route.
+    /// </para>
+    /// <para>
+    /// A POLICY OF ITS OWN RATHER THAN A SHARE OF THE CREDENTIAL WINDOW, for the reason
+    /// <see cref="RevocationPolicyName"/> and <see cref="SessionReadPolicyName"/> each have one: a budget
+    /// shared between two operations lets traffic against one suppress the other. Here the direction that
+    /// matters is the reverse of revocation's - guessing must not be able to spend the budget that ordinary
+    /// sign-in needs - so redemption draws on <see cref="RedemptionPartitionKeyPrefix"/> and takes the
+    /// tighter allowance in <see cref="RedemptionPermitsPerWindow"/>.
+    /// </para>
+    /// <para>
+    /// PARTITIONED BY ACCOUNT AND ADDRESS TOGETHER, which is what makes the bound meaningful for this
+    /// endpoint. The action is <c>AccountOwner</c>-protected, so every attempt that can make progress is made
+    /// by one particular account: an address-only partition would let a pool of accounts behind one address
+    /// share the work out between them, and an account-only partition would let one account spread its
+    /// guessing across as many client addresses as it can reach. Keying on both means a fresh budget costs a
+    /// fresh account AND a fresh address. See <see cref="BuildRedemptionPartition"/> for which account
+    /// identity is used and why it is not the claim.
+    /// </para>
+    /// <para>
+    /// The endpoint also carries the <c>CredentialEndpoint</c> mark, so the process-wide concurrency bound
+    /// and the body limit apply to it as they do to sign-in; this policy decides the WINDOW it draws on and
+    /// nothing else.
+    /// </para>
+    /// </remarks>
+    public const string RedemptionPolicyName = "service-redemption";
+
+    /// <summary>
     /// The configuration section that sizes the credential window: <c>RateLimiting:Authentication</c>.
     /// </summary>
     /// <remarks>
@@ -236,6 +278,20 @@ public static class RateLimitingExtensions
 
     /// <summary>Profile replacements permitted per client per minute.</summary>
     private const int ProfileWritePermitsPerWindow = 20;
+
+    /// <summary>Invitation-code redemptions permitted per account, per client address, per minute: 5.</summary>
+    /// <remarks>
+    /// MEASURED AGAINST THE GESTURE RATHER THAN AGAINST THE ATTACK, which is the only way to size a bound
+    /// like this without guessing. Redeeming an invitation code is a single deliberate act: a person is
+    /// handed a code, types it once, and either it works or they check it and try again. Five attempts a
+    /// minute leaves room for mistyping and for a second code the same person legitimately holds, while
+    /// reducing exhaustive guessing to a rate at which any code with real entropy outlives the installation.
+    /// It is deliberately far below the thirty a minute the credential window allows, because sign-in is a
+    /// routine repeated act and this is not, and it is deliberately not configurable: the credential window's
+    /// configurability exists so a deployment behind a shared-address proxy can widen it, and this partition
+    /// already includes the ACCOUNT, so a shared address does not make the budget collective.
+    /// </remarks>
+    private const int RedemptionPermitsPerWindow = 5;
 
     /// <summary>
     /// Credential requests processed at once, across the whole process: 4.
@@ -323,6 +379,36 @@ public static class RateLimitingExtensions
     /// <summary>Prefix separating profile-validation work from every credential/session budget.</summary>
     private const string ProfileWritePartitionKeyPrefix = "profile-write-window:";
 
+    /// <summary>Prefix separating invitation-code redemption from every other budget.</summary>
+    /// <remarks>
+    /// This constant IS the separation, as it is for the two prefixes above: two partitions keyed by the same
+    /// caller under different prefixes are two independent budgets, and giving redemption the credential
+    /// prefix would let guessing spend the window ordinary sign-in needs.
+    /// </remarks>
+    private const string RedemptionPartitionKeyPrefix = "service-redemption-window:";
+
+    /// <summary>
+    /// Route key naming the account a redemption acts on: <c>userId</c>.
+    /// </summary>
+    /// <remarks>
+    /// Spelled once here rather than at the partitioner's call site, because it must match the segment the
+    /// account routes declare exactly; a mistyped key would silently produce one shared budget for every
+    /// caller instead of a per-account one, and nothing would fail.
+    /// </remarks>
+    private const string AccountRouteKey = "userId";
+
+    /// <summary>
+    /// Stands in for the account portion of a redemption partition key when the request names no account.
+    /// </summary>
+    /// <remarks>
+    /// Reachable only for a request that matched the route without an integer account segment, which the route
+    /// constraint makes impossible, or for one that reached this partitioner without routing having run. Every
+    /// such request shares ONE budget rather than being given a partition of its own, which is a stricter
+    /// outcome than a per-account budget and never a looser one - the safe direction for a fall-back in a
+    /// limiter to fail in.
+    /// </remarks>
+    private const string UnattributedAccountSuffix = "unattributed-account";
+
     /// <summary>
     /// Path segments that mark a request as credential-bearing.
     /// </summary>
@@ -354,6 +440,13 @@ public static class RateLimitingExtensions
         "reset",
         "token",
         "tokens",
+        // SEC: THE REDEMPTION PATH, AND ITS ABSENCE WAS THE DEFECT THAT LEFT THAT ENDPOINT UNBOUNDED. A
+        // submitted invitation code is a secret the caller either knows or does not, and the answer is
+        // distinguishable either way, so the route is credential-bearing in substance whatever its
+        // vocabulary. The endpoint now also carries the mark, which is the authoritative statement; this
+        // entry is the fall-back that would have caught it, and it is added so the fall-back is honest about
+        // the shape of this API rather than only about sign-in.
+        "redemptions",
     ];
 
     /// <summary>
@@ -439,6 +532,16 @@ public static class RateLimitingExtensions
                     ProfileWritePermitsPerWindow,
                     DefaultCredentialWindow,
                     ProfileWritePartitionKeyPrefix));
+
+            // Its own window, its own prefix and its own partition key: redemption is keyed by the ACCOUNT as
+            // well as by the observable address, because every attempt is authenticated and neither key alone
+            // bounds a determined guesser. See RedemptionPolicyName.
+            options.AddPolicy(
+                RedemptionPolicyName,
+                context => BuildRedemptionPartition(
+                    context,
+                    RedemptionPermitsPerWindow,
+                    DefaultCredentialWindow));
 
             options.GlobalLimiter = PartitionedRateLimiter.CreateChained(
                 PartitionedRateLimiter.Create<HttpContext, string>(
@@ -596,6 +699,74 @@ public static class RateLimitingExtensions
             {
                 PermitLimit = permitLimit,
                 Window = window,
+                QueueLimit = 0,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                AutoReplenishment = true,
+            });
+    }
+
+    /// <summary>
+    /// Builds the redemption window's partition, keyed by the caller's account AND its observable address.
+    /// </summary>
+    /// <param name="context">The request being partitioned.</param>
+    /// <param name="permitLimit">Permits per window.</param>
+    /// <param name="window">Length of the window.</param>
+    /// <returns>A window partition keyed by both identities.</returns>
+    /// <remarks>
+    /// <para>
+    /// TWO KEYS RATHER THAN ONE, because either alone leaves a way to buy a fresh budget. An address-only key
+    /// lets a pool of accounts behind one address share the guessing out between them - one corporate egress
+    /// or one hosting provider is enough - while an account-only key lets a single account spread its guessing
+    /// over as many client addresses as it can reach, which is a trivially available number. Composing both
+    /// means a fresh budget costs a fresh account AND a fresh address.
+    /// </para>
+    /// <para>
+    /// ⚠ THE ACCOUNT IS TAKEN FROM THE ROUTE, NOT FROM THE CALLER'S CLAIMS, AND THAT IS FORCED RATHER THAN
+    /// PREFERRED. This limiter is deliberately registered BEFORE authentication, so that a flood is charged
+    /// before any credential work is done on its behalf; at the moment a partition is chosen there is
+    /// therefore no authenticated principal to read, and a claims-derived key would resolve to the same
+    /// fall-back for every caller and collapse the account half of the partition entirely. Reading the
+    /// presented token here WITHOUT validating it would be worse than useless: an unverified subject can be
+    /// set to anything, so it would hand a guesser one fresh budget per value it invented.
+    /// </para>
+    /// <para>
+    /// The route value is likewise caller-chosen, and the reason that is sound here is the action's own
+    /// authorisation. <c>AccountOwner</c> admits a caller only to the account it holds, so the ONLY route
+    /// value that can reach the redemption logic at all is the caller's own account: varying the segment buys
+    /// extra partitions in which every request is refused before a code is ever compared. The budget that
+    /// bounds actual guessing - the one for the caller's own account, on its own address - is therefore
+    /// exactly the one this key selects.
+    /// </para>
+    /// <para>
+    /// The separator cannot appear in either part - an account identifier is an integer and an address has no
+    /// vertical bar in any form <see cref="IPAddress.ToString"/> produces - so no pair of callers can compose
+    /// the same key from different halves.
+    /// </para>
+    /// </remarks>
+    private static RateLimitPartition<string> BuildRedemptionPartition(
+        HttpContext context,
+        int permitLimit,
+        TimeSpan window)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        string account = AuthorizationClaims.ReadRouteInt(context, AccountRouteKey) is { } userId
+            ? userId.ToString(CultureInfo.InvariantCulture)
+            : UnattributedAccountSuffix;
+
+        string partitionKey = string.Concat(
+            ResolveClientPartitionKey(context, RedemptionPartitionKeyPrefix),
+            "|",
+            account);
+
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey,
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = permitLimit,
+                Window = window,
+                // Does not queue, for the reason the credential window does not: holding a guessing attempt
+                // open consumes exactly the resources the limiter is protecting.
                 QueueLimit = 0,
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                 AutoReplenishment = true,

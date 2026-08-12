@@ -4884,6 +4884,26 @@ public sealed class UserService : IUserService
 
         if (matches.Count == 0)
         {
+            // SEC: A FAILED ATTEMPT IS RECORDED, AND THE SUBMITTED CODE IS NOT. The legacy handler answered a
+            // miss with an on-screen sentence and wrote nothing, so an installation could be guessed at
+            // indefinitely and leave no trace; the endpoint's window now bounds the RATE, and this record is
+            // what makes a bounded-but-persistent attempt visible to an operator. What is recorded is
+            // deliberately narrow: that an attempt failed, and how many of the tenant's roles are reachable
+            // by code at all. Putting the guess itself in the trail would turn the trail into a list of
+            // near-miss codes for whoever can read it - a worse exposure than the silence it replaces - and
+            // naming the codes that DO exist would be worse again. The account and the tenant are already
+            // carried by every record this service writes, which is what an operator correlates on.
+            RecordAudit(
+                AuditEventNames.ServiceCodeRedemptionFailure,
+                portalId,
+                userId,
+                new Dictionary<string, string?>(StringComparer.Ordinal)
+                {
+                    ["CodedServiceCount"] = tenantRoles
+                        .Count(role => !string.IsNullOrEmpty(role.RsvpCode))
+                        .ToString(CultureInfo.InvariantCulture),
+                });
+
             // MIGRATION: the legacy RSVPFailure message (:L427) becomes a failed outcome rather than a
             // successful empty one. Reporting success with nothing enrolled would tell a client its code
             // had been accepted when it had not.
@@ -4920,6 +4940,22 @@ public sealed class UserService : IUserService
 
             enrolled.Add(UserMappings.ToRedeemedService(role));
         }
+
+        // SEC: A SUCCESSFUL REDEMPTION IS RECORDED TOO, and for a reason the failure record does not cover: a
+        // role obtained by code is a MEMBERSHIP GRANT, which is the kind of change the legacy register audits
+        // everywhere else, and without this record the only trace of how the membership arrived was the
+        // assignment itself. This names the MECHANISM; the per-role assignment records name the roles. The
+        // count is recorded because one code may legitimately grant several services - the legacy loop had no
+        // early exit - and the code that granted them is not recorded here any more than it is on the failure
+        // path.
+        RecordAudit(
+            AuditEventNames.ServiceCodeRedeemed,
+            portalId,
+            userId,
+            new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["GrantedServiceCount"] = enrolled.Count.ToString(CultureInfo.InvariantCulture),
+            });
 
         return Result<RedeemServiceCodeResultDto>.Success(new RedeemServiceCodeResultDto
         {

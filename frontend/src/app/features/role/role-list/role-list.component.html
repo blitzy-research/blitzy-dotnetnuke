@@ -131,10 +131,22 @@
   as belonging beside a failed listing - a transient fault then costs a press rather than a
   navigation. Its wording is authored directly: no legacy resource key covers it.
 -->
+<!--
+  ⚠ MOUNTED UNCONDITIONALLY, AND THE `@if` THAT USED TO ENCLOSE IT WAS THE DEFECT. The banner
+  element used to be created only once `loadProblem()` was non-null, so the live region and its
+  first message entered the document in the same change - which is precisely the case screen
+  readers announce least reliably, on the one announcement that matters most. The shared
+  component owns that contract and states it on itself: its `@if` sits INSIDE the region, the
+  region declares no padding, border or background, and its `problem` input defaults to null, so
+  an empty banner paints nothing and occupies no height. Sixteen sibling templates already
+  mounted it this way. Only the VISIBLE recovery affordance below stays conditional: a retry for
+  a failure that has not happened is an offer with no referent, and a button carries no
+  announcement semantics to preserve.
+-->
+<app-error-banner [problem]="loadProblem()" />
+
 @if (loadProblem() !== null) {
   <div class="role-list__failure">
-    <app-error-banner [problem]="loadProblem()" />
-
     <button
       type="button"
       class="role-list__failure-retry"

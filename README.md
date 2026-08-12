@@ -650,9 +650,51 @@ browsers never matched, a certificate that matched no server name, and an API th
 
   | Snippet | What it owns | Included by |
   | --- | --- | --- |
-  | [`docker/api-proxy.conf`](./docker/api-proxy.conf) | `location /api/` — per-request upstream resolution, the raw request target, the 6,356,992-byte import allowance, the six forwarded headers — and the `@api_unavailable` RFC 7807 answer | both servers |
+  | [`docker/api-proxy.conf`](./docker/api-proxy.conf) | the API location — a regex matching `/api/` **and one optional tenant segment before it**, so a child portal addressed at `host/child` reaches the API too — per-request upstream resolution, the raw request target, the 6,356,992-byte import allowance, the six forwarded headers, and the `@api_unavailable` RFC 7807 answer | both servers |
   | [`docker/spa-static.conf`](./docker/spa-static.conf) | the immutable hashed-asset policy and the SPA deep-link fallback | both servers |
   | [`docker/security-headers.conf`](./docker/security-headers.conf) | the nine response headers, including the content security policy and TLS-only HSTS | both servers, and every location that sets a `Cache-Control` of its own |
+- **Addressing a child portal beneath a path segment works end to end, and needs the alias
+  row to exist.** <a id="addressing-a-child-portal-beneath-a-path-segment"></a>The legacy
+  product let a child portal be reached at `domain/segment` — the signup screen composed and
+  stored exactly that (`Website/admin/Portal/Signup.ascx.vb` L232-L236) — and that address
+  shape is preserved. Externally the URLs look like this:
+
+  | External URL | Which tenant answers |
+  | --- | --- |
+  | `http://localhost:4200/` | the tenant whose alias is `localhost:4200` |
+  | `http://localhost:4200/portals` | the same tenant; `portals` is one of the console's own screens |
+  | `http://localhost:4200/acme/` | the tenant whose alias is `localhost:4200/acme` |
+  | `http://localhost:4200/acme/users/1/profile` | the same child tenant, deep-linked |
+  | `http://localhost:4200/acme/api/v1/roles` | the child tenant's roles — the address the SPA composes for itself |
+
+  Three hops each have to carry the segment, and each fails silently on its own:
+
+  1. **The browser** puts it back onto every request. One built bundle is served to every
+     tenant and the configured API base is the relative `/api/v1`, so the prefix cannot be a
+     build-time value; it is derived at run time from the address the document was served at,
+     by [`frontend/src/app/core/config/tenant-path.ts`](./frontend/src/app/core/config/tenant-path.ts),
+     and composed in the one place that builds URLs. The same value is supplied as the
+     router's `APP_BASE_HREF`, so in-application links keep the prefix. The document's own
+     `<base href="/">` stays at the root, because the hashed assets are served from the
+     server root for every tenant.
+  2. **The proxy** forwards it. [`docker/api-proxy.conf`](./docker/api-proxy.conf) matches
+     `^(?:/[^/]+)?/api/` and passes the caller's own request target through unchanged — the
+     segment is *not* stripped, because the API needs it to identify the tenant.
+  3. **The API** resolves and rebases it. `TenantPathBaseMiddleware` resolves the tenant from
+     host + path before routing, then moves the segment into the request's path base so the
+     routes still match and a `Location` header still names the child.
+
+  Two operational requirements follow. The alias must be stored exactly as `host[:port]/segment`,
+  matched whole-segment and case-insensitively — a substring is not a match, so `/acmeish/…`
+  resolves nothing. And a child portal must be created through `POST /api/v1/portals`, not by
+  inserting a `Portals` row: resolution refuses a portal that designates no administrator
+  account, no administrator role or no registered-user role. **One** segment of prefix is
+  honoured, which is what the legacy signup screen could compose; the browser and the proxy are
+  bounded identically on purpose. A tenant segment that spells one of the console's own
+  top-level route names — `users`, `roles`, `settings`, `portals`, `modules`, `role-groups`,
+  `login` — cannot be told apart from the console's own screen by a browser that has not yet
+  spoken to the API; that limit is recorded in
+  [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md).
 - **Treat an API restart as a sign-out.** Refresh-token state is held in the API process,
   because the DotNetNuke schema this API maps onto is immutable and owns no table for it. A
   restart or a redeploy therefore invalidates every refresh token: access tokens already
@@ -1212,6 +1254,8 @@ the migration's own normative sections are treated as binding:
 | SPA requests answered 503 with `Retry-After` just after a redeploy | The proxy's short-lived DNS entry has not yet aged out | Wait a few seconds. Nothing needs restarting |
 | `dotnet run` fails to bind port 8080 | The container topology already holds it | Run with `--no-launch-profile --urls http://127.0.0.1:5080` |
 | Sign-in returns 400 with an error on `portalId` | The host and port used are not a row in `PortalAlias` | Seed the alias, or address a portal explicitly |
+| A child portal's address serves the SPA but every call resolves the parent | The tenant segment is being dropped somewhere between the browser and the API | All three hops must carry it: the browser composes it (`frontend/src/app/core/config/tenant-path.ts`), the proxy matches it (`docker/api-proxy.conf`), and the API rebases it (`Api/Middleware/TenantPathBaseMiddleware.cs`). See [addressing a child portal](#addressing-a-child-portal-beneath-a-path-segment) |
+| A child portal's address answers 404 for every API call, or 403 `portal.tenant_unresolved` | No alias row matches `host/segment`, or the child portal designates no administrator account, administrator role or registered-user role | Add the alias row exactly as `host[:port]/segment`, and create the child through `POST /api/v1/portals` rather than by hand — resolution refuses a portal with those designations unset |
 | `the attribute 'version' is obsolete` on every `docker compose` | The preserved Compose file keeps the `version` key | Expected. Do not delete the key |
 
 ---

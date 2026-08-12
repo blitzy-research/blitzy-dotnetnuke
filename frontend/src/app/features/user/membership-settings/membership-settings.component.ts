@@ -18,6 +18,8 @@ import type {
   MembershipSettingsUpdateResult,
 } from '../../../core/models/user.model';
 import { NotificationService } from '../../../core/services/notification.service';
+import { AuthStore } from '../../../core/state/auth.store';
+import type { UserOperation } from '../../../core/state/user.store';
 import { UserStore } from '../../../core/state/user.store';
 import { fieldErrorMessage } from '../../../core/utils/form-errors.util';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
@@ -27,6 +29,10 @@ import { PageHeaderComponent } from '../../../shared/components/page-header/page
 import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
 import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
 import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
+import {
+  MEMBER_SERVICE_OPERATIONS,
+  MemberServicesComponent,
+} from './member-services/member-services.component';
 
 // ---------------------------------------------------------------------------
 // WHERE EVERY MEMBER OF THIS POLICY TAKES EFFECT
@@ -108,35 +114,43 @@ import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guar
 //     would put per-account operations on a tenant-wide settings page.
 //   * `MemberServices.ascx` is seventy-seven lines of role subscription: a help
 //     paragraph, an invitation-code box with a subscribe command, and a
-//     seven-column services grid carrying a trial command. THE API SIDE OF IT IS
-//     IMPLEMENTED - the account resource publishes the catalogue, subscribe or
-//     renew, cancel, trial and invitation-code endpoints - but NO SCREEN IN THIS
-//     WORKSPACE PRESENTS IT. A sibling component reached at `/users/{userId}/services`
-//     did, and it is withdrawn: AAP 0.4.4 freezes the route table at twenty-five
-//     screens and names no member-services address among them. The divergence is
-//     recorded in `MIGRATION_NOTES.md`.
+//     seven-column services grid carrying a trial command. IT IS RENDERED HERE, as
+//     the last section of this screen, by the sibling component in this folder. That
+//     is what AAP 0.5.1.8 describes - three legacy screens consolidated into this
+//     feature - and it is the only arrangement the plan permits, because AAP 0.4.4
+//     freezes the console's route table at twenty-five addresses and names no
+//     member-services address among the seven it enumerates for accounts.
 //
-//     ⚠ AN EARLIER REVISION OF THIS NOTE RECORDED IT AS OMITTED, on the grounds
-//     that "role subscription, invitation codes, trials and billing transactions
-//     have no endpoint in this API at all, so there is nothing for a screen to
-//     call". That was an accurate statement about the API as it then stood and is
-//     WITHDRAWN: the account resource now publishes five self-service endpoints -
-//     the catalogue, subscribe or renew, cancel, trial and invitation-code
-//     redemption - and the screen calls them. What remains excluded is the payment
-//     processor redirect the legacy screen performed for a fee-bearing role, which
-//     AAP 0.2.2.4 places out of scope; that divergence is recorded in
-//     `MIGRATION_NOTES.md` and stated on the screen itself.
+//     ⚠ TWO EARLIER REVISIONS OF THIS NOTE ARE WITHDRAWN, and recording both is
+//     the point rather than tidying them away. The first said the workflow "has no
+//     endpoint in this API at all, so there is nothing for a screen to call": true
+//     of the API as it then stood, and no longer - the account resource publishes
+//     five self-service endpoints. The second said the panel was reached at
+//     `/users/{userId}/services` and then that the address was withdrawn and the
+//     panel deleted with it; that left five published endpoints, a typed client for
+//     each and five store operations with no consumer anywhere in the workspace,
+//     which is a capability the plan requires being absent rather than a route being
+//     tidied. Mounting the panel HERE adds no address and withdraws no capability.
 //
-//     It is not rendered on THIS screen because the two differ in whose data they
-//     show and in who may see it. This screen configures the TENANT and is reached
-//     by a portal administrator; that one shows ONE account's personal
-//     subscriptions and is gated on account ownership with no administrator arm,
-//     because the legacy panel operated on the signed-in account
-//     (`PortalModuleBase.vb` L319-L323) and its container hid the tab from an
-//     administrator outright (`ManageUsers.ascx.vb` L61-L66). Rendering them
-//     together would put an administrator's own subscriptions on a tenant
-//     configuration page and would need one route to satisfy two authorisation
-//     policies.
+//     ⚠ WHAT THE CONSOLIDATION COSTS, STATED PLAINLY. This screen is gated on
+//     tenant administration, so the panel below is reachable by a caller admitted
+//     here and by nobody else - and every other address in the closed route table
+//     that could have hosted it is gated the same way. The five endpoints remain
+//     gated on ACCOUNT OWNERSHIP server-side, so such a caller manages strictly its
+//     OWN subscriptions and cannot reach another account's through the panel. A
+//     self-service surface for ordinary members is a different product surface from
+//     an administration console and is not in the plan; the divergence is recorded in
+//     `MIGRATION_NOTES.md`.
+//
+//     THE ARRANGEMENT IS COHERENT RATHER THAN MERELY PERMITTED. The tenant switch
+//     that governs all five of those endpoints - `Profile_ManageServices` - is a
+//     field on THIS screen, so the policy and the behaviour it governs are read and
+//     exercised in one place; when the switch is off the panel's own requests are
+//     refused by the server and the refusal is rendered in the server's words.
+//
+//     What remains excluded is the payment-processor redirect the legacy screen
+//     performed for a fee-bearing role, which AAP 0.2.2.4 places out of scope; that
+//     divergence is recorded in `MIGRATION_NOTES.md` and stated on the panel itself.
 //
 // This component therefore derives from `UserSettings.ascx` and the account-policy
 // contract ALONE. Its own field set comes from that contract rather than from the
@@ -927,6 +941,11 @@ const REQUIRED_MESSAGE = 'This setting is required.';
     FormFieldComponent,
     LoadingSpinnerComponent,
     PageHeaderComponent,
+    // The consolidated self-service subscription panel, rendered as this screen's last
+    // section. Listed here because a standalone component absent from this array cannot be
+    // rendered - strict template checking turns its element into a compilation error rather
+    // than a silent unknown tag.
+    MemberServicesComponent,
   ],
   templateUrl: './membership-settings.component.html',
   styleUrl: './membership-settings.component.scss',
@@ -967,6 +986,22 @@ export class MembershipSettingsComponent implements OnInit {
    * fetched at the previous size on display.
    */
   private readonly store = inject(UserStore);
+
+  /**
+   * The session, read for ONE question: which account the caller holds.
+   *
+   * That answer is the subject account of the subscription panel this screen mounts, and it is
+   * the only thing this screen reads the session for. It is never used to decide whether an
+   * operation is permitted: the server gates the policy write on tenant administration and the
+   * panel's five endpoints on account ownership, and refuses with its own status and document.
+   *
+   * MIGRATION: the legacy panel took its subject the same way. `MemberServices.ascx.vb` passed
+   * `UserInfo.UserID` on every one of its four commands, which `PortalModuleBase.vb` L319-L323
+   * resolves as the SIGNED-IN account, and it never read the identifier its container assigned
+   * (`ManageUsers.ascx.vb` L517). Supplying the caller's own account is therefore the measured
+   * legacy behaviour rather than a simplification of it.
+   */
+  private readonly auth = inject(AuthStore);
 
   /** The confirmation channel. Used on success only; failures are shown in place. */
   private readonly notifications = inject(NotificationService);
@@ -1216,6 +1251,25 @@ export class MembershipSettingsComponent implements OnInit {
   });
 
   /**
+   * The account whose subscriptions the mounted panel manages: the caller's own, or `null` while
+   * the session has not resolved one.
+   *
+   * ⚠ NULL IS PASSED THROUGH RATHER THAN SUBSTITUTED FOR. The session resolves asynchronously,
+   * so "not yet known" is a real state on arrival; a sentinel would be indistinguishable from a
+   * genuine key - zero and minus one are both real account identifiers in this schema - and
+   * defaulting to any other account would point the panel at somebody else's subscriptions. The
+   * panel renders a transient notice for the absent case and issues no request.
+   *
+   * The panel additionally compares this value against the session itself before issuing
+   * anything, which is defence in depth rather than duplication: this screen decides WHICH
+   * account, the panel declines to act on one the caller does not hold, and the server is the
+   * authority for both.
+   */
+  protected readonly ownAccountId: Signal<number | null> = computed(
+    () => this.auth.currentUser()?.userId ?? null,
+  );
+
+  /**
    * The failure to show, or null.
    *
    * MIGRATION: severity is NOT decided here. A permission refusal must read as a
@@ -1224,11 +1278,23 @@ export class MembershipSettingsComponent implements OnInit {
    * refusal to a warning and a rate-limit refusal to its calmest band. Passing the
    * document and letting it decide is what keeps one authority over that rule
    * instead of two that can drift.
+   *
+   * ⚠ A FAILURE OF THE SUBSCRIPTION PANEL IS NOT SHOWN HERE. The store holds ONE
+   * failure slot for every account command, and the panel this screen mounts renders
+   * its own five; without this filter a refused redemption would be announced twice -
+   * once at the top of a screen that did not perform it, once where it happened - and
+   * a reader would have to work out which of the two surfaces meant it. Each surface
+   * therefore renders the failures of its own operations. See
+   * {@link MEMBER_SERVICE_OPERATIONS}.
    */
   protected readonly problem: Signal<ProblemDetails | null> = computed(() => {
     const failure = this.store.failure();
 
-    return failure === null ? null : failure.problem;
+    if (failure === null || MEMBER_SERVICE_OPERATIONS.includes(failure.operation)) {
+      return null;
+    }
+
+    return failure.problem;
   });
 
   /**
@@ -1238,12 +1304,13 @@ export class MembershipSettingsComponent implements OnInit {
    * A transport failure that never reached the API carries no problem document, so
    * the banner would render nothing and the screen would look as though the save had
    * simply been ignored. Null whenever the banner has something to show, so the two
-   * never appear together.
+   * never appear together, and null for a subscription-panel failure for the reason
+   * given on {@link problem}.
    */
   protected readonly failureMessage: Signal<string | null> = computed(() => {
     const failure = this.store.failure();
 
-    if (failure === null) {
+    if (failure === null || MEMBER_SERVICE_OPERATIONS.includes(failure.operation)) {
       return null;
     }
 

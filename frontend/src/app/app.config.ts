@@ -1,3 +1,4 @@
+import { APP_BASE_HREF } from '@angular/common';
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { type ApplicationConfig, provideZoneChangeDetection } from '@angular/core';
 import {
@@ -9,6 +10,7 @@ import {
 } from '@angular/router';
 
 import { APP_ROUTES } from './app.routes';
+import { appBaseHref } from './core/config/tenant-path';
 import { correlationIdInterceptor } from './core/interceptors/correlation-id.interceptor';
 import { authInterceptor } from './core/interceptors/auth.interceptor';
 import { errorInterceptor } from './core/interceptors/error.interceptor';
@@ -113,6 +115,32 @@ export const appConfig: ApplicationConfig = {
      * changes no rendered output.
      */
     provideZoneChangeDetection({ eventCoalescing: true }),
+
+    /**
+     * The base every address the router produces and parses is relative to, taken from
+     * the address THIS DOCUMENT WAS SERVED AT rather than from the document's own
+     * `<base href>`.
+     *
+     * ⚠ THIS IS WHAT LETS A CHILD PORTAL'S ADDRESSES SURVIVE A NAVIGATION. The legacy
+     * product addressed a child portal by a path segment beneath a shared host name -
+     * `Website/admin/Portal/Signup.ascx.vb` L232-L236 composes and stores exactly
+     * `domain/segment` - and the reverse proxy serves this one document for every path
+     * beneath it. The document declares `<base href="/">` and must keep doing so, because
+     * that is what keeps the built assets root-anchored for every tenant; but with the
+     * document base alone, the router treats `/child/portals` as the route `child/portals`,
+     * matches nothing, and a caller who signed in at `https://host/child` is navigated to
+     * `https://host/portals` - the PARENT - by the first link they follow.
+     *
+     * Providing the base here takes precedence over the document's, so the router strips
+     * the prefix before matching and restores it in every address it emits. For the
+     * ordinary root deployment the value is `/`, which is exactly what the document
+     * declares, so nothing changes for it.
+     *
+     * The value is a FUNCTION CALL rather than a constant because it is a property of the
+     * running document; `core/config/tenant-path.ts` owns the derivation and states the two
+     * limits of the rule it applies.
+     */
+    { provide: APP_BASE_HREF, useFactory: appBaseHref },
 
     /**
      * The router. All four arguments are load-bearing; each is annotated in place.

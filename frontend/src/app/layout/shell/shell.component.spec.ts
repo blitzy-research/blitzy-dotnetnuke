@@ -1,3 +1,4 @@
+import { APP_BASE_HREF } from '@angular/common';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Component } from '@angular/core';
@@ -330,6 +331,13 @@ describe('ShellComponent', () => {
         // graph is what makes "asking to sign out actually ends the session" assertable.
         provideHttpClient(),
         provideHttpClientTesting(),
+        // The base href every case below except the tenant suite at the foot of this file
+        // assumes, declared rather than inherited. Without it `PathLocationStrategy` falls
+        // back to reading the base element out of whatever document the runner serves, so
+        // the skip link's asserted address would depend on the harness rather than on the
+        // component - and the assertion would go quiet, not fail, if the runner's document
+        // ever changed. `/` is what `appBaseHref()` derives at the root deployment.
+        { provide: APP_BASE_HREF, useValue: '/' },
       ],
     }).compileComponents();
 
@@ -956,5 +964,130 @@ describe('ShellComponent', () => {
       expect(infoSpy).not.toHaveBeenCalled();
       expect(debugSpy).not.toHaveBeenCalled();
     });
+  });
+});
+
+
+/**
+ * The shell as a child portal addressed beneath a path segment renders it.
+ *
+ * A suite of its own rather than a case inside the one above, because the thing under test is
+ * an INJECTED CONSTANT the shell reads at construction: `APP_BASE_HREF` cannot be changed after
+ * the injector is built, so proving both deployments requires two injectors.
+ *
+ * ## What this pins, and why the main suite cannot
+ *
+ * `Router.url` is internal — expressed relative to the base href — so at `/acme/` the router
+ * reports `/roles` for the screen whose real address is `/acme/roles`. Every `routerLink` in the
+ * workspace already converts that for its own `href`; the shell's skip link is the one address
+ * in the application composed by hand, and it published the internal form. The published form
+ * resolves against the bare host, and the bare host is the PARENT tenant, so the one
+ * hand-composed address in the console pointed at a different portal's data.
+ *
+ * The main suite provides `/` and therefore cannot see this: at the root deployment the
+ * conversion is the identity, which is exactly why the defect survived a full specification.
+ * That is the argument for this suite existing rather than a stronger assertion up there.
+ */
+describe('ShellComponent under a tenant path base href', () => {
+  /** The prefix a child portal is addressed beneath, matching the alias `localhost:4200/acme`. */
+  const TENANT_BASE_HREF = '/acme/';
+
+  let fixture: ComponentFixture<ShellComponent>;
+  let router: Router;
+  let httpMock: HttpTestingController;
+
+  /** @returns The skip link's `href` exactly as the attribute carries it. */
+  function skipLinkHref(): string {
+    const element = fixture.nativeElement as HTMLElement;
+    const link = element.querySelector<HTMLAnchorElement>('a.shell__skip-link');
+
+    if (link === null) {
+      throw new Error('expected the shell to render a skip link');
+    }
+
+    // The ATTRIBUTE rather than the property, deliberately. The property is resolved against
+    // the document and would read as an absolute URL, which would hide a missing prefix behind
+    // the runner's own origin; the attribute is the value a browser hands to "open in new tab".
+    return link.getAttribute('href') ?? '';
+  }
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [ShellComponent],
+      providers: [
+        provideRouter([{ path: DEEP_PROBE_PATH, component: RouteProbeComponent }]),
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: APP_BASE_HREF, useValue: TENANT_BASE_HREF },
+      ],
+    }).compileComponents();
+
+    httpMock = TestBed.inject(HttpTestingController);
+    router = TestBed.inject(Router);
+    spyOn(router, 'navigate').and.resolveTo(true);
+
+    fixture = TestBed.createComponent(ShellComponent);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  it("carries the tenant's prefix on the skip link, so the one hand-composed address names this portal", async () => {
+    await router.navigateByUrl(`/${DEEP_PROBE_PATH}`);
+    fixture.detectChanges();
+
+    // The address a middle-click, an "open in new tab" or a "copy link address" consumes. The
+    // internal form `/deep/route/below/the/root#main-content` is what this used to read, and it
+    // resolves against the bare host.
+    expect(skipLinkHref()).toBe(`${TENANT_BASE_HREF}${DEEP_PROBE_PATH}#main-content`);
+  });
+
+  it('never publishes the router-internal address, which would name the parent tenant', async () => {
+    const onArrival = skipLinkHref();
+
+    await router.navigateByUrl(`/${DEEP_PROBE_PATH}`);
+    fixture.detectChanges();
+
+    const afterNavigating = skipLinkHref();
+
+    // Asserted on BOTH the initial address and one reached by navigating, because the href is
+    // composed twice by two different callers - once in a field initialiser and once from the
+    // `NavigationEnd` handler - and either could have been left converting nothing.
+    for (const published of [onArrival, afterNavigating]) {
+      expect(published.startsWith(TENANT_BASE_HREF)).toBeTrue();
+      expect(published.startsWith(`/${DEEP_PROBE_PATH}`)).toBeFalse();
+    }
+
+    expect(afterNavigating).not.toBe(onArrival);
+  });
+
+  it('still ends in the fragment naming the main region, exactly once', () => {
+    const element = fixture.nativeElement as HTMLElement;
+    const region = element.querySelector('main');
+
+    if (region === null) {
+      throw new Error('expected the shell to render a main region');
+    }
+
+    // The prefix must not have displaced the part of the address that does the work: the
+    // fragment is what makes this a skip link rather than a link to the current screen.
+    expect(region.id).not.toBe('');
+    expect(skipLinkHref().endsWith(`#${region.id}`)).toBeTrue();
+    expect(skipLinkHref().split('#').length).toBe(2);
+  });
+
+  it('still moves focus into the main region, so the prefix changed the address and nothing else', () => {
+    const element = fixture.nativeElement as HTMLElement;
+    const link = element.querySelector<HTMLAnchorElement>('a.shell__skip-link');
+    const region = element.querySelector('main');
+
+    link?.click();
+
+    // The behaviour a keyboard operator experiences is unchanged by the conversion. This is the
+    // case that would have caught a `prepareExternalUrl` call placed on the element identifier
+    // as well as on the path, which would have left the fragment naming nothing.
+    expect(document.activeElement).toBe(region);
   });
 });

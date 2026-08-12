@@ -2282,10 +2282,22 @@ describe('UserFormComponent', () => {
     it('keeps the announcing region mounted with nothing to announce', () => {
       arriveEditing(account(7));
 
-      // The banner emits nothing at all when there is no problem, so the screen binds it
-      // unconditionally and lets it disappear rather than guarding it.
+      // ⚠ THIS CASE NOW ASSERTS WHAT ITS NAME ALWAYS CLAIMED. It used to require the banner
+      // element to be ABSENT, which is the opposite of a mounted region: the screen guarded the
+      // element with `@if (problem())`, so the assertive live region and its first message entered
+      // the document in the same change - and that first message is the outcome of a save the
+      // operator just asked for. The banner emits nothing at all when there is no problem, so the
+      // screen binds it unconditionally and lets its CONTENTS disappear rather than the region.
       expect(query('.error-banner__title')).toBeNull();
-      expect(query('app-error-banner')).toBeNull();
+      expect(query('app-error-banner'))
+        .withContext('the region is in the document before anything fails')
+        .not.toBeNull();
+      expect(query('app-error-banner [role="alert"]'))
+        .withContext('carrying its announcement semantics already')
+        .not.toBeNull();
+      expect(query('app-error-banner .error-banner'))
+        .withContext('and painting nothing')
+        .toBeNull();
     });
 
     it('records the required-field legend once, as measured', () => {

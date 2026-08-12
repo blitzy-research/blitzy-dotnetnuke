@@ -404,6 +404,26 @@ const EDIT_SUBHEADING =
 const CREATE_SUBHEADING =
   'Choose a module and the page to place it on. The remaining settings can be changed afterwards.';
 
+/**
+ * The supporting text shown in place of the all-pages hint while that switch is withheld.
+ *
+ * A NET ADDITION, and it exists because a disabled control carrying its ordinary help text explains what
+ * the control does and not why it cannot be used. The legacy screen simply disabled the checkbox and left
+ * a caller with no explanation at all, so there is no wording to recover and nothing is being displaced:
+ * the legacy sentence still shows for the callers who may use the control.
+ *
+ * The wording states the rule and the authority it needs. It deliberately does not promise that holding
+ * that authority makes the write succeed, because the server re-decides from stored state on every
+ * submission, and it names no role: the administrator designation is a per-tenant column rather than a
+ * fixed role name.
+ *
+ * It is declared here rather than as a member of the hint record, whose type is closed over the form's own
+ * field names - this is a second sentence about ONE field rather than a hint for a new field.
+ */
+const ALL_TABS_WITHHELD_HINT =
+  'Placing a module on every page reaches beyond the page in front of you, so it is available only to '
+  + 'an administrator of this site. The module can still be placed on the page selected above.';
+
 /** The validation message for an unparseable start date, from `valStartDate.ErrorMessage`. */
 const START_DATE_INVALID_MESSAGE = 'Invalid Start Date';
 
@@ -1305,6 +1325,21 @@ export class ModuleFormComponent {
    * `IDENTITY(-1, 1)`, so both -1 and 0 are ordinary portal identifiers, and `if (portalId)` would
    * discard the tenant the measured baseline actually uses.
    */
+  /**
+   * Whether the session reports that the caller administers the tenant it is signed in to.
+   *
+   * Read from the session store's single answer to that question, which folds the host-account arm into
+   * the tenant's own administrator designation exactly as the API's handler does. It is deliberately not
+   * recomputed here from the role list: the designation is a per-tenant column
+   * (`Portals.AdministratorRoleId`) naming whichever role confers administration, so a test against the
+   * literal name `Administrators` is right about the word and wrong about the portal.
+   *
+   * ⚠ ADVISORY. It decides whether the all-pages switch is OFFERED, and nothing else. The service
+   * re-decides from stored state on every write, so a caller demoted a moment ago is refused however
+   * recently this said otherwise, and a submission that never rendered this control is refused too.
+   */
+  protected readonly administersPortal: Signal<boolean> = this.session.administersCurrentPortal;
+
   private readonly tabSourcePortalId: Signal<number | null> = computed(() => {
     if (this.isEditMode()) {
       return this.loadedModule()?.portalId ?? null;
@@ -1549,6 +1584,9 @@ export class ModuleFormComponent {
   /** The supporting text for each field. */
   protected readonly hints = FIELD_HINTS;
 
+  /** The sentence shown beside the all-pages switch while that switch is withheld. */
+  protected readonly allTabsWithheldHint = ALL_TABS_WITHHELD_HINT;
+
   /** @see MODULE_TITLE_MAX_LENGTH — bound to the heading box's native attribute. */
   protected readonly titleMaxLength = MODULE_TITLE_MAX_LENGTH;
 
@@ -1736,6 +1774,53 @@ export class ModuleFormComponent {
       }
 
       untracked(() => this.seedFrom(detail));
+    });
+
+    // ---------------------------------------------------------------------------------------------
+    // Withholding the all-pages switch from a caller who does not administer the tenant.
+    // ---------------------------------------------------------------------------------------------
+    // MIGRATION: `Page_Load:L215-L220` disabled `chkAllTabs` for any caller outside the portal
+    // administrator role, and this reproduces that ONE control's state. It is an affordance and not the
+    // enforcement: the service refuses an all-pages placement from a caller who does not administer the
+    // portal, decided from stored state, so a submission that reaches the API without this switch ever
+    // being rendered is refused there.
+    //
+    // ⚠ WHY THIS IS NOW POSSIBLE WHERE IT WAS ONCE DECLINED. An earlier revision of the template
+    // recorded that nothing among this screen's dependencies could answer the question - the identity
+    // contract exposed a super-user flag and a role list, and the administrator designation is a
+    // per-tenant COLUMN rather than a role NAME, so any client-side test would have been a weaker second
+    // copy of a server rule. The session store now publishes the server's own derived answer
+    // (`administersCurrentPortal`, which folds in the host arm the API's handler applies first), so the
+    // control's state follows the authority that will actually decide the write instead of guessing at
+    // it.
+    //
+    // ⚠ ONLY THIS CONTROL, AND THE OTHER THREE THE LEGACY SCREEN DISABLED STAY ENABLED DELIBERATELY.
+    // The page picker must remain usable: on the create route it is how a page administrator names the
+    // one page they administer, and disabling it would make the screen unusable for exactly the callers
+    // the legacy application admitted. The two propagation instructions are edit-mode-only and already
+    // refused by the service with their own reason.
+    //
+    // Disabled rather than removed, so the label and its help text stay legible and the form's shape
+    // does not change between callers. `emitEvent: false` keeps the enforced state out of the dirty
+    // tracking the unsaved-entry guard reads: a control the caller never touched must not make the form
+    // look edited.
+    effect(() => {
+      const mayPlaceOnEveryPage = this.administersPortal();
+      const control = this.form.controls.allTabs;
+
+      untracked(() => {
+        if (mayPlaceOnEveryPage) {
+          if (control.disabled) {
+            control.enable({ emitEvent: false });
+          }
+
+          return;
+        }
+
+        if (control.enabled) {
+          control.disable({ emitEvent: false });
+        }
+      });
     });
 
     // ---------------------------------------------------------------------------------------------

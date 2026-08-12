@@ -275,6 +275,21 @@ public class CreateRoleRequestValidatorTests
         RoleName = "Subscribers",
     };
 
+
+    /// <summary>
+    /// Builds an invitation code of an exact length that satisfies every rule EXCEPT a width bound.
+    /// </summary>
+    /// <param name="length">The length the value must have.</param>
+    /// <returns>A code of exactly that length, mixing letters with digits.</returns>
+    /// <remarks>
+    /// A width fact has to vary the width and nothing else. A value made of one repeated character carries a
+    /// single character class and therefore also trips the authoring-strength rule, so a width fact built from
+    /// one would fail for the wrong reason and report the wrong field message. Alternating a letter with a
+    /// digit gives two classes at every length, including the odd ones, and keeps the value single-line and
+    /// free of invisible characters so the text-integrity rule is not in play either.
+    /// </remarks>
+    private static string StrongCodeOfLength(int length)
+        => string.Concat(Enumerable.Range(0, length).Select(index => index % 2 == 0 ? 'a' : '1'));
     /// <summary>
     /// Renders the framework's own length message for a property, so the expectation cannot drift from the
     /// validator's wording.
@@ -432,7 +447,10 @@ public class CreateRoleRequestValidatorTests
             TrialPeriod = 14,
             TrialFrequency = BillingFrequency.Day,
             RoleGroupId = 3,
-            RsvpCode = "GOLD-2026",
+            // Strong enough for the AUTHORING rule: twelve characters or more, mixing letters with digits.
+            // A shorter code such as "GOLD-2026" is what the legacy screen accepted and is still redeemable,
+            // but it can no longer be authored - see the strength facts below.
+            RsvpCode = "GOLD-2026-ALPHA",
             IconFile = "icons/gold.gif",
         };
 
@@ -1192,8 +1210,15 @@ public class CreateRoleRequestValidatorTests
     /// <param name="length">The submitted length.</param>
     /// <param name="accepted">Whether that length is within the ceiling.</param>
     /// <remarks>
+    /// <para>
     /// No legacy validator was declared on the invitation-code box and no index makes the value unique, so a
     /// clash between two roles is not a conflict and there is deliberately no uniqueness rule to reproduce.
+    /// </para>
+    /// <para>
+    /// THE FILLER MIXES TWO CHARACTER CLASSES, so this fact isolates the WIDTH it names. A single repeated
+    /// character now trips the authoring-strength rule as well, and a width fact that failed for a strength
+    /// reason would report the wrong rule; the strength rule has facts of its own below.
+    /// </para>
     /// </remarks>
     [Theory]
     [InlineData(49, true)]
@@ -1202,7 +1227,7 @@ public class CreateRoleRequestValidatorTests
     public async Task RsvpCode_IsBoundedByItsColumnWidth(int length, bool accepted)
     {
         CreateRoleRequest request = ValidRequest();
-        request.RsvpCode = new string('c', length);
+        request.RsvpCode = StrongCodeOfLength(length);
 
         ValidationResult result = await _validator.ValidateAsync(request);
 
@@ -1216,6 +1241,57 @@ public class CreateRoleRequestValidatorTests
                 result,
                 nameof(CreateRoleRequest.RsvpCode),
                 LengthExceeded("Rsvp Code", RsvpCodeWidth, length));
+        }
+    }
+
+    /// <summary>
+    /// A newly authored invitation code must be long enough and varied enough not to be guessable.
+    /// </summary>
+    /// <param name="submitted">The code the issuer typed.</param>
+    /// <param name="accepted">Whether the rule admits it.</param>
+    /// <remarks>
+    /// <para>
+    /// SEC: THE OTHER HALF OF CLOSING A GUESSING ORACLE. Redemption compares a submitted code against every
+    /// role of the tenant and grants membership of every role that bears it, so the cost of guessing is set by
+    /// two things together - how fast an attacker may try, which the endpoint's own window now bounds, and how
+    /// large the space it is trying against is, which is this rule. A four-character code stays enumerable at
+    /// any rate limit that leaves the feature usable, so bounding the rate alone would not have been enough.
+    /// </para>
+    /// <para>
+    /// AN ABSENT OR EMPTY VALUE IS ACCEPTED, and that is the rule rather than a hole in it: the column is
+    /// nullable, the legacy screen left the box empty for a service that is not invitation-only, and clearing
+    /// the box is the only way an issuer can WITHDRAW a code. Refusing empty would make an existing code
+    /// impossible to remove.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("", true)]
+    [InlineData("JOIN", false)]
+    [InlineData("JOIN2008", false)]
+    [InlineData("abcdefghijk1", true)]
+    [InlineData("abcdefghijk", false)]
+    [InlineData("abcdefghijklmnop", false)]
+    [InlineData("1234567890123456", false)]
+    [InlineData("GOLD-2026-ALPHA", true)]
+    [InlineData("Founders-Circle", true)]
+    public async Task RsvpCode_MustBeHardEnoughToGuessWhenItIsAuthored(string? submitted, bool accepted)
+    {
+        CreateRoleRequest request = ValidRequest();
+        request.RsvpCode = submitted;
+
+        ValidationResult result = await _validator.ValidateAsync(request);
+
+        if (accepted)
+        {
+            ShouldAccept(result);
+        }
+        else
+        {
+            ShouldReport(
+                result,
+                nameof(CreateRoleRequest.RsvpCode),
+                "An RSVP Code must be at least 12 characters long and must mix letters with digits or punctuation.");
         }
     }
 

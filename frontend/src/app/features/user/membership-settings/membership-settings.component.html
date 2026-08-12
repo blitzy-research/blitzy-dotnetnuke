@@ -25,18 +25,19 @@
     * `Website/admin/Users/MemberServices.ascx` is seventy-seven lines of role
       subscription - a help paragraph, an invitation code box with a subscribe
       command, and a seven column services grid carrying a trial command. IT IS
-      IMPLEMENTED, in the sibling component in this folder, and reached at
-      `/users/{userId}/services`. An earlier revision of this note said "none of it
-      has an endpoint in this API, so there is nothing for a screen to call"; that
-      was true of the API as it then stood and is now withdrawn - the account
-      resource publishes five self-service endpoints. It is not rendered HERE
-      because it is per-account and gated on account ownership, whereas this screen
-      configures the TENANT and is reached by an administrator: rendering them
-      together would put an administrator's own subscriptions on a tenant
-      configuration page and would need one route to satisfy two authorisation
-      policies.
-  This screen therefore derives from `Website/admin/Users/UserSettings.ascx` and
-  the account policy contract ALONE.
+      RENDERED HERE, as this screen's last section, by the sibling component in this
+      folder. Two earlier revisions of this note are withdrawn: the first said "none
+      of it has an endpoint in this API, so there is nothing for a screen to call",
+      which was true of the API as it then stood and is not now; the second said the
+      panel was reached at `/users/{userId}/services` and then that the address AND
+      the panel were withdrawn, which left five published endpoints and five store
+      operations with no consumer anywhere in the workspace. Mounting it here adds no
+      address - AAP 0.4.4 freezes the route table at twenty-five screens - and
+      withdraws no capability, which is what AAP 0.5.1.8 means by three legacy
+      screens consolidated into this feature. The paired class records what the
+      consolidation costs, and `MIGRATION_NOTES.md` carries the divergence.
+  This screen therefore derives from `Website/admin/Users/UserSettings.ascx` and the
+  account policy contract for everything ABOVE that final section.
 
   MIGRATION: EVERY STRING RENDERED HERE IS INTERPOLATED PLAIN TEXT, and that is a
   security boundary rather than a preference. Measured across the thirty-seven
@@ -586,17 +587,17 @@
           resource publishes five self-service endpoints, and EVERY ONE OF THEM CHECKS
           THIS SETTING on the server: a tenant that clears it makes each of them refuse
           with its own reason rather than merely hiding a screen. It governs those
-          endpoints and not a screen in this workspace: the sibling component that
-          presented them at `/users/{userId}/services` is withdrawn, because AAP 0.4.4
-          freezes the route table at twenty-five screens and names no member-services
-          address among them.
+          endpoints, and the panel that calls them is THE LAST SECTION OF THIS SCREEN -
+          so the switch and the behaviour it governs are read and exercised in one place.
+          Clearing it does not hide that panel: the panel's own requests are refused by
+          the server and it renders the refusal in the server's words.
 
           The enforcement is deliberately the server's and not this client's. The legacy
           container folded the setting into a tab's visibility, which a client can only
           approximate; a copy of the rule here would be a second opinion about it, and the
-          screen it governs cannot read this policy at all - the policy endpoint is gated
-          on tenant administration, so the account holder that screen serves would be
-          refused it.
+          panel below cannot read this policy for itself in any case - the policy endpoint
+          is gated on tenant administration, and the panel is written to serve an account
+          holder rather than an administrator.
         -->
         <app-form-field
           class="form-field--inline"
@@ -943,3 +944,27 @@
     </div>
   </form>
 }
+
+<!--
+  THE CONSOLIDATED SELF-SERVICE SUBSCRIPTION PANEL.
+
+  MIGRATION: `Website/admin/Users/MemberServices.ascx` - the third of the three legacy
+  controls the transformation plan consolidates into this feature (AAP 0.5.1.8). It is
+  rendered HERE and nowhere else: AAP 0.4.4 freezes the console's route table at
+  twenty-five addresses and names no member-services address, so the panel has no
+  address of its own and is mounted rather than routed. The paired class records the two
+  withdrawn arrangements this replaces - a twenty-sixth route, and the deletion that
+  followed it - and what the consolidation costs.
+
+  OUTSIDE THE POLICY FORM, DELIBERATELY. The panel carries a form of its own for the
+  invitation code, and a nested form element is invalid markup that browsers silently
+  discard - the inner controls would be adopted by the outer form and the code would be
+  submitted with the tenant's policy. It is also independent of the policy read: it is
+  rendered whether or not that read has settled, because its own request is separate.
+
+  THE SUBJECT ACCOUNT IS THE CALLER'S OWN, and null until the session resolves one. The
+  panel is what decides what to render for each of those states; this screen decides only
+  which account it is about. Every one of the panel's five endpoints is gated on account
+  ownership server-side, so nothing here can reach another account's subscriptions.
+-->
+<app-member-services [accountId]="ownAccountId()" />

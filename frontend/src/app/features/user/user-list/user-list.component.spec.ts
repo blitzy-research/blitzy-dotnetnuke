@@ -2503,7 +2503,13 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
       settleOutcome();
 
-      expect(query('app-error-banner')).toBeNull();
+      // ⚠ THE SURFACE IS THE BANNER'S CONTENTS, NOT THE BANNER ELEMENT. The element is mounted
+      // unconditionally so that its assertive live region survives between failures rather than
+      // being created with its first message; what a failed WRITE must leave alone is the painted
+      // read-failure banner inside it, which is what this asserts.
+      expect(query('app-error-banner .error-banner'))
+        .withContext('a failed removal paints no read-failure banner')
+        .toBeNull();
       expect(rows()).toHaveSize(1);
     });
 
@@ -2526,7 +2532,11 @@ describe('UserListComponent', () => {
       settleOutcome();
 
       expect(notifySpy).toHaveBeenCalledWith('success', USER_DELETED_MESSAGE, null, false);
-      expect(query('app-error-banner')).not.toBeNull();
+      // The PAINTED banner, not merely the element: the element is always mounted, so asserting its
+      // presence would now hold whether or not the re-read failure was reported at all.
+      expect(query('app-error-banner .error-banner'))
+        .withContext("the re-read's failure is painted in the shared banner")
+        .not.toBeNull();
     });
 
     it('reports one outcome per removal, however many unrelated signals move afterwards', () => {
@@ -5006,6 +5016,31 @@ describe('UserListComponent', () => {
 
       expect(query('.error-banner'))
         .withContext('a successful read clears the failure')
+        .toBeNull();
+    });
+  });
+
+  describe('the persistent announcing region', () => {
+    it('is mounted before anything has failed, with the retry offered only for a failure', () => {
+      // ⚠ THE REGION MUST PRE-EXIST THE MESSAGE IT ANNOUNCES. A `role="alert"` region inserted in the
+      // same change as its first text is announced inconsistently across screen readers, and the first
+      // read failure is the one an operator most needs to hear. This screen used to create the banner
+      // element only while a read failure existed - correct about WHICH failures it reported, once both
+      // inputs were bound, and still wrong about the region's lifetime. The shared component keeps its
+      // own `@if` inside the region, so an empty banner paints nothing and occupies no height.
+      arrive(pageOf([userRow(7)]));
+
+      expect(query('app-error-banner'))
+        .withContext('the region is present on a healthy screen')
+        .not.toBeNull();
+      expect(query('app-error-banner [role="alert"]')?.getAttribute('aria-live'))
+        .withContext('with its announcement semantics already declared')
+        .toBe('assertive');
+      expect(query('app-error-banner .error-banner'))
+        .withContext('and nothing painted inside it')
+        .toBeNull();
+      expect(query('.user-list__failure-retry'))
+        .withContext('while the recovery command is offered only for a failure that happened')
         .toBeNull();
     });
   });

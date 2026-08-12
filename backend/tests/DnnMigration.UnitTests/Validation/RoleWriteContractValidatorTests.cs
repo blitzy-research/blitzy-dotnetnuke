@@ -395,13 +395,16 @@ public class RoleWriteContractValidatorTests
 
         UpdateRoleRequest atLimit = ValidUpdate();
         atLimit.Description = new string('d', DescriptionWidth);
-        atLimit.RsvpCode = new string('r', RsvpCodeWidth);
+        // TWO CHARACTER CLASSES, so this fact isolates the width it names: a single repeated character now
+        // trips the authoring-strength rule as well, and a width fact that failed for a strength reason would
+        // report the wrong rule.
+        atLimit.RsvpCode = StrongCodeOfLength(RsvpCodeWidth);
         atLimit.IconFile = new string('i', IconFileWidth);
         ShouldAccept(validator.Validate(atLimit));
 
         UpdateRoleRequest overLimit = ValidUpdate();
         overLimit.Description = new string('d', DescriptionWidth + 1);
-        overLimit.RsvpCode = new string('r', RsvpCodeWidth + 1);
+        overLimit.RsvpCode = StrongCodeOfLength(RsvpCodeWidth + 1);
         overLimit.IconFile = new string('i', IconFileWidth + 1);
 
         ValidationResult result = validator.Validate(overLimit);
@@ -902,7 +905,9 @@ public class RoleWriteContractValidatorTests
         TrialFee = 0m,
         TrialPeriod = 14,
         TrialFrequency = BillingFrequency.Day,
-        RsvpCode = "JOIN2008",
+        // Authoring-strength: twelve characters or more mixing letters with digits. The legacy-shaped
+        // "JOIN2008" remains redeemable and can no longer be authored.
+        RsvpCode = "JOIN2008-ALPHA",
         IconFile = "images/subscriber.gif",
     };
 
@@ -952,6 +957,21 @@ public class RoleWriteContractValidatorTests
     // ASSERTION HELPERS
     // ------------------------------------------------------------------------
 
+
+    /// <summary>
+    /// Builds an invitation code of an exact length that satisfies every rule EXCEPT a width bound.
+    /// </summary>
+    /// <param name="length">The length the value must have.</param>
+    /// <returns>A code of exactly that length, mixing letters with digits.</returns>
+    /// <remarks>
+    /// A width fact has to vary the width and nothing else. A value made of one repeated character carries a
+    /// single character class and therefore also trips the authoring-strength rule, so a width fact built from
+    /// one would fail for the wrong reason and report the wrong field message. Alternating a letter with a
+    /// digit gives two classes at every length, including the odd ones, and keeps the value single-line and
+    /// free of invisible characters so the text-integrity rule is not in play either.
+    /// </remarks>
+    private static string StrongCodeOfLength(int length)
+        => string.Concat(Enumerable.Range(0, length).Select(index => index % 2 == 0 ? 'a' : '1'));
     /// <summary>
     /// Asserts that a result reports the given message against the given property, character for
     /// character.
