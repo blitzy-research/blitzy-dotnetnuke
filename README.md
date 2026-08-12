@@ -594,12 +594,14 @@ schema from this work.**
   the **cumulative terminal state** is meaningful; reading any single script in isolation will
   mislead you.
 
-Two consequences worth knowing before you go looking for bugs. Identity seeds collide with
-the legacy null sentinels: `Portals.PortalID` is `IDENTITY(-1,1)`, so the first real portal is
-`0` and `-1` is simultaneously a valid identifier *and* the legacy "absent" marker, while
-`Roles.RoleID` is `IDENTITY(0,1)`. The domain model uses nullable CLR types, and sentinel
-semantics are preserved at the DTO boundary wherever the legacy contract is externally
-visible. All of it is itemised in [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md).
+One consequence is worth knowing before you go looking for bugs: the identity seeds collide
+with the legacy null sentinels. `Portals.PortalID` is declared `IDENTITY(-1,1)` and
+`Roles.RoleID` is declared `IDENTITY(0,1)`, so `-1` is a perfectly legitimate portal
+identifier at the same time as being the legacy `Null.NullInteger` "absent" marker, and `0`
+is a legitimate role identifier. Treating either as "no value" silently changes a branch
+outcome. The domain model therefore uses nullable CLR types, while sentinel semantics are
+preserved at the DTO boundary wherever the legacy contract is externally visible. All of it
+is itemised in [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md).
 
 ---
 
