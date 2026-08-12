@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using DnnMigration.Api.Authorization;
 using DnnMigration.Api.ErrorHandling;
 using DnnMigration.Api.Filters;
@@ -12,6 +13,9 @@ using DnnMigration.Application.Dtos.Module;
 using DnnMigration.Application.Options;
 using DnnMigration.Application.Serialization;
 using DnnMigration.Application.Validation;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.DataProtection.Repositories;
+using Microsoft.AspNetCore.DataProtection.XmlEncryption;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.HttpsPolicy;
 using Microsoft.AspNetCore.Mvc;
@@ -205,8 +209,79 @@ public static class ServiceCollectionExtensions
         AddRequestLimits(services);
         AddTransportSecurity(services, configuration);
         AddForwardedHeaders(services, configuration);
+        AddEphemeralDataProtection(services);
 
         return services;
+    }
+
+    /// <summary>
+    /// Declares the data-protection key ring EPHEMERAL, because this application protects nothing that
+    /// must outlive its own process.
+    /// </summary>
+    /// <param name="services">The container being populated.</param>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: THIS REPLACES TWO STARTUP WARNINGS WITH A DECISION. The framework registers the
+    /// data-protection stack whether or not an application uses it, and its default key ring is written to
+    /// a directory under the account's home folder. In the shipped container that produced two warnings on
+    /// every start - <c>Storing keys in a directory '/home/appuser/.aspnet/DataProtection-Keys' that may
+    /// not be persisted outside of the container</c> and <c>No XML encryptor configured. Key {id} may be
+    /// persisted to storage in unencrypted form</c> - which runtime testing recorded as the first lines of
+    /// the API log. Both were accurate and neither was actionable, and an accurate warning nobody can act
+    /// on is worse than none: it trains an operator to skim the start-up log where a real fault will
+    /// appear.
+    /// </para>
+    /// <para>
+    /// <strong>Nothing in this solution consumes data protection, and that was established rather than
+    /// assumed.</strong> There is no cookie authentication - the API is bearer-token only, and the tokens
+    /// are HMAC-signed with <c>Jwt:Secret</c>, which is deployment configuration and has nothing to do
+    /// with this key ring. There is no session state, no temp-data provider, no antiforgery token (this
+    /// host serves no form and no view), and no <c>IDataProtector</c> is injected anywhere in
+    /// <c>backend/src</c>. So the key ring protects no payload, and no payload survives a restart today
+    /// either: the container declares no volume and no mount, deliberately, and the QA topology confirmed
+    /// it holds no persistent state at all.
+    /// </para>
+    /// <para>
+    /// <strong>Why ephemeral rather than a persisted directory.</strong> Persisting would require a volume
+    /// the topology does not have and would not want - the two containers are stateless by design, which
+    /// is what lets either be recreated at any moment - and it would leave the second warning standing,
+    /// because a file-backed ring on Linux with no certificate to protect it is exactly what that warning
+    /// describes. Ephemeral says the true thing instead: keys live as long as the process, nothing depends
+    /// on them, and a restart loses nothing. A deployment that later introduces a data-protection consumer
+    /// - a cookie, an antiforgery token, a protected payload shared between replicas - must replace this
+    /// registration with a persisted, encrypted ring at that point, and this remark is where it will look.
+    /// </para>
+    /// <para>
+    /// <strong>The mechanism is the key-management options, and the reason is measured.</strong> Replacing
+    /// the data-protection PROVIDER with the framework's ephemeral one was tried first and changed nothing
+    /// observable: the container still wrote
+    /// <c>/home/appuser/.aspnet/DataProtection-Keys/key-{id}.xml</c> and still logged both warnings, because
+    /// the eager key-ring initialisation the framework performs at start-up goes through the key MANAGER
+    /// rather than through the provider. Naming the repository and the encryptor is what actually decides
+    /// where a key goes: with an in-memory repository no key file is created at all - verified in the
+    /// running container, which now has no such directory - and with an explicitly null encryptor the
+    /// second warning has nothing to report, because the absence of encryption is a stated decision rather
+    /// than an unmet default.
+    /// </para>
+    /// <para>
+    /// Not encrypting the ring is safe precisely because it never leaves memory: there is no file for a
+    /// reader to find and no shared store for another process to reach, so there is nothing for an
+    /// encryptor to protect it from. Were this ever persisted, an encryptor would become mandatory and this
+    /// call would be the wrong shape for the job.
+    /// </para>
+    /// <para>
+    /// Registered last in the composition above so this configuration is applied after the framework's own
+    /// defaults, and confined to this one call so the decision is visible in one place.
+    /// </para>
+    /// </remarks>
+    private static void AddEphemeralDataProtection(IServiceCollection services)
+    {
+        services.AddDataProtection()
+            .AddKeyManagementOptions(options =>
+            {
+                options.XmlRepository = new InMemoryKeyRingRepository();
+                options.XmlEncryptor = new NullXmlEncryptor();
+            });
     }
 
     /// <summary>
@@ -924,6 +999,63 @@ public static class ServiceCollectionExtensions
             return failures.Count == 0
                 ? ValidateOptionsResult.Success
                 : ValidateOptionsResult.Fail(failures);
+        }
+    }
+
+    /// <summary>
+    /// Holds the data-protection key ring in process memory, so no key is written anywhere.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the counterpart of <see cref="AddEphemeralDataProtection(IServiceCollection)"/>, and the
+    /// piece that makes the decision real rather than declared. The framework's default repository is the
+    /// file system, and in a container that means a key file under the account's home directory which the
+    /// next container recreation discards - accurate to warn about and impossible to act on, because this
+    /// application protects nothing with that ring. Holding it here removes the file, and with it both the
+    /// warning and the file's own small disclosure: an unencrypted key at rest inside the image's writable
+    /// layer.
+    /// </para>
+    /// <para>
+    /// The framework ships an in-memory repository of its own, and it is deliberately not used: its
+    /// constructor is not part of the documented surface of the shared framework, so depending on it would
+    /// make this registration a patch-level upgrade away from failing to compile for no benefit. The
+    /// contract it implements IS documented, and implementing that contract is fifteen lines.
+    /// </para>
+    /// <para>
+    /// A lock rather than a concurrent collection, because the contract has two operations and one of them
+    /// returns the whole set: a snapshot taken while another thread appends must not observe a torn list,
+    /// and the key manager reads the ring far more often than it writes to it. Reads copy the list, so a
+    /// caller enumerating the result cannot be disturbed by a later write.
+    /// </para>
+    /// </remarks>
+    private sealed class InMemoryKeyRingRepository : IXmlRepository
+    {
+        private readonly List<XElement> _elements = [];
+        private readonly object _gate = new();
+
+        /// <inheritdoc />
+        public IReadOnlyCollection<XElement> GetAllElements()
+        {
+            lock (_gate)
+            {
+                return _elements.ToList();
+            }
+        }
+
+        /// <inheritdoc />
+        /// <remarks>
+        /// The element is copied before being stored. The key manager hands over an element it may still
+        /// hold a reference to, and a repository that kept the caller's instance would let a later
+        /// modification of it change what this ring believes was stored.
+        /// </remarks>
+        public void StoreElement(XElement element, string friendlyName)
+        {
+            ArgumentNullException.ThrowIfNull(element);
+
+            lock (_gate)
+            {
+                _elements.Add(new XElement(element));
+            }
         }
     }
 }

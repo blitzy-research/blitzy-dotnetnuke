@@ -17025,3 +17025,245 @@ paragraph that is easy to mistake for a banner when auditing; and administrative
 preloaded into a non-administrative browser, which is the mandated preloading strategy and not an
 authorisation hole, since the guards refuse every one of those routes and no data is fetched.
 
+
+## QA remediation: the proxy that could not follow a redeployed API, and nine other container-checkpoint findings
+
+Runtime testing of the delivered two-container topology reported thirteen findings — one major, two minor
+and ten informational. Three were closed by changing behaviour, one by removing two misleading start-up
+warnings, and the rest by recording a decision that was already correct. Everything below was measured on the
+delivered artefacts rather than reasoned about, and the measurements are quoted because they are what settle
+the design questions.
+
+### The reverse proxy resolved the API's address once, and a redeployed API was therefore unreachable for good
+
+**What was wrong.** `docker/nginx.conf` proxied `/api/` with a literal upstream name —
+`proxy_pass http://api:8080/api/;`, exactly as the migration plan's preserved example writes it. nginx
+resolves a literal name ONCE, while parsing its configuration, and caches the address for the life of the
+process. Two failures followed from that single fact:
+
+- **A redeployed API became permanently unreachable, silently.** Recreating only the api service —
+  `docker compose up -d --force-recreate api`, which is how a new API image is rolled out — can place the
+  container on a different address, and compose does not recreate the front end with it. The proxy went on
+  dialling the old address: the first call hung for the full proxy timeout and every later one was refused,
+  with no self-healing measured at +10, +20, +30, +40, +50 or +60 seconds. Throughout, `docker compose ps`
+  reported BOTH services `Up (healthy)` and the front end still served the application document with 200. A
+  user therefore loaded the administration console and every request it made failed, while neither container
+  health check nor the compose dependency state showed anything wrong. The production bundle's API base URL
+  is the relative `/api/v1`, so this proxy is the browser's only route to the API and there is no second path
+  to fall back to.
+- **The front-end container could not START while the api service was absent.** An unresolvable literal
+  upstream is a configuration error rather than a runtime one, so nginx exited with
+  `[emerg] host not found in upstream "api"` and Docker restarted it in a loop. Stopping the api service took
+  the entire static application down — `:4200` unreachable — instead of degrading only its API calls.
+
+**What changed.** The `/api/` block now resolves the upstream per request:
+
+```
+resolver           127.0.0.11 valid=10s ipv6=off;
+resolver_timeout   5s;
+set                $api_upstream api;
+proxy_pass         http://$api_upstream:8080$request_uri;
+```
+
+`127.0.0.11` is Docker's embedded DNS, present on every user-defined network, which the compose file
+declares. `valid=10s` overrides the long time-to-live Docker publishes and is what bounds staleness.
+`resolver_timeout` is stated because the default is thirty seconds: an image run outside a user-defined
+network has no embedded DNS to ask and must fail fast into a problem document rather than hold a browser
+connection open for half a minute.
+
+**Measured, side by side.** With a temporary container occupying the API's address, `up -d --force-recreate
+api` moved the API from `172.28.0.2` to `172.28.0.4`. The fixed proxy answered `503` at t+0s and **200 from
+t+6s through t+54s**; a control container running the PREVIOUS configuration on the same network answered
+**502 at every sample across the same 54 seconds**. The front-end container was never restarted — restart
+count 0, unchanged start time — and its own error log shows it trying `172.28.0.2` during the window and then
+`172.28.0.4`, which is re-resolution in the log rather than by inference. Separately, with the api service
+stopped, restarting the front end now starts nginx cleanly (zero `[emerg]` entries) and `:4200` keeps serving
+the full 12,971-byte document, where before the container crash-looped.
+
+**Why the request target is named explicitly, and why it is safer.** Once a variable appears in
+`proxy_pass`, nginx can no longer work out which part of the URI to replace and sends whatever URI the
+directive names; writing `/api/` there would forward every request in the application to the single path
+`/api/`. Naming `$request_uri` is not a rewrite — the location prefix and the upstream prefix are the same
+string — and it forwards the caller's own target unchanged, verified against a request-echoing upstream for
+paths, trailing slashes and two- and three-parameter query strings. It also removes a latent hazard: the
+previous form sent nginx's normalised, DECODED URI, so `%2F` inside a path segment arrived upstream as a real
+path separator (`/api/v1/na%2Fme` → `/api/v1/na/me`), and the API's routing and authorisation both key on
+path segments. The one visible consequence is that a caller-authored double slash is no longer silently
+collapsed: `/api//v1/portals` now reaches the API as written and is answered 404 with a problem document
+rather than matching a route. Nothing the application emits contains one.
+
+**Operational consequence.** An API-only redeploy is now supported without touching the front end. Calls in
+the first few seconds may be answered `503` with `Retry-After: 5` while the ten-second DNS entry ages out.
+
+### A proxy that cannot reach the API now answers in the contract the client parses
+
+**What was wrong.** With the API unreachable, `/api/` calls were answered with nginx's own HTML error page.
+The application's error interceptor reads RFC 7807 problem documents and had to synthesise a generic sentence
+for a body it could not parse, so the one failure an operator most needs described — "the API is not there" —
+was the one presented worst.
+
+**What changed.** `error_page 502 503 504 = @api_unavailable;` and a named location that returns
+`503 application/problem+json` with `Retry-After: 5`, `Cache-Control: no-store`, the same eight security
+headers every other response carries, and a fixed body:
+`urn:dnnmigration:error:gateway.api_unreachable`. Three details are load-bearing:
+
+- **The `=` form is required.** Without it the status line would keep nginx's own 502 or 504 while the body
+  declared 503, and a problem document whose status disagrees with its response is worse than none.
+- **Only nginx's own failures are answered here.** `proxy_intercept_errors` is left at its default of off, so
+  a 502, 503 or 504 the API itself produced travels to the caller untouched. Measured with the database
+  stopped: a proxied data read returns the API's own `urn:dnnmigration:error:server.unavailable` document,
+  not this one. The distinction matters, because this document says "the API is not reachable", which would
+  be a lie if the API had answered.
+- **Nothing the caller sent appears in the body.** No correlation identifier is echoed and no path is quoted.
+  A value interpolated into a JSON document would need escaping nginx cannot perform, so echoing a header
+  would be an injection vector in a response the caller could then quote as ours. The client synthesises its
+  own reference when a document carries none.
+
+**The permitted delta from the preserved example grows by two entries**, and both are recorded in that
+file's own header alongside the existing four: the late-resolving upstream, and this problem-details error
+page. The header's previous claim that the file performs "no dynamic DNS lookup" was true when written and
+is now withdrawn. The rule applied throughout: this file departs from the supplied example only where the
+supplied text causes a functional failure.
+
+### A database outage is reported as a dependency failure rather than as a server defect
+
+**What was wrong.** With the database stopped, every data endpoint — sign-in included — answered
+`500 Internal Server Error`. The payload was a correct problem document that disclosed nothing, and
+`/health/ready` already reported `503` to an orchestrator, so nothing leaked and nothing was unmonitored. The
+defect was in the instruction the status carried: `500` tells a caller this server is broken and asks them to
+report it, while the truth was that a dependency was down and the same request would succeed shortly.
+
+**What changed.** A store outage is now answered `503` with `Retry-After: 5`, in the problem-details
+vocabulary the API already publishes for that status (`urn:dnnmigration:error:server.unavailable`), with
+authored wording that names no component: *"A service this request depends on is temporarily unavailable.
+Retry after a short delay, and quote the X-Correlation-Id response header if the problem persists."* Which
+dependency failed is an infrastructure fact of no use to a caller and of obvious use to somebody deciding
+what to probe.
+
+**How it is classified, and why not in the transport.** The API project references neither the
+object-relational mapper nor the database client, deliberately, so it cannot recognise a provider fault by
+type. The question is therefore declared as a Domain contract, `IStoreFailureClassifier`, and answered in the
+persistence assembly — the only assembly permitted to name `SqlException`, and the same division the
+duplicate-key translation already uses. The transport asks; it does not inspect.
+
+**The rule is measured rather than assumed.** A stopped SQL Server was probed through a raw connection open,
+an Entity Framework query with retrying enabled and one with it disabled. All three produced the same thing:
+one `SqlException` with `Number = 0`, `Class = 20`, `IsTransient` false and no inner exception, unwrapped by
+the mapper. Two consequences follow. Keying on the client's transient flag would have closed nothing, because
+it does not consider an unreachable server transient; and keying on error numbers would have closed nothing
+either, because the number is zero. The load-bearing test is SEVERITY: SQL Server reserves classes 20 and
+above for errors that terminate the connection, and the client reuses that scale for connections it could not
+establish. Added to it are the client's transient flag, the command-timeout number, and socket and
+framework-level timeouts.
+
+**The bias is one-directional and deliberate.** Anything the classifier cannot positively identify stays
+`500`. A constraint violation, an invalid object or column name, a permission refusal, a deadlock victim and
+an arithmetic fault are all the store working correctly, and telling a caller to retry a statement that will
+be refused every time is strictly worse than reporting a fault. The new arm also sits BELOW every existing
+arm, so a broken invariant is still 400, a refusal 403, a duplicate 409 and a transport refusal whatever the
+host decided — asserted by feeding the two existing handler suites a classifier that answers "unavailable"
+for everything and requiring their statuses to be unchanged.
+
+**Measured after the change**, with the database stopped: data reads and sign-in answer `503` with
+`Retry-After: 5` both directly and through the proxy; `/health` and `/health/live` stay `200` while
+`/health/ready` reports `503`; the container stays healthy on the same process with restart count 0; the logs
+carry no credential, no connection string and no token; and readiness returns to `200` within ten seconds of
+the database coming back, with traffic resuming and no restart.
+
+### The data-protection key ring is held in memory, which is what the container already implied
+
+**What was wrong.** The API logged two warnings on every start — `Storing keys in a directory
+'/home/appuser/.aspnet/DataProtection-Keys' that may not be persisted outside of the container` and
+`No XML encryptor configured` — and wrote an unencrypted `key-{id}.xml` into the container's writable layer.
+Both warnings were accurate and neither was actionable, and an accurate warning nobody can act on is worse
+than none: it trains an operator to skim the start-up log where a real fault will appear.
+
+**Nothing in this solution consumes data protection, and that was established rather than assumed.** The API
+is bearer-token only and its tokens are HMAC-signed with `Jwt:Secret`, which is deployment configuration and
+unrelated to this key ring. There is no cookie authentication, no session state, no temp-data provider, no
+antiforgery token — this host serves no form and no view — and no `IDataProtector` is injected anywhere in
+`backend/src`. The ring protected nothing, and nothing survived a container recreation anyway: the topology
+declares no volume and no mount, by design.
+
+**What changed, and a correction worth recording.** Replacing the data-protection PROVIDER with the
+framework's ephemeral one was tried first and changed nothing observable — the key file was still written and
+both warnings still logged — because the eager key-ring initialisation the framework performs at start-up
+goes through the key MANAGER rather than through the provider. Naming the repository and the encryptor is
+what actually decides where a key goes: the ring is now held by an in-memory `IXmlRepository` with an
+explicit `NullXmlEncryptor`. Measured after the change: zero occurrences of either warning, and no
+`DataProtection-Keys` directory and no key file anywhere in the container. Not encrypting is safe precisely
+because the ring never leaves memory — there is no file for a reader to find and no shared store for another
+process to reach. A deployment that later introduces a data-protection consumer must replace that
+registration with a persisted, encrypted ring, and the remark on it says so.
+
+The framework's own in-memory repository was deliberately not used: its constructor is not part of the
+documented shared-framework surface, so depending on it would put this registration one patch-level upgrade
+away from failing to compile, for no benefit over fifteen lines implementing the documented contract.
+
+### Refresh tokens still do not survive an API restart, and the constraint that decides it
+
+Runtime testing confirmed what this file already records: a restart of the api container invalidates every
+refresh token, so each signed-in user authenticates again once their access token expires, and the topology
+cannot run a second API replica without sticky routing. **This is unchanged, and the reason is a rule rather
+than a preference.** Persisting the state needs a table, and the governing constraint of this migration is
+that the existing SQL Server schema is immutable — the target's entity inventory is a fixed set of legacy
+tables with no refresh-token table among them, and an earlier revision that created one is exactly what had
+to be withdrawn, because against the unaltered database sign-in could not complete at all. The migration
+plan also registers the token service as a singleton, which is only coherent for a store that holds its own
+state. So the store is process-local by construction, and the honest response to the finding is to make the
+operational consequence impossible to miss rather than to break the rule: the deployment facts now appear in
+`README.md` under *Operating the topology* — treat a restart as a sign-out, run one API instance, introduce a
+shared durable store behind `IRefreshTokenStore` before scaling out — beside the store's own remarks and the
+detailed account earlier in this file. Verified in the browser: a refresh rejected after a restart returns
+the user to the sign-in screen with the session cleared and no console error.
+
+### Six behaviours that were reported and are deliberately unchanged
+
+Each was measured, and each is either mandated by the preserved container examples or a consequence of a
+decision recorded above. Recording them matters because an unexplained accepted finding reads later as an
+oversight.
+
+- **Immutable assets emit two `Cache-Control` lines.** `expires 1y` contributes `max-age=31536000` and an
+  `Expires` date; the `add_header` contributes `public, immutable`. A client joins repeated field lines with
+  commas, and a browser was measured reporting exactly `max-age=31536000, public, immutable`. Both directives
+  come from the preserved example, the behaviour is correct, and collapsing them would be a deviation with
+  nothing to gain.
+- **`docker compose` prints an obsolete-`version` warning on every invocation.** The `version` key is part of
+  the preserved compose file, the exit code is unaffected, and the file's own header already says the warning
+  is expected and must not be "fixed".
+- **The literal `docker-compose` spelling cannot run.** Compose v1 is end-of-life and absent from current
+  Docker distributions, so the plan's gate commands as literally written exit 127 without starting anything.
+  Every gate passes on the supported two-word spelling, including a full `--no-cache` build; that spelling is
+  what `README.md` documents and what was executed. This is a tooling fact, and no product change can address
+  it.
+- **A running container's `docker inspect` exposes the injected connection string and signing key.** The
+  preserved compose file delivers both as environment variables, so anyone who can reach the Docker socket
+  can read them from a live container. Runtime testing confirmed that this is the ONLY surface that does:
+  neither value appears in either image's history, layers, configuration or filesystem, in the served bundle,
+  or in either container's logs — zero occurrences everywhere, including for an issued access token, and the
+  browser holds tokens in memory with local storage, session storage and cookies all empty.
+  `docker/.env.example` now documents how a hardened deployment moves both values to file-based or managed
+  secrets without any code change, and records that doing so is a deliberate deviation.
+- **`/health` is not reachable through `:4200`.** Only `/api/` is proxied. The health views are anonymous on
+  the API's own published port, which is where the container probe and the end-to-end gate read them.
+- **`/API/v1/...` is not proxied.** nginx prefix locations are case-sensitive, and the production bundle
+  emits only lower-case paths from a constant rather than from caller input. Widening the surface would proxy
+  requests the application never makes. Both facts are now stated in the configuration itself.
+
+### Four observations recorded outside the checkpoint's scope, and why three are not defects
+
+- **Sign-in returns an authority-minimised identity.** `POST /api/v1/auth/login` reports empty role and
+  permission collections and `isPortalAdministrator` false, while `GET /api/v1/auth/me` reports the real
+  values for the same token in the same second. This is the documented design — the snapshot carried on a
+  token-issuing response is identity and display fields only, and expanded authority is available from the
+  explicit current-user read — and the application hydrates from `/auth/me` immediately, so nothing renders
+  from the minimised copy.
+- **An absent membership bound renders an entirely empty cell** where other absent values render an em dash.
+  That is deliberate legacy parity, recorded on the component that does it: the legacy screen asserted no
+  state for an absent bound, so neither does this one.
+- **The portal listing reports three accounts where the account screen lists two.** Both are legacy-faithful
+  and they count different things: the listing counts every tenant-membership row regardless of authorisation
+  state, as the legacy grid did, while the account screen excludes super users unless asked to include them.
+- **Sign-out carries no `Authorization` header.** The request presents the refresh token, which is the
+  credential being withdrawn; the access token is self-contained and expires on its own, as recorded earlier
+  in this file.

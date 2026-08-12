@@ -190,9 +190,54 @@ report rather than a container fault.
 The API image installs ICU and turns globalisation-invariant mode off, because the
 mandated Alpine runtime base sets that mode and the SQL Server client library
 refuses to open a connection while it is on. That two-line addition to the runtime
-stage of `docker/api.Dockerfile` is the one documented deviation from the preserved
-container example, and it is applied rather than merely described so the composed
-topology works as delivered. The reasoning is recorded in `MIGRATION_NOTES.md`.
+stage of `docker/api.Dockerfile` is one of the documented deviations from the
+preserved container example, and it is applied rather than merely described so the
+composed topology works as delivered. Every deviation is recorded in
+`MIGRATION_NOTES.md`.
+
+`docker compose` — two words — is the invocation throughout. The legacy
+`docker-compose` script is end-of-life and absent from current Docker
+distributions, so the commands above are also how the migration plan's container
+build and end-to-end gates are executed; a literal v1 spelling exits 127 without
+starting anything, which is a tooling fact rather than a project one.
+
+Every `docker compose` command prints `the attribute 'version' is obsolete, it will
+be ignored`. That warning is expected and must not be "fixed": the `version` key is
+part of the compose file the migration plan preserves verbatim, the exit code is
+unaffected, and deleting the key would be a deviation with nothing to gain.
+
+### Operating the topology
+
+- **Redeploying the API alone is supported.** `docker compose up -d
+  --force-recreate api` may place the API container on a different address, and the
+  front end resolves the API per request rather than once at start-up, so it follows
+  the new address by itself. Calls made in the first few seconds may be answered
+  `503` with `Retry-After: 5` and an RFC 7807 body while the ten-second DNS entry
+  ages out; nothing needs restarting. The front end also starts and keeps serving
+  the application while the API is absent — only `/api/` calls fail, and they fail
+  with a problem document rather than an HTML error page.
+- **Treat an API restart as a sign-out.** Refresh-token state is held in the API
+  process, because the DotNetNuke schema this API maps onto is immutable and owns no
+  table for it. A restart or a redeploy therefore invalidates every refresh token:
+  access tokens already issued stay valid until they expire, and after that each
+  signed-in user authenticates again. The front end handles this cleanly — a
+  rejected refresh returns the user to the sign-in screen — but the effect is
+  visible, so a redeploy is best scheduled accordingly.
+- **Run exactly one API instance.** For the same reason, a second replica without
+  sticky routing would reject refresh tokens issued by the first. Introduce a
+  shared, durable store behind `IRefreshTokenStore` before scaling out.
+- **A database outage is reported as a dependency failure, not a server fault.**
+  Data endpoints answer `503` with `Retry-After` while `/health` and `/health/live`
+  stay `200` and `/health/ready` reports `503`. The API is not restarted by the
+  outage and recovers on its own when the database returns.
+- **`/health` is not reachable through `:4200`.** Only `/api/` is proxied. Probe the
+  health views on the API's own port, which is what the container health check and
+  the end-to-end gate do.
+- **Deployment values arrive as environment variables**, which means anyone able to
+  reach the Docker socket can read them from a running container with `docker
+  inspect`. That is inherent to the compose file the plan preserves; for a hardened
+  deployment `docker/.env.example` describes how to deliver the same values from a
+  secret store instead.
 
 ## Contributing to the migration
 

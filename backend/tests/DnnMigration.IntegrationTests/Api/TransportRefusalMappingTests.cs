@@ -1,4 +1,5 @@
 using DnnMigration.Api.ErrorHandling;
+using DnnMigration.Domain.Abstractions.Services;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -103,9 +104,17 @@ public sealed class TransportRefusalMappingTests
                 return ValueTask.FromResult(true);
             });
 
+        // Answered "the store is unavailable" on purpose, which is the wrong answer for a transport refusal.
+        // The arm that classifies a store outage sits BELOW this one, so the host's status must survive the
+        // classifier saying yes; a handler that consulted the classifier first would answer 503 for an
+        // oversized body and fail here.
+        Mock<IStoreFailureClassifier> storeFailures = new(MockBehavior.Strict);
+        storeFailures.Setup(classifier => classifier.IsStoreUnavailable(It.IsAny<Exception?>())).Returns(true);
+
         GlobalExceptionHandler handler = new(
             problemService.Object,
             problemFactory.Object,
+            storeFailures.Object,
             factory.CreateLogger<GlobalExceptionHandler>());
 
         DefaultHttpContext httpContext = new();

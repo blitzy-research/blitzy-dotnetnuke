@@ -1,4 +1,5 @@
 using DnnMigration.Api.ErrorHandling;
+using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
@@ -114,9 +115,17 @@ public sealed class DuplicateKeyMappingTests
                 return ValueTask.FromResult(true);
             });
 
+        // The store-failure classifier is asked only after the duplicate arm has declined, so it is given
+        // the answer that would be WRONG for this failure - "the store is unavailable" - deliberately. A
+        // handler that consulted it before the specific arms, or instead of them, would answer 503 here and
+        // fail this fact; one that keeps the order answers 409 whatever the classifier says.
+        Mock<IStoreFailureClassifier> storeFailures = new(MockBehavior.Strict);
+        storeFailures.Setup(classifier => classifier.IsStoreUnavailable(It.IsAny<Exception?>())).Returns(true);
+
         GlobalExceptionHandler handler = new(
             problemService.Object,
             problemFactory.Object,
+            storeFailures.Object,
             factory.CreateLogger<GlobalExceptionHandler>());
 
         DefaultHttpContext httpContext = new();

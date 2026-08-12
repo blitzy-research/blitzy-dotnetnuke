@@ -486,6 +486,15 @@ public static class DependencyInjection
         // user repository may reach it, and giving it an abstraction would invite the application layer
         // to depend on a credential store directly.
         services.AddScoped<MembershipStore>();
+
+        // MIGRATION: the transport can now tell a store outage from a defect, and this registration is
+        // the whole mechanism. A SINGLETON, and it must be: the type holds no state, reads no clock and
+        // touches no connection, and its consumer is the exception handler, which the framework registers
+        // as a singleton and which therefore cannot capture anything scoped. It is registered here rather
+        // than with the platform services because the knowledge it encodes is provider knowledge - error
+        // severity classes and client fault types - and this assembly is the only one permitted to hold
+        // that. See SqlStoreFailureClassifier for the measured evidence behind the rule it applies.
+        services.AddSingleton<IStoreFailureClassifier, SqlStoreFailureClassifier>();
     }
 
     /// <summary>Registers the nine repositories.</summary>

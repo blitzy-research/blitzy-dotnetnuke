@@ -1,6 +1,7 @@
 using System.Text;
 using DnnMigration.Api.Middleware;
 using DnnMigration.Application.Dtos.Common;
+using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
@@ -206,6 +207,47 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         + "Reload the resource and submit different values.";
 
     /// <summary>
+    /// Explanation returned when a dependency this request needed could not be reached or could
+    /// not serve.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: a database outage used to be answered 500 on every data endpoint. The payload
+    /// disclosed nothing and the readiness view already reported the outage as 503 to an
+    /// orchestrator, so the defect was in the INSTRUCTION the status carried: 500 says "this
+    /// server has a fault, report it", while the truth was "a dependency is down, retry
+    /// shortly". Measured during runtime testing with the database stopped, where sign-in was
+    /// answered 500.
+    /// </para>
+    /// <para>
+    /// The wording says "a service this request depends on" rather than naming the store. Which
+    /// dependency failed is an infrastructure fact of no use to a caller, and the alternative
+    /// wording would tell an unauthenticated caller which component to probe. It says what can be
+    /// acted on - retry, and quote the reference if it persists - and the reference is what joins
+    /// the report to the log entry that does name the failure in full.
+    /// </para>
+    /// </remarks>
+    private const string StoreUnavailableDetail =
+        "A service this request depends on is temporarily unavailable. Retry after a short delay, "
+        + "and quote the "
+        + CorrelationIdMiddleware.HeaderName
+        + " response header if the problem persists.";
+
+    /// <summary>
+    /// Value of the <c>Retry-After</c> header sent with a 503, in seconds.
+    /// </summary>
+    /// <remarks>
+    /// Five seconds, and a delta-seconds form rather than a date, because a date requires the
+    /// caller's clock to agree with this server's. The figure is a hint and nothing depends on
+    /// it being right: it is short enough that a caller retrying on it recovers promptly from a
+    /// brief failover, and long enough that a client honouring it does not become a load
+    /// generator against a store that is already struggling. The same header and figure are
+    /// emitted by the reverse proxy for the case it answers - the API being unreachable
+    /// altogether - so a client sees one consistent hint whichever hop reports the condition.
+    /// </remarks>
+    private const string RetryAfterSeconds = "5";
+
+    /// <summary>
     /// Text recorded in place of a route template when the failure happened before, or
     /// outside, endpoint selection.
     /// </summary>
@@ -276,6 +318,7 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
 
     private readonly IProblemDetailsService _problemDetailsService;
     private readonly ProblemDetailsFactory _problemDetailsFactory;
+    private readonly IStoreFailureClassifier _storeFailures;
     private readonly ILogger<GlobalExceptionHandler> _logger;
 
     /// <summary>
@@ -299,6 +342,15 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
     /// status-code title and the trace identifier - so this type's output cannot drift from
     /// every other problem response the application produces.
     /// </param>
+    /// <param name="storeFailures">
+    /// The classifier that reports whether a failure means the backing store was unreachable
+    /// rather than that this application has a defect. It is injected rather than consulted
+    /// statically because the knowledge it applies is database-provider knowledge, and this
+    /// project references no database provider: the contract is declared in the Domain and
+    /// implemented in the persistence assembly, which is the only assembly permitted to name a
+    /// client type. See <see cref="Describe(Exception, IStoreFailureClassifier)"/> for what the
+    /// answer changes.
+    /// </param>
     /// <param name="logger">
     /// The logger that receives the diagnostic description of the failure. It is the only
     /// destination for diagnostic detail; none of it reaches the response. What is recorded is
@@ -307,20 +359,23 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
     /// withholds.
     /// </param>
     /// <exception cref="ArgumentNullException">
-    /// <paramref name="problemDetailsService"/>, <paramref name="problemDetailsFactory"/> or
-    /// <paramref name="logger"/> is <see langword="null"/>.
+    /// <paramref name="problemDetailsService"/>, <paramref name="problemDetailsFactory"/>,
+    /// <paramref name="storeFailures"/> or <paramref name="logger"/> is <see langword="null"/>.
     /// </exception>
     public GlobalExceptionHandler(
         IProblemDetailsService problemDetailsService,
         ProblemDetailsFactory problemDetailsFactory,
+        IStoreFailureClassifier storeFailures,
         ILogger<GlobalExceptionHandler> logger)
     {
         ArgumentNullException.ThrowIfNull(problemDetailsService);
         ArgumentNullException.ThrowIfNull(problemDetailsFactory);
+        ArgumentNullException.ThrowIfNull(storeFailures);
         ArgumentNullException.ThrowIfNull(logger);
 
         _problemDetailsService = problemDetailsService;
         _problemDetailsFactory = problemDetailsFactory;
+        _storeFailures = storeFailures;
         _logger = logger;
     }
 
@@ -410,7 +465,7 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
             return false;
         }
 
-        (int statusCode, string detail) = Describe(exception);
+        (int statusCode, string detail) = Describe(exception, _storeFailures);
 
         // Level follows the status family: a caller who provoked a 4xx has not broken the
         // server and must not raise an error alert, while anything resolving to 5xx has.
@@ -452,6 +507,17 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         // Assigned before the payload is written: the status carried inside the body is a
         // copy for the reader's benefit and does not set the status line.
         httpContext.Response.StatusCode = statusCode;
+
+        // MIGRATION: a 503 carries a retry hint, because a status that says "come back later" and
+        // then declines to say when leaves a client to invent an interval - and the interval it
+        // invents is usually "immediately", which is how an already-struggling dependency acquires a
+        // retry storm. Written through the typed accessor so the header name and its delta-seconds
+        // form cannot drift, and only for 503: on a 500 there is nothing to come back for, and
+        // advertising a retry would be an invitation to repeat a request that will fail identically.
+        if (statusCode == StatusCodes.Status503ServiceUnavailable)
+        {
+            httpContext.Response.Headers.RetryAfter = RetryAfterSeconds;
+        }
 
         // Published for the request-logging stage, which unwound before this decision was made
         // and would otherwise record the status the response carried BEFORE the failure - which
@@ -498,6 +564,10 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
     /// the caller.
     /// </summary>
     /// <param name="exception">The exception being translated.</param>
+    /// <param name="storeFailures">
+    /// The classifier consulted after the table below has been exhausted, to tell a store
+    /// outage apart from a defect.
+    /// </param>
     /// <returns>The status code to report and the <c>detail</c> text to publish.</returns>
     /// <remarks>
     /// <para>
@@ -507,10 +577,11 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
     /// </para>
     /// <para>
     /// No persistence or data-access type is named, and none could be: this project
-    /// references neither the object-relational mapper nor the database client, so a failure
-    /// from either arrives as the general case. That is the correct outcome as well as the
-    /// only available one, since such a failure is a server-side fault and telling its
-    /// varieties apart is the application layer's business rather than the transport's.
+    /// references neither the object-relational mapper nor the database client. A failure from
+    /// either therefore cannot be recognised BY TYPE here, which is why the one store-shaped
+    /// question this type does ask is asked through an injected Domain contract whose
+    /// implementation lives in the persistence assembly. The rule that the transport names no
+    /// provider type holds unchanged.
     /// </para>
     /// <para>
     /// MIGRATION: SEC-F6 ADDED ONE STORE-SHAPED ARM, AND IT DOES NOT WEAKEN THE RULE ABOVE. A unique
@@ -521,7 +592,9 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
     /// as the general case.
     /// </para>
     /// </remarks>
-    private static (int StatusCode, string Detail) Describe(Exception exception) => exception switch
+    private static (int StatusCode, string Detail) Describe(
+        Exception exception,
+        IStoreFailureClassifier storeFailures) => exception switch
     {
         // A broken invariant means the request asked the model to enter a state it must never
         // occupy, so the request is what is at fault and 400 is what the caller needs to hear.
@@ -603,6 +676,30 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
             badRequest.StatusCode == StatusCodes.Status413PayloadTooLarge
                 ? PayloadTooLargeDetail
                 : MalformedRequestDetail),
+
+        // MIGRATION: A DEPENDENCY BEING DOWN IS NOT THIS SERVER HAVING A DEFECT, AND 503 IS WHAT SAYS SO.
+        // This arm is reached only after every arm above has declined, so nothing already classified is
+        // affected: a broken invariant is still 400, a refusal 403, a duplicate 409 and a transport fault
+        // whatever the host decided. What changes is the residue - the failures that used to fall to the
+        // general case below - and only the part of it that a classifier can positively identify as an
+        // availability condition of the store or of the path to it.
+        //
+        // It is a GUARD rather than a type pattern for the reason set out on the constructor parameter:
+        // this project references no database provider, so the exception cannot be recognised by type
+        // here. The question is asked of a Domain contract whose implementation lives in the persistence
+        // assembly, which is the only assembly permitted to know that a severity class of 20 or more means
+        // the connection is gone. That keeps the rule intact - the layer that owns the classification
+        // performs it - while letting the transport act on the answer, which is the only layer that can
+        // choose a status code.
+        //
+        // The classification is deliberately conservative: anything it cannot positively identify stays
+        // 500. Answering 503 for a defect would tell a caller to retry a request that can never succeed
+        // and would mask a fault behind a retry loop, which is strictly worse than the 500 this replaces.
+        // The log level follows the status family with no further change - both are 5xx - so an outage is
+        // still recorded at Error and still raises whatever a deployment alerts on.
+        Exception when storeFailures.IsStoreUnavailable(exception) => (
+            StatusCodes.Status503ServiceUnavailable,
+            StoreUnavailableDetail),
 
         // MIGRATION: the general case publishes fixed text and never the exception's own
         // message, in every environment. That is not conservatism about detail. An
