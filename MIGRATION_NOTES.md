@@ -16,6 +16,1236 @@ legacy configuration files are read-only reference inputs. They are unmodified b
 this work, so the legacy application remains buildable and deployable exactly as
 it was.
 
+This document has two parts. **Sections 1 to 13 immediately below are the canonical
+record**: the settled, cross-referenced account of what changed, why, and what an
+integrator observes as a result. **Everything after Section 13 is the append-only
+register**, where each agent that ported a piece of the platform recorded its own
+findings as it went. The canonical record is the place to start; the register is the
+evidence behind it and carries detail this summary deliberately does not repeat.
+
+## 1. Purpose and scope
+
+### 1.1 What this document is for
+
+This file is a contractual deliverable, not a courtesy. The migration's governing rule
+is *preserve behaviour, document divergence*: identical inputs must produce identical
+outcomes, and where exact equivalence was impossible — most significantly the password
+store — the divergence is written down here and annotated inline at the point of
+departure with a `// MIGRATION:` comment. Nothing is absorbed silently. A behavioural
+difference that is not in this file is a defect, not a decision.
+
+The corollary matters just as much. Where the legacy code contains a discovered
+weakness, it is annotated and **left alone** rather than opportunistically improved. The
+migration is not a licence to redesign. Exactly one exception to that discipline appears
+below — the tenant-resolution predicate in Section 4.2 — and it is carried only because
+leaving it in place would have imported a tenant-isolation defect into new code. It is
+recorded as a difference, not presented as a bug fix.
+
+### 1.2 The shape of the migration
+
+| Dimension | Legacy | Target |
+| --- | --- | --- |
+| Language | VB.NET, `OptionStrict On` in the class library and **off** in the web tier | C# 12, `Nullable enable`, warnings as errors |
+| Runtime | .NET Framework 2.0 | .NET 8 (LTS) |
+| Presentation | ASP.NET Web Forms — 15 `.aspx` pages, 147 `.ascx` user controls, ViewState and postbacks | Angular 19 single-page application, standalone components, Signals |
+| Server role | Page renderer | ASP.NET Core Web API acting as a backend-for-frontend, JSON only, versioned under `/api/v1` |
+| Data access | ADO.NET through `SqlHelper` and stored procedures | Entity Framework Core 8 against the **existing, unaltered** SQL Server schema |
+| Hosting | IIS with `System.Web` and `bin` assembly probing | Kestrel on Linux Alpine behind nginx, two containers composed together |
+
+The legacy product is DotNetNuke 4.9.0, assembly version `4.9.0.85`
+(`Library/AssemblyInfo.vb:L48`, `Website/App_Code/AssemblyInfo.vb:L49`). There was no
+in-place upgrade path to take: `Library/DotNetNuke.Library.vbproj` is a pre-3.5 project
+file declaring `ToolsVersion="3.5"`, `<ProductVersion>8.0.50727</ProductVersion>` — the
+Visual Studio 2005 build number — and `<OldToolsVersion>2.0</OldToolsVersion>`, with **no
+`TargetFrameworkVersion` element at all**. Every line of production code in the target was
+therefore re-authored rather than converted.
+
+The size of the source is worth stating once, because it is the reason the migration is
+scoped to five domains rather than to the whole product. Measured directly in this checkout:
+**634 `.vb` files** — 504 under `Library/` and 130 under `Website/` — together with 15
+`.aspx` pages, 147 `.ascx` user controls, **zero** `.master` files, and 88
+`*.SqlDataProvider` upgrade scripts. Of those 634 files, 84 sit in the five in-scope
+`Library/Components` trees and 39 are the admin code-behinds that supply the screen and
+endpoint semantics.
+
+Five domain models are preserved by name and by behaviour — **Portal** (the multi-tenant
+site container), **Module** (a pluggable content component with a lifecycle), **User**
+(an identity with credentials and a profile), **Role** (a permission grouping) and
+**Permission** (a granular access-control entry). **Tab**, the DotNetNuke page
+abstraction, is drawn in as a supporting aggregate because module placement, tab
+permissions and portal navigation are inseparable from it:
+`Library/Components/Tabs/TabController.vb` is 1,302 lines and
+`Library/Components/Tabs/TabInfo.vb` is 616, and the permission tables are keyed by
+`TabID`.
+
+The migration is **side by side**. The `Library/` and `Website/` trees, both legacy
+solution files and the legacy configuration files are read-only reference inputs and are
+byte-identical to their committed state; no file in them was updated and none was
+deleted. The legacy application therefore remains buildable and deployable exactly as it
+was, and this work introduces **no regression surface** into it. Build, test and run
+instructions for the new stacks live in [`./README.md`](./README.md).
+
+### 1.3 Governing constraints, and the absence of project rules
+
+**No user-specified rules were provided for this project.** The rules document returns a
+single line stating exactly that. No rule is invented to fill the gap, no file entered
+scope on rule grounds, and the absence is not treated as licence to lower the bar.
+
+Four bodies of requirement are held with rule force in their place:
+
+1. **The Minimal Change Clause and migration discipline**, six items: preserve domain
+   logic without opportunistic optimisation; keep the data model faithful to the existing
+   schema; preserve behaviour and document every divergence; preserve UI functional
+   parity including validation rules and error wording; derive code organisation from
+   patterns discovered in the source rather than invented; and annotate migrations in
+   both stacks, with this document as the register.
+2. **System boundaries**, comprising the exclusion list in Section 13, the preservation
+   requirements for tenant isolation, module registration and lifecycle and the
+   user/role/permission model, and the database directive that forbids altering existing
+   table structures.
+3. **The non-functional requirements** for both stacks — transport security, short-lived
+   tokens with refresh rotation, a cross-origin policy restricted to the application's own
+   origin, rate limiting on the authentication endpoints, API versioning, RFC 7807 error
+   bodies, correlation identifiers, structured logging that excludes sensitive values,
+   strict TypeScript, ahead-of-time production builds, in-memory token storage, lazy
+   loading, `OnPush` change detection and accessibility.
+4. **The seven validation gates**, treated as acceptance criteria rather than
+   suggestions. Their commands and outcomes are in Section 11.
+
+Beyond those, an enterprise baseline was self-imposed: layering enforced by the compiler
+rather than by convention (the Domain project declares zero project references and zero
+third-party packages, so an accidental infrastructure dependency is a build failure);
+warnings as errors with exactly two narrowly justified suppressions; nullable reference
+types everywhere; asynchronous I/O end to end with no synchronous bridging; repository
+and unit-of-work behind interfaces; DTO boundaries so no entity crosses the wire;
+declarative request validation; deterministic dependency restoration with no floating
+versions; and a non-root container user.
+
+### 1.4 On performance
+
+**No throughput or latency target is asserted anywhere in this document, and none was
+measured.** The legacy system could not be compiled in the authoring environment
+(Section 11), so no baseline exists to compare against, and static analysis cannot supply
+one. Four improvements are nevertheless structural consequences of the target
+architecture rather than optimisations anyone chose: server-side page assembly is gone,
+because the proxy serves a static bundle and the API returns JSON; ViewState round-tripping
+is gone, because client state lives in signal stores; data access is asynchronous end to
+end rather than synchronous reader-based; and caching is deliberate and inspectable
+instead of coarse (Section 4.11). The Minimal Change Clause forbids optimising ported
+logic, so none was optimised.
+
+## 2. Inline annotation convention
+
+Every divergence in this document also carries a `// MIGRATION:` comment at the place in
+the code where it happens. The two directions of that rule are equally binding: a reader
+of the code should never have to come here to discover that a decision was made, and a
+reader of this document should be able to find the code that implements it.
+
+The convention follows the standard established in `docs/technical-specifications.md`
+§0.7.4 (L1326–L1357). Backend, C#:
+
+```csharp
+// MIGRATION: VB ByRef parameter converted to a Result<T> return value
+// MIGRATION: VB Nothing check converted to null pattern
+if (portal is null) { }
+
+// MIGRATION: SqlHelper.ExecuteReader replaced with EF Core LINQ
+var portals = await _context.Portals.ToListAsync(cancellationToken);
+
+// MIGRATION: Original stored procedure: dbo.GetPortal
+// MIGRATION: Parameters: @PortalID int
+```
+
+Frontend, TypeScript:
+
+```typescript
+// MIGRATION: Derived from SiteSettings.ascx.vb cmdUpdate_Click handler
+onSave(): void { }
+
+// MIGRATION: Form fields mapped from original ASPX form controls
+portalForm = new FormGroup({
+  // MIGRATION: txtPortalName from SiteSettings.ascx
+  portalName: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
+});
+```
+
+One detail of the earlier standard is deliberately **superseded**. Its example reads
+`// MIGRATION: VB ByRef parameter converted to ref keyword`; the target admits **no `out`
+or `ref` parameter in any public API**, so the conversion is to a `Task<Result<T>>` return
+value instead, and the annotation says so. Section 5 gives the full rule.
+
+Two further conventions are worth stating because they are load-bearing rather than
+cosmetic. Where a decision is a *prohibition* — a thing a later maintainer must not
+"fix" — the annotation says so explicitly and in the imperative, as in the empty baseline
+migration's closing line, `DO NOT add any operation to Up or Down`
+(`backend/src/DnnMigration.Infrastructure/Persistence/Migrations/20260730120000_InitialCreate.cs`).
+And where a stored procedure was replaced by LINQ, the annotation records the procedure's
+name and parameter list, so the original contract remains discoverable from the code that
+replaced it even though the procedure is no longer called.
+
+## 3. Architecture transformation summary
+
+Legacy mechanisms that existed only because .NET Framework 2.0 lacked a first-class
+alternative were **deleted rather than translated**. Each row below names the primitive
+that replaced the workaround; a mechanical translation would have faithfully reproduced
+machinery the platform now provides.
+
+| Concern | Legacy mechanism | Target mechanism | Why the workaround was deleted |
+| --- | --- | --- | --- |
+| Provider resolution | `Shared Sub New()` calling `Framework.Reflection.CreateObject(ProviderType, ProviderNamespace, ProviderAssemblyName)`, exposed through `Public Shared Shadows Function Instance()` — `Library/Components/Providers/Data/DataProvider.vb:L31-L50` | Constructor injection via `Microsoft.Extensions.DependencyInjection` | Reflection resolution existed to allow a swappable provider assembly. A container does that natively, with compile-time checked constructors and no probing. |
+| Data-access surface | One abstract class with **269 `MustOverride` members** — `Library/Components/Providers/Data/DataProvider.vb:L26`, 397 lines | Nine repository interfaces in `Domain/Abstractions/Repositories/`, one per aggregate; only the in-scope subset is realised | A single god-interface cannot be implemented partially. Decomposing by aggregate boundary makes each contract implementable, mockable and reviewable. |
+| Command execution | `SqlHelper.ExecuteNonQuery` / `ExecuteReader` / `ExecuteScalar` / `ExecuteDataset` with the procedure name built as `DatabaseOwner & ObjectQualifier & ProcedureName` — `Library/Providers/DataProviders/SqlDataProvider/SqlDataProvider.vb:L272,L276,L280,L288` | `DbSet<T>` LINQ on `DnnDbContext`, with `FromSqlInterpolated` reserved for the few procedures whose logic is not expressible relationally | `SqlHelper` lives only in a source-less binary (Section 5). String-concatenated object names are also an injection surface that parameterised LINQ removes. |
+| Row hydration | Reflection hydrator `Library/Components/Shared/CBO.vb` (729 lines) **and** hand-written sentinel reads at `Library/Components/Modules/ModuleController.vb:L54,L66-L72` | The EF Core materialiser | Two hand-rolled hydration paths for one job. See Section 4.13. |
+| Presentation state | ViewState and the postback lifecycle across 147 `.ascx` controls | Angular Signals — `signal`, `computed`, `asReadonly` — in feature-scoped stores | Round-tripping control state through the server was a workaround for a stateless protocol on a stateful UI model. Client-held reactive state removes both the payload and the lifecycle. |
+| Method contracts | 27 positional parameters on `UpdatePortalInfo` — `Library/Components/Portal/PortalController.vb:L1568`; untyped `GetPortals() As ArrayList` — `:L1263` | Request and response DTOs, `PagedResult<T>`, `Result<T>` | A 27-parameter positional call cannot be read or safely reordered, and an `ArrayList` erases the element type at the contract boundary. |
+| Ambient request state | A mutable per-request composite whose `ActiveTab` is settable — `Library/Components/Portal/PortalSettings.vb:L398,L548` — reached statically through `HttpContext.Current.Items("PortalSettings")` at `Library/Components/Portal/PortalController.vb:L1209-L1210` | An immutable scoped `IPortalContext`, resolved once per request by `Api/Middleware/PortalAliasResolutionMiddleware.cs` | Ambient mutable state is untestable and order-dependent. Resolving once and freezing makes tenant facts a request invariant. |
+| Authentication | ASP.NET 2.0 `SqlMembershipProvider` with reversible passwords, plus `DNNRoleProvider` | JWT bearer tokens with refresh rotation, BCrypt hashing, policy-based authorisation | See Section 4.1. Reversible storage cannot be carried forward on security grounds. |
+| Error handling | Ad-hoc and provider-specific; the plumbing lived in HTTP modules and page-level handlers | One `IExceptionHandler` registered with `AddProblemDetails()`, emitting RFC 7807 bodies | See Section 4.10 — this is net-new, not a translation. |
+| Hosting | IIS, `System.Web`, and `probing privatePath="bin;bin\HttpModules;bin\Providers;bin\Modules;bin\Support;"` | Kestrel on Alpine Linux behind an nginx reverse proxy | Assembly probing and IIS coupling have no counterpart and no purpose in the target. |
+
+## 4. Behavioural divergences
+
+Each entry states what the legacy behaviour was, what the target behaviour is, why the
+change was necessary, and what an operator, an end user or an integrator observes as a
+result. Every entry is annotated in the code as described in Section 2.
+
+### 4.1 Password storage, and the removal of password retrieval
+
+This is the most consequential divergence in the migration.
+
+**Legacy behaviour.** Credentials were stored in a *reversible* form.
+`Website/release.config:L218` selects `AspNetSqlMembershipProvider` as the membership
+default and `Website/release.config:L236-L246` registers it with
+`passwordFormat="Encrypted"` — Triple-DES — together with
+`enablePasswordRetrieval="true"`, `enablePasswordReset="true"`,
+`requiresQuestionAndAnswer="false"`, `minRequiredPasswordLength="7"`,
+`minRequiredNonalphanumericCharacters="0"` and `requiresUniqueEmail="false"`. The key that
+reverses that encryption is committed to source control in plain sight:
+`Website/release.config:L89-L93` declares a `machineKey` element with
+`validationKey="AutoGenerate,IsolateApps"`, `decryption="3DES"`, `validation="SHA1"` and a
+literal 48-character hexadecimal `decryptionKey` at `:L91`. Anyone with a copy of the
+source could therefore decrypt every stored password. That key value is deliberately
+**not reproduced here**; the citation is precise enough to verify and copying it again
+would serve no purpose. Earlier in the product's history the storage was not even
+encrypted: `Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L97-L110`
+declares `[Password] [nvarchar] (20) NOT NULL` in plaintext on `[dbo].[Users]`.
+
+**Target behaviour.** Passwords are hashed one way with BCrypt
+(`BCrypt.Net-Next` 4.0.3) in
+`backend/src/DnnMigration.Infrastructure/Security/BcryptPasswordHasher.cs`. Reversible
+storage is not reproduced, no decryption key appears in any new configuration file, and
+**password retrieval is removed outright** — no endpoint and no screen exposes it.
+Password *reset* remains available.
+
+**Why the difference was necessary.** Reproducing reversible storage would carry a known
+credential-disclosure weakness into new code. This is the one place where the
+behaviour-preservation default is overridden on security grounds, which is why BCrypt is
+a dependency of the target rather than an optional convenience.
+
+**Observable consequence.** A one-way hash cannot verify a credential stored under the
+legacy scheme, so legacy passwords cannot be validated as they stand. The adopted path is
+**re-hash on first successful login, with administrative reset as the fallback** for
+accounts that never sign in again. Until a row has been re-hashed it is still held in its
+legacy format, so that format has to remain expressible: the legacy `PasswordFormat`
+enumeration is ported member for member with its persisted ordinals `Clear = 0`,
+`Hashed = 1` and `Encrypted = 2` unchanged. Any integration that read a password back
+through the membership API has no counterpart and must be reworked around reset.
+
+**Preserved unchanged.** The legacy password *policy* is carried over verbatim as
+FluentValidation rules — minimum length seven, zero required non-alphanumeric characters,
+no question-and-answer requirement, email uniqueness not enforced. Tightening a password
+policy during a migration locks out existing users, so hardening is deliberately left as
+a separate, explicit decision rather than smuggled in here.
+
+### 4.2 Portal alias resolution: a substring match replaced by an exact match
+
+**Legacy behaviour.** Despite its name, `GetPortalSettings` was not a settings reader — it
+was the *tenant-resolution* procedure. It is created at
+`Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L4569-L4600`
+taking `@PortalAlias nvarchar(200)` and `@TabID int`, resolves the tenant with
+
+```sql
+select @PortalID = min(PortalID) from Portals where  PortalAlias like '%' + @PortalAlias + '%'
+```
+
+and then verifies through a left outer join that the requested tab belongs to that portal.
+It was dropped and recreated across seven successive scripts in the 01.00.x band, appeared
+in templated form at `02.00.00.SqlDataProvider:L2284`, and was finally **dropped for good**
+at `02.02.00.SqlDataProvider:L267` with no recreate, superseded by
+`create procedure {databaseOwner}{objectQualifier}GetPortal` taking `@PortalId int` at
+`02.02.00.SqlDataProvider:L274`.
+
+**Target behaviour.** `backend/src/DnnMigration.Api/Middleware/PortalAliasResolutionMiddleware.cs`
+performs one **exact** lookup on the host as sent, ports included, together with the
+request path, and refuses the request when it cannot be resolved to exactly one tenant.
+Matching remains case-insensitive by design, because stored aliases were authored by
+hand. The legacy resolver's fuzzy fallback stages are not reproduced, and resolution never
+writes.
+
+**Why the difference was necessary.** A containment predicate combined with
+`min(PortalID)` is a latent multi-tenant mis-resolution hazard: an alias that is a
+substring of another portal's alias can resolve to the wrong tenant, and `min` makes the
+outcome depend on insertion order rather than on the request. Carrying that forward would
+have imported a tenant-isolation defect into new code, which is the one class of legacy
+weakness the migration does not preserve.
+
+**Observable consequence.** A host name that previously resolved *by accident* — because
+it happened to be a substring of a stored alias — now returns a refusal instead of
+serving another tenant's data. Deployments that relied on that accident must add the alias
+explicitly. This is recorded as a deliberate behavioural difference, not advertised as a
+fix.
+
+### 4.3 The `Null` sentinel system, and the identity-seed double collision
+
+**Legacy behaviour.** `Library/Components/Shared/Null.vb` defines a sentinel for every
+primitive: `NullInteger` is `-1`, `NullByte` is `255`, the floating-point and decimal
+sentinels are `MinValue`, `NullDate` is `Date.MinValue`, `NullBoolean` is `False`,
+`NullGuid` is `Guid.Empty`, and — consequentially — **`NullString` is the empty string,
+not null**. Its `SetNull` helper at `:L88` translates `DBNull` into those sentinels on
+every read. This is the codebase's null contract, not a vestigial utility: measured across
+the five in-scope trees there are **168 `Null.SetNull` call sites**, distributed Portal 36,
+Modules 57, Users 12, Security 38 and Tabs 25.
+
+**The collision.** Two sentinel values are simultaneously legitimate primary-key values in
+the shipped schema.
+
+| Value | As a sentinel | As data |
+| --- | --- | --- |
+| `-1` | `Null.NullInteger`, the "no integral value" marker, and the value the legacy null test reported as absent for *every* integer | The identity seed of `dbo.Portals.PortalID`, declared `IDENTITY (-1, 1)` at `01.00.00.SqlDataProvider:L76-L77`, so the **first** portal row is keyed `-1` and the second `0`. Shipped legacy code passes `-1` *as a portal identifier* to reach host-level rows. |
+| `0` | Not a sentinel, but indistinguishable from an uninitialised `Integer` | The identity seed of `dbo.Roles.RoleID`, declared `IDENTITY (0, 1)` at `01.00.00.SqlDataProvider:L114-L115` |
+| `""` | `Null.NullString` | A legitimate stored value; after a read through the legacy path a SQL `NULL` string and an empty string are indistinguishable |
+
+**Target behaviour.** Domain properties use nullable CLR types, so absence is expressed by
+the type system. At the DTO and API boundary the legacy sentinel semantics are preserved
+wherever the contract is externally observable: serialisation must not turn `""` into
+`null` or `-1` into `null` on a response a legacy consumer may read.
+`backend/src/DnnMigration.Domain/ValueObjects/PortalId.cs` exists solely to make the
+collision unrepresentable — it wraps one `int`, validates nothing, and its header forbids
+adding a range check, a reserved constant or an absence marker. Absence is `PortalId?`
+and nothing else. The sibling tables do not even agree on their seeds (`Roles`, `Tabs` and
+`Modules` start at 0; `Users` and `ModuleDefinitions` start at 1), so no value could be
+reserved safely even in principle.
+
+**Why the difference was necessary.** A naive mapping to nullable types produces `null`
+exactly where legacy code tests for `-1`, silently changing branch outcomes; keeping the
+sentinels in the domain would have imported the ambiguity instead. Splitting the treatment
+by layer is the only arrangement that gives an honest domain model *and* an unchanged wire
+contract.
+
+**Observable consequence.** Callers see the values they saw before. Anyone extending the
+model must not treat `-1` as absent, and must not "tidy" a `PortalId?` into a sentinel
+comparison.
+
+### 4.4 The Option Strict asymmetry: every implicit conversion made explicit
+
+**Legacy behaviour.** The two halves of the product compiled under different type rules.
+`Library/DotNetNuke.Library.vbproj:L23-L24` sets `<OptionExplicit>On</OptionExplicit>` and
+`<OptionStrict>On</OptionStrict>` for the class library, but the web tier compiled with
+`Website/release.config:L125` declaring `<compilation debug="false" strict="false">` —
+**Option Strict off**. The 39 admin code-behinds could therefore legally contain late
+binding and implicit narrowing conversions.
+
+**Target behaviour.** C# rejects both outright, so every implicit conversion is made
+explicit during translation. Wherever the coerced result could differ — string-to-numeric
+parsing, `Nothing` collapsing to `0` or `""`, late-bound member access — the difference is
+itemised rather than assumed harmless.
+
+**Why the difference was necessary.** There is no C# equivalent of Option Strict off. A
+line-by-line translation of an Option-Strict-off code-behind either fails to compile or
+compiles to something whose failure mode has moved from a silent coercion to a thrown
+exception.
+
+**Observable consequence.** This is precisely why the admin code-behinds are treated as
+reference inputs for endpoint and screen *semantics* rather than as candidates for
+line-by-line translation. Input that the legacy screen silently coerced now produces an
+explicit RFC 7807 validation response instead of a coerced value — a better outcome, but a
+different one, and therefore recorded here.
+
+### 4.5 CAPTCHA removed from the login flow
+
+**Legacy behaviour.** `Website/DesktopModules/AuthenticationServices/DNN/Login.ascx.vb`
+gated sign-in on a challenge image. `:L59-L61` reads `UseCaptcha` from
+`AuthenticationConfig.GetConfig(PortalId).UseCaptcha`, `:L137-L142` shows the
+`trCaptcha1`/`trCaptcha2` rows and sets the control's messages, and `:L162` guards the
+whole attempt with `If (UseCaptcha And ctlCaptcha.IsValid) OrElse (Not UseCaptcha) Then`.
+The control itself is declared in `Login.ascx:L18-L21`. Inside that guard, `:L164` calls
+
+```vbnet
+UserController.ValidateUser(PortalId, txtUsername.Text, txtPassword.Text, "DNN", _
+                            txtVerification.Text, PortalSettings.PortalName, IPAddress, loginStatus)
+```
+
+where `loginStatus` is a `ByRef` status argument.
+
+**Target behaviour.** The signature becomes
+`Task<Result<LoginResponse>> LoginAsync(LoginRequest, CancellationToken)`. Three things
+disappear with it: the `ctlCaptcha.IsValid` guard, because the in-repository
+`Library/Controls/Captcha` library is out of scope; the literal `"DNN"` authentication-type
+argument, because there is a single JWT path and nothing to select between; and the
+`ByRef loginStatus` out-parameter, whose values now arrive as the failure reason on the
+`Result`. The registration verification code that `txtVerification.Text` carried is a
+distinct concern from the CAPTCHA and is not conflated with it here.
+
+**Why the difference was necessary.** The CAPTCHA control is a Web Forms server control
+with a ViewState-backed challenge; it has no counterpart in a JSON API and porting it
+would have pulled an excluded control library into scope.
+
+**Observable consequence.** Brute-force protection now rests on **rate limiting of the
+authentication endpoints** (`backend/src/DnnMigration.Api/Extensions/RateLimitingExtensions.cs`)
+rather than on a challenge image. An operator who relied on the CAPTCHA should treat the
+rate limit as its replacement and tune it accordingly; a deployment that wants a challenge
+again needs a new component, not a revived one.
+
+### 4.6 Sign-out semantics
+
+**Legacy behaviour.** `Library/Components/Security/PortalSecurity.vb:L79` calls
+`System.Web.Security.FormsAuthentication.SignOut()`. The authentication cookie was the
+session, so clearing it ended the session immediately and server-side.
+
+**Target behaviour.** Access tokens are self-contained and stateless, so there is nothing
+on the server to clear. Sign-out revokes the refresh token, discards the client's copy of
+both tokens, and lets the access token expire on its own. The sign-out request presents the
+refresh token — the credential actually being withdrawn — rather than the access token.
+
+**Why the difference was necessary.** `FormsAuthentication.SignOut` has no stateless
+counterpart. Reproducing immediate server-side revocation would mean validating every
+access token against a server-side store on every request, which is exactly the property
+stateless bearer tokens exist to avoid.
+
+**Observable consequence.** **A previously issued, unexpired access token remains valid
+until it expires**, even after sign-out. The mitigation is deliberate and twofold: the
+access token's lifetime is short, and refresh rotation means the revoked refresh token
+cannot mint a replacement. An integrator who needs immediate revocation must shorten the
+access-token lifetime further and accept the extra refresh traffic.
+
+### 4.7 Localisation is not ported
+
+**Legacy behaviour.** User-facing wording lived in ASP.NET resource files keyed by
+`<ControlID>.<Property>` — for example
+`Website/admin/Portal/App_LocalResources/PortalAlias.ascx.resx`. The in-scope surface is
+**40 resource files**: 37 under the admin `App_LocalResources` directories, distributed
+Portal 11, Users 12, Security 6, Modules 3 and Tabs 5, plus 3 under
+`Website/App_GlobalResources`. Measured against the code, 34 of the 39 admin code-behinds
+call the localisation API (224 `Localization.GetString` calls between them), including
+**11 of the 13 portal admin code-behinds**, and a further 46 call lines sit in the five
+in-scope `Library/Components` trees.
+
+**Target behaviour.** The mechanism is not ported. User-facing strings are authored
+directly in Angular templates, with the `.resx` files read as the **authoritative reference
+for wording** so that labels, help text and error messages stay recognisable to existing
+users. `@angular/localize` is not installed and no translation runtime is introduced.
+
+**Why the difference was necessary.** ASP.NET local resources are a Web Forms feature bound
+to the control tree and the page's implicit localisation pass; there is nothing to
+translate the mechanism *into* without adopting a second, unrequested framework. The
+requirement is functional parity of wording, and reading the resource files satisfies it
+directly.
+
+**Observable consequence.** The application is English-only. Multi-language content and the
+localisation administration screens are out of scope (Section 13), and adding a language
+later means introducing a translation runtime and re-externalising the strings — a known,
+bounded piece of future work rather than a hidden one. The 138 `.resx` files under
+`Website/` are unmodified.
+
+### 4.8 Deferred portal-template members
+
+**Legacy behaviour.** `Library/Components/Portal/PortalController.vb` devotes roughly 630
+lines (`:L281-L914`) to XML portal templates: reading a template document, walking its
+sections and materialising portal content from them, with `ParseTemplate` at `:L1360` as
+the entry point the create path actually uses.
+
+**Target behaviour.** Only what `ParseTemplate` requires to stand up a portal is ported —
+the portal row itself, its alias, its administrator role and the initial tab and module
+placement that make a new portal navigable.
+
+**What is deferred.** Everything else in that range: import and export of a portal to and
+from a template document; the file-system side of template handling, including the
+template's own resource archive and the folder and file rows it would create; template-driven
+seeding of arbitrary module content; the skin and container assignments a template
+declares; and the profile-definition and role-group sections. Each depends on a subsystem
+Section 13 places out of scope — the file system, skinning, the module content providers —
+so porting the template reader without them would produce a parser with nothing to hand
+its output to.
+
+**Why the difference was necessary.** Template import is a fan-out point: it touches every
+excluded subsystem at once. Carrying it would have re-admitted them through the back door.
+
+**Observable consequence.** A portal is created from the API's own request contract, not
+from a `.template` file. An operator who relied on template-driven provisioning — or on
+exporting a portal as a template — has no equivalent, and that is the single largest
+functional reduction in the portal domain.
+
+### 4.9 The users-online purge job is dropped
+
+**Legacy behaviour.** `DotNetNuke.Services.Scheduling` is a 14-file subsystem referenced by
+29 files across the tree, but it touches **exactly one in-scope file**:
+`"Library/Components/Users/Users Online/PurgeUsersOnline.vb"`, which at `:L44` inherits
+`DotNetNuke.Services.Scheduling.SchedulerClient` and at `:L59` takes a
+`ScheduleHistoryItem` in its constructor. Its job was to age out users-online rows.
+
+**Target behaviour.** The job is dropped as an intentional omission. Nothing in the target
+runs on a schedule.
+
+**Why the difference was necessary.** Scheduling administration is out of scope, and the
+scheduler client is an implementation of the excluded provider model rather than a domain
+rule. The .NET 8 mechanism for this need is a hosted `BackgroundService`, which shares no
+code with the legacy client — so this would have been a rewrite rather than a port, for a
+feature the requirements exclude.
+
+**Observable consequence.** Users-online rows are not purged automatically. If the
+users-online data is retained in a deployment, its growth is now an operational concern; the
+target mechanism, should the need return, is a hosted `BackgroundService` registered in the
+API's composition root. *A note for tooling:* the directory name `Users Online` contains a
+space and silently breaks unquoted shell globs — quote every path into that tree.
+
+### 4.10 The audit trail changes mechanism, and exception logging is net-new
+
+**Legacy behaviour, audit.** Domain operations wrote to the DotNetNuke event log through an
+`AddLog` call: `Library/Components/Portal/PortalController.vb:L1157` and
+`Library/Components/Users/UserController.vb:L81` both call
+`objEventLog.AddLog(objEventLogInfo)`, and `Library/Components/Users/UserController.vb:L240`
+uses the typed overload, recording a deletion as
+`objEventLog.AddLog("Username", objUser.Username, _portalSettings, objUser.UserID, EventLogType.USER_DELETED)`.
+Measured across the five in-scope trees there are 10 such call lines, rising to 24 once the
+39 admin code-behinds are included.
+
+**Target behaviour, audit.** The audit intent is preserved; its storage is not. Audited
+operations emit **Serilog structured events** from the Application service layer, with the
+legacy `EventLogType` members mapped to stable log event names so that a search which used
+to look for `USER_DELETED` still has something deterministic to look for. The correlation
+identifier issued by `Api/Middleware/CorrelationIdMiddleware.cs` ties an audit event to the
+request that produced it.
+
+**Why, audit.** The legacy logging *provider model* — its database and XML logging providers
+and their configuration — is out of scope, so the sink had to change. The choice was
+between dropping the audit trail and re-homing it; re-homing it preserves the intent.
+
+**Observable consequence, audit.** Audit records are log events, not rows in the event-log
+table, so anything that queried that table must read the log sink instead. Structured
+logging deliberately excludes sensitive values, so an audit event names *what* changed and
+*who* changed it without carrying credential material or caller-supplied text.
+
+**Legacy behaviour, exceptions.** There is none in scope. **Exception logging has zero
+in-scope occurrences**: the legacy exception plumbing lived in HTTP modules and page-level
+handlers, both of which are out of scope, and not in the domain or data code that was
+ported.
+
+**Target behaviour, exceptions.**
+`backend/src/DnnMigration.Api/ErrorHandling/GlobalExceptionHandler.cs` implements
+`IExceptionHandler`, is registered alongside `AddProblemDetails()`, and turns an unhandled
+exception into an RFC 7807 response. Its own annotation says so plainly:
+*centralised exception handling has no legacy behaviour to translate.*
+
+**Observable consequence, exceptions.** This is a **net-new cross-cutting addition, not a
+translation** — stated explicitly so that nobody searches the legacy tree for a predecessor
+that does not exist. Every error response now carries `type`, `title`, `status`, `detail`
+and, for validation failures, a per-field `errors` map, in place of the legacy error page.
+
+### 4.11 Caching consolidated behind one service
+
+**Legacy behaviour.** `Library/Components/Providers/Caching/DataCache.vb` (317 lines) is
+reached from **116 call sites** in the five in-scope trees. The distribution shows how
+pervasive it was: `ModuleController` 21, `UserController` 15, `PortalController` 13,
+`TabController` 12, `ModulePermissionController` 11, `TabPermissionController` 10,
+`ProfileController` 6, `FolderPermissionController` 5, `PortalSettings` 3,
+`PortalAliasController` 3, `DesktopModuleController` 3 and `ProfilePropertyAccess` 2. The
+idiom is a static get, then a static set whose expiry is a per-entity timeout multiplied by
+a global performance setting — visible together at
+`Library/Components/Portal/PortalController.vb:L211,L218,L240` and again at
+`Library/Components/Modules/ModuleController.vb:L998,L1052,L1264,L1355` — and invalidation
+is coarse: portal-wide and host-wide clears at
+`Library/Components/Portal/PortalController.vb:L916,L1128`. A second, unrelated 85-line
+`DataCache.vb` under `Library/Controls/DotNetNuke.WebUtility/` is out of scope.
+
+**Target behaviour.** `IMemoryCache` behind an `ICacheService` abstraction, in
+`backend/src/DnnMigration.Infrastructure/Services/MemoryCacheService.cs`. Three properties
+are deliberate: the **legacy cache key names are preserved as constants** — `PortalDictionary`,
+`Portal{0}`, `Tabs{0}`, `TabPathDictionary`, `TabPermissions{0}`, `TabModules{0}`,
+`ModulePermissions{0}`, `Modules{0}`, `ProfileDefinitions{0}`, `UserInfo|{0}|{1}`,
+`GetHostSettings`, `GetPortalByAlias`, `CSS`, `CompressionConfig`, `GetModuleSettings`,
+`GetRoles` — so cache behaviour stays auditable against the original; **explicit
+invalidation methods** replace the coarse clears; and the multiplier is bound as
+configuration under `Caching:PerformanceMultiplier` rather than read from a static.
+
+**Why the difference was necessary.** The legacy caching *provider model* is out of scope,
+and `DataCache`'s static surface is unmockable, so the call sites could not be ported
+as-is. Caching is also the largest cross-cutting concern the requirements never mention —
+had it not been carried deliberately it would have disappeared from the migration
+altogether.
+
+**Observable consequence.** Eviction is narrower than before: an operation that used to
+clear an entire portal's cache now evicts the entries it actually invalidated. That is the
+intended improvement, and it means an integrator can no longer rely on an unrelated write
+to refresh a stale read. Cache entries the legacy code created for out-of-scope features
+are deliberately absent, and the service documents which ones and why. The single legacy
+`CacheDependency` usage (`Library/Components/Users/UserModuleBase.vb`) becomes explicit
+eviction. Where caching is intentionally omitted on a read path, the omission is recorded
+at that path rather than left to inference.
+
+### 4.12 The server-side event model is not reproduced
+
+**Legacy behaviour.** The Web Forms event model is confined in scope to a single file:
+`Library/Components/Users/UserUserControlBase.vb:L59-L65` declares seven user-lifecycle
+events — `UserCreated`, `UserCreateCompleted`, `UserDeleted`, `UserDeleteError`,
+`UserUpdated`, `UserUpdateCompleted` and `UserUpdateError` — raised from the control's own
+handlers, as at `:L80`.
+
+**Target behaviour.** These become Angular component outputs and signal effects: the
+component that owns the interaction emits, and the feature store reacts. **No server-side
+event bus is introduced.**
+
+**Why the difference was necessary.** The events were a *presentation* mechanism — a user
+control notifying its host page within one postback — not a domain integration point.
+Nothing subscribed to them across a process boundary.
+
+**Observable consequence.** There is no server-side extensibility hook where these events
+were. Inventing an event bus to preserve the shape would have been scope creep dressed as
+fidelity; a genuine future need for domain events is a deliberate design decision, not a
+migration artefact.
+
+### 4.13 Hydration and collection wrappers are deleted, not ported
+
+**Legacy behaviour.** Two independent hand-rolled hydration paths existed for the same job.
+The first is the reflection hydrator `Library/Components/Shared/CBO.vb` — 729 lines, with
+its entry points at `:L50,L80,L278,L300,L334` — reached from **21 in-scope call sites**
+(`PortalAliasController` 3, `DesktopModuleController` 7, `ModuleDefinitionController` 3,
+`ProfileController` 2, `PermissionController` 6). The second is written out by hand, one
+line per column, at `Library/Components/Modules/ModuleController.vb:L54,L66-L72`, each line
+of the form `Convert.ToInt32(Null.SetNull(dr("ModuleID"), objModuleInfo.ModuleID))`. There
+is also **no `IHydratable` implementation among the in-scope entities** — the interface file
+`Library/Components/Modules/IHydratable.vb` exists but nothing in scope implements it, so
+there was no hydration contract to port either.
+
+**Target behaviour.** The EF Core materialiser replaces both paths outright. Consequently
+there is **no `CBO.cs`, no `Fill` or `FillObject` method anywhere in the target, and none of
+the four legacy `*Collection.vb` wrappers produces a `*Collection.cs`** —
+`Library/Components/Portal/PortalAliasCollection.vb`,
+`Library/Components/Security/Permissions/ModulePermissionCollection.vb`,
+`Library/Components/Security/Permissions/TabPermissionCollection.vb` and
+`Library/Components/Users/Profile/ProfilePropertyDefinitionCollection.vb` are pre-generics
+`CollectionBase`/`DictionaryBase` shims, subsumed by `IReadOnlyList<T>` and
+`IReadOnlyDictionary<TKey, TValue>`.
+
+**Why the difference was necessary.** Both paths are workarounds for the absence of an
+object-relational mapper, and the collection wrappers are workarounds for the absence of
+generics. The platform now supplies both.
+
+**Observable consequence.** This is stated explicitly because a mechanical translator would
+faithfully reproduce 729 lines of reflection and four collection shims that the ORM and the
+BCL make redundant. Materialisation errors now surface as EF Core model or query
+exceptions rather than as reflection failures, and a column added to the database is picked
+up by adding a mapped property rather than by adding a `SetNull` line.
+
+### 4.14 Structural entity change: `ModuleInfo` split into four
+
+**Legacy behaviour.** `Library/Components/Modules/ModuleInfo.vb` is a single class of **58
+properties** — 936 lines — and it is not one table. It is a flattened
+`Modules ⋈ TabModules ⋈ ModuleDefinitions ⋈ ModuleControls` join, carrying a module's own
+identity, its placement on a tab, its definition metadata and its control metadata all on
+one object. It is declared `<XmlRoot("module", IsNullable:=False)>` at `:L36` and
+`Implements IPropertyAccess` at `:L37`.
+
+**Target behaviour.** Four entities along the real table boundaries — `Module`,
+`TabModule`, `ModuleDefinition` and `ModuleControl` — with `ModuleSetting` and
+`TabModuleSetting` alongside them as genuine key-value entities. `Implements IPropertyAccess`
+is dropped, here and on `Library/Components/Tabs/TabInfo.vb:L41`, because the
+token-replacement subsystem that consumed it is out of scope. The XML serialisation
+attributes are dropped from the domain; `System.Text.Json` owns the wire contract at the
+API boundary only.
+
+**Why the difference was necessary.** A flattened join cannot be persisted as one entity
+without either duplicating rows or losing the ability to write to one table without the
+others. The split is what makes `ToTable`/`HasColumnName` mapping against the unaltered
+schema possible at all (Section 6).
+
+**Observable consequence.** A single legacy object becomes several typed DTOs at the API
+boundary, so a caller reads a module's placement from the tab-module resource rather than
+from the module itself. The property *values* are unchanged; their grouping is not.
+
+### 4.15 `PortalSetting` is deliberately not an entity
+
+This entry exists so that nobody re-adds it. Four independent findings establish that
+there is no such aggregate.
+
+| Finding | Evidence |
+| --- | --- |
+| The data abstraction declares no such member | None of the 269 `MustOverride` members of `Library/Components/Providers/Data/DataProvider.vb` names a portal setting |
+| The provider invokes no such procedure | None of the 245 procedures reached from `Library/Providers/DataProviders/SqlDataProvider/SqlDataProvider.vb` names one |
+| No such table exists | No `PortalSettings` table appears in any of the 88 DDL scripts. They contain `ModuleSettings`, `HostSettings`, `TabModuleSettings`, `ScheduleItemSettings` and a transient `Tmp_ModuleSettings`, and nothing else of the kind |
+| The type is a per-request composite, positively identified | `Library/Components/Portal/PortalController.vb:L1209-L1210` returns `CType(HttpContext.Current.Items("PortalSettings"), PortalSettings)` — an ambient object assembled per request, not a persisted one |
+
+**Target behaviour.** Portal configuration lives where it always lived: as columns on the
+`Portals` table, mapped onto the `Portal` entity and projected into a `PortalSettingsDto` in
+the Application layer. The legacy ambient composite becomes the scoped, immutable
+`IPortalContext` (Section 3). `ModuleSetting` and `TabModuleSetting` **are** retained as
+real key-value entities — they are created by the DDL chain and then altered six and eight
+times respectively across it, which is what a real table's history looks like.
+
+**Why the difference was necessary.** The name `PortalSettings` invites the assumption that
+a settings aggregate exists, and an agent following the naming rather than the schema would
+create one. Introducing a table the legacy database does not have would breach the immutable
+schema rule outright; introducing an entity with no table behind it would breach the
+data-model-fidelity rule instead. The only correct reading is the one the evidence supports:
+this is a request-scoped composite, and it maps to a request-scoped type.
+
+**Observable consequence.** There is no key-value settings endpoint for portals, because
+there was never a key-value settings table. Adding one would create a persistence concept
+the legacy schema does not have, which Rule T4 forbids.
+
+### 4.16 Rich-text editing reduced to a plain text area
+
+**Legacy behaviour.** Multi-line content fields were edited through the HTML editor provider
+under `Website/Providers/HtmlEditorProviders/Fck/`, registered as the default editor and
+rendered as a rich-text control with its own toolbar, upload integration and configuration.
+
+**Target behaviour.** Multi-line fields use a plain `<textarea>` inside the shared
+`form-field` component
+(`frontend/src/app/shared/components/form-field/form-field.component.ts`).
+
+**Why the difference was necessary.** The editor provider is out of scope, and it is not a
+self-contained control: it reaches into the file system for uploads and into the provider
+model for configuration, both of which are excluded.
+
+**Observable consequence.** This is a deliberate functional reduction. Authors type or paste
+markup rather than composing it in a toolbar, and any HTML they enter is rendered through
+Angular's sanitiser. Restoring rich-text editing means choosing a new editor component and
+deciding how it uploads — a fresh decision, not a restoration.
+
+### 4.17 Visual and design-token divergences
+
+**Legacy behaviour.** There was no design system. Appearance came from two stylesheets —
+`Website/Portals/_default/default.css` (1,030 lines) and
+`Website/Portals/_default/portal.css` (275 lines), among 34 CSS files under `Website/` —
+in which values were written literally at each use site.
+
+**Target behaviour.** Those measured values seed a token vocabulary in
+`frontend/src/styles/_tokens.scss`, and every component stylesheet consumes only tokens.
+Nine colours carry over exactly, case-normalised:
+
+| Legacy value | Uses in `default.css` | Token |
+| --- | --- | --- |
+| `#003366` | 28 | `--color-primary` |
+| `#25569a` | 2 | `--color-primary-hover` |
+| `#EEEEEE` / `#eeeeee` | 20 + 4 | `--color-surface` |
+| `#FFFFFF` / `#FFF` | 18 + 2 | `--color-background` |
+| `#696969` | 9 | `--color-text-muted` |
+| `#ff0000` | 5 | `--color-danger` |
+| `#dcdcdc` | 3 | `--color-border` |
+| `#cccccc` | 2 | `--color-border-strong` |
+| `#C1D2EE` | 2 | `--color-selected` |
+
+**The divergences.** `#666644`, used twice, is **not tokenised**, because the decoration it
+styles belongs to an out-of-scope feature. **Three overlapping legacy font stacks are
+consolidated into one** — `Tahoma, Arial, Helvetica` (38 uses),
+`Tahoma, Verdana, Arial, Sans-Serif` (2) and `Verdana, sans-serif` (1) all become the single
+base stack `Tahoma, Verdana, Arial, sans-serif`, with `"Lucida Console", monospace` retained
+for code display; the rendered difference is imperceptible and the consolidation removes an
+inconsistency rather than a design. The **4px-based eight-step spacing scale, the three-step
+radius scale and the three elevation levels are net additions**: the legacy design has no
+spacing system, is square-cornered and has no elevation, so there was nothing to translate
+and a scale had to be defined. Two legacy class families have **no target equivalent** —
+`.FileManager_*` (10 declarations) and `.MainMenu_*` (9) — because file management and the
+legacy menu providers are out of scope.
+
+**Why the differences were necessary.** A token vocabulary is the only way to guarantee
+"no hardcoded values" downstream, and the missing scales had to be invented because the
+source has none.
+
+**Observable consequence.** The application looks like the portal it replaces — same brand
+colour, same surfaces, same type — with more consistent spacing and slightly softer
+corners. Where a token's measured legacy value could not meet a contrast requirement, the
+addition made for accessibility is recorded against that token in `_tokens.scss` and in the
+register below, rather than silently replacing the legacy value.
+
+### 4.18 Vacuous exclusions, reported honestly rather than presented as work
+
+Three directives in the requirements have **zero instances** in this codebase. Reporting
+that is more useful than implying that removal work took place.
+
+| Directive | Measured finding |
+| --- | --- |
+| Remove Telerik RadControls and all Telerik dependencies | **0 files, 0 references tree-wide.** A case-insensitive search across `*.vbproj`, `*.config`, `*.aspx`, `*.ascx` and `*.vb` returns nothing, and no path in the repository contains the name. The real control library here is the in-repository `Library/Controls/**` set — 102 `.vb` files across nine sub-libraries and the tree's own root — which is excluded separately (Section 4.19) |
+| Replace COM interop / VB6 / ActiveX | **0 true sites.** The apparent matches are .NET reflection, not COM: `Framework.Reflection.CreateObject(objModule.BusinessControllerClass, objModule.BusinessControllerClass)` at `Library/Components/Modules/ModuleController.vb:L231,L431` and `Framework.Reflection.CreateObject(BusinessControllerClass, "")` at `Library/Components/Modules/EventMessageProcessor.vb:L32,L52,L77` — five sites in two files. They become a DI-registered `IModuleBusinessControllerFactory` over a **closed** set of implementations, with no arbitrary assembly probing |
+| Modernise `On Error GoTo` error handling | **0 occurrences in the entire tree.** No `On Error` statement of any form exists; the handful of case-insensitive matches are the words "on error" inside comments such as `' decryption error`. No error-handling modernisation of that kind was required |
+
+**Target behaviour.** For two of the three, nothing: there is no Telerik replacement and no
+`On Error` rewrite, because there was no Telerik dependency and no `On Error` statement. The
+third is not a no-op — the five late-bound activation sites do change, becoming
+`IModuleBusinessControllerFactory` resolved from the container over a closed set of
+registered implementations — but the change is a reflection-to-injection change, not a COM
+interop replacement, and calling it the latter would misdescribe it.
+
+**Why this is recorded.** A requirement that names a technology absent from the codebase
+cannot be satisfied by work, only by measurement. Silently listing these as completed would
+overstate what happened and leave the next reader unable to tell a genuine removal from a
+vacuous one; leaving them out entirely would look like an unaddressed requirement. Both
+failure modes are avoided by stating the measurement and its method.
+
+**Observable consequence.** None, by definition — and that is the point. Anyone auditing
+the migration against the requirements will find no Telerik removal commit, no COM shim and
+no `On Error` rewrite, because there was nothing to remove, shim or rewrite.
+
+### 4.19 Excluded subsystems, and what they actually cost
+
+Whole-tree reference counts make these exclusions look dangerous. Measuring the coupling
+**from in-scope code** shows they are safe, and shows exactly what had to be built instead.
+
+| Excluded subsystem | Size and whole-tree reach | Coupling from in-scope code | Replacement |
+| --- | --- | --- | --- |
+| `Globals` — `Library/Components/Shared/Globals.vb` | **2,704 lines**, referenced by **111 files** | **Exactly 6 distinct members**: `HostSettings` 21 uses, `PerformanceSetting` 15, `ApplicationPath` 5, `ApplicationMapPath` 4, `glbRoleUnauthUserName` 3, `HostMapPath` 1 — all under `Library/Components/`, at `Portal/PortalController.vb:L218,L557,L994,L1048,L1232`, `Portal/PortalInfo.vb:L391`, `Portal/PortalSettings.vb:L673`, `Modules/ModuleDefinitionValidator.vb:L65`, `Modules/ModuleController.vb:L356,L998,L1052,L1264,L1355` and `Modules/PaWriter.vb:L337` | `IHostSettingsService` over the real `HostSettings` table; bound configuration for the performance multiplier; `PathBase` and `LinkGenerator` for application paths; `IWebHostEnvironment` for map paths; one domain constant for the unauthenticated role name. **Excluding 2,704 lines cost exactly six small replacements.** |
+| Host settings — `Library/Components/Host/` | 3 files (`HostPropertyAccess.vb`, `HostSettings.vb`, `HostSettingsController.vb`) | **One member, two call sites**, both in `Library/Components/Users/Membership/PasswordConfig.vb:L62,L87` | Subsumed by the same `IHostSettingsService` |
+| Scheduling | 14 files, referenced by 29 | **One file** (Section 4.9) | Nothing; a hosted `BackgroundService` is the mechanism if the need returns |
+| Legacy module loader — all under `Library/Components/Modules/` | `PortalModuleBase.vb` 881 lines, `PaWriter.vb` 563, `PaFileInfo.vb` 87, `EventMessageProcessor.vb` 125 | Web Forms control loading only | Module *registration and lifecycle* is preserved as a domain concern; the control-loading mechanism is not ported |
+| Web Forms infrastructure | `Library/HttpModules/**` 24 files; `Library/Controls/**` 102 across nine sub-libraries; `Library/WebControls/**` 2; `Website/controls/**` 26 files; 15 `.aspx` and 147 `.ascx` | Replaced structurally | The eight-module HTTP pipeline and six handlers declared in `Website/release.config` collapse into explicit middleware registrations in one composition root |
+| Pre-built assemblies | 27 `.dll` files under `Website/bin/` plus `Library/Components/DataAccessBlock/bin/Microsoft.ApplicationBlocks.Data.dll` | — | No source exists for any of them, so there was nothing to port (Section 5) |
+
+**Target behaviour.** Nothing in the target references any of the subsystems above. Each
+crossing named in the third column is met by the narrow replacement in the fourth — one host
+settings service, one bound configuration value, path generation from the framework, one
+domain constant, one factory over a closed set of implementations, and explicit middleware
+in place of the module and handler chains. No excluded subsystem is partially ported, and
+none is re-admitted transitively: the Domain project declares zero project references and
+zero third-party packages, so a dependency on any of them would be a build failure.
+
+**Why the exclusions are safe, and why they were measured this way.** A whole-tree reference
+count answers the wrong question. `Globals` looks load-bearing at 111 referencing files, but
+almost all of that reach is from code that is itself excluded; what matters is the coupling
+*crossing the boundary into scope*, which is six members at fourteen call sites. Measuring
+the boundary rather than the subsystem is what turns each of these from a leap of faith into
+a bounded piece of replacement work — and it is why the replacement column above is short
+rather than speculative. Each excluded subsystem is also an implementation of the .NET 2.0
+provider model, whose whole purpose — swapping an implementation by configuration string —
+the container now serves natively, so porting it would have reproduced indirection with
+nothing left to indirect.
+
+**Observable consequence.** Host-level (super-user) administration, the excluded provider
+families and every bundled desktop module are absent from the target's functional envelope;
+Section 13 is the consolidated index. Within the five preserved domains, the six `Globals`
+replacements above are the entire cost of the largest exclusion.
+
+### 4.20 Framework coupling was far smaller than it appeared
+
+**The measurement.** Across the five in-scope trees there are **84 `.vb` files, and only 8
+reference `System.Web` at all** — ninety percent of the port is mechanical language
+translation with no framework-coupling problem to solve. The eight are exactly
+`Library/Components/Portal/PortalSettings.vb`,
+`Library/Components/Modules/ModuleCommunication.vb`,
+`Library/Components/Users/UserModuleBase.vb`,
+`"Library/Components/Users/Users Online/UserOnlineController.vb"`,
+`Library/Components/Users/UserTime.vb`, `Library/Components/Users/UserController.vb`,
+`Library/Components/Security/PortalSecurity.vb` and
+`Library/Components/Tabs/Navigation.vb`. Their entire coupled surface is
+`HttpContext.Current` 33 times, `ViewState` 4, `System.Web.UI.Control` 3,
+`System.Web.Security` 2, `FormsAuthentication.SignOut` once and `CacheDependency` once.
+
+**Target behaviour.** The ambient static `HttpContext.Current` becomes
+`IHttpContextAccessor`, injected in **exactly one place** —
+`backend/src/DnnMigration.Api/Middleware/PortalAliasResolutionMiddleware.cs`. `ViewState`
+disappears into Angular signals. `FormsAuthentication.SignOut` becomes token expiry plus
+refresh revocation (Section 4.6). The single `CacheDependency` becomes explicit eviction
+(Section 4.11).
+
+**Why this is recorded as a divergence.** The project reference graph makes it a compile
+error for the Domain or Application layer to acquire an ASP.NET Core dependency, so
+behaviour that used to read ambient request state now receives it as data. Code that
+silently depended on "whatever the current request happens to be" must be given its input
+explicitly.
+
+**Observable consequence.** Domain and Application code is unit-testable without a web
+host, and time-dependent logic is testable because `Date.Now` reads became an injected
+clock. The flip side is that anything needing request context outside the API layer must
+have it passed in — which is the intended constraint, not a limitation to work around.
+
+## 5. Language-construct conversions
+
+Each construct below was counted in the source rather than presumed present. Two entries
+matter more than the rest because the equivalence is **not general** — the conversion is
+correct here for a reason that has to be checked at each site.
+
+| VB construct | Measured in scope | C# 12 equivalent | Note |
+| --- | --- | --- | --- |
+| `ByRef` mutate-and-return-status | **30 declaration lines** across the five in-scope trees; canonical at `Library/Components/Users/UserController.vb:L156` (`CreateUser(ByRef objUser As UserInfo) As UserCreateStatus`) and `:L200` (`DeleteUser(ByRef objUser As UserInfo, …)`) | `Task<Result<TDto>>` | Uniformly: the mutated object becomes the `Result` value and the status enum becomes the failure reason. **No `out` or `ref` parameter appears in any target public API.** |
+| `ByRef totalRecords` paging | 3 sites at `Library/Components/Users/UserController.vb:L685,L725,L746` | `PagedResult<T>` | Items and total travel together, so a caller cannot read one without the other |
+| `IIf(...)` | 2 cast-wrapped sites at `Library/Components/Portal/PortalController.vb:L395` (`ServiceFee`) and `:L398` (`TrialFee`), each clamping a fee to zero | `Math.Max(fee, 0f)` | **`IIf` is a function and evaluates both arms; C# `?:` short-circuits.** Here both arms are side-effect-free literals, so the conversion is exactly equivalent — but that reasoning must be repeated at any other site, because the equivalence does not hold in general |
+| `Optional ByVal` parameter tails | `Library/Components/Portal/PortalController.vb:L1596`; `Library/Components/Tabs/TabController.vb:L243,L550` | Default parameter values or explicit overloads | Chosen per site: a default where the omitted value is genuinely a default, an overload where omission means a different operation |
+| A long optional tail | `Library/Components/Modules/ModuleActionCollection.vb:L151` — an `Add` with three required parameters followed by **seven** optional ones | An options object | Seven defaults in one signature make call sites unreadable and reorderings silently valid |
+| `Imports Microsoft.VisualBasic` | **Exactly one import in scope**, at `Library/Components/Security/Roles/RoleController.vb:L25`, consumed at `:L496` and in the billing switch at `:L543-L546` | `DateTime.AddDays`, `AddDays(period * 7)`, `AddMonths`, `AddYears` | The switch reads `Case "D"`, `"W"`, `"M"`, `"Y"` and calls `DateAdd(DateInterval.Day / Day with Period * 7 / Month / Year, …)`. **The `D`/`W`/`M`/`Y` codes are load-bearing data**, matching `Roles.BillingFrequency char(1)`, so they are preserved as an explicitly-valued enum and **never renamed** |
+| `Shared` (static) members | The whole `Library/Components/Users/UserController.vb` surface is `Shared` | Instance methods on injected services | Static members cannot be substituted in a test; injection is what makes the service layer testable at all |
+| `ArrayList`, `CollectionBase`, `DictionaryBase`, `Hashtable` returns | `GetPortals() As ArrayList` at `Library/Components/Portal/PortalController.vb:L1263`; `GetUsers(...) As ArrayList` at `Library/Components/Users/UserController.vb:L685`; `GetUserSettings(...) As Hashtable` at `:L656` | `PagedResult<T>`, typed DTOs — `GetUserSettings` becomes a `MembershipSettingsDto` | An untyped collection at a contract boundary defers every type error to runtime |
+| `Property Get`/`Set` blocks and XML attributes | `Library/Components/Portal/PortalInfo.vb:L29` is `<XmlRoot("settings", IsNullable:=False)>` with 39 property declarations, 37 of them carrying an `<XmlElement(...)>` attribute | Auto-properties; no serialisation attributes in the domain | `System.Text.Json` owns the wire contract at the API boundary only, so the domain model is not also a serialisation format |
+| `Imports Microsoft.ApplicationBlocks.Data` | Every ADO.NET call in both provider stacks | **No equivalent — nothing to port** | The `SqlHelper` type exists only as the pre-built, source-less binary `Library/Components/DataAccessBlock/bin/Microsoft.ApplicationBlocks.Data.dll`. This is an independent justification for replacing the data layer wholesale rather than porting it: there is no source to port |
+| Reflection singleton provider access | `DataProvider.Instance()` — `Library/Components/Providers/Data/DataProvider.vb:L31-L50` | Constructor injection | The 269 `MustOverride` members are **not** reproduced; only the in-scope subset, as narrow repository contracts |
+
+`<ImplicitUsings>enable</ImplicitUsings>` removes the `System.*` import boilerplate that
+the legacy files declare explicitly, so the `using` list in a target file names only what is
+genuinely notable.
+
+## 6. Data layer and schema fidelity
+
+The governing rule is that **the schema is immutable**. Entity configurations bind to the
+legacy table and column names; no `CREATE TABLE`, `ALTER TABLE` or `DROP` from this work
+ever reaches a production schema.
+
+### 6.1 The two-stack provider architecture, and why reading one stack is not enough
+
+Data access was split across two independent provider stacks, and this determines which
+files have to be read to reconstruct each contract.
+
+| Stack | File | Distinct procedures | Naming idiom |
+| --- | --- | --- | --- |
+| Core | `Library/Providers/DataProviders/SqlDataProvider/SqlDataProvider.vb` (1,410 lines) | **245** | `DatabaseOwner & ObjectQualifier & "<ProcName>"` |
+| Membership | `Library/Providers/MembershipProviders/DataProvider/SqlDataProvider.vb` | **46** | `GetFullyQualifiedName("<ProcName>")`, and the concatenated form for some calls |
+
+The two sets **do not overlap at all**: measured de-duplicated, the combined reachable
+surface is 245 + 46 = **291 distinct procedure names** with zero intersection. (The plan's
+approximation of roughly 289 and its count of 31 user procedures pre-date this exact
+de-duplicated measurement; both figures describe the same surface.)
+
+The decisive asymmetry is in the domain split. Within the core stack the in-scope slices are
+Portal 30, Module 63, Tab 35, Permission 33 and Profile 4 — and then **User 4, Role 0**. The
+only user-related procedures the core stack reaches are `AddUserAuthentication` and the
+three permission-cleanup procedures keyed by user id; it names **no role procedure at all**.
+The membership stack supplies the rest: **22 role procedures** and 24 user, profile and
+users-online procedures, including `UserLogin`, `GetAuthRoles`, `AddUser`, `GetRolesByUser`
+and `UpdateUserRole`. For completeness, the 1,773-line
+`Library/Providers/MembershipProviders/AspNetMembershipProvider/AspNetMembershipProvider.vb`
+invokes **zero** procedures directly — it delegates through the membership stack's own
+abstraction, which confirms the two-stack shape rather than contradicting it.
+
+> **Warning for future maintainers.** An agent that reads only the core provider will
+> produce a `UserRepository` and a `RoleRepository` with almost no behaviour, because the
+> contract it needs lives in the other stack.
+
+### 6.2 Why the baseline migration is intentionally empty
+
+The 88 `*.SqlDataProvider` scripts under
+`Website/Providers/DataProviders/SqlDataProvider/` total **83,614 lines** and are an
+append-only, destructive upgrade history rather than a schema definition: 97 distinct tables
+created, **849 `ALTER TABLE`** statements, 89 `DROP TABLE`, 1,408 `CREATE PROCEDURE`, 50
+`ALTER PROCEDURE` and 15 `CREATE VIEW`. Objects are dropped and recreated repeatedly, six
+`Tmp_` tables (`Tmp_Banners`, `Tmp_Faqs`, `Tmp_ModuleSettings`, `Tmp_Portals`, `Tmp_Roles`,
+`Tmp_Users`) are built, populated and renamed over their originals, and some objects are
+dropped for good. Only the **terminal cumulative state** is meaningful, and it is obtainable
+only by replaying all 88 scripts in order.
+
+Then the decisive finding, which makes a generated create-migration impossible in principle
+rather than merely inadvisable: **the schema depends on objects the scripts never create.**
+
+- **Zero `CREATE TABLE` statements for any `aspnet_*` object appear in any of the 88
+  scripts**, yet 32 distinct `aspnet_*` object names are referenced across the chain.
+- DotNetNuke **patches Microsoft's own membership procedures** rather than owning them: 19
+  distinct `aspnet_*` procedures are altered, including
+  `04.00.00.SqlDataProvider:L31` — `ALTER PROCEDURE dbo.aspnet_Membership_UpdateUser` — and
+  `:L119` — `ALTER PROCEDURE dbo.aspnet_Membership_UpdateUserInfo` — which add the
+  failed-attempt and lockout bookkeeping declared at `:L135-L138`.
+- The four Microsoft installer scripts that would create those objects sit alongside the
+  chain (`InstallCommon.sql`, `InstallMembership.sql`, `InstallProfile.sql`,
+  `InstallRoles.sql`) and require the ASP.NET application-services objects to have been
+  installed externally by `aspnet_regsql.exe`.
+
+Replaying the scripts against an empty database therefore cannot produce the terminal
+schema, and neither can any migration generated from the target model. The conclusion is
+Fluent API mapping plus an **intentionally empty baseline migration**:
+`backend/src/DnnMigration.Infrastructure/Persistence/Migrations/20260730120000_InitialCreate.cs`
+has empty `Up` and `Down` bodies, so the only change it makes to an existing DotNetNuke
+database is the history row it inserts into `__EFMigrationsHistory`. Every table, column,
+constraint and row is left exactly as it was. Building the schema straight from the model is
+forbidden project-wide for the same reason, and the file says so in the imperative:
+`DO NOT add any operation to Up or Down`.
+
+The `aspnet_*` membership store is consequently treated as an **external legacy dependency
+that the `User` entity maps alongside**, not as something the new model owns or recreates.
+
+### 6.3 Object qualifier and database owner
+
+The data provider is registered with `objectQualifier=""` and `databaseOwner="dbo"`, in the
+block at `Website/release.config:L351-L355` that also sets
+`connectionStringName="SiteSqlServer"` and
+`providerPath="~\Providers\DataProviders\SqlDataProvider\"`. The qualifier reaches further
+than table names — it is templated **inside constraint names** as well, so a
+differently-qualified installation differs in more places than a reader expects. The Fluent
+configurations target the un-prefixed default this installation actually uses; the
+configurability is documented so that a differently-qualified installation is a
+configuration change rather than a code change.
+
+### 6.4 A DDL inspection hazard
+
+Any future audit of these scripts must know this or it will draw a false conclusion.
+Procedures appear under **four coexisting naming conventions** across the chain — bare
+(`create procedure GetPortalSettings`), owner-qualified (`dbo.`), bracketed
+(`[dbo].[…]`) and qualifier-templated (`{databaseOwner}{objectQualifier}…`) — and the
+earliest scripts use lower-case `create procedure`. **Every DDL search must be
+case-insensitive and must match all four forms.** A case-sensitive search for the bracketed
+form alone returns nothing and invites the conclusion that an object does not exist. The
+same applies to the `aspnet_*` audit in Section 6.2.
+
+### 6.5 Identity seeds
+
+`dbo.Portals.PortalID` is `IDENTITY (-1, 1)` and `dbo.Roles.RoleID` is `IDENTITY (0, 1)`, both
+declared in `Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider` — at
+`:L76-L77` and `:L114-L115` respectively. Both seeds collide with values that
+the legacy code and the CLR treat as "absent"; Section 4.3 is the full account, and
+`PortalId` is the type that prevents the collision from being re-introduced.
+
+## 7. Configuration key changes
+
+| Legacy key | Source | Target | Note |
+| --- | --- | --- | --- |
+| `SiteSqlServer` connection string — `Data Source=.\SQLExpress;Integrated Security=True;User Instance=True;AttachDBFilename=\|DataDirectory\|Database.mdf;` with `providerName="System.Data.SqlClient"` | `Website/release.config:L21-L26` | `ConnectionStrings:Default` | The container form is the environment variable `ConnectionStrings__Default`. A placeholder or incomplete value is refused at start-up rather than failing on first query |
+| `objectQualifier=""`, `databaseOwner="dbo"` | `Website/release.config:L351-L355` | Fluent `ToTable(name, "dbo")` per entity | Qualifier support remains configurable but defaults to the observed empty value (Section 6.3) |
+| **14 `defaultProvider` declarations** | `Website/release.config` | Typed `IOptions<T>` classes | The provider indirection is **removed, not reproduced**. Selecting an implementation by configuration string was how .NET 2.0 expressed substitutability; the container expresses it directly |
+| `passwordFormat`, `enablePasswordRetrieval`, `enablePasswordReset`, `requiresQuestionAndAnswer`, `minRequiredPasswordLength`, `minRequiredNonalphanumericCharacters`, `requiresUniqueEmail` | `Website/release.config:L236-L246` | `PasswordPolicyOptions` plus FluentValidation rules | Policy preserved verbatim; **retrieval deliberately not preserved** (Section 4.1) |
+| `machineKey` with a committed 3DES `decryptionKey` | `Website/release.config:L89-L93` | No counterpart | Nothing in the target decrypts a stored password, so no such key exists to commit |
+| `<compilation debug="false" strict="false">` | `Website/release.config:L125` | **Not carried forward** | There is no C# equivalent of Option Strict off (Section 4.4) |
+| `probing privatePath="bin;bin\HttpModules;bin\Providers;bin\Modules;bin\Support;"`, eight `httpModules`, seven `httpHandlers` | `Website/release.config` | Explicit middleware and endpoint registrations in one composition root | Assembly probing has no counterpart; the pipeline is declared in code, in a fixed order |
+| — | no legacy counterpart | `Jwt:Secret`, `Jwt:Issuer`, `Jwt:Audience`, `Jwt:ExpirationMinutes` | New. The key names match those already documented in `docs/project-guide.md`, so the two documents agree |
+| — | no legacy counterpart | `Caching:PerformanceMultiplier` | Replaces the static `Globals.PerformanceSetting` read (Section 4.11, Section 4.19) |
+
+**The release/development twin-file pattern is preserved.** There is no `web.config` in the
+checkout: `Website/release.config` and `Website/development.config` are both complete
+candidates, and `Website/DotNetNuke.build` copies `release.config` over to `web.config` at
+packaging time. The target keeps the same shape — `appsettings.Development.json` and
+`appsettings.Production.json` on the backend, `environment.development.ts` and
+`environment.ts` on the frontend.
+
+**One configuration value has a failure mode no build step can catch.** The production
+`apiBaseUrl` must be the **relative** path `/api/v1`, never an absolute host. `docker/nginx.conf`
+proxies `/api/` to `http://api:8080/api/`, so the browser must address the API through the
+same origin that served the application. An absolute `http://api:8080` resolves only inside
+the Docker network: the bundle would build cleanly, both containers would report healthy, and
+every request from the browser would fail.
+
+## 8. Build policy inversion
+
+The legacy policy is deliberately lax. `Library/DotNetNuke.Library.vbproj` sets
+`<TreatWarningsAsErrors>false</TreatWarningsAsErrors>` with `<WarningLevel>1</WarningLevel>`
+in both configurations (`:L50-L51` and `:L71-L72`), promoting only ten specific VB codes to
+errors through `<WarningsAsErrors>41999,42016,42017,42018,42019,42020,42021,42022,42032,42036</WarningsAsErrors>`
+(`:L55`, `:L76`).
+
+The target inverts it. `backend/Directory.Build.props` applies one policy to all six
+projects: `TargetFramework net8.0`, `LangVersion 12.0`, `Nullable enable`,
+`ImplicitUsings enable`, `TreatWarningsAsErrors true`, `GenerateDocumentationFile true` and
+`EnforceCodeStyleInBuild true`, with **exactly two suppressions**:
+
+| Suppressed | Why |
+| --- | --- |
+| `CS8618` — non-nullable member is uninitialised | Required by the requirements' own carve-out for nullable warnings, and unavoidable for entity types the ORM materialises rather than constructs |
+| `CS1591` — missing XML comment on a publicly visible member | **Required for the strict policy to be applicable at all.** Enabling documentation generation alongside warnings-as-errors turns every undocumented public member into a build error. This was discovered by execution, not predicted |
+
+**No other warning is suppressed.** Two adjacent checks were run so that nobody has to
+repeat them: a forced no-cache restore produced zero restore warnings, and a `Release` build
+with NuGet auditing explicitly enabled at the lowest severity level still produced zero
+warnings — so no package advisory can be promoted to an error by this policy.
+
+`backend/global.json` pins the SDK to the band the environment actually provides, with
+feature-level roll-forward, and `frontend/.nvmrc` pins Node to the version that matches the
+`node:20-alpine` build stage.
+
+## 9. Dependency decisions
+
+The legacy application has no package manager at all — no NuGet manifest, no
+`packages.config`, no `package.json` and no lock file anywhere in the checkout. References
+are declared directly in `Library/DotNetNuke.Library.vbproj` and in
+`Website/release.config`, and 27 pre-built assemblies sit in `Website/bin/`. Every
+dependency in the target is therefore an **addition**, declared exclusively in newly created
+manifests. Five decisions are recorded because they would otherwise be re-argued.
+
+- **No AutoMapper.** Hand-written static mapper classes are used instead. The mapping is
+  mechanical and the volume is bounded, and a hand-written mapper fails at **compile time**
+  rather than at runtime profile validation. This **supersedes** the AutoMapper adoption in
+  `docs/technical-specifications.md` (`Mapping/MappingProfile.cs` at L761 and the package at
+  L934).
+- **The EF Core family is pinned at 8.0.29**, matching the installed shared-framework
+  runtime exactly. This **supersedes** the prior 8.0.11 pin at
+  `docs/technical-specifications.md:L928-L932`.
+- **`Microsoft.Data.SqlClient` is explicitly pinned to 5.2.3.** Without the pin, the SQL
+  Server provider resolves **5.1.7** transitively. The pin was verified to change the
+  resolved graph and is deliberate hardening, not tidiness.
+- **No design-system or UI dependency.** `@angular/material` is available at a compatible
+  version and was **deliberately not selected**; neither Bootstrap, Tailwind nor PrimeNG is
+  introduced. Styling is hand-authored SCSS over the token set in Section 4.17, which keeps
+  the npm surface confined to the framework and its test toolchain.
+- **No floating versions.** No dependency uses `latest`, `*` or a placeholder, and
+  `frontend/package-lock.json` is committed because `npm ci` fails outright without it.
+
+Layer ownership of packages is itself a constraint rather than a convention: the Domain
+project declares **no package references at all**, Application declares only its validation
+library, Infrastructure owns every EF Core, SQL client, BCrypt and health-check reference,
+and the API owns the JWT, OpenAPI, versioning and logging references. That is what keeps
+Domain free of infrastructure concerns as a compile-time fact.
+
+## 10. Security advisory posture
+
+**This is a standing decision. It is recorded here so that it is not re-litigated.**
+
+`npm audit` on a **pristine, freshly scaffolded** Angular 19.2.x workspace reports **48
+vulnerabilities — 1 critical, 36 high, 9 moderate and 2 low — before a single line of
+application code exists.** The overwhelming majority are build-toolchain transitives that
+never reach the browser bundle, reached through the archive, glob, worker-pool,
+CSS-processing, dev-server-proxy and registry-client chains.
+
+**Exactly one** root advisory touches a runtime dependency: a high-severity **client-hydration**
+advisory against `@angular/core` whose affected range covers **every** 19.2.x release, with
+no remedy inside the mandated major version. The other flagged Angular packages are
+implicated only because they depend on core.
+
+That vector was **verified unreachable rather than assumed so**: the workspace is scaffolded
+**without server-side rendering**, `@angular/platform-server` is **not installed**, and **no
+hydration provider appears anywhere in the source**. The application cannot execute the code
+path the advisory describes.
+
+**Consequence: `npm audit` must not be added as a build gate.** Gate 3 is install plus
+production build; Gate 4 is the test run. An audit threshold would fail a pristine Angular 19
+workspace on day one and block the entire delivery over a vector this application cannot
+reach. The equivalent trap was checked and cleared on the .NET side in Section 8.
+
+If the Angular major version is raised in future, re-check this advisory at that point — the
+decision is scoped to Angular 19, not open-ended.
+
+## 11. Validation gate outcomes
+
+The seven gate commands, reproduced verbatim:
+
+```
+Gate 1: cd backend; dotnet restore; dotnet build --configuration Release --warnaserror
+Gate 2: dotnet test --configuration Release --no-build --verbosity normal
+Gate 3: cd frontend; npm ci; ng build --configuration production
+Gate 4: ng test --watch=false --browsers=ChromeHeadless --code-coverage
+Gate 5: dotnet test --configuration Release --filter "Category=Integration"
+Gate 6: docker-compose build
+Gate 7: docker-compose up -d; sleep 10; curl -f http://localhost:8080/health;
+        curl -f http://localhost:4200; docker-compose down
+```
+
+### 11.1 Preconditions discovered by execution
+
+These are the findings that turn a gate from "should pass" into "does pass". Each was
+discovered by running the gate, not by predicting it.
+
+- **Gate 1 fails until `CS1591` is suppressed.** Documentation generation combined with
+  warnings-as-errors turns every undocumented public member into a build error. Section 8
+  records the suppression and its justification.
+- **Gate 4 fails outright without `frontend/karma.conf.js`.** Headless Chrome refuses to
+  start as root without a sandbox flag, so the run only succeeds with a custom
+  `ChromeHeadlessNoSandbox` launcher that adds the no-sandbox, disable-GPU,
+  disable-shared-memory and new-headless flags. **That file is mandatory, not optional.**
+- **Gate 5 selects on `[Trait("Category", "Integration")]`.** The class names
+  `PortalApiTests`, `ModuleApiTests` and `UserApiTests` are fixed by the gate specification
+  and must match exactly, asserting `POST` 201, `GET` 200, `PUT` 200 and `DELETE` 204.
+- **Gate 7 has three preconditions that no build step checks.** `/health` must be
+  **anonymous**, because the compose file's `depends_on: condition: service_healthy` means
+  the frontend service never starts otherwise; the container probe must use **`wget --spider`**,
+  because the Alpine runtime image ships `wget` and not `curl`; and the production
+  `apiBaseUrl` must be **relative** (Section 7).
+
+### 11.2 Three facts about the gate commands and the environments that ran them
+
+- **The literal `docker-compose` spelling in Gates 6 and 7 cannot run on a current Docker
+  installation.** Compose v1 is end-of-life and absent; the supported spelling is the
+  two-word `docker compose`. This is a tooling fact that no product change can address, and
+  it is what the container documentation in [`./README.md`](./README.md) uses.
+- **The container gates were not executable in the authoring environment.** That environment
+  had no container runtime at all, so the four Docker artefacts were authored
+  correct-by-construction from their verbatim specifications, with both name placeholders
+  independently proven by real builds: a scaffolded solution emitted `DnnMigration.Api.dll`,
+  the exact filename the API image's `ENTRYPOINT` names, and a scaffolded workspace emitted
+  `dist/dnn-migration/browser/`, the exact path the frontend image copies. They have since
+  been exercised in an environment that does provide Docker Engine with the Compose plugin;
+  the container-gate findings, including a full `--no-cache` build, are recorded in the
+  register below rather than duplicated here.
+- **The legacy solution could not be compiled anywhere in this work:** `msbuild`, `mono` and
+  `vbnc` are all unavailable. Legacy behaviour was therefore established by reading the
+  source and analysing the DDL, which is why every claim in this document carries a file and
+  line citation instead of a runtime observation.
+
+## 12. Documentation site decision
+
+**`mkdocs.yml` is deliberately not modified, and no navigation entry is added for this
+file.**
+
+The reason is mechanical rather than stylistic. `mkdocs.yml` is eight lines long and
+declares **no `docs_dir`**, so MkDocs resolves its three-entry `nav` — `index.md`,
+`project-guide.md`, `technical-specifications.md` — relative to the default `docs/`
+directory. A repository-root file is simply not addressable from there, and adding an entry
+would break the documentation build.
+
+The three alternatives were considered and rejected: duplicating this file into `docs/`
+creates two copies that will diverge; renaming it moves the deliverable away from the name
+the requirements specify; and adding an include plugin introduces a dependency that is not
+installed. `MIGRATION_NOTES.md` therefore lives at the repository root, following the same
+convention that already applies to the equally un-navigated `README.md`.
+
+> **Standing instruction to anyone extending this work: do not add a `mkdocs.yml` nav entry
+> for `MIGRATION_NOTES.md`, do not copy it into `docs/`, and do not rename it.**
+
+Two committed documents are **reference only** and must not be read as descriptions of this
+checkout. `docs/technical-specifications.md` is a prior action plan for this same migration;
+its naming and layout conventions are adopted, but its EF Core pin and its mapping-library
+choice are superseded as recorded in Section 9. `docs/project-guide.md` is a post-hoc
+assessment guide whose configuration key names and health-endpoint shape are adopted, but
+whose reported completion figures describe work that is **not present in this checkout** and
+are not restated as results anywhere in this document.
+
+## 13. What was not migrated
+
+A single scannable index of the functional envelope, so an integrator can see the boundary
+at a glance.
+
+**Whole subsystems and features**
+
+- DotNetNuke skinning, skin objects and containers (this generation uses skins, not master
+  pages — there are **zero** `.master` files in the repository)
+- The search, cache, logging, scheduling and friendly-URL provider models
+- Newsletter, messaging, vendors, affiliates, banners and sales administration
+- Host-level (super-user) administration
+- Localisation administration and multi-language content (Section 4.7)
+- Scheduling administration, including the users-online purge job (Section 4.9)
+- The FCK HTML editor and rich-text editing (Section 4.16)
+- File management (the `.FileManager_*` UI vocabulary has no target equivalent)
+- The legacy navigation/menu providers (`.MainMenu_*` likewise)
+- Every bundled desktop module under `Website/DesktopModules/**`, with the single exception
+  of the DNN authentication service, which is read as the reference for the login flow
+- Portal template import and export (Section 4.8)
+- Password retrieval (Section 4.1)
+
+**Mechanisms**
+
+- The Web Forms postback infrastructure — 15 `.aspx` pages and 147 `.ascx` user controls
+- Server-side HTML rendering: there is no Razor and no server-side rendering, and the API
+  returns JSON only
+- ViewState, and the page and control lifecycle around it
+- Reflection-based provider resolution and assembly probing
+- The reflection row hydrator and the pre-generics collection wrappers (Section 4.13)
+- The server-side event model (Section 4.12)
+
+**Testing**
+
+- End-to-end browser suites. Playwright and Cypress are listed as optional in the
+  requirements and no gate exercises them, so none was written; the two test suites that do
+  exist are the backend unit and integration suites and the frontend Karma suite, all
+  covered by Section 11.
+
+**Not written or modified at all**
+
+- No VB.NET was authored or edited, and no `.vb`, `.vbproj`, `.aspx`, `.ascx`, `.asmx`,
+  `.resx` or `.dnn` file was changed
+- Both legacy solution files, `Website/release.config` and `Website/development.config`
+  remain untouched — they are read as the authority for configuration truth
+- `mkdocs.yml` is untouched (Section 12)
+
+---
+
+## The register
+
+Everything below this line is the append-only register described at the top of this file:
+the entries each agent recorded while porting its own part of the platform. It is the
+evidence behind Sections 1 to 13, and it carries per-file detail — individual method
+signatures, individual contract decisions, individual review and QA findings and the
+differences that closing them introduced — that the canonical record above deliberately
+summarises rather than repeats. Where the two ever appear to disagree, the register is the
+primary source, because it was written at the point of change.
+
 > This file is append-only. Add a new `###` entry under the section below; do not
 > restructure, reword or remove an existing entry.
 
