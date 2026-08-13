@@ -657,21 +657,43 @@ public interface IPortalService
     /// </param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
     /// <returns>
-    /// A successful outcome when the alias was stored. Fails with <c>portal.alias_not_found</c> when
-    /// no alias carries that identifier <em>within that portal</em>, and with
-    /// <c>portal.alias_duplicate</c> when the new host name is already bound to another alias.
+    /// A successful outcome carrying the alias as it now stands, so that a caller answers 200 OK with
+    /// the updated representation. Fails with <c>portal.alias_not_found</c> when no alias carries that
+    /// identifier <em>within that portal</em>, and with <c>portal.alias_duplicate</c> when the new
+    /// host name is already bound to another alias.
     /// </returns>
     /// <remarks>
+    /// <para>
     /// Replaces <c>UpdatePortalAliasInfo</c> (<c>PortalAliasController.vb:L94</c>). An alias cannot
     /// be moved between portals through this member: the owning portal is fixed when the alias is
     /// bound, matching the legacy screen, which offered only the host name for editing.
+    /// </para>
+    /// <para>
+    /// The stored row is returned rather than discarded because it carries facts a caller cannot
+    /// reconstruct from its own request. The decisive one is the current-alias flag: whether this row
+    /// is the alias the request itself resolved the tenant through is decided here, from the request's
+    /// own context, and nothing in the submitted contract implies it. The host name can differ too -
+    /// this member trims what it is given before writing it, so a caller that submitted surrounding
+    /// whitespace is told the spelling that was kept. It does NOT change case, and no other
+    /// transformation is applied. Returning the row costs nothing, because the entity is already
+    /// loaded and tracked by the time the write completes, and it removes the follow-up read the
+    /// caller would otherwise have to make.
+    /// </para>
     /// </remarks>
     // MIGRATION: for the reason recorded on the create member, this member takes a request contract
     // rather than the alias projection. The update path is where the shape gap mattered most: the
     // legacy screen declared no validator over its one input and learned about a collision only by
     // catching the exception the unique constraint raised, at EditPortalAlias.ascx.vb:L223-L228, so
     // an unchecked value reached the store on every edit.
-    Task<Result> UpdatePortalAliasAsync(
+    //
+    // MIGRATION: this member reports the stored alias rather than bare success, which aligns the
+    // update with the house contract for a modifying verb - POST answers 201 with the created
+    // representation, PUT answers 200 with the updated one, and only a genuinely bodyless command
+    // answers 204. UpdatePortalAsync and UpdatePortalSettingsAsync on this interface already carry a
+    // representation the same way; they differ only in expressing a missing row as a null value,
+    // whereas the alias members report it as portal.alias_not_found, which is the shape the alias
+    // failure codes were documented and tested against from the outset and is not disturbed here.
+    Task<Result<PortalAliasDto>> UpdatePortalAliasAsync(
         int? portalId,
         int portalAliasId,
         UpdatePortalAliasRequest request,

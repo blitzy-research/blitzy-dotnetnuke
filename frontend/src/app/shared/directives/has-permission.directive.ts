@@ -292,9 +292,11 @@ function isGranted(required: PermissionKey, held: readonly PermissionKey[]): boo
  * while the projection functions did — which is a further reason the client must not
  * attempt to re-derive any of it.
  *
- * MIGRATION: the authorisation POLICY vocabulary is a separate, closed set of EIGHT names
- * registered by the API and is NOT what this directive takes. Policy names are the
- * server's route-level contract, enumerated once in `core/guards/permission.guard.ts`; the
+ * MIGRATION: the authorisation POLICY vocabulary is a separate, closed set of NINE names
+ * registered by the API — the eight route-scoped and membership policies plus
+ * `PortalContentEditor`, which decides at portal scope and needs no route identifier — and
+ * is NOT what this directive takes. Policy names are the server's
+ * route-level contract, enumerated once in `core/guards/permission.guard.ts`; the
  * permission keys above are the persisted data. A third axis exists as well, the
  * permission CODE that scopes a key to folders, module definitions or pages — `READ` and
  * `WRITE` are folder-scoped keys, which is why they never reach a policy and why file

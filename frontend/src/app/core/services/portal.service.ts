@@ -549,30 +549,36 @@ export class PortalService {
   /**
    * Changes the host name one alias binds.
    *
-   * Returns NOTHING, and that is the endpoint's contract rather than an omission here:
-   * this is the one write in this service that answers `204` instead of returning the
-   * record it wrote, so a caller that needs the stored row reads it back with
-   * {@link PortalService.getAlias}. The owning portal is not re-bound by this call —
-   * the request contract carries the host name alone.
+   * Returns the stored row, which carries a fact the caller cannot derive from its own
+   * request: `isCurrent`, saying whether this is the alias the request reached the portal
+   * through, which the screen reads to decide whether to offer the rename affordance
+   * again. The host name comes back as KEPT rather than as submitted — the server trims
+   * it — so nothing here reconstructs the row from the request. The response is decoded
+   * rather than trusted, exactly as {@link PortalService.createAlias} and
+   * {@link PortalService.getAlias} decode theirs — one endpoint, one shape, one decoder.
+   * The owning portal is not re-bound by this call — the request contract carries the
+   * host name alone.
    *
    * @param portalId The portal that owns the alias. Checked by the server against the
    * stored row's owner, because changing another tenant's alias would make that tenant
    * unreachable at the host name its users hold.
    * @param portalAliasId The alias to change.
    * @param request The host name to store in place of the current one.
-   * @returns Nothing. Answered `204`; a host name already bound to another alias is
-   * reported as a conflict carrying the problem type `portal.alias_duplicate`.
+   * @returns The alias as stored. Answered `200`; a host name already bound to another
+   * alias is reported as a conflict carrying the problem type `portal.alias_duplicate`.
    */
   updateAlias(
     portalId: number,
     portalAliasId: number,
     request: UpdatePortalAliasRequest,
-  ): Observable<void> {
-    return this.http.put<void>(
-      API_ENDPOINTS.portalAliases.forPortal.byId({ portalId, portalAliasId }),
-      request,
-      { context: presentedInContext() },
-    );
+  ): Observable<PortalAlias> {
+    return this.http
+      .put<unknown>(
+        API_ENDPOINTS.portalAliases.forPortal.byId({ portalId, portalAliasId }),
+        request,
+        { context: presentedInContext() },
+      )
+      .pipe(map((body) => decodeResponse(PORTAL_ALIAS_RESPONSE, body)));
   }
 
   /**

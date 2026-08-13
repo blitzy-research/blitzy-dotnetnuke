@@ -117,14 +117,18 @@ namespace DnnMigration.Api.Controllers;
 /// question about stored state and is answered by the service as <c>portal.alias_duplicate</c>.
 /// </para>
 /// <para>
-/// <b>A create answers <c>201</c> with the created representation; an update and an unbind answer
-/// <c>204</c> with no body.</b> That asymmetry follows the service contract rather than a preference:
-/// the create member reports the stored alias, because only the database can supply the identifier it
-/// assigned, whereas the update and delete members report a payload-free outcome, and <c>204</c> is what
-/// the shared translator answers for one. Answering <c>200</c> instead would mean either an extra read
-/// this API does not need or an empty envelope, and HTTP forbids a body on <c>204</c> in any case, so the
-/// two cannot be reconciled by wrapping. A caller that has just submitted the only value this resource
-/// holds already knows what it now says; one that wants confirmation from the store re-reads it.
+/// <b>A create answers <c>201</c> with the created representation, an update answers <c>200</c> with the
+/// updated representation, and only the unbind answers <c>204</c> with no body.</b> That follows the
+/// service contract rather than a preference: the create and update members both report the stored alias,
+/// so the shared translator answers <c>201</c> and <c>200</c> respectively, whereas the delete member
+/// reports a payload-free outcome and <c>204</c> is what the translator answers for one. Returning the
+/// representation on an update costs no extra read - the entity is already loaded and tracked by the time
+/// the write completes - and it is not redundant, because the row carries a fact no caller can derive from
+/// its own request: <c>isCurrent</c>, which says whether this is the alias the request itself resolved the
+/// tenant through, and which a client reads to decide whether to offer the affordance again. The host name
+/// is reported as STORED rather than as submitted for the same reason, the service having trimmed it. This
+/// is also the contract the rest of this API publishes for a modifying verb, so no consumer has to
+/// special-case aliases.
 /// </para>
 /// <para>
 /// MIGRATION: the legacy screen hid its Delete button when a portal had a single alias
@@ -394,8 +398,11 @@ public sealed class PortalAliasesController : ControllerBase
     /// <param name="portalAliasId">Identifier of the alias to change.</param>
     /// <param name="request">The host name to store in place of the current one.</param>
     /// <param name="cancellationToken">Abandons the work when the caller disconnects.</param>
-    /// <returns><c>204 No Content</c> when the alias has been changed.</returns>
-    /// <response code="204">The alias was changed.</response>
+    /// <returns><c>200 OK</c> carrying the alias as it now stands.</returns>
+    /// <response code="200">
+    /// The alias was changed, and the body carries it as stored - including <c>isCurrent</c>, which the
+    /// caller cannot derive from its own request, and the host name as kept rather than as submitted.
+    /// </response>
     /// <response code="400">
     /// The body was absent or malformed, or a declared rule refused the host name, in which case the body is
     /// an RFC 7807 validation document naming the offending field.
@@ -420,19 +427,19 @@ public sealed class PortalAliasesController : ControllerBase
     [HttpPut("portals/{portalId:int}/aliases/{portalAliasId:int}")]
     [Authorize(Policy = PolicyNames.PortalAdministrator)]
     [TenantOptional(AliasRepairJustification)]
-    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ApiResponse<PortalAliasDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
-    public async Task<ActionResult> UpdateForPortalAsync(
+    public async Task<ActionResult<ApiResponse<PortalAliasDto>>> UpdateForPortalAsync(
         int portalId,
         int portalAliasId,
         [FromBody] UpdatePortalAliasRequest request,
         CancellationToken cancellationToken)
     {
-        Result outcome = await _portals
+        Result<PortalAliasDto> outcome = await _portals
             .UpdatePortalAliasAsync(portalId, portalAliasId, request, cancellationToken)
             .ConfigureAwait(false);
 

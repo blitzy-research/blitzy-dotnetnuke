@@ -28,11 +28,13 @@
  *
  * ⚠ WHAT THIS FILE IS GUARDING AGAINST, since every one of these fails SILENTLY:
  *
- *   1. **The policy catalogue drifting from the API's.** The client's list once held five
- *      names while the API registers eight, so three real policies could not be declared
- *      on a route at all — every one of them was refused for no reason a person could
- *      see. Nothing but a positive control per name catches that, because a suite of
- *      refusals passes just as happily against a gate that refuses everything.
+ *   1. **The policy catalogue drifting from the API's.** The API registers NINE names. The
+ *      client's list once held five, so four real policies could not be declared on a
+ *      route at all — every one of them was refused for no reason a person could see. It
+ *      has drifted twice, which is the reason this control is stated as a count as well as
+ *      a list: it was first corrected to eight, and `PortalContentEditor` was registered
+ *      afterwards. Nothing but a positive control per name catches that, because a suite
+ *      of refusals passes just as happily against a gate that refuses everything.
  *   2. **A scope key the API does not read.** The module and tab keys once carried a
  *      generic `id` fallback with no server-side counterpart, so a route naming its
  *      record `id` satisfied the client and then failed at the endpoint — surfacing as an
@@ -133,11 +135,14 @@ const PORTAL_ADMINISTRATOR_ROLE = 'Administrators';
  * the server's list, so the assertion genuinely asks whether the client agrees with the
  * server.
  *
- * ⚠ EIGHT, NOT FIVE. An earlier reading of this migration described the vocabulary as
- * closed at five. It is not, and the difference is not cosmetic: `HostAdministrator`,
- * `AccountOwner` and `AccountOwnerOrPortalAdministrator` are registered policies that a
- * route may legitimately declare, so treating them as unknown names would refuse three
- * working screens.
+ * ⚠ NINE, AND IT HAS BEEN UNDERSTATED TWICE. An early reading of this migration described
+ * the vocabulary as closed at five; the correction to eight was itself overtaken when
+ * `PortalContentEditor` was registered. Neither understatement was cosmetic:
+ * `HostAdministrator`, `AccountOwner`, `AccountOwnerOrPortalAdministrator` and
+ * `PortalContentEditor` are registered policies that a route may legitimately declare, so
+ * treating any of them as an unknown name would refuse a working screen. The count is
+ * asserted as a number below as well as name by name, because a list that merely LOOKS
+ * long is what let the second understatement survive.
  */
 const SERVER_POLICY_NAMES = [
   'ModuleView',

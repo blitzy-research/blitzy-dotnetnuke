@@ -2323,8 +2323,10 @@ public sealed class AuthService : IAuthService
     /// <remarks>
     /// <para>
     /// This is <c>UserController.vb</c> L1171-L1197, the overload that returned the legacy
-    /// post-credential validation enumeration. MIGRATION: that enumeration is NOT one of the nine Domain
-    /// enumerations and no type is invented for it here - its five members are surfaced as the advisory
+    /// post-credential validation enumeration. MIGRATION: that enumeration is not among the thirteen the
+    /// Domain layer declares - the nine the architecture specifies for ported legacy enumerations, plus
+    /// four added since for credential, membership, refresh-token and security-diagnostic outcomes - and
+    /// no type is invented for it here; its five members are surfaced as the advisory
     /// flags this method reports, which the sign-in response carries. The forced update is reported first
     /// and suppresses the expiry evaluation entirely, preserving the legacy's <c>ElseIf</c>: the legacy
     /// enumeration was single-valued with precedence, so it could never report both, and neither does

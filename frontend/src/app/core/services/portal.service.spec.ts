@@ -1518,15 +1518,17 @@ describe('PortalService', () => {
   });
 
   describe('updateAlias', () => {
-    it('puts the alias to its own address and completes on a 204 with no body', () => {
-      // ⚠️ THE ENDPOINT ANSWERS 204, NOT 200. The action reports its outcome through
-      // `ApiResults.Complete(Result)`, whose success arm is `NoContent()` — and HTTP forbids
-      // a 204 from carrying a body at all, so there is no envelope to unwrap and none is
-      // looked for. An earlier revision of this spec flushed a 200, which is a status this
-      // action cannot produce; the two happen to behave alike through a `void`-typed
-      // observable, which is exactly what makes the wrong fixture invisible until a consumer
-      // starts distinguishing them.
+    it('puts the alias to its own address and unwraps the stored row from the 200', () => {
+      // ⚠️ THE ENDPOINT ANSWERS 200 CARRYING THE STORED ROW, NOT 204. The action reports its
+      // outcome through `ApiResults.Complete(Result<PortalAliasDto>)`, whose success arm is
+      // `Ok(ApiResponse<T>.Success(value))`, so there IS an envelope and it is unwrapped by the
+      // same decoder `createAlias` and `getAlias` use. The fixture below deliberately answers
+      // with a host name the caller did not submit, because that is the whole reason the body
+      // is worth reading: the row is the server's, and a member that discarded the answer
+      // would leave a consumer holding the value it typed plus a guess at `isCurrent`, which
+      // only the server can decide.
       const request = updatePortalAliasRequest();
+      const stored = portalAlias(PORTAL_ID, PORTAL_ALIAS_ID, 'www.contoso.example.test');
 
       const observed = observe(service.updateAlias(PORTAL_ID, PORTAL_ALIAS_ID, request));
 
@@ -1537,18 +1539,16 @@ describe('PortalService', () => {
         .withContext('the body is the request the caller composed')
         .toEqual(request);
       expect(pending.request.responseType)
-        .withContext('a JSON response type is declared even though nothing comes back')
+        .withContext('the response is JSON, and it is decoded rather than trusted')
         .toBe('json');
 
-      pending.flush(null, { status: 204, statusText: 'No Content' });
+      pending.flush(envelope(stored));
 
-      // The member returns no payload, so there is nothing to unwrap and nothing to
-      // assert beyond the request and the completion.
       expect(observed.isComplete()).toBeTrue();
       expect(observed.failures).toEqual([]);
       expect(observed.values)
-        .withContext('a payload-free success emits the null body and nothing else')
-        .toEqual([null as never]);
+        .withContext('the stored row, unwrapped from the envelope')
+        .toEqual([stored]);
     });
 
     it('lets a duplicate-alias refusal reach the caller as the 409 it is', () => {
@@ -1670,7 +1670,10 @@ describe('PortalService', () => {
         statusText: 'Created',
       });
       issued[9].flush(envelope(portalAlias(PORTAL_ID, PORTAL_ALIAS_ID, 'localhost')));
-      issued[10].flush(null, { status: 200, statusText: 'OK' });
+      issued[10].flush(envelope(portalAlias(PORTAL_ID, PORTAL_ALIAS_ID, 'renamed.example.test')), {
+        status: 200,
+        statusText: 'OK',
+      });
       issued[11].flush(null, { status: 204, statusText: 'No Content' });
 
       for (const observed of observations) {

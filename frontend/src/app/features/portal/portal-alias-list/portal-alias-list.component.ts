@@ -827,16 +827,25 @@ const ALIAS_MAX_LENGTH = 200;
 // -----------------------------------------------------------------------------
 //
 // Read from `Api/Controllers/PortalAliasesController.cs`,
-// which declares every response it can produce. Two findings are recorded because
-// they contradict the brief this screen was written from:
+// which declares every response it can produce. Two findings are recorded:
 //
-//   * the update action answers 204 NO CONTENT (L406), not 200. The store's
-//     update command already accounts for it by re-reading rather than
-//     reconstructing, so nothing here depends on a body.
+//   * the update action answers 200 OK carrying the stored row. This note used to
+//     record it answering 204 NO CONTENT, in contradiction of the brief this screen
+//     was written from, and the endpoint has since been aligned to the brief - so the
+//     contradiction is resolved rather than merely documented. Nothing on this screen
+//     depended on the difference either way, because the store re-reads the collection
+//     after a write rather than reconstructing it; what the body adds is `isCurrent`,
+//     which says whether the row just written is the alias THIS request resolved the
+//     tenant through. That is decided by the server from the request's own context and
+//     cannot be derived here from what was typed. The host name comes back as stored,
+//     which is the submitted spelling with surrounding whitespace removed - the server
+//     trims and does NOTHING else to it, so no case folding and no prefix stripping
+//     should be expected of it either.
 //   * the delete action DOES now declare a 409, and this note used to record that
 //     it declared none. The active-alias refusal introduced it - see MIGRATION 6
 //     and MIGRATION 17 - so both write actions and the removal can each answer a
-//     conflict, for two different reasons.
+//     conflict, for two different reasons. The removal remains the one action here
+//     that answers 204, because it is the only one with nothing to report.
 
 /** A refusal on grounds of permission. The successor of both legacy denials. */
 const FORBIDDEN_STATUS = 403;
@@ -2664,9 +2673,10 @@ export class PortalAliasListComponent implements OnInit {
    * added it at `EditPortalAlias.ascx.vb:L242` and then issued
    * `Response.Redirect(…, True)` on the very next line, which ends the response, so the
    * message was rendered into a page nobody saw. Here the measured wording is announced
-   * and the listing is refreshed in place - the store appends the created row to the
-   * collection in hand and re-reads the collection after an update, because that write
-   * is answered with no body and the stored value must not be guessed from the request.
+   * and the listing is refreshed in place - the store records the row the server answered
+   * with, whether that answer came from a create or from an update, and then re-reads the
+   * collection, so the stored value is never guessed from the request and the collection is
+   * always the server's own.
    */
   private onSaved(): void {
     // ⚠ THE FAILURE SURFACE IS CLEARED HERE BECAUSE SUCCESS AND FAILURE FOR ONE ACTION ARE

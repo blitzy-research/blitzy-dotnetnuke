@@ -24,9 +24,14 @@
 //     member name IS the stored value, compared with exact string equality and gated by a separate
 //     allow-access flag on every comparison. READ and WRITE are folder-scope keys and never appear in a
 //     policy. This is what the `permissionKey` filter and the catalogue payload carry.
-//   (2) the AUTHORISATION POLICY names - ModuleView, ModuleEdit, TabView, TabEdit and PortalAdministrator.
-//     Mixed case, and never travelling in a request from this service. No policy provider is registered on the
-//     server, so an unregistered policy name fails at request time rather than at start-up.
+//   (2) the AUTHORISATION POLICY names, a closed set of NINE: ModuleView, ModuleEdit, TabView, TabEdit,
+//     PortalAdministrator, HostAdministrator, AccountOwner, AccountOwnerOrPortalAdministrator and
+//     PortalContentEditor. Mixed case, and never travelling in a request from this service. The client's
+//     single source of truth for them is the PERMISSION_POLICIES tuple in core/guards/permission.guard.ts,
+//     which mirrors Api/Authorization/PolicyNames.cs; this note lists them rather than importing them
+//     because it exists to say the two vocabularies are NOT the same set, and that point is lost if one of
+//     them is only a reference. No policy provider is registered on the server, so an unregistered policy
+//     name fails at request time rather than at start-up.
 // This service maps neither onto the other and validates against neither: a closed-set check here would be
 // business logic, and it would wrongly reject a key an installation legitimately holds.
 //

@@ -17,7 +17,8 @@
 //
 //   * subscribing, and cancelling an in-flight request that a newer one supersedes;
 //   * sequencing two calls into one operation (a write followed by the read that
-//     confirms it, where the endpoint answers with no body);
+//     confirms it — because the endpoint answered with no body, as a removal does, or
+//     because the answer describes the row written and not the collection it sits in);
 //   * holding the loading and structured-failure state of each concern;
 //   * optimistic removal from a collection already in hand;
 //   * deriving projections over held state.
@@ -2170,8 +2171,10 @@ export class PortalStore implements OnDestroy {
           // resource leave the collection in the same state. Creation used to splice the 201
           // body onto the held array while {@link PortalStore.updateAlias} re-read the
           // collection, and the reason for the split was a difference in the CONTRACTS rather
-          // than a decision: `POST` answers with the created resource and `PUT` answers with no
-          // body, so update had nothing to merge and had to ask again.
+          // than a decision: `POST` answered with the created resource while `PUT` answered with
+          // no body, so update had nothing to merge and had to ask again. Both verbs now answer
+          // with the row, which removes the asymmetry that once explained the split - and leaves
+          // the re-read standing on its own merits, set out below.
           //
           // That is an explanation and not a justification. A spliced row is the client's OWN
           // idea of where the record belongs: it lands at the end of the array regardless of the
@@ -2203,12 +2206,18 @@ export class PortalStore implements OnDestroy {
   /**
    * Changes the host name one alias binds.
    *
-   * THE ENDPOINT RETURNS NO BODY, so the stored row is re-read rather than reconstructed
-   * from the request. That is the composition this store exists for: it is the one write
-   * on the transport that answers with nothing, and guessing the stored value would
-   * display the text as typed even where the server stored something else. The
-   * collection is re-read for the same reason, and the two reads are sequenced here so
-   * that no caller has to know the endpoint is unusual.
+   * The endpoint answers with the stored row, so the record just written is adopted from
+   * the response rather than reconstructed from the request. Reconstruction is not merely
+   * inelegant here, it is impossible: `isCurrent` is decided by the server from the
+   * request's own context and no client can compute it, and the host name comes back as
+   * the server kept it after trimming.
+   *
+   * The collection is still RE-READ, for the same reason it is re-read after a create:
+   * the response describes the row that was written and says nothing about the order the
+   * collection endpoint applies, nor about the rows nobody here wrote. Renaming an alias
+   * can also move which row the `isCurrent` flag falls on, and that is a fact about the
+   * collection rather than about the row in hand. The sequencing is the store's to
+   * perform, because a transport may not chain two calls.
    *
    * MIGRATION: a duplicate host name is refused here too, with the same code as on
    * create - see {@link PortalStore.createAlias}.
@@ -2217,26 +2226,31 @@ export class PortalStore implements OnDestroy {
    * @param portalAliasId The row to change.
    * @param request The host name to store in place of the current one. The owning portal
    * is not re-bound: the contract carries the host name alone.
-   * @returns A ticket emitting once after the write has been stored and the collection
-   * re-read. See {@link PortalStore.outcomeTicket}.
+   * @returns A ticket emitting the stored row once, after the write has been stored and
+   * the collection re-read. See {@link PortalStore.outcomeTicket}.
    */
   updateAlias(
     portalId: number,
     portalAliasId: number,
     request: UpdatePortalAliasRequest,
-  ): Observable<void> {
-    const outcome = PortalStore.outcomeTicket<void>();
+  ): Observable<PortalAlias> {
+    const outcome = PortalStore.outcomeTicket<PortalAlias>();
 
     this._aliasLoading.set(true);
     this._aliasFailure.set(null);
 
     this.track(
       this.portalApi.updateAlias(portalId, portalAliasId, request).subscribe({
-        next: () => {
+        next: (stored: PortalAlias) => {
+          // Recorded as the detail exactly as a create records its own answer. The selection is
+          // deliberately NOT re-stated: the caller already addressed this row by identifier, so
+          // writing it again would be the only place in this store where a write moved the
+          // selection onto a row that was already the subject of the request.
+          this._aliasDetail.set(stored);
           this._aliasLoading.set(false);
           this.loadAliases(portalId);
 
-          outcome.next();
+          outcome.next(stored);
           outcome.complete();
         },
         error: (cause: unknown) => {

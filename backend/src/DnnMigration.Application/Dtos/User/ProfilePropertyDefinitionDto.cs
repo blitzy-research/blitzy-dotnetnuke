@@ -361,8 +361,10 @@ public sealed class ProfilePropertyDefinitionDto
     // hint defaults to 2, while the stored per-user column defaults to 0.
     //
     // Second, the value travels as an int because no domain enumeration exists for it. The
-    // domain layer declares nine enumerations and this concept is deliberately not among them,
-    // so the three meanings are documented above instead of being typed.
+    // domain layer declares thirteen enumerations - the nine the architecture specifies for
+    // ported legacy enumerations, plus four added since for credential, membership,
+    // refresh-token and security-diagnostic outcomes - and this concept is deliberately not
+    // among them, so the three meanings are documented above instead of being typed.
     //
     // Both belong in the repository migration notes.
     public int Visibility { get; set; }

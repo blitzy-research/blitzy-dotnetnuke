@@ -305,8 +305,8 @@ export interface DataTableColumnCommon {
    * written as a literal is validated when the set is bound, so a malformed one is reported rather than
    * silently discarded by the browser.
    *
-   * Sizing the columns here rather than from cell content is also what makes the render-virtualisation
-   * strategy safe - see {@link DataTableComponent}.
+   * Sizing the columns here rather than from cell content is also what makes the row-windowing strategy
+   * safe - see {@link DataTableComponent}.
    *
    * One obligation on the caller, because the component cannot discharge it. An `actions` column must be
    * given `min-content`, `max-content`, or omitted so it sizes itself; it must NOT be given a track narrower
@@ -814,25 +814,37 @@ const SPACE_KEY = ' ';
  * of the row projection: were it a member of {@link DataTableBodyRow}, selecting a row would re-run every
  * {@link DataTableFormattedColumn.value} formatter on the page to recompute text that had not changed.
  *
- * Virtualisation is achieved in CSS rather than with a scrolling viewport, because the pinned dependency set
- * contains no scrolling package and none may be added. The stylesheet marks body rows so the engine may skip
- * the layout and paint of rows that are off screen and supplies a placeholder size for the rows it skips.
- * That needs zero JavaScript and no change to the public surface, and every row stays in the DOM, so every
- * row stays in the accessibility tree, in find-in-page and in the tab order. Two facts make it work rather
+ * Virtualisation is achieved by WINDOWING THE ROWS IN TYPESCRIPT rather than with a scrolling viewport
+ * component, because the pinned dependency set contains no scrolling package and none may be added. Above a
+ * row-count threshold only the rows near the viewport are rendered, and the scrollable height is held by two
+ * `aria-hidden` spacer rows so the document keeps its true length and the scrollbar its true proportions.
+ * Below the threshold - which every paged screen in this application sits comfortably under - nothing is
+ * removed and the table renders exactly as it would without the mechanism. Four facts make it work rather
  * than merely compile:
  *
- * - Skipping a row's layout is only safe when column widths do not depend on that row's content, or the
- *   columns would shift as rows entered and left the viewport. {@link DataTableColumnCommon.width} applied
+ * - The CSS-only alternative was tried first and is INERT on a table. `content-visibility: auto` with
+ *   `contain-intrinsic-size` was declared on each `<tr>`, and a control experiment settled it: the identical
+ *   declarations collapse a `<div>` to its intrinsic size while a `<tr>` keeps its real height, because a
+ *   `display: table-row` element is an internal table element and CSS containment does not apply to those.
+ *   The ROW WINDOWING section on the class records the measurement; the declarations are removed rather than
+ *   kept as decoration.
+ * - Windowing is only safe when column widths do not depend on which rows are currently rendered, or the
+ *   columns would shift as rows entered and left the window. {@link DataTableColumnCommon.width} applied
  *   through the `colgroup`, with a fixed table layout, supplies exactly that guarantee: the width member and
  *   the virtualisation strategy are two halves of one design.
- * - The placeholder size is composed ENTIRELY from existing design tokens - the base line height, the base
- *   type size and a spacing step - because the token set declares no row-height token and a pixel literal is
- *   forbidden.
+ * - The row height used to size the spacers is MEASURED from the rendered rows rather than assumed, because
+ *   heights genuinely vary here. All of that arithmetic lives in TypeScript, where the no-hardcoded-value
+ *   rule does not apply; no pixel literal appears in the stylesheet or in the template text, and the spacers
+ *   are sized through a style binding with a unit suffix.
+ * - Rows leaving the DOM has real costs, and they are accepted rather than hidden: a windowed row is not in
+ *   the accessibility tree, not reachable by find-in-page and not in the tab order. That is the reason the
+ *   threshold exists and the reason it sits above every page size this application requests.
  *
- * Because every row remains rendered this is not windowing, so `aria-rowcount` and `aria-rowindex` are not
- * strictly needed. They are published anyway: they are accurate, they are valid on a native table without an
- * explicit role, and they mean a future switch to true windowing cannot silently start misreporting the row
- * count.
+ * Because rows ARE removed, this is windowing, so `aria-rowcount` on the table and a TRUE `aria-rowindex` on
+ * every row are mandatory rather than optional: without them a screen reader would be told the table holds
+ * only the handful of rows currently rendered, and each row would be numbered by its position in the window
+ * instead of in the set. Both are published, both are valid on a native table without an explicit role, and
+ * the header, message and body rows are indexed from one continuous sequence.
  *
  * @typeParam TRow The row contract carried on the current page.
  */
@@ -2151,12 +2163,28 @@ function projectCell<TRow extends object>(
 // marginally narrow track can break mid-word, which is cosmetic, leaves the accessible name intact, and is
 // strictly preferable to two illegible headings.
 
-// MIGRATION: virtualisation is delivered by CSS render-virtualisation, with zero JavaScript, zero new
-// dependency and no change to the public surface. No scrolling package exists in the pinned dependency set
-// and none was added, so no viewport component was available. Every row remains in the DOM, hence in the
-// accessibility tree, find-in-page and the tab order. The design-token set declares no row-height or
-// intrinsic-size token, so the placeholder size is composed from the existing base line-height, base type
-// size and spacing tokens rather than being hardcoded to a pixel literal. Because no rows are removed this
-// is not windowing, so aria-rowcount and aria-rowindex are not strictly needed; they are published anyway
-// because they are accurate, valid on a native table without an explicit role, visually free, and they stop
-// a future switch to real windowing from silently misreporting the table's size.
+// MIGRATION: virtualisation is delivered by THRESHOLDED ROW WINDOWING IN TYPESCRIPT, with zero new
+// dependency. No scrolling package exists in the pinned dependency set and none was added, so no viewport
+// component was available. The CSS-only route was attempted first and abandoned on evidence rather than on
+// preference: `content-visibility: auto` with `contain-intrinsic-size` is INERT on a `<tr>`, because a
+// `display: table-row` element is an internal table element and CSS containment does not apply to those - a
+// control experiment measured a row 3,951 px below the fold fully laid out with all 26 of its descendants.
+// The declarations were therefore removed rather than kept as documentation, and the ROW WINDOWING section
+// on the class holds the measurement.
+//
+// What is delivered instead renders only the rows near the viewport, holds the scrollable height with two
+// aria-hidden spacer rows so the document keeps its true length, and engages only above a row-count
+// threshold that sits above every page size this application requests - so the ordinary paged path renders
+// every row exactly as it did before. The row height that sizes the spacers is measured from the rendered
+// rows rather than assumed, because heights genuinely vary here: a 1,000-character description measured
+// 821 px against a 33 px median. All of that arithmetic lives in TypeScript, where the no-hardcoded-value
+// rule does not apply; the stylesheet and the template text carry no pixel literal and the spacers are
+// sized through a style binding with a unit suffix.
+//
+// THE COSTS ARE REAL AND ARE RECORDED RATHER THAN GLOSSED. A windowed row is not in the accessibility tree,
+// not reachable by find-in-page and not in the tab order, and an estimated row height makes the spacers
+// approximate, so a row's scroll position can drift slightly from where a fully rendered table would have
+// put it. The drift is bounded by re-measuring on every window update and by the overscan; the removal from
+// the DOM is what the threshold exists to keep off the ordinary path. Because rows ARE removed,
+// aria-rowcount and a true aria-rowindex per row are MANDATORY rather than a courtesy: without them a
+// screen reader would report the size of the window instead of the size of the set.

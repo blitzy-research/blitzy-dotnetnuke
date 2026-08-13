@@ -4058,13 +4058,27 @@ public class PortalServiceTests
     /// actually owns the row.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is also where the returned representation is pinned, and it is pinned HERE rather than in the API
+    /// test for a reason worth stating. Two facts about the answered row are asserted below. The first is that
+    /// <c>IsCurrent</c> is reported: it says whether this row is the alias the request itself resolved the
+    /// tenant through, it is decided from the caller's own context, and no client can compute it - that is the
+    /// fact that makes returning a representation worth doing at all, and it holds at every layer. The second
+    /// is that the reported host name is the STORED spelling rather than the submitted one: the request here
+    /// carries surrounding whitespace and the row keeps the trimmed form, so a bodyless answer would have left
+    /// this caller holding a value the store had already replaced. That second fact is only reachable from a
+    /// direct service caller, because the API's own <c>HttpAlias</c> validator refuses a padded host name with
+    /// <c>400</c> before the service is entered - which is exactly why it is asserted at this level and not in
+    /// <c>PortalApiTests</c>. Trimming is the only transformation applied; the stored spelling is otherwise the
+    /// submitted one, case included.
+    /// </remarks>
     [Fact]
     public async Task UpdatePortalAlias_DoesNotMoveTheHostNameBetweenTenants()
     {
         Harness harness = Harness.Ready();
         ArrivedThroughAnotherAlias(harness);
 
-        Result outcome = await harness.Service.UpdatePortalAliasAsync(
+        Result<PortalAliasDto> outcome = await harness.Service.UpdatePortalAliasAsync(
             PortalId,
             PortalAliasId,
             new UpdatePortalAliasRequest { HttpAlias = "  renamed.example  " },
@@ -4075,6 +4089,15 @@ public class PortalServiceTests
         harness.LookupAlias!.PortalId.Should().Be(PortalId);
         harness.InvalidatedPortalIds.Should().Equal(new[] { PortalId });
         harness.HostInvalidations.Should().Be(1);
+
+        outcome.Value.Should().NotBeNull();
+        outcome.Value!.PortalAliasId.Should().Be(PortalAliasId);
+        outcome.Value.PortalId.Should().Be(PortalId);
+        outcome.Value.HttpAlias.Should().Be("renamed.example");
+
+        // The row this request did NOT arrive through, so the flag the client reads to decide whether to offer
+        // the rename affordance again must come back false rather than being absent or guessed.
+        outcome.Value.IsCurrent.Should().BeFalse();
     }
 
     /// <summary>

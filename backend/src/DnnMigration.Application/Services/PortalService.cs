@@ -1651,7 +1651,7 @@ public sealed class PortalService : IPortalService
     }
 
     /// <inheritdoc />
-    public async Task<Result> UpdatePortalAliasAsync(
+    public async Task<Result<PortalAliasDto>> UpdatePortalAliasAsync(
         int? portalId,
         int portalAliasId,
         UpdatePortalAliasRequest request,
@@ -1671,7 +1671,9 @@ public sealed class PortalService : IPortalService
         // somebody else's alias re-points their portal's traffic.
         if (stored is null || (portalId is int scopedPortalId && stored.PortalId != scopedPortalId))
         {
-            return Result.Failure(AliasNotFoundCode, $"No portal alias bears identifier {portalAliasId}.");
+            return Result<PortalAliasDto>.Failure(
+                AliasNotFoundCode,
+                $"No portal alias bears identifier {portalAliasId}.");
         }
 
         // MIGRATION: the alias the CURRENT REQUEST resolved through cannot be renamed, which restores the
@@ -1682,7 +1684,7 @@ public sealed class PortalService : IPortalService
         // explain the wrong thing.
         if (IsCurrentPortalAlias(portalAliasId))
         {
-            return Result.Failure(
+            return Result<PortalAliasDto>.Failure(
                 AliasInUseConflictCode,
                 "This host name is the one the current request reached the portal through, so it cannot " +
                 "be renamed. Reach the portal through one of its other host names and try again.");
@@ -1693,7 +1695,7 @@ public sealed class PortalService : IPortalService
             .ConfigureAwait(false);
         if (aliasTaken)
         {
-            return Result.Failure(
+            return Result<PortalAliasDto>.Failure(
                 AliasDuplicateCode,
                 $"The host name '{httpAlias}' is already bound to another portal alias.");
         }
@@ -1717,7 +1719,7 @@ public sealed class PortalService : IPortalService
         }
         catch (DuplicateKeyException)
         {
-            return Result.Failure(
+            return Result<PortalAliasDto>.Failure(
                 AliasDuplicateCode,
                 $"The host name '{httpAlias}' is already bound to another portal alias.");
         }
@@ -1725,7 +1727,19 @@ public sealed class PortalService : IPortalService
         _cache.InvalidateHost();
         _cache.InvalidatePortal(stored.PortalId);
 
-        return Result.Success();
+        // MIGRATION: the stored row is reported back rather than discarded, so the caller answers 200 with
+        // the updated representation instead of an empty 204. What the response adds is not a copy of the
+        // request: the current-alias flag below is decided from THIS request's context and no caller can
+        // derive it, and the host name is the value that was KEPT - NormaliseAlias above TRIMS what it was
+        // given, and trims only; it does not change case and applies no other transformation - so a caller
+        // that submitted surrounding whitespace is told the stored spelling rather than holding a stale
+        // copy of the row it just changed. Nothing is re-read: the entity is already loaded and tracked.
+        //
+        // The current-alias flag is resolved the same way the create path resolves it rather than being
+        // written as false, even though the refusal above means this row provably is not the current one.
+        // A literal here would be a second statement of that rule, free to disagree with the first the day
+        // the resolution rule changes.
+        return Result<PortalAliasDto>.Success(PortalMappings.ToDto(stored, CurrentPortalAliasId()));
     }
 
     /// <inheritdoc />

@@ -3258,7 +3258,18 @@ public sealed class PortalApiTests
             new UpdatePortalAliasRequest { HttpAlias = secondAlias },
             ApiTestFixture.Json);
 
-        updated.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        // The update answers 200 carrying the alias as stored, which is the contract every modifying verb on
+        // this API publishes. Asserting the body here is what stops the endpoint drifting back to an empty
+        // 204: a re-read alone would still pass against a bodyless update.
+        updated.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PortalAliasDto? updatedAlias = await updated.Content
+            .ReadEnvelopeAsync<PortalAliasDto>();
+
+        updatedAlias.Should().NotBeNull();
+        updatedAlias!.PortalAliasId.Should().Be(alias.PortalAliasId);
+        updatedAlias.PortalId.Should().Be(created.PortalId);
+        updatedAlias.HttpAlias.Should().Be(secondAlias);
 
         using HttpResponseMessage rereadAlias = await client.GetAsync(aliasRoute);
         rereadAlias.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -3381,12 +3392,25 @@ public sealed class PortalApiTests
             $"/api/v1/portals/{Route(created.PortalId)}/aliases/{Route(spareAlias.PortalAliasId)}",
             UriKind.Relative);
 
+        string spareRenamed = "spare-renamed-" + Suffix() + ".local";
+
         using HttpResponseMessage spareUpdate = await client.PutAsJsonAsync(
             spareRoute,
-            new UpdatePortalAliasRequest { HttpAlias = "spare-renamed-" + Suffix() + ".local" },
+            new UpdatePortalAliasRequest { HttpAlias = spareRenamed },
             ApiTestFixture.Json);
 
-        spareUpdate.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        spareUpdate.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // The permitted rename reports the row it wrote, and the row it reports is NOT the current one - which
+        // is the pair of facts this half of the test exists for: the rule withholds exactly one row, and the
+        // representation a successful rename returns carries the flag that says which.
+        PortalAliasDto? spareUpdated = await spareUpdate.Content
+            .ReadEnvelopeAsync<PortalAliasDto>();
+
+        spareUpdated.Should().NotBeNull();
+        spareUpdated!.PortalAliasId.Should().Be(spareAlias.PortalAliasId);
+        spareUpdated.HttpAlias.Should().Be(spareRenamed);
+        spareUpdated.IsCurrent.Should().BeFalse();
 
         using HttpResponseMessage spareRemoved = await client.DeleteAsync(spareRoute);
         spareRemoved.StatusCode.Should().Be(HttpStatusCode.NoContent);

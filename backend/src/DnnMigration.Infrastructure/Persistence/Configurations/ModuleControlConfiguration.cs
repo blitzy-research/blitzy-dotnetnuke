@@ -127,7 +127,9 @@ internal sealed class ModuleControlConfiguration : IEntityTypeConfiguration<Modu
         // MIGRATION: ControlType is mapped as a raw int with no value conversion. The column stores
         //   the ordinal of the legacy access-level enumeration declared at
         //   Library/Components/Security/PortalSecurity.vb line 45, and that enumeration belongs to an
-        //   excluded tree: it is none of the nine enumerations this migration defines, and it is
+        //   excluded tree: it is none of the thirteen enumerations Domain/Enums declares - the nine the
+        //   architecture specifies for ported legacy enumerations, plus four added since for
+        //   credential, membership, refresh-token and security-diagnostic outcomes - and it is
         //   deliberately not recreated here or anywhere. Three measurements say the ordinal must travel
         //   untranslated. The data boundary already treats it as an integer, since
         //   Library/Components/Providers/Data/DataProvider.vb declares "ControlType As Integer" on both

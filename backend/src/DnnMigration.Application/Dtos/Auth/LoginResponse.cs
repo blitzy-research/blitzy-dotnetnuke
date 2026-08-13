@@ -31,8 +31,10 @@ namespace DnnMigration.Application.Dtos.Auth;
 // The blocking distinction is measured, not inferred: Website/admin/Authentication/Login.ascx.vb
 // renders the same interstitial for values 1, 2 and 4 (PageNo = 2) but enables its proceed panel for
 // value 2 alone (L544, against L539 and L548), and sends value 3 to a different step (L552).
-// GAP REPORTED: that enumeration is deliberately NOT one of the nine domain enumerations, so no
-// domain type exists for it and none was invented here. Its meaning survives only as these flags.
+// GAP REPORTED: that enumeration is deliberately not among the thirteen the domain declares - the
+// nine the architecture specifies for ported legacy enumerations, plus the four added since for
+// credential, membership, refresh-token and security-diagnostic outcomes - so no domain type exists
+// for it and none was invented here. Its meaning survives only as these flags.
 //
 // MIGRATION: a semantic divergence that is deliberate and is not absorbed silently. The legacy
 // enumeration was SINGLE-VALUED WITH PRECEDENCE - UserController.vb:L1175-L1194 assigns the forced

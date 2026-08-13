@@ -325,7 +325,7 @@ function danglingReferences(root: HTMLElement): readonly string[] {
  * input. Every entry below comes from one of the other two, or from a spelling that a
  * lenient comparison would have collapsed onto a real key:
  *
- * - the EIGHT authorisation policy names the API registers, which are the server's
+ * - the NINE authorisation policy names the API registers, which are the server's
  *   route-level contract and are evaluated by the route gate, not here;
  * - the permission CODES that scope a key to folders, page definitions or pages;
  * - role names, including the administrator role — spelled in the plural in the legacy
@@ -337,7 +337,10 @@ function danglingReferences(root: HTMLElement): readonly string[] {
  * these collide with a real grant and ADMIT content the server will refuse.
  */
 const NON_KEY_VOCABULARY = Object.freeze([
-  // The eight registered authorisation policy names.
+  // The nine registered authorisation policy names. `PortalContentEditor` was ABSENT from this
+  // list while it was already registered on the server, which left the one policy name a
+  // migration-era reader is most likely to mistake for a permission key — it reads like a
+  // capability rather than a role — as the one name this fixture never tried.
   'ModuleView',
   'ModuleEdit',
   'TabView',
@@ -346,6 +349,7 @@ const NON_KEY_VOCABULARY = Object.freeze([
   'HostAdministrator',
   'AccountOwner',
   'AccountOwnerOrPortalAdministrator',
+  'PortalContentEditor',
   // Plausible policy-shaped names that are not registered at all.
   'PortalView',
   'PortalEdit',
@@ -859,7 +863,7 @@ describe('HasPermissionDirective', () => {
 
   describe('vocabulary confusion', () => {
     // The fail-OPEN defect this whole set exists to prevent. Three closed vocabularies live in
-    // this system — the four persisted permission keys, the eight authorisation policy names
+    // this system — the four persisted permission keys, the nine authorisation policy names
     // the API registers, and the permission codes that scope a key — plus role names, which
     // are a fourth namespace again. Only the first belongs on this input. A lenient
     // comparison, or a directive that consulted roles, would let one of the others collide

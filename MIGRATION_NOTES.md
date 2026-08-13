@@ -3822,8 +3822,10 @@ DotNetNuke CAPTCHA server control on.
 - **`DisplayMode`, the profile default visibility mode and `UsersControl` are
   carried as plain integer discriminators**, with their legal values and meanings
   documented on the contract. They are *not* recreated as target enumerations,
-  because the domain's enumeration set is closed at the nine types the
-  architecture specifies and declaring competing copies in the application layer
+  because the domain's enumeration set is closed — it holds thirteen types, the
+  nine the architecture specifies for ported legacy enumerations plus four added
+  since for credential, membership, refresh-token and security-diagnostic
+  outcomes — and declaring competing copies in the application layer
   would fracture the single source of truth the domain owns. The profile
   visibility mode in particular is a **distinct concept** from the module
   visibility enumeration and must not be merged into it.
@@ -19597,14 +19599,35 @@ and it conflates route declarations with components. Measured on this checkout:
 | --- | --- |
 | Unique feature component files (`features/**/*.component.ts`, specs excluded) | **22** |
 | All component files under `src/app/` (features, shared, layout and the root) | **37** |
-| `loadComponent:` route declarations across the six `*.routes.ts` files | **26** |
+| `loadComponent:` route declarations across the six `*.routes.ts` files | **25** |
 | `loadChildren:` route declarations | **5** |
+| `path:` properties across the six `*.routes.ts` files | **31** |
 
-The three numbers differ for good reasons rather than by error: a component reached by two
+**A correction inside this correction, and it is the same class of error.** This table first
+gave the `loadComponent:` figure as **26**, which was a count of text matches rather than of
+declarations: the twenty-sixth match is the word `loadComponent` inside a comment in
+`app.routes.ts`, explaining why two screens are declared with it rather than reached through a
+barrel. Counted as declarations — that is, matches of `loadComponent:` with the colon — there
+are **25**: `module.routes.ts` 6, `portal.routes.ts` 5, `user.routes.ts` 5, `role.routes.ts` 4,
+`app.routes.ts` 4, `auth.routes.ts` 1. The lesson is the one this whole errata entry is about: a
+figure taken from a text search counts mentions, not declarations. Per-declaration line numbers
+are deliberately not listed, because they are the most perishable form this record could take —
+any comment edited above a route moves every number below it, which is how the register drifted
+in the first place. The per-file counts and the search that produces them are reproducible
+without them.
+
+The `path:` figure is added because it is the number a reader arrives at independently and it
+does not equal either of the others. **31 = 25 leaf routes + 5 `loadChildren` feature groups +
+one entry that names no destination at all** — the `path: ''` entry in `app.routes.ts` carrying
+`redirectTo` with `pathMatch: 'full'`, which resolves the application root to the landing
+address rather than mounting anything. Per file: `app.routes.ts` 10, `module.routes.ts` 6,
+`portal.routes.ts` 5, `user.routes.ts` 5, `role.routes.ts` 4, `auth.routes.ts` 1.
+
+The counts differ for good reasons rather than by error: a component reached by two
 routes is declared twice (the account form serves both create and edit), the shared, layout and
 root components are not features and are not lazily loaded as features, and `loadChildren`
 counts feature groups rather than screens. What the original entry meant — that no feature
-screen is in the initial bundle — is true: every one of the 26 leaf routes is a dynamic
+screen is in the initial bundle — is true: every one of the 25 leaf routes is a dynamic
 `import()`, and the only eagerly reached store is the credential store the shell needs to name
 the operator and offer sign-out.
 
@@ -22605,3 +22628,54 @@ duplicated here.
 **The gate evidence in Section 11 and `README.md` §7 was re-measured at this commit** rather than edited in place, because every count had moved: unit tests 3 078 → **3 094**, integration tests 1 362 → **1 898** (total **4 992**), Karma specs 5 724 → **5 922**, the initial bundle 500.80 kB → **461.67 kB** raw, `npm ci` 938 → **989** packages installed, and the api image 197 MB → **199 MB**. Gate 7 was taken as a single uninterrupted cycle from a torn-down host, so the two-part measurement the previous text described no longer applies.
 
 **One deliberate non-change.** The six `packages.lock.json` files end without a final newline, which `backend/.editorconfig`'s `[*]` section nominally requires. They are left exactly as NuGet writes them: a hand-added newline was appended and then **stripped by NuGet itself** on the next full re-evaluation, so carrying one would make the repository oscillate. `dotnet format` does not process these files, and it verifies clean without the change.
+
+
+## Review remediation: the portal-alias update answers `200` with the stored row, and five documentation figures are corrected
+
+*Recorded 13 August 2026. This entry supersedes every passage that described the portal-alias update as a payload-free `204`, and it records the figures that replace five stale counts. The affected source files were corrected in place; this entry is the account of what moved and why.*
+
+### 1. `PUT /api/v1/portals/{portalId}/aliases/{portalAliasId}` now answers `200` with the updated representation
+
+**What was wrong.** The action answered `204 No Content`. Its own frozen contract specifies `200` with the updated DTO, and so does the global status map every controller in this API is written against: `POST` 201, `GET` 200, `PUT` 200, `DELETE` 204. Nine of the thirteen `PUT` actions already answered `200`; this was the only update whose divergence had no stated exception behind it.
+
+**The divergence was recorded twice in the tree rather than hidden, which is what made it findable.** `PortalAliasesController`'s class remark asserted the asymmetry and argued for it — *"Answering `200` instead would mean either an extra read this API does not need or an empty envelope"* — and `portal-alias-list.component.spec.ts` carried a test whose comment read *"RECORDED DISCREPANCY, ASSERTED BOTH WAYS. The controller answers `204 No Content` for a replacement while the migration brief for this screen states `200`."* Both statements are now withdrawn: the argument was wrong on its own terms, and the test that hedged against the ambiguity has been repurposed.
+
+**Why the argument was wrong.** There is no extra read. The entity is already loaded and tracked by the time the write commits, so the service maps the row it just wrote. And the envelope is not empty of anything a caller can predict — it carries `isCurrent`, which says whether this row is the alias the request itself resolved the tenant through. That is decided by the server from the request's own context, no client can compute it, and it is the flag a client reads to decide whether to offer the rename affordance again. The host name is reported as **kept** rather than as submitted for the same reason, the service having trimmed it. **A measured correction to an earlier draft of this entry:** that draft said the host name is lower-cased as well as trimmed. It is not — `NormaliseAlias` trims and does nothing else, verified in the source and again over HTTP, where a rename to `E2E-Renamed.EXAMPLE.test` came back in exactly that spelling. Under the old contract the client's only recourse was a follow-up read; the collection re-read the screen already performs happened to cover it, which is why the defect never surfaced as a visible bug.
+
+**What changed.**
+
+| Layer | Before | After |
+| --- | --- | --- |
+| `IPortalService.UpdatePortalAliasAsync` | `Task<Result>` | `Task<Result<PortalAliasDto>>` |
+| `PortalService.UpdatePortalAliasAsync` | `Result.Success()` | `Result<PortalAliasDto>.Success(PortalMappings.ToDto(stored, CurrentPortalAliasId()))` |
+| `PortalAliasesController.UpdateForPortalAsync` | `ActionResult`, `ProducesResponseType(204)` | `ActionResult<ApiResponse<PortalAliasDto>>`, `ProducesResponseType(typeof(ApiResponse<PortalAliasDto>), 200)` |
+| `portal.service.ts` `updateAlias` | `Observable<void>` over `put<void>` | `Observable<PortalAlias>`, decoded through the same decoder `createAlias` and `getAlias` use |
+| `portal.store.ts` `updateAlias` | `Observable<void>`, re-read only | `Observable<PortalAlias>`, records the returned row as the alias detail **and** re-reads |
+
+No failure code changed, and the four failure paths — `portal.alias_not_found`, the active-alias `409`, the pre-write duplicate check and the unique-index race — report exactly what they reported before. The controller body is unchanged apart from its declared types: `ApiResults.Complete` already had a generic overload that answers `200` with the envelope, so overload resolution did the work.
+
+**The collection is still re-read after the write, and that is deliberate.** The response describes one row. It says nothing about the order the collection endpoint applies, about rows another operator inserted or removed, or about which row now carries `isCurrent` — and renaming an alias can move that mark. Adopting the row and re-reading the collection are answers to different questions.
+
+**What did NOT change.** `204` remains the answer for every genuinely bodyless write: the alias `DELETE`, `PUT /modules/{moduleId}/settings`, `PUT /users/{userId}/approval` and `PUT /users/{userId}/profile`. The generated OpenAPI document was read back to confirm both halves — the alias `PUT` declares `200` with `PortalAliasDtoApiResponse`, and those four still declare `204` with no content schema.
+
+**Verified outcome.** Release build clean with warnings as errors; 3 094 unit and 1 898 integration tests pass; 5 922 Karma specs pass. `PortalApiTests` now asserts the `200` **and** the body on both rename paths, including that the permitted rename of a spare alias reports `isCurrent: false`; `PortalServiceTests` asserts that the returned row carries the **stored** host name rather than the padded one submitted, which is the assertion that would fail if the representation were ever reconstructed from the request.
+
+**And verified over HTTP against a running instance**, because a contract change deserves more than a green suite. Against the seeded database, as a portal administrator: `POST` answered `201` with the created row; `PUT` answered **`200`** with `Content-Type: application/json` and the envelope `{ "data": { "portalAliasId": …, "portalId": -1, "httpAlias": …, "isCurrent": false }, "meta": null }`; a follow-up `GET` returned a body identical to the `PUT`'s; `DELETE` answered `204` with zero bytes and no content type; and the subsequent `GET` answered `404`. A `PUT` carrying surrounding whitespace was refused `400` by the request validator before the service saw it, so the trimming the service performs is observable to a service caller rather than to an HTTP one — which is why the unit test, not the API test, is where it is pinned. The temporary alias was removed afterwards and the tenant's ten seeded aliases were confirmed unchanged.
+
+### 2. Five documentation figures corrected
+
+Each was measured against this checkout rather than carried forward.
+
+- **The domain enumeration count is thirteen, not nine.** `Domain/Enums` holds the nine the architecture specifies for ported legacy enumerations plus four added since for credential, membership, refresh-token and security-diagnostic outcomes. Five comments still said nine — in `ModuleControlConfiguration`, `LoginResponse`, `ProfilePropertyDefinitionDto`, `AuthService` and this register — each while explaining that some legacy enumeration is *not* among them, so the sentence was doing real work with the wrong number. Every one now states the total and names the four additions by concern, so a fourteenth type contradicts a sentence rather than only a numeral. One nearby statement was verified **correct** and left alone: `UserVisibilityMode` is not one of the **nine ported** enumerations, which is true, because the four additions are not ports.
+- **The authorisation policy vocabulary is nine names, not five or eight.** `PolicyNames.cs` registers `ModuleView`, `ModuleEdit`, `TabView`, `TabEdit`, `PortalAdministrator`, `HostAdministrator`, `AccountOwner`, `AccountOwnerOrPortalAdministrator` and `PortalContentEditor`. Seven frontend files understated it, and the understatement had happened twice: an early revision said five, the correction to eight was overtaken when `PortalContentEditor` was registered. The client's runtime tuple already held all nine, so nothing was refused in practice — with **one exception that was not documentation at all.** `has-permission.directive.spec.ts`'s negative fixture, which exists to prove that no policy name is ever accepted as a permission key, omitted `PortalContentEditor`: the one policy name a reader is most likely to mistake for a permission key, because it reads like a capability rather than a role, was the one name that fixture never tried. It is now in the list and the directive is proven to refuse it.
+- **Two refresh-token retention settings were undocumented.** `RefreshTokenStore:RevokedRecordRetentionHours` (default 24, range 1–720) and `RefreshTokenStore:RetentionSweepMinutes` (default 60, range 1–1440) are validated for **every** provider, above the shared-store early return, and appeared in no `.md`, `.json` or `.yml` file. Both are now rows in the `README.md` configuration matrix and keys in `appsettings.json`. `RefreshTokenStore:AcknowledgeSingleInstance` was documented but likewise absent from `appsettings.json`, which made the README's stated bidirectional reconciliation untrue independently of the retention keys; it is shipped too, at its existing default of `false`. All 27 option properties across the five options classes now appear in both, in both directions.
+- **`loadComponent:` declarations number 25, and `path:` properties 31.** Corrected inside the errata entry that first published 26. The full reasoning is there; the short version is that the twenty-sixth match was the word inside a comment, and 31 decomposes as 25 leaves plus 5 feature groups plus one root redirect that names no destination.
+- **The stale line citations that pointed at nothing.** Three frontend files cited `PolicyNames.cs` at eight line numbers that no longer land on a declaration; they now cite the nine real ones. Two files cited the client's policy tuple at its former address. Three citations of `PortalAliasesController.cs` action lines were re-measured because the change in part 1 moved them.
+
+### 3. The data-table's virtualisation documentation described a design that had been replaced
+
+`DataTableComponent`'s class documentation and its trailing migration note both described virtualisation as achieved in CSS with *"zero JavaScript"*, claimed *"every row stays in the DOM"*, and concluded that because *"this is not windowing… `aria-rowcount` and `aria-rowindex` are not strictly needed"*. All three statements had been false since the CSS route was abandoned. The stylesheet already recorded the reason correctly — `content-visibility: auto` with `contain-intrinsic-size` is inert on a `<tr>`, because a `display: table-row` element is an internal table element and CSS containment does not apply, measured by a control experiment that found a row 3,951 px below the fold fully laid out with all 26 of its descendants — but the paired `.ts` and `.html` had not been brought along.
+
+Both blocks now describe what is delivered: thresholded row windowing in TypeScript, only the rows near the viewport rendered, the scrollable height held by two `aria-hidden` spacer rows, and a row height **measured** from the rendered rows because heights genuinely vary here (a 1,000-character description measured 821 px against a 33 px median). The costs are stated rather than glossed — a windowed row is not in the accessibility tree, not reachable by find-in-page and not in the tab order, and an estimated height makes the spacers approximate — and the conclusion is inverted: because rows **are** removed, `aria-rowcount` and a true per-row `aria-rowindex` are **mandatory**, since without them a screen reader would be told the size of the window instead of the size of the set. Both are published and were already asserted by the component's specification.
+
+**One divergence from that component's frozen contract is recorded rather than resolved.** It declares a sixth public input, `virtualizeThreshold`, where the contract closes the surface at five and requires the threshold to be a private constant. The row height *is* private and measured internally; the threshold is not. No component, template or specification anywhere in the workspace sets it, so it is unused public surface rather than a behaviour, and removing a public input is a breaking change no review finding asked for. It is left in place and named here so the decision is not silently inherited.

@@ -37,22 +37,25 @@ import { unsavedChangesGuard } from '../../core/guards/unsaved-changes.guard';
  * ---------------------------------------
  * A child declares the policy ITS OWN primary endpoint declares, read from the
  * controller rather than assumed. The gate resolves a declared name against the closed
- * set it registers at `core/guards/permission.guard.ts:L131-L140`, which mirrors the
- * eight names the API registers in `Api/Authorization/PolicyNames.cs` (L54, L61, L73,
- * L80, L115, L139, L153, L164) and activates in
- * `Api/Extensions/AuthenticationExtensions.cs:L300-L354`. A name outside that set is
- * refused outright by the gate (`permission.guard.ts:L589-L595`) rather than forwarded,
+ * set it registers at `core/guards/permission.guard.ts:L142-L152`, which mirrors the
+ * nine names the API registers in `Api/Authorization/PolicyNames.cs` (L86, L93, L105,
+ * L112, L147, L171, L185, L196, L231) and activates in
+ * `Api/Extensions/AuthenticationExtensions.cs`. A name outside that set is refused
+ * outright by the gate (`permission.guard.ts:L589-L595`) rather than forwarded,
  * because the API registers no policy provider that could invent one on demand and would
  * therefore throw while authorising rather than answer with a tidy refusal.
  *
- * ⚠ THE CLIENT'S ROUTE VOCABULARY IS THE API'S, ALL EIGHT NAMES, AND NO APPROXIMATION IS
+ * ⚠ THE CLIENT'S ROUTE VOCABULARY IS THE API'S, ALL NINE NAMES, AND NO APPROXIMATION IS
  * SUBSTITUTED FOR ANY OF THEM. A previous revision of this file asserted the opposite —
- * that a route here could declare only five of the eight — and declared the tenant-scoped
+ * that a route here could declare only five of them — and declared the tenant-scoped
  * policy on tenant CREATION as the "closest declarable" stand-in for the host policy the
  * endpoint really requires. That claim was false in both halves. The gate registers all
- * eight names, resolves the scope each one needs, and answers the host question from the
+ * nine names, resolves the scope each one needs, and answers the host question from the
  * caller's host flag alone; the only thing that had ever restricted this table was a
  * specification pinning a five-name list, which was itself wrong and has been corrected.
+ * The registered set has since grown to nine with `PortalContentEditor`, which no route in
+ * THIS table declares — module creation is where it is needed — but which counts toward the
+ * closed set the gate resolves against and is named here so the number cannot drift again.
  *
  * The substitution mattered rather than being a documentation slip. Approximating the host
  * rule with the tenant rule errs toward ADMITTING, so it offered tenant creation to every
@@ -73,7 +76,7 @@ import { unsavedChangesGuard } from '../../core/guards/unsaved-changes.guard';
  *     create tenants.
  *   * Everything else is genuinely tenant-scoped and declares `PortalAdministrator`:
  *     `PortalsController.cs:L291`, `:L500`, `:L615` and `:L658`, plus all five actions of
- *     `PortalAliasesController.cs` (L233, L304, L370, L421, L475).
+ *     `PortalAliasesController.cs` (L236, L307, L373, L427, L481).
  *
  * The LISTING declares `HostAdministrator` for the same reason `new` does, and that was a
  * separate decision from the vocabulary question — an earlier revision left it ungated on
@@ -81,7 +84,7 @@ import { unsavedChangesGuard } from '../../core/guards/unsaved-changes.guard';
  * why that reasoning is withdrawn, what the objection to gating was, and how it is
  * answered.
  *
- * A name outside the registered eight would still be refused outright by the gate
+ * A name outside the registered nine would still be refused outright by the gate
  * (`permission.guard.ts` fails closed on an unregistered declaration) and the API would
  * throw while authorising, so no such name may be invented here.
  *
@@ -107,7 +110,7 @@ import { unsavedChangesGuard } from '../../core/guards/unsaved-changes.guard';
  * tenant tier to `PortalAdministrator`, so the split survives; what does not survive is
  * the per-action access-level CONCEPT, because the target authorises per endpoint rather
  * than per grid action. Nothing here invents a `SuperUser` policy: the API registers none,
- * and a name outside the registered eight would be refused by the gate
+ * and a name outside the registered nine would be refused by the gate
  * (`permission.guard.ts:L589-L595`) and would throw while the endpoint was authorised.
  *
  * MIGRATION: the legacy list's Edit affordance did NOT open an edit page of its own — it
@@ -320,8 +323,8 @@ export const PORTAL_ROUTES: Routes = [
     /**
      * The tenant's address list, with creation and editing handled in place.
      *
-     * Every action on `PortalAliasesController.cs` declares portal administration — L233,
-     * L304, L370, L421 and L475 — so one policy covers the whole screen. The identifier
+     * Every action on `PortalAliasesController.cs` declares portal administration — L236,
+     * L307, L373, L427 and L481 — so one policy covers the whole screen. The identifier
      * is bound by name into `portal-alias-list.component.ts:L1427-L1428`.
      *
      * MIGRATION: the legacy pair of controls collapses into one screen. `PortalAlias.ascx.vb:L81`

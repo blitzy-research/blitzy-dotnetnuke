@@ -298,15 +298,17 @@ export const rootLandingRedirect: RedirectFunction = () => {
  * route specification asserts the biconditional across this table and all five barrels.
  *
  * MIGRATION: the POLICY VOCABULARY IS CLOSED, and an unknown name is not a soft
- * failure. The client's declarable set is the SAME EIGHT the API registers —
+ * failure. The client's declarable set is the SAME NINE the API registers —
  * `ModuleView`, `ModuleEdit`, `TabView`, `TabEdit`, `PortalAdministrator`,
- * `HostAdministrator`, `AccountOwner` and `AccountOwnerOrPortalAdministrator`
- * (`permission.guard.ts:L131-L141`, mirroring `Api/Authorization/PolicyNames.cs` L54,
- * L61, L73, L80, L115, L139, L153, L164) — and because the API registers no
+ * `HostAdministrator`, `AccountOwner`, `AccountOwnerOrPortalAdministrator` and
+ * `PortalContentEditor` (`permission.guard.ts:L142-L152`, mirroring
+ * `Api/Authorization/PolicyNames.cs` L86, L93, L105, L112, L147, L171, L185, L196, L231)
+ * — and because the API registers no
  * `IAuthorizationPolicyProvider`, an unregistered policy name throws when the request is
  * authorised rather than degrading to a denial. Names are therefore never invented to fit
  * a screen, and equally never SUBSTITUTED for one another: an earlier revision of this
- * comment described the declarable set as "exactly five" and licensed each barrel to
+ * comment described the declarable set as "exactly five", a later one as eight, and the
+ * first of those licensed each barrel to
  * approximate a host or account rule with the tenant rule, or to declare nothing at all.
  * Both licences are withdrawn. Every route declares the policy its own endpoint declares:
  * the portal COLLECTION and portal creation are `HostAdministrator` because they address

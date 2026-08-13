@@ -40,11 +40,15 @@
  * would hide the very alias a tenant is failing to resolve on — so the body is the
  * single-resource envelope carrying an array, with `meta` null.
  *
- * ⚠ THE WRITE PATHS DIFFER IN WHETHER THEY RE-READ, and the difference is observable as a
- * second request. A replacement is answered with no body, so the store RE-READS the collection
- * rather than guessing the stored value from the request; a creation is answered with the
- * created row, so the store appends it and re-reads nothing; a removal is exact for an unpaged
- * collection, so the store filters locally and re-reads nothing. Each is asserted as measured.
+ * ⚠ EVERY WRITE PATH RE-READS THE COLLECTION, and the re-read is observable as a second
+ * request that each case asserts. This note once described them as differing — a replacement
+ * re-reading because it was answered with no body, a creation appending its 201 body and asking
+ * nothing further, a removal filtering locally because a local filter is exact for an unpaged
+ * collection — and every clause of that has since been overtaken. A create and a replacement are
+ * both answered with the stored row and both re-read; a removal answers 204, filters locally so
+ * the row disappears at once, and re-reads as well. The local filter and the response bodies are
+ * still used, for the record WRITTEN; the re-read is for everything else the answer cannot speak
+ * to — the collection's order, rows nobody here wrote, and which row bears `isCurrent`.
  *
  * ⚠ RATE LIMITING IS NOT MODELLED, AND THAT OMISSION IS DELIBERATE. See the note above
  * {@link problemDocument} — the alias actions carry no `[CredentialEndpoint]` marker and no alias
@@ -1614,7 +1618,7 @@ describe('PortalAliasListComponent', () => {
       httpMock.expectNone((candidate) => candidate.method === 'GET');
     });
 
-    it('replaces at the row address, answers a bodiless 204 and then re-reads the collection', () => {
+    it('replaces at the row address, answers 200 with the stored row and then re-reads', () => {
       arrive([alias(7, 'localhost')]);
 
       editRow(0);
@@ -1629,35 +1633,57 @@ describe('PortalAliasListComponent', () => {
       expect(call.request.url).toBe('/api/v1/portals/-1/aliases/7');
       expect(transmittedAlias(call)).toBe('example.com');
 
-      call.flush(null, { status: 204, statusText: 'No Content' });
+      call.flush(envelope(alias(7, 'example.com')));
       settle();
 
-      // A replacement is answered with NO BODY, so the stored value must not be guessed from the
-      // request — the collection is re-read instead. The second request is the proof.
+      // ⚠ A REPLACEMENT IS ANSWERED WITH THE STORED ROW, AND THE COLLECTION IS STILL RE-READ. This
+      // block used to assert a bodiless `204`, and the change is an alignment rather than a
+      // preference: the migration brief for this endpoint states `200` with the updated
+      // representation, every other modifying verb on this API already reads that way, and the
+      // answered row carries `isCurrent`, which says whether the row just written is the alias
+      // THIS request resolved the tenant through and cannot be derived from what was typed. The
+      // re-read survives the change because the answer describes ONE row and says nothing about
+      // the order the collection endpoint applies, about rows nobody here wrote, or about which
+      // OTHER row now bears `isCurrent`. The second request is the proof.
       answerAliases([alias(7, 'example.com')]);
 
       expect(notifications()).toEqual([{ severity: 'success', message: SAVED_MESSAGE }]);
       expect(textOf('td.data-table__cell,th.data-table__cell')).toContain('example.com');
     });
 
-    it('treats a 200 answer to a replacement exactly as it treats a 204', () => {
+    it('shows the host name the server stored, not the one that was typed', () => {
       arrive([alias(7, 'localhost')]);
 
       editRow(0);
-      type('example.com');
+      type('typed-by-operator.example');
       submit();
 
-      // ⚠ RECORDED DISCREPANCY, ASSERTED BOTH WAYS. The controller answers `204 No Content` for a
-      // replacement while the migration brief for this screen states `200`. The transport declares no
-      // response body either way, so the screen cannot depend on the distinction — and this case
-      // proves it does not, which is a stronger guarantee than picking one status and hoping.
-      expectRequest('PUT', aliasUrl(-1, 7)).flush(null, { status: 200, statusText: 'OK' });
+      // ⚠ THE RESOLVED DISCREPANCY, ASSERTED FROM THE OTHER SIDE. This case used to prove the screen
+      // could not tell a `204` from a `200`, because the controller answered `204` while the
+      // migration brief stated `200` and neither could be relied upon. The endpoint now answers
+      // `200` with the row it wrote, so the interesting question is no longer the status but the
+      // BODY: whatever the server reports is what the screen must show, and it must never fall back
+      // to the text that was typed.
+      //
+      // ⚠ THE FIXTURE'S TWO HOST NAMES ARE DELIBERATELY UNRELATED RATHER THAN THE SAME NAME IN TWO
+      // CASINGS, and that choice is the point of this note. A case-only difference would pass just
+      // as well, but it would read as though the SERVER folds case - and it does not.
+      // `PortalService.NormaliseAlias` trims the submitted value and applies no other
+      // transformation, verified in the source and again over HTTP, where a rename to
+      // `E2E-Renamed.EXAMPLE.test` came back spelled exactly that way. A fixture that implied
+      // otherwise would teach a false rule about the endpoint while proving a true one about the
+      // screen. Two unrelated names prove only what is being claimed: the screen renders the
+      // reported row and never its own input.
+      expectRequest('PUT', aliasUrl(-1, 7)).flush(envelope(alias(7, 'stored-by-server.example')));
       settle();
 
-      answerAliases([alias(7, 'example.com')]);
+      answerAliases([alias(7, 'stored-by-server.example')]);
 
       expect(notifications()).toEqual([{ severity: 'success', message: SAVED_MESSAGE }]);
-      expect(textOf('td.data-table__cell,th.data-table__cell')).toContain('example.com');
+      expect(textOf('td.data-table__cell,th.data-table__cell')).toContain('stored-by-server.example');
+      expect(textOf('td.data-table__cell,th.data-table__cell'))
+        .withContext('the typed spelling is not what the screen reports')
+        .not.toContain('typed-by-operator.example');
     });
 
     it('removes at the row address, answers 204 and drops the row from the listing', () => {
@@ -1707,7 +1733,7 @@ describe('PortalAliasListComponent', () => {
 
       // Off-by-one here would rename the wrong tenant address, which is exactly the class of defect
       // no status code reveals.
-      expectRequest('PUT', aliasUrl(-1, 8)).flush(null, { status: 204, statusText: 'No Content' });
+      expectRequest('PUT', aliasUrl(-1, 8)).flush(envelope(alias(8, 'renamed.example.com')));
       settle();
 
       answerAliases([alias(7, 'localhost'), alias(8, 'renamed.example.com'), alias(9, '127.0.0.1')]);

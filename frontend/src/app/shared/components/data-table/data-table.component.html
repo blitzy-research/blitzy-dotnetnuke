@@ -127,10 +127,10 @@
 
     <!--
       Track sizes live here and nowhere else, so NO CELL EVER CARRIES A SIZE. This is
-      also what makes row-level render virtualisation safe: under a fixed table layout
-      the columns resolve from this group rather than from cell content, so a row whose
-      layout is skipped while it is off screen cannot shift the columns as it scrolls
-      in. The width member and the virtualisation strategy are two halves of one design.
+      also what makes row windowing safe: under a fixed table layout the columns resolve
+      from this group rather than from cell content, so a row that is not currently
+      rendered cannot shift the columns as it scrolls into the window. The width member
+      and the virtualisation strategy are two halves of one design.
 
       Guarded so that a table with no columns yet - the initial state, before a feature's
       first response arrives - emits no group at all. A column group containing neither a

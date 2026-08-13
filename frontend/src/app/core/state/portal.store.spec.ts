@@ -2669,17 +2669,17 @@ describe('PortalStore', () => {
       expect(store.aliasLoading()).toBeFalse();
     });
 
-    it('re-reads the collection after an update answered with no body', () => {
+    it('adopts the row an update answers with and still re-reads the collection', () => {
       store.loadAliases(PORTAL_ID);
       httpMock
         .expectOne(PORTAL_ALIASES_URL)
         .flush(envelope([portalAlias(PORTAL_ID, PORTAL_ALIAS_ID, 'localhost')]));
 
       const composed = updateAliasRequest('renamed.example.test');
-      let notifications = 0;
+      const emitted: PortalAlias[] = [];
 
-      store.updateAlias(PORTAL_ID, PORTAL_ALIAS_ID, composed).subscribe(() => {
-        notifications += 1;
+      store.updateAlias(PORTAL_ID, PORTAL_ALIAS_ID, composed).subscribe((stored: PortalAlias) => {
+        emitted.push(stored);
       });
 
       const written = httpMock.expectOne(PORTAL_ALIAS_URL);
@@ -2688,10 +2688,13 @@ describe('PortalStore', () => {
       expect(written.request.url).toBe('/api/v1/portals/3/aliases/7');
       expect(written.request.body).toBe(composed);
 
-      // This is the sole write in the resource that answers with no body, so the record
-      // has to be read back. That sequencing is the store's to perform — a transport may
-      // not chain two calls — and it is the reason the two-request shape below exists.
-      written.flush(null, { status: 204, statusText: 'No Content' });
+      // The endpoint answers 200 with the row it stored, so the record just written comes from
+      // the response rather than from the request. The collection is nevertheless read again,
+      // because that answer describes ONE row and says nothing about the order the collection
+      // endpoint applies, about rows nobody here wrote, or about which row now bears
+      // `isCurrent`. That sequencing is the store's to perform — a transport may not chain two
+      // calls — and it is the reason the two-request shape below exists.
+      written.flush(envelope(portalAlias(PORTAL_ID, PORTAL_ALIAS_ID, 'renamed.example.test')));
 
       const reread = httpMock.expectOne(PORTAL_ALIASES_URL);
 
@@ -2703,7 +2706,13 @@ describe('PortalStore', () => {
       expect(heldAliases(store.aliases())[0].httpAlias)
         .withContext('the collection now reports what the server stored')
         .toBe('renamed.example.test');
-      expect(notifications).toBe(1);
+      expect(emitted.length).toBe(1);
+      expect(emitted[0].httpAlias)
+        .withContext('the ticket carries the stored row, not the submitted host name')
+        .toBe('renamed.example.test');
+      expect(heldRecord(store.aliasDetail(), 'alias detail').httpAlias)
+        .withContext('the record just written is held, exactly as a create holds its answer')
+        .toBe('renamed.example.test');
       expect(store.aliasLoading()).toBeFalse();
     });
 

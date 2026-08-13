@@ -84,8 +84,8 @@ import { AuthStore } from '../state/auth.store';
  * route may declare.
  *
  * ⚠ CLOSED AT NINE, AND NINE IS THE WHOLE REGISTERED SET — not a convenient subset.
- * `Api/Authorization/PolicyNames.cs` declares exactly these nine names (L54, L61, L73,
- * L80, L115, L139, L153, L164, L231) and `Api/Extensions/AuthenticationExtensions.cs`
+ * `Api/Authorization/PolicyNames.cs` declares exactly these nine names (L86, L93, L105,
+ * L112, L147, L171, L185, L196, L231) and `Api/Extensions/AuthenticationExtensions.cs`
  * registers exactly these nine and no others. Listing fewer would be worse than it
  * looks in BOTH directions: a route declaring a real policy this list omitted would be
  * refused here for no reason a person could see, while the omission would also hide the
@@ -304,7 +304,7 @@ const ACCESS_REFUSED_MESSAGE = 'You do not have access to this content.';
  */
 
 /**
- * Whether a string is one of the eight registered policy names.
+ * Whether a string is one of the nine registered policy names.
  *
  * A type predicate rather than a plain boolean test, so a successful check NARROWS the
  * value to {@link PermissionPolicy} for everything downstream and the policy can then
