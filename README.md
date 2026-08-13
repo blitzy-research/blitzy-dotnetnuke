@@ -96,7 +96,7 @@ under `/api/v1`; the API talks to the existing DotNetNuke database.
 | `DnnMigration.Application` | Application services, DTOs, hand-written mappers, FluentValidation validators, options classes | Domain |
 | `DnnMigration.Infrastructure` | `DnnDbContext`, Fluent entity configurations, the baseline migration, repositories, unit of work, BCrypt hasher, JWT token service, permission evaluator, health checks | Domain, Application |
 | `DnnMigration.Api` | `Program.cs`, attribute-routed controllers, middleware, the global exception handler, authorisation policies | Application, Infrastructure |
-| `DnnMigration.UnitTests` | Service, mapper, validator and security tests | Application, Infrastructure |
+| `DnnMigration.UnitTests` | Service, mapper, validator and security tests | Application |
 | `DnnMigration.IntegrationTests` | The `WebApplicationFactory<Program>` fixture and the API and persistence suites | Api |
 
 The point of that graph is that it is **not a convention**. `Domain` takes no project
@@ -443,18 +443,28 @@ All three answer plain HTTP with no credential and emit the same document:
 ```
 
 The split is deliberate, and **both [`docker/api.Dockerfile`](./docker/api.Dockerfile) and
-[`docker/docker-compose.yml`](./docker/docker-compose.yml) probe `/health/ready`** — not
-`/health`. They used to probe `/health`, which is the process-only view: the container was
-therefore reported healthy while SQL Server was unreachable, and the front-end service started
-in front of an API that could not answer a single membership-backed request. `service_healthy`
-is a statement about whether traffic may be sent, so it is tested against the view that
-exercises the dependency.
+[`docker/docker-compose.yml`](./docker/docker-compose.yml) probe `/health`**, the liveness view.
+That address is frozen: AAP 0.9.3 supplies the `HEALTHCHECK` and the Compose health check as
+preserved examples whose only permitted substitution is the name placeholder, the end-to-end
+gate curls the same path, and `HealthCheckTests` hard-codes it as a literal precisely so that
+moving it fails a test suite instead of silently following the move.
 
-The consequence is stated rather than hidden: the compose topology declares no database
-service, so a deployment whose store is genuinely absent will see the API container marked
-unhealthy and the front end held back. That is the correct report — the API cannot serve — and
-it is why `/health/live` exists alongside it: point a restart-or-not probe there, so an
-orchestrator does not recycle a healthy process merely because its dependency is down.
+It is also the right view for *this* topology, so the contract and the engineering agree rather
+than merely coexisting. The compose file declares **no database service** — the store is
+external by design — so it may legitimately be unreachable while the process starts. A probe
+that depended on it would mark the container unhealthy for a reason unrelated to whether it can
+answer, and `condition: service_healthy` would hold the front end back for the whole outage
+with both images built perfectly.
+
+**The trade-off is reported rather than hidden, and it is reported elsewhere.** Because the
+probed view excludes the database check, a container whose store is unreachable stays `healthy`.
+That condition is not unmonitored: `/health/ready` runs the database probe, answers `503` for
+exactly this case, and stays registered and anonymous for an orchestrator that gates **traffic**
+rather than **start-up** on the store; and every store-backed endpoint answers `503` with
+`Retry-After` while the outage lasts, so no caller is told a request succeeded. An orchestrator
+that owns the database as well should point its readiness probe at `/health/ready` and leave the
+container's own probe alone. `/health/live` is the third view, running no probe at all, for a
+restart policy that must not recycle a process merely because a dependency is down.
 
 ---
 
@@ -529,8 +539,8 @@ them.
 cp docker/.env.example docker/.env      # then fill in the values; docker/.env is never committed
 docker compose -f docker/docker-compose.yml --env-file docker/.env build
 docker compose -f docker/docker-compose.yml --env-file docker/.env up -d
-curl -f http://localhost:8080/health/ready  # 200, the readiness view the container probes
-curl -f http://localhost:8080/health    # 200, the anonymous process-only view
+curl -f http://localhost:8080/health    # 200, the liveness view the container and Compose probe
+curl -f http://localhost:8080/health/ready  # 200, the readiness view, registered but unprobed here
 curl -f http://localhost:4200           # 200, the SPA document
 docker compose -f docker/docker-compose.yml --env-file docker/.env down
 ```
@@ -595,8 +605,8 @@ described so the composed topology works as delivered. Every deviation is record
 [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md).
 
 As delivered this topology speaks plain HTTP on both published ports, because the end-to-end
-gate probes `http://localhost:8080/health/ready` - the view the image and Compose both probe,
-which is the one that exercises the database dependency - and `http://localhost:4200` directly.
+gate probes `http://localhost:8080/health` - the view the image and Compose both probe - and
+`http://localhost:4200` directly.
 It is a validation and demonstration topology, **not a public-facing one** — and it is
 *constrained* to that role rather than merely described as having it: **both** published ports
 are bound to `127.0.0.1`. The front end's binding matters most, because it proxies `/api/`, so a
@@ -903,30 +913,43 @@ Three mechanical differences, and nothing else:
   Compose v1 is end-of-life and absent from current Docker distributions; the literal v1
   spelling exits 127 without starting anything. No product change can address this.
 
-**Result matrix.** All seven gates were executed from this repository on **12 August 2026** on
-Linux (Ubuntu 25.10 container) with .NET SDK 8.0.423 (runtimes 8.0.29), Node 20.20.2, npm
-10.8.2, Angular CLI 19.2.27, Chrome Headless 151.0.0.0, Docker Engine 29.7.0 with Compose
-v5.3.1, and SQL Server 2022 for the integration suites. Each row names the command that
-produced its evidence.
+**Result matrix.** All seven gates were executed from this repository on **13 August 2026** on
+Linux (Ubuntu 25.10 container) with .NET SDK 8.0.423 (runtimes Microsoft.AspNetCore.App and
+Microsoft.NETCore.App 8.0.29), Node v20.20.2, npm 10.8.2, Angular CLI 19.2.27 driving Angular
+19.2.25 and TypeScript 5.7.3, Google Chrome 151.0.7922.71 (reported by Karma as Chrome Headless
+151.0.0.0), Docker Engine 29.7.0 with Compose v5.3.1, and SQL Server 2022 CU26 (16.0.4265.3) for
+the integration suites. Each row names the command that produced its evidence.
 
-| Gate | Command run | Status (12 Aug 2026) | Measured evidence |
+| Gate | Command run | Status (13 Aug 2026) | Measured evidence |
 | --- | --- | --- | --- |
-| 1 | Gate 1 above | **PASS** | `Build succeeded. 0 Warning(s) 0 Error(s)` across all six projects |
-| 2 | Gate 2 above | **PASS** | `DnnMigration.UnitTests` 3078 passed / 0 failed / 0 skipped; `DnnMigration.IntegrationTests` 1362 passed / 0 failed / 0 skipped; 4440 tests total |
-| 3 | Gate 3 above | **PASS** | `npm ci` restored 938 packages; production build emitted `dist/dnn-migration/browser`; initial payload 500.80 kB raw / 131.74 kB transfer |
-| 4 | Gate 4 above | **PASS** | `TOTAL: 5724 SUCCESS` — 5 724 specs, zero failures; coverage written to `frontend/coverage/dnn-migration` — statements 95.08 %, branches 85.38 %, functions 97.60 %, lines 95.04 % |
-| 5 | Gate 5 above | **PASS** | `Failed: 0, Passed: 1362, Skipped: 0` on `DnnMigration.IntegrationTests.dll`; the unit-test assembly matches nothing and the run still exits 0 |
-| 6 | Gate 6 above | **PASS** | Exit 0; both images tagged — `dnnmigration-api:latest` (197 MB) and `dnnmigration-frontend:latest` (63.5 MB) |
-| 7 | Gate 7 above | **PASS** | `curl -f http://localhost:8080/health` → 200 and `curl -f http://localhost:4200` → 200, both services reporting `healthy`; the full `up -d` → probe → `down` cycle completed with exit 0 throughout. A request through the SPA origin (`/api/v1/portals`, no token) was answered 401 `application/problem+json`, proving the proxy hop end to end |
+| 1 | Gate 1 above | **PASS** | Restore reported 0 `NU` diagnostics; `Build succeeded. 0 Warning(s) 0 Error(s)` across all six projects, emitting `DnnMigration.Api.dll` — the exact assembly name the image `ENTRYPOINT` requires |
+| 2 | Gate 2 above | **PASS** | `DnnMigration.UnitTests` 3094 passed / 0 failed / 0 skipped in 12.75 s; `DnnMigration.IntegrationTests` 1898 passed / 0 failed / 0 skipped in 4.02 min; **4 992 tests total**, both assemblies reporting `Test Run Successful` |
+| 3 | Gate 3 above | **PASS** | `npm ci` added 989 packages and audited 990 in 11 s, leaving `package-lock.json` untouched; production build emitted `dist/dnn-migration/browser`; initial payload **461.67 kB raw / 122.91 kB transfer** |
+| 4 | Gate 4 above | **PASS** | `TOTAL: 5922 SUCCESS` — 5 922 specs, zero failures; coverage written to `frontend/coverage/dnn-migration` — statements **95.21 %** (11 079/11 636), branches **85.71 %** (3 583/4 180), functions **97.71 %** (2 527/2 586), lines **95.18 %** (10 807/11 354) |
+| 5 | Gate 5 above | **PASS** | `Failed: 0, Passed: 1898, Skipped: 0` on `DnnMigration.IntegrationTests.dll`; the unit-test assembly reports `No test matches the given testcase filter` and the run still exits 0, which is what proves every integration test carries the trait |
+| 6 | Gate 6 above | **PASS** | Exit 0; both images tagged — `dnnmigration-api:latest` (199 MB) and `dnnmigration-frontend:latest` (63.5 MB) |
+| 7 | Gate 7 above | **PASS** | `up -d` transitioned the api service `Started` → `Waiting` → `Healthy`, which released `dnnmigration-frontend` through its `condition: service_healthy` gate; `curl -f http://localhost:8080/health` → 200 with the health document and `curl -f http://localhost:4200` → 200 (14 983 bytes), both services `Up (healthy)`; `down` removed both containers and the network, every step exit 0 |
 
-One note on how gate 7 was measured, because the host it ran on matters. An instance of this
-same topology was already running there, and the Compose file fixes `container_name`, so the
-gate was taken in two parts: the `curl -f` probes above were made against the canonical
-`127.0.0.1:8080` and `:4200` mappings of the running instance, and the full `up -d` → probe →
-`down` cycle was run from this checkout under a second Compose project name with the container
-names, published ports and network subnet shifted, so that it could not disturb the first. Both
-halves used the gate command above unchanged apart from those shifts; a host with nothing
-already running needs neither.
+Gate 7 ran as a single uninterrupted `up -d` → probe → `down` cycle from a fully torn-down
+host. That is worth stating because the Compose file fixes `container_name`: if an instance of
+this same topology is already running, the gate cannot be taken as written, and it must either be
+stopped first or the cycle run under a second Compose project name with the container names,
+published ports and network subnet shifted so the two cannot disturb each other.
+
+Two observations were taken beyond what the gate asserts, because "both containers are healthy"
+does not by itself prove the topology serves anything:
+
+- **The proxy hop.** `GET http://localhost:4200/api/v1/portals` with no token was answered
+  **401 `application/problem+json`** carrying `urn:dnnmigration:error:auth.unauthenticated`, so
+  nginx proxied to the API and the API's authentication and RFC 7807 contracts both answered.
+- **A real sign-in.** `POST http://localhost:4200/api/v1/auth/login` returned **200** with the
+  `{ data, meta }` envelope — a credential exchanged for a token through the proxy, against SQL
+  Server, end to end.
+
+One reading note for gate 2: the verbose log contains Serilog lines at level `Fatal`. Those are
+captured output from **passing** negative-path tests that deliberately bind a malformed boolean
+configuration value in order to assert that the host fails fast. They are assertions being met,
+not failures.
 
 Four things worth knowing about individual gates, each discovered by running it rather than by
 predicting it:
@@ -967,17 +990,23 @@ recorded with the evidence it rests on, and that evidence has a date on it becau
 data changes underneath a fixed lockfile.
 
 **Everything with a released fix has been fixed**, so the set below is the *unfixable* one
-rather than an accepted backlog. Eight `overrides` in
-[`frontend/package.json`](./frontend/package.json) — two of them nested under a specific parent —
-resolve the development-toolchain advisories that had a compatible release: `nanoid`,
-`webpack-dev-server`, `serialize-javascript`, `uuid`, `sigstore`, `@sigstore/core`, and `esbuild`
-and `http-proxy-middleware` where the *affected* copy was an exact pin rather than a live range.
-Two packages were also moved out of production dependencies, since nothing under `frontend/src`
-imports them.
+rather than an accepted backlog. [`frontend/package.json`](./frontend/package.json) carries
+**13 `overrides` keys — 11 flat and 2 nested under a specific parent — pinning 13 distinct
+packages**: `tar`, `postcss`, `piscina`, `vite`, `@babel/core`, `nanoid`, `webpack-dev-server`,
+`serialize-javascript`, `uuid`, `sigstore` and `@sigstore/core` flat, plus `esbuild` under
+`@angular/build` and `esbuild` and `http-proxy-middleware` under `@angular-devkit/build-angular`,
+where the *affected* copy was an exact pin rather than a live range and only the nested form
+reaches it. Between them they resolve every development-toolchain advisory that had a compatible
+release. Two packages were also moved out of production dependencies, since nothing under
+`frontend/src` imports them.
 
 **Reproduce it:** `cd frontend && npm audit`. Measured on **13 August 2026** with npm 10.8.2
 against the committed `package-lock.json` (SHA-256 `d8f3a622…`), which resolves 1,123
-dependencies — 9 production, 1,115 development, 171 optional:
+dependencies — 9 production, 1,115 development, 171 optional. That production figure is the
+whole **resolved graph** reachable from the runtime dependencies, not the manifest: `package.json`
+declares **8 `dependencies`** and 13 `devDependencies`, and the ninth production node is a
+transitive one. Quote 9 when discussing what `npm audit` scanned, and 8 when discussing what the
+manifest asks for:
 
 | Severity | Count | Was, before remediation |
 | --- | --- | --- |
@@ -985,20 +1014,27 @@ dependencies — 9 production, 1,115 development, 171 optional:
 | High | 13 | 19 |
 | Moderate | 0 | 7 |
 | Low | 0 | 1 |
-| **Total** | **13** across 13 root advisory records | **27** across 22 |
+| **Total** | **13** nodes, from **8** distinct advisories | **27** across 22 |
+
+Three different quantities are easy to conflate here, so all three are stated. `npm audit` reports
+**13 vulnerability nodes** — one per flagged package. Only **4** of those packages carry an advisory
+of their own (`@angular/common`, `@angular/compiler`, `@angular/core` and `image-size`); the other
+nine are flagged solely because they depend on one of the four. Behind them sit **8 distinct GHSA
+identifiers**, appearing as 9 advisory-package pairs because `GHSA-jj27-h5hq-8x99` is filed against
+both `@angular/compiler` and `@angular/core`. Quote 13 for what the tool prints, 8 for how many
+advisories actually exist.
 
 Production-only (`npm audit --omit=dev`) reports **5 high**, down from 7.
 
-Two of the 13 are `image-size`, reached through `less`, and are **genuinely unfixable**: the
+Two of the 8 are against `image-size`, reached through `less`, and are **genuinely unfixable**: the
 latest published release is itself inside the affected range. They are also unreachable — the
 workspace contains **zero `.less` files**, `inlineStyleLanguage` is `scss`, and the runtime image
 serves static files from nginx with no build toolchain present at all.
 
-The remaining eleven records resolve to six advisories against Angular packages, each naming a
-feature this application does not use. All six are ranged `<= 19.2.25`, i.e. the whole of Angular
-19.2.x, so none has a remedy inside the mandated major version. Note that `@angular/compiler` is
-now a **development** dependency, so the two advisories against it no longer touch anything the
-browser downloads:
+The remaining six are against Angular packages, each naming a feature this application does not
+use, and all six are ranged `<= 19.2.25` — the whole of Angular 19.2.x — so none has a remedy
+inside the mandated major version. Note that `@angular/compiler` is now a **development**
+dependency, so the advisories against it no longer touch anything the browser downloads:
 
 | Advisory | Package | Requires | Measured in this workspace |
 | --- | --- | --- | --- |
@@ -1218,14 +1254,6 @@ Three consequences follow, and all three are deliberate:
   `DB_CONNECTION_STRING` and `JWT_SECRET` from the environment or a secret store. There is no
   committed signing key anywhere in this repository — ending the committed-key practice of the
   legacy application is one of the reasons this migration exists.
-- **Package restore is repository-controlled.** [`backend/NuGet.Config`](./backend/NuGet.Config)
-  clears every inherited source, declares the single public source the dependency inventory was
-  pinned against, and maps each package identity to it with no bare `*` pattern, so an unreviewed
-  identity fails restore rather than resolving from an unexpected feed. It sits beside the
-  solution rather than at the repository root because NuGet searches upwards from each project,
-  so that placement governs all six projects while leaving the legacy trees beside it alone — and
-  it travels into the API image with `COPY backend/ ./`, so the container restore is governed the
-  same way without an instruction of its own.
 - **Secrets can be delivered as mounted files, and the host reads them.** A key-per-file
   configuration source is registered over `/run/secrets`, where the **file name is the
   configuration key** with `__` for the section separator — so
@@ -1243,10 +1271,13 @@ Three consequences follow, and all three are deliberate:
   [`backend/NuGet.Config`](./backend/NuGet.Config) clears every inherited source, declares the single public
   source the dependency inventory was pinned against, and maps each package identity to it
   with no bare `*` pattern, so an unreviewed identity fails restore rather than resolving from
-  an unexpected feed. [`docker/api.Dockerfile`](./docker/api.Dockerfile) copies that file into
-  its build stage and restores with `--configfile`, which makes NuGet read it *and nothing
-  else* — so the image cannot inherit a source from the base image's own settings or from a
-  build agent. Locked mode is not passed on the command line: `backend/Directory.Build.props`
+  an unexpected feed. It sits beside the solution rather than at the repository root because
+  NuGet searches upwards from each project, so that placement governs all six projects while
+  leaving the legacy trees beside it alone. On a workstation that is the whole story; in the
+  image, [`docker/api.Dockerfile`](./docker/api.Dockerfile) copies the file into its build stage
+  with the source tree and then restores with `--configfile`, which makes NuGet read it *and
+  nothing else* — so the image cannot inherit a source from the base image's own settings or
+  from a build agent. Locked mode is not passed on the command line: `backend/Directory.Build.props`
   sets `RestorePackagesWithLockFile` and `RestoreLockedMode` for all six projects, and the six
   committed `packages.lock.json` files travel into the build with the source tree.
 - **Both images are pinned by base-image digest, with the readable tag retained.** All four
@@ -1327,14 +1358,32 @@ the migration's own normative sections are treated as binding:
   Breakpoints come from the shared mixins, never from an ad-hoc media query.
 
   Separately, a **bounded set of structural literals** is permitted, because these describe
-  layout mechanics rather than design and a token for them would name nothing: CSS-grid line
-  indices and track counts (`grid-column: 1 / -1`, `repeat(2, …)`), the `fr` unit and
-  `minmax(0, 1fr)`, flex factors (`flex: 1 1 …`), line-clamp counts, the `-1` multiplier in
-  `calc(-1 * var(--token))`, viewport and percentage bounds inside `min()`/`calc()`
-  (`100vw`, `100vh`, `100%`), `1em` where a box is deliberately sized to the current type
-  step, and keyframe rotation angles (`0deg`, `360deg`). That list is exhaustive as of this
-  writing — 24 declarations across the workspace, and no other kind of literal appears in a
-  declaration. Adding a category to it is a review decision, not a local one.
+  layout mechanics rather than design and a token for them would name nothing. Nine categories
+  are permitted, and **17 declarations across the 44 stylesheets** use them — measured, not
+  estimated, and no other kind of literal appears in a declaration anywhere:
+
+  | Permitted category | Declarations using it | Example |
+  | --- | --- | --- |
+  | Grid track counts | 5 | `repeat(3, var(--grid-track-fluid))` |
+  | CSS-grid line indices | 4 | `grid-column: 1 / -1` |
+  | The `-1` multiplier that negates a token | 3 | `calc(-1 * var(--border-width))` |
+  | The `fr` unit and its zero-basis pairing | 2 | `minmax(0, 1fr)` |
+  | Flex grow and shrink factors | 2 | `flex: 1 1 var(--filter-control-basis)` |
+  | Line-clamp counts | 2 | `-webkit-line-clamp: 4` |
+  | Viewport and percentage bounds inside `min()`/`calc()` | 1 | `min(var(--notification-max-inline-size), calc(100% - var(--space-8)))` |
+  | `1em` where a box is deliberately sized to the current type step | **0** | — |
+  | Keyframe rotation angles | **0** | — |
+
+  The counts sum to 19 rather than 17 because two declarations exercise two categories at once —
+  `repeat(2, minmax(0, 1fr))` is both a track count and the zero-basis pairing. The distinct
+  declaration count is 17, spread across ten stylesheets: `form-field` 3, then `_mixins`,
+  `membership-settings`, `module-list`, `portal-settings` and `user-list` with 2 each, and
+  `data-table`, `notification-list`, `profile-definition-list` and `role-form` with 1 each.
+
+  The last two categories are **currently empty**: both were tokenised, so the sort indicator's
+  `1em` reservation and the spinner's `0deg`/`360deg` frames now read tokens. They stay listed
+  because the permission is what was reviewed, and a future component may legitimately need one.
+  Adding a *new* category is a review decision, not a local one.
 - Services under `core/services/` are typed `HttpClient` wrappers and hold no business logic.
 - **Accessibility is required, not optional:** semantic landmarks, `<caption>` and
   `<th scope>` on tables, every control label-associated through `form-field`, `aria-live` on

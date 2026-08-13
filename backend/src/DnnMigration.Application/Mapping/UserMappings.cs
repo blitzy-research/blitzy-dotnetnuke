@@ -845,7 +845,7 @@ public static class UserMappings
         definition.ViewOrder = request.ViewOrder;
 
         // MIGRATION: A REQUIRED PROPERTY IS ALWAYS VISIBLE, and this coercion is the legacy rule rather
-        // than a convenience. Both legacy write members open with the identical two lines - 
+        // than a convenience. Both legacy write members open with the identical two lines -
         // ProfileController.vb AddPropertyDefinition:
         //     If definition.Required Then
         //         definition.Visible = True

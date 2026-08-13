@@ -93,13 +93,17 @@ public/               static assets served by nginx
   counts as hardcoding it. The keyword literals `0`, `none`, `auto`, `inherit`, `currentColor`
   and `transparent` are permitted anywhere, and breakpoints live once in `_mixins.scss`.
 - **A bounded set of structural literals is permitted**, because these name layout mechanics
-  rather than appearance and a token for them would name nothing: CSS-grid line indices and
-  track counts (`grid-column: 1 / -1`, `repeat(2, …)`), the `fr` unit and `minmax(0, 1fr)`,
-  flex factors (`flex: 1 1 …`), line-clamp counts, the `-1` multiplier in
-  `calc(-1 * var(--token))`, viewport and percentage bounds inside `min()`/`calc()` (`100vw`,
-  `100vh`, `100%`), `1em` where a box is deliberately sized to the current type step, and
-  keyframe rotation angles (`0deg`, `360deg`). That list is exhaustive — 24 declarations across
-  the workspace — and adding a category to it is a review decision, not a local one.
+  rather than appearance and a token for them would name nothing. Nine categories are permitted
+  and **17 declarations across the 44 stylesheets** use them, measured rather than estimated:
+  grid track counts (`repeat(2, …)`) 5, CSS-grid line indices (`grid-column: 1 / -1`) 4, the
+  `-1` multiplier in `calc(-1 * var(--token))` 3, the `fr` unit and its `minmax(0, 1fr)`
+  zero-basis pairing 2, flex grow and shrink factors (`flex: 1 1 …`) 2, line-clamp counts 2, and
+  viewport or percentage bounds inside `min()`/`calc()` 1. Those counts sum to 19 because two
+  declarations use two categories at once — `repeat(2, minmax(0, 1fr))` is both. The two
+  remaining permitted categories, `1em` sizing to the current type step and keyframe rotation
+  angles, are **currently empty**: both were tokenised, so the sort indicator's `inline-size`
+  and the spinner's `0deg`/`360deg` frames now read tokens. That list is exhaustive, and adding a
+  category to it is a review decision, not a local one.
 - **One `.spec.ts` per component, service, interceptor, guard and store**, using
   `TestBed`, `provideHttpClientTesting` and `HttpTestingController`. Karma with Jasmine.
 

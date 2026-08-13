@@ -10,9 +10,10 @@
 #
 #   docker compose -f docker/docker-compose.yml --env-file docker/.env build
 #   docker compose -f docker/docker-compose.yml --env-file docker/.env up -d
-#   GET http://localhost:8080/health/ready -> 200, the anonymous readiness view
-#     (the container HEALTHCHECK and the gate below both probe this one - SEC-F10)
-#   GET http://localhost:8080/health  -> 200, the anonymous process-only view
+#   GET http://localhost:8080/health  -> 200, the anonymous liveness view
+#     (the container HEALTHCHECK and the gate below both probe this one)
+#   GET http://localhost:8080/health/ready -> 200, the anonymous readiness view,
+#     registered for an orchestrator that gates traffic on the store; unprobed here
 #   GET http://localhost:4200         -> 200, the SPA document
 #   docker compose -f docker/docker-compose.yml --env-file docker/.env down
 #
@@ -191,14 +192,17 @@ services:
     # probe only after one interval has elapsed, so a thirty-second interval would
     # leave this service `starting` - and the front end unstarted - past the
     # ten-second mark at which the end-to-end gate probes port 4200. start_period
-    # keeps early failures from spending the retry budget while the API opens its
-    # first database connection.
+    # keeps early failures from spending the retry budget while the host is still
+    # starting - configuration binding, options validation and the first listener -
+    # which is all this path reports on, the store being excluded from it.
     healthcheck:
-      # SEC-F10. READINESS, NOT LIVENESS. The `depends_on: service_healthy` gate below
-      # decides when the front end may start, so it has to test whether the API can
-      # SERVE - which means its database dependency, probed only by /health/ready.
-      # Against /health the gate passed while SQL Server was unreachable.
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/ready"]
+      # The address is frozen by AAP 0.9.3, which supplies this health check as a
+      # preserved example, and it is also the right one for a topology whose store is
+      # external - see the paragraph above and the matching directive in
+      # docker/api.Dockerfile. A store outage is reported by /health/ready and by the
+      # 503 + Retry-After answer every store-backed endpoint gives, not by failing
+      # this probe and stranding the front end behind the condition below.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
       interval: 10s
       timeout: 5s
       start_period: 20s

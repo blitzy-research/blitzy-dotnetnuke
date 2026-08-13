@@ -1391,4 +1391,3 @@ export const decodeRedeemServiceCodeResult: Decoder<RedeemServiceCodeResult> =
   objectOf<RedeemServiceCodeResult>({
     roles: arrayOf(decodeRedeemedService),
   });
-

@@ -1679,18 +1679,18 @@ public class ModuleServiceApplicationTests
         outcome.IsSuccess.Should().BeTrue();
 
         PagedResult<ModuleListItemDto> page = outcome.Value;
-            page.Items.Should().HaveCount(1, "the window is one row wide and the rows are placements");
-            page.PageSize.Should().Be(1, "the declared width is the width the caller asked for");
-            page.PageIndex.Should().Be(0, "the coordinates address rows, so the first window is index zero");
-            page.TotalCount.Should().Be(2, "the module sits on two pages, so the collection holds two rows");
-            page.TotalPages.Should().Be(2, "two rows in windows of one is two windows");
+        page.Items.Should().HaveCount(1, "the window is one row wide and the rows are placements");
+        page.PageSize.Should().Be(1, "the declared width is the width the caller asked for");
+        page.PageIndex.Should().Be(0, "the coordinates address rows, so the first window is index zero");
+        page.TotalCount.Should().Be(2, "the module sits on two pages, so the collection holds two rows");
+        page.TotalPages.Should().Be(2, "two rows in windows of one is two windows");
 
-            Result<PagedResult<ModuleListItemDto>> next = await harness.Service.ListModulesAsync(
-            PortalId,
-            new PagedRequest { PageIndex = 1, PageSize = 1 },
-            tabId: null,
-            includeDeleted: false,
-            CancellationToken.None);
+        Result<PagedResult<ModuleListItemDto>> next = await harness.Service.ListModulesAsync(
+        PortalId,
+        new PagedRequest { PageIndex = 1, PageSize = 1 },
+        tabId: null,
+        includeDeleted: false,
+        CancellationToken.None);
 
         next.Value.Items.Should().ContainSingle().Which.TabId.Should().Be(
             SecondTabId,

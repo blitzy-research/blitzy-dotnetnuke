@@ -7853,7 +7853,8 @@ public class UserServiceTests
         /// Every occurrence the service recorded privately, in the order it recorded them.
         /// </summary>
         public List<(SecurityDiagnosticEvent Occurrence, int? PortalId, int? UserId, string? ReasonCode)>
-            DiagnosedOccurrences { get; }
+            DiagnosedOccurrences
+        { get; }
 
 
         /// <summary>

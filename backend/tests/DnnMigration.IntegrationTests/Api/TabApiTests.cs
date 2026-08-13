@@ -649,7 +649,7 @@ public sealed class TabApiTests
 
         using HttpResponseMessage response = await client.GetAsync(TabRoute(UnknownTabId));
 
-                // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
+        // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
         // administers the tenant. The permission service establishes that the item exists before it resolves
         // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
         // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
@@ -672,7 +672,7 @@ public sealed class TabApiTests
         // finds it does not belong to it.
         using HttpResponseMessage response = await host.GetAsync(TabRoute(foreignTabId));
 
-                // 403, AND DELIBERATELY NOT 404, BECAUSE THE PAGE EXISTS - it simply belongs to another tenant. The
+        // 403, AND DELIBERATELY NOT 404, BECAUSE THE PAGE EXISTS - it simply belongs to another tenant. The
         // refusal for an identifier that names NOTHING was changed to 404 so the console can present a
         // not-found treatment, and that change had to stop precisely here: the permission service reports a
         // separate reason code for a foreign-tenant item, and the authorisation handler admits only the
@@ -1192,7 +1192,7 @@ public sealed class TabApiTests
             NewUpdateRequest("IGhost" + Suffix()),
             ApiTestFixture.Json);
 
-                // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
+        // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
         // administers the tenant. The permission service establishes that the item exists before it resolves
         // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
         // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
@@ -1912,7 +1912,7 @@ public sealed class TabApiTests
 
         using HttpResponseMessage response = await administrator.GetAsync(TabRoute(foreignTabId));
 
-                // 403, AND DELIBERATELY NOT 404, BECAUSE THE PAGE EXISTS - it simply belongs to another tenant. The
+        // 403, AND DELIBERATELY NOT 404, BECAUSE THE PAGE EXISTS - it simply belongs to another tenant. The
         // refusal for an identifier that names NOTHING was changed to 404 so the console can present a
         // not-found treatment, and that change had to stop precisely here: the permission service reports a
         // separate reason code for a foreign-tenant item, and the authorisation handler admits only the

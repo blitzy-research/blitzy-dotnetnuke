@@ -620,162 +620,162 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
     private static (int StatusCode, string Detail) Describe(
         Exception exception,
         IStoreFailureClassifier storeFailures) => exception switch
-    {
-        // A broken invariant means the request asked the model to enter a state it must never
-        // occupy, so the request is what is at fault and 400 is what the caller needs to hear.
-        //
-        // The exception's OWN message is deliberately not published, and the discarded argument
-        // for publishing it is worth recording because it is superficially convincing: the text
-        // is written by our own domain code, for a reader, so it looks safe by provenance. It is
-        // not. Being safe would require every author of every DomainException message, now and
-        // in future, to omit every value the caller supplied - an unenforceable property of
-        // human discipline rather than a property of the code, and one this solution had already
-        // failed to hold. PortalGuid.Parse interpolated the rejected caller text straight into
-        // its message, so an arbitrary string chosen by an unauthenticated caller was echoed
-        // back inside a 400 body. That site is fixed, but a rule that depends on nobody ever
-        // reintroducing it is not a rule. Publishing fixed text instead makes the guarantee
-        // structural: a future interpolated message becomes a log entry and nothing more.
-        //
-        // The diagnostics that matter are still recorded. The 4xx branch describes the failure for
-        // the log exactly as the 5xx branch does, through DescribeForDiagnostics: the type name of
-        // every link in the exception chain and its stack trace are written in full, because those
-        // identify the defect and are authored by us or by a library, while the messages are
-        // dropped because a message may quote the input that failed. The exception object itself is
-        // deliberately not handed to the logger, for the reason set out on that member. The
-        // correlation identifier echoed on this response is what joins a caller's report to that
-        // entry. This is the same treatment the general case below receives, for the same reason,
-        // which leaves UnauthorizedAccessException the only arm whose text is specific, and that
-        // text is authored here rather than taken from the exception.
-        // The one exception to "never publish an exception's own text" is opt-in and explicit:
-        // DomainException.PublicDetail exists so a thrower can supply caller-safe wording
-        // deliberately. Absent or blank, the authored constant above is used, so a thrower cannot
-        // disclose by accident and a caller never receives an empty explanation.
-        DomainException domainException => (
-            StatusCodes.Status400BadRequest,
-            string.IsNullOrWhiteSpace(domainException.PublicDetail)
-                ? InvalidRequestDetail
-                : domainException.PublicDetail),
+        {
+            // A broken invariant means the request asked the model to enter a state it must never
+            // occupy, so the request is what is at fault and 400 is what the caller needs to hear.
+            //
+            // The exception's OWN message is deliberately not published, and the discarded argument
+            // for publishing it is worth recording because it is superficially convincing: the text
+            // is written by our own domain code, for a reader, so it looks safe by provenance. It is
+            // not. Being safe would require every author of every DomainException message, now and
+            // in future, to omit every value the caller supplied - an unenforceable property of
+            // human discipline rather than a property of the code, and one this solution had already
+            // failed to hold. PortalGuid.Parse interpolated the rejected caller text straight into
+            // its message, so an arbitrary string chosen by an unauthenticated caller was echoed
+            // back inside a 400 body. That site is fixed, but a rule that depends on nobody ever
+            // reintroducing it is not a rule. Publishing fixed text instead makes the guarantee
+            // structural: a future interpolated message becomes a log entry and nothing more.
+            //
+            // The diagnostics that matter are still recorded. The 4xx branch describes the failure for
+            // the log exactly as the 5xx branch does, through DescribeForDiagnostics: the type name of
+            // every link in the exception chain and its stack trace are written in full, because those
+            // identify the defect and are authored by us or by a library, while the messages are
+            // dropped because a message may quote the input that failed. The exception object itself is
+            // deliberately not handed to the logger, for the reason set out on that member. The
+            // correlation identifier echoed on this response is what joins a caller's report to that
+            // entry. This is the same treatment the general case below receives, for the same reason,
+            // which leaves UnauthorizedAccessException the only arm whose text is specific, and that
+            // text is authored here rather than taken from the exception.
+            // The one exception to "never publish an exception's own text" is opt-in and explicit:
+            // DomainException.PublicDetail exists so a thrower can supply caller-safe wording
+            // deliberately. Absent or blank, the authored constant above is used, so a thrower cannot
+            // disclose by accident and a caller never receives an empty explanation.
+            DomainException domainException => (
+                StatusCodes.Status400BadRequest,
+                string.IsNullOrWhiteSpace(domainException.PublicDetail)
+                    ? InvalidRequestDetail
+                    : domainException.PublicDetail),
 
-        // Authentication is settled long before this point, because an unauthenticated caller
-        // is challenged by the authentication handler and never arrives here. This is a
-        // caller who is known and still not entitled, so 403 rather than 401.
-        UnauthorizedAccessException => (StatusCodes.Status403Forbidden, ForbiddenDetail),
+            // Authentication is settled long before this point, because an unauthenticated caller
+            // is challenged by the authentication handler and never arrives here. This is a
+            // caller who is known and still not entitled, so 403 rather than 401.
+            UnauthorizedAccessException => (StatusCodes.Status403Forbidden, ForbiddenDetail),
 
-        // MIGRATION: SEC-F6. A UNIQUE CONSTRAINT REFUSING A WRITE IS THE CALLER'S CONFLICT, NOT A SERVER
-        // FAULT. The store told us the value is already held; it did exactly its job and kept exactly one
-        // record, so 409 is what the caller needs to hear and 500 - what this family was answered before -
-        // was wrong on both counts, misreporting a correct store and raising a server-fault log entry for
-        // an ordinary collision.
-        //
-        // This arm does NOT contradict the paragraph above about naming no persistence type. It names
-        // none: the signal is a DOMAIN type, raised at the persistence seam where the provider fault is
-        // recognised and translated, precisely so the transport can classify this outcome without
-        // referencing the mapper or the database client. That translation is also why the arm is safe to
-        // place here rather than being "the application layer's business" - the classification has already
-        // been made by the layer that owns it.
-        //
-        // It is a net, not the route. Each create path catches the same signal and answers with the reason
-        // code its own pre-check emits, which is both more useful and reached first; see the remarks on
-        // DuplicateRecordDetail for why that text names no field and never publishes the constraint name.
-        DuplicateKeyException => (StatusCodes.Status409Conflict, DuplicateRecordDetail),
+            // MIGRATION: SEC-F6. A UNIQUE CONSTRAINT REFUSING A WRITE IS THE CALLER'S CONFLICT, NOT A SERVER
+            // FAULT. The store told us the value is already held; it did exactly its job and kept exactly one
+            // record, so 409 is what the caller needs to hear and 500 - what this family was answered before -
+            // was wrong on both counts, misreporting a correct store and raising a server-fault log entry for
+            // an ordinary collision.
+            //
+            // This arm does NOT contradict the paragraph above about naming no persistence type. It names
+            // none: the signal is a DOMAIN type, raised at the persistence seam where the provider fault is
+            // recognised and translated, precisely so the transport can classify this outcome without
+            // referencing the mapper or the database client. That translation is also why the arm is safe to
+            // place here rather than being "the application layer's business" - the classification has already
+            // been made by the layer that owns it.
+            //
+            // It is a net, not the route. Each create path catches the same signal and answers with the reason
+            // code its own pre-check emits, which is both more useful and reached first; see the remarks on
+            // DuplicateRecordDetail for why that text names no field and never publishes the constraint name.
+            DuplicateKeyException => (StatusCodes.Status409Conflict, DuplicateRecordDetail),
 
-        // A LOST UPDATE IS THE CALLER'S CONFLICT TOO, AND FOR THE SAME REASONS. The store refused a write
-        // because the row had already moved: it did exactly its job and it preserved somebody's committed
-        // edit, so 409 with an instruction to reload is what the caller needs to hear, and the 500 this
-        // family was answered before was wrong on both counts - it reported a defect that does not exist and
-        // it raised a server-fault log entry for an ordinary collision.
-        //
-        // Like the arm above it names no persistence type. The signal is a DOMAIN type raised at the
-        // persistence seam, where an affected-row count of zero and a serialisation-failure error number are
-        // both recognisable, precisely so the transport can classify the outcome without referencing the
-        // mapper or the database client.
-        //
-        // It is a net, not the route: each write path catches the same signal and answers with the reason
-        // code its own token comparison emits, which names the resource and is reached first.
-        ConcurrencyConflictException => (StatusCodes.Status409Conflict, ConcurrentWriteDetail),
+            // A LOST UPDATE IS THE CALLER'S CONFLICT TOO, AND FOR THE SAME REASONS. The store refused a write
+            // because the row had already moved: it did exactly its job and it preserved somebody's committed
+            // edit, so 409 with an instruction to reload is what the caller needs to hear, and the 500 this
+            // family was answered before was wrong on both counts - it reported a defect that does not exist and
+            // it raised a server-fault log entry for an ordinary collision.
+            //
+            // Like the arm above it names no persistence type. The signal is a DOMAIN type raised at the
+            // persistence seam, where an affected-row count of zero and a serialisation-failure error number are
+            // both recognisable, precisely so the transport can classify the outcome without referencing the
+            // mapper or the database client.
+            //
+            // It is a net, not the route: each write path catches the same signal and answers with the reason
+            // code its own token comparison emits, which names the resource and is reached first.
+            ConcurrencyConflictException => (StatusCodes.Status409Conflict, ConcurrentWriteDetail),
 
-        // MIGRATION: A TRANSPORT REFUSAL CARRIES THE STATUS THE HOST ALREADY CHOSE. The host raises
-        // this type when it declines to read a request itself - the body exceeding the configured size
-        // ceiling, a malformed chunked body, a declared length that disagrees with what arrived - and it
-        // records the status it settled on ON THE EXCEPTION. Without this arm the whole family fell to
-        // the general case and was answered 500 and logged at Error, which was wrong twice over: it told
-        // the caller the server had failed when the caller had submitted something the server correctly
-        // refused, and it raised a server-fault log entry for an ordinary client mistake, so a volume of
-        // oversized submissions read as an outage. Both are corrected by taking the status the host
-        // already decided; the log level follows from the status family with no further change, because
-        // the branch above keys off exactly that.
-        //
-        // The exception's own message is not published, in keeping with every other arm - the host's
-        // wording for a size refusal quotes the configured limit, which is a deployment fact and not
-        // part of any contract. The status is READ from the exception rather than assumed to be 413:
-        // this type also carries 400 for the framing faults, and hard-coding either would mislabel the
-        // other. Kestrel's own subclass derives from this type, so one arm covers both, and an
-        // unexpected status on the exception is honoured as-is rather than being second-guessed here.
-        BadHttpRequestException badRequest => (
-            badRequest.StatusCode,
-            badRequest.StatusCode == StatusCodes.Status413PayloadTooLarge
-                ? PayloadTooLargeDetail
-                : MalformedRequestDetail),
+            // MIGRATION: A TRANSPORT REFUSAL CARRIES THE STATUS THE HOST ALREADY CHOSE. The host raises
+            // this type when it declines to read a request itself - the body exceeding the configured size
+            // ceiling, a malformed chunked body, a declared length that disagrees with what arrived - and it
+            // records the status it settled on ON THE EXCEPTION. Without this arm the whole family fell to
+            // the general case and was answered 500 and logged at Error, which was wrong twice over: it told
+            // the caller the server had failed when the caller had submitted something the server correctly
+            // refused, and it raised a server-fault log entry for an ordinary client mistake, so a volume of
+            // oversized submissions read as an outage. Both are corrected by taking the status the host
+            // already decided; the log level follows from the status family with no further change, because
+            // the branch above keys off exactly that.
+            //
+            // The exception's own message is not published, in keeping with every other arm - the host's
+            // wording for a size refusal quotes the configured limit, which is a deployment fact and not
+            // part of any contract. The status is READ from the exception rather than assumed to be 413:
+            // this type also carries 400 for the framing faults, and hard-coding either would mislabel the
+            // other. Kestrel's own subclass derives from this type, so one arm covers both, and an
+            // unexpected status on the exception is honoured as-is rather than being second-guessed here.
+            BadHttpRequestException badRequest => (
+                badRequest.StatusCode,
+                badRequest.StatusCode == StatusCodes.Status413PayloadTooLarge
+                    ? PayloadTooLargeDetail
+                    : MalformedRequestDetail),
 
-        // MIGRATION: A DEPENDENCY BEING DOWN IS NOT THIS SERVER HAVING A DEFECT, AND 503 IS WHAT SAYS SO.
-        // This arm is reached only after every arm above has declined, so nothing already classified is
-        // affected: a broken invariant is still 400, a refusal 403, a duplicate 409 and a transport fault
-        // whatever the host decided. What changes is the residue - the failures that used to fall to the
-        // general case below - and only the part of it that a classifier can positively identify as an
-        // availability condition of the store or of the path to it.
-        //
-        // It is a GUARD rather than a type pattern for the reason set out on the constructor parameter:
-        // this project references no database provider, so the exception cannot be recognised by type
-        // here. The question is asked of a Domain contract whose implementation lives in the persistence
-        // assembly, which is the only assembly permitted to know that a severity class of 20 or more means
-        // the connection is gone. That keeps the rule intact - the layer that owns the classification
-        // performs it - while letting the transport act on the answer, which is the only layer that can
-        // choose a status code.
-        //
-        // The classification is deliberately conservative: anything it cannot positively identify stays
-        // 500. Answering 503 for a defect would tell a caller to retry a request that can never succeed
-        // and would mask a fault behind a retry loop, which is strictly worse than the 500 this replaces.
-        // The log level follows the status family with no further change - both are 5xx - so an outage is
-        // still recorded at Error and still raises whatever a deployment alerts on.
-        // MIGRATION: A STALLED CACHE PRODUCTION IS THIS SERVER'S DEFECT, NOT A DEPENDENCY OUTAGE, AND THIS
-        // ARM IS WHERE THE TWO ARE TOLD APART. It sits ABOVE the availability guard deliberately, and the
-        // order is the whole of its effect: reaching the guard with this condition is what used to answer
-        // 503 with a Retry-After. The cache raised a plain TimeoutException when a value factory outran its
-        // budget, the classifier read any bare timeout in the chain as an unreachable database, and a caller
-        // was consequently told to retry a request that would fail identically while the actual defect - a
-        // factory ignoring the cancellation token it was handed - was hidden behind the retry hint.
-        //
-        // Two changes settle it and BOTH are needed. The cache now raises a cache-specific type, and the
-        // classifier now requires structural data-access context before reading a generic timeout as an
-        // outage. This arm is the third: it maps the condition EXPLICITLY, so the mapping is a stated
-        // decision rather than a consequence of falling through to the general case, and a reader can see
-        // that the omission of a retry hint is deliberate. 500 is the honest status - the request can be
-        // reissued, but nothing about waiting makes it more likely to succeed - and the published wording is
-        // the same fixed sentence every unexpected failure carries, so the cache key, the value shape and
-        // the budget stay out of the response. The log entry above records the failure for the operator.
-        CacheProductionTimeoutException => (
-            StatusCodes.Status500InternalServerError,
-            UnexpectedFailureDetail),
+            // MIGRATION: A DEPENDENCY BEING DOWN IS NOT THIS SERVER HAVING A DEFECT, AND 503 IS WHAT SAYS SO.
+            // This arm is reached only after every arm above has declined, so nothing already classified is
+            // affected: a broken invariant is still 400, a refusal 403, a duplicate 409 and a transport fault
+            // whatever the host decided. What changes is the residue - the failures that used to fall to the
+            // general case below - and only the part of it that a classifier can positively identify as an
+            // availability condition of the store or of the path to it.
+            //
+            // It is a GUARD rather than a type pattern for the reason set out on the constructor parameter:
+            // this project references no database provider, so the exception cannot be recognised by type
+            // here. The question is asked of a Domain contract whose implementation lives in the persistence
+            // assembly, which is the only assembly permitted to know that a severity class of 20 or more means
+            // the connection is gone. That keeps the rule intact - the layer that owns the classification
+            // performs it - while letting the transport act on the answer, which is the only layer that can
+            // choose a status code.
+            //
+            // The classification is deliberately conservative: anything it cannot positively identify stays
+            // 500. Answering 503 for a defect would tell a caller to retry a request that can never succeed
+            // and would mask a fault behind a retry loop, which is strictly worse than the 500 this replaces.
+            // The log level follows the status family with no further change - both are 5xx - so an outage is
+            // still recorded at Error and still raises whatever a deployment alerts on.
+            // MIGRATION: A STALLED CACHE PRODUCTION IS THIS SERVER'S DEFECT, NOT A DEPENDENCY OUTAGE, AND THIS
+            // ARM IS WHERE THE TWO ARE TOLD APART. It sits ABOVE the availability guard deliberately, and the
+            // order is the whole of its effect: reaching the guard with this condition is what used to answer
+            // 503 with a Retry-After. The cache raised a plain TimeoutException when a value factory outran its
+            // budget, the classifier read any bare timeout in the chain as an unreachable database, and a caller
+            // was consequently told to retry a request that would fail identically while the actual defect - a
+            // factory ignoring the cancellation token it was handed - was hidden behind the retry hint.
+            //
+            // Two changes settle it and BOTH are needed. The cache now raises a cache-specific type, and the
+            // classifier now requires structural data-access context before reading a generic timeout as an
+            // outage. This arm is the third: it maps the condition EXPLICITLY, so the mapping is a stated
+            // decision rather than a consequence of falling through to the general case, and a reader can see
+            // that the omission of a retry hint is deliberate. 500 is the honest status - the request can be
+            // reissued, but nothing about waiting makes it more likely to succeed - and the published wording is
+            // the same fixed sentence every unexpected failure carries, so the cache key, the value shape and
+            // the budget stay out of the response. The log entry above records the failure for the operator.
+            CacheProductionTimeoutException => (
+                StatusCodes.Status500InternalServerError,
+                UnexpectedFailureDetail),
 
-        Exception when storeFailures.IsStoreUnavailable(exception) => (
-            StatusCodes.Status503ServiceUnavailable,
-            StoreUnavailableDetail),
+            Exception when storeFailures.IsStoreUnavailable(exception) => (
+                StatusCodes.Status503ServiceUnavailable,
+                StoreUnavailableDetail),
 
-        // MIGRATION: the general case publishes fixed text and never the exception's own
-        // message, in every environment. That is not conservatism about detail. An
-        // object-relational-mapper or database-client message routinely carries the
-        // connection string, the server and database names and the values bound to a
-        // statement, and an argument or key-lookup message routinely carries the value that
-        // failed; any of those can be a credential or personal data, and none can be
-        // recognised from the base type, so the only safe rule is to publish none of them.
-        // Enriching this text outside production was considered and rejected: it would give
-        // one deployment a payload another does not have, and the legacy application set the
-        // precedent for one error surface everywhere by declaring the same customErrors mode
-        // in both its release and its development configuration. The message and stack are
-        // already in the log, joined to this response by the correlation identifier, which is
-        // the one diagnostic handle a caller receives.
-        _ => (StatusCodes.Status500InternalServerError, UnexpectedFailureDetail),
-    };
+            // MIGRATION: the general case publishes fixed text and never the exception's own
+            // message, in every environment. That is not conservatism about detail. An
+            // object-relational-mapper or database-client message routinely carries the
+            // connection string, the server and database names and the values bound to a
+            // statement, and an argument or key-lookup message routinely carries the value that
+            // failed; any of those can be a credential or personal data, and none can be
+            // recognised from the base type, so the only safe rule is to publish none of them.
+            // Enriching this text outside production was considered and rejected: it would give
+            // one deployment a payload another does not have, and the legacy application set the
+            // precedent for one error surface everywhere by declaring the same customErrors mode
+            // in both its release and its development configuration. The message and stack are
+            // already in the log, joined to this response by the correlation identifier, which is
+            // the one diagnostic handle a caller receives.
+            _ => (StatusCodes.Status500InternalServerError, UnexpectedFailureDetail),
+        };
 
     /// <summary>
     /// Resolves the correlation identifier for the failed request.

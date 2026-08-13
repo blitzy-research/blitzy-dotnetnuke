@@ -314,12 +314,12 @@ public sealed class HealthCheckTests
             + "authority the container does not serve, and the client follows nothing so a 307 surfaces "
             + "here rather than being chased");
 
-            response.StatusCode.Should().Be(
-                HttpStatusCode.OK,
-                "on a host whose dependency is provisioned and reachable every view answers 200: the liveness "
-                + "views run no dependency probe at all, and the readiness view's one probe is sound - and the "
-                + "acceptance gate probes with 'curl -f' and holds the front-end service back on "
-                + "'condition: service_healthy', so anything but 200 here fails acceptance");
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "on a host whose dependency is provisioned and reachable every view answers 200: the liveness "
+            + "views run no dependency probe at all, and the readiness view's one probe is sound - and the "
+            + "acceptance gate probes with 'curl -f' and holds the front-end service back on "
+            + "'condition: service_healthy', so anything but 200 here fails acceptance");
     }
 
     /// <summary>
@@ -342,14 +342,14 @@ public sealed class HealthCheckTests
     /// <c>serviceName</c>, <c>version</c> and <c>timestamp</c> are asserted on both branches because none of
     /// the three depends on the dependency's condition - the first two are read from the assembly and the
     /// third from the clock - so exempting them from the unhealthy branch would leave the case an operator
-        /// most needs to read unasserted. Only the aggregate status word is branch-specific, and the two
-        /// branches are two FACTS rather than one fact with a conditional: each is asserted against the host
-        /// that produces it, so neither can pass by never having been exercised. This one covers the healthy
-        /// branch on the shared host; the unhealthy branch is covered by
-        /// <see cref="Readiness_WhenADependencyIsUnreachable_AnswersTheDocumentedContractWith503"/> against a
-        /// host whose dependency cannot be reached. A 200 admits a healthy or a degraded aggregate, because the
-        /// process-local audit-delivery probe joins the liveness view and declares degraded as its failure
-        /// status; a 503 admits only an unhealthy one, because a degraded aggregate itself maps to 200.
+    /// most needs to read unasserted. Only the aggregate status word is branch-specific, and the two
+    /// branches are two FACTS rather than one fact with a conditional: each is asserted against the host
+    /// that produces it, so neither can pass by never having been exercised. This one covers the healthy
+    /// branch on the shared host; the unhealthy branch is covered by
+    /// <see cref="Readiness_WhenADependencyIsUnreachable_AnswersTheDocumentedContractWith503"/> against a
+    /// host whose dependency cannot be reached. A 200 admits a healthy or a degraded aggregate, because the
+    /// process-local audit-delivery probe joins the liveness view and declares degraded as its failure
+    /// status; a 503 admits only an unhealthy one, because a degraded aggregate itself maps to 200.
     /// </para>
     /// </remarks>
     [Fact]

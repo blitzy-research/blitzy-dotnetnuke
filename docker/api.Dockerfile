@@ -26,8 +26,7 @@
 # for the name placeholders. Every instruction the example specifies is present
 # and unchanged: the two Alpine bases, the UID 1000 non-root account created with
 # `adduser -D -u 1000 appuser`, the account switch, ASPNETCORE_URLS=http://+:8080,
-# EXPOSE 8080, the wget --spider HEALTHCHECK (retargeted to /health/ready per
-# SEC-F10, see the directive below), and
+# EXPOSE 8080, the wget --spider HEALTHCHECK against /health, and
 # ENTRYPOINT ["dotnet", "DnnMigration.Api.dll"].
 #
 # THREE FORMER ADDITIONS STAY WITHDRAWN, AND ONE HAS RETURNED FOR A REASON THE
@@ -299,32 +298,43 @@ EXPOSE 8080
 #
 # --spider discards the body and only the status code decides; --tries=1 stops
 # wget's own retry from hiding a failure; the trailing exit normalises any
-# failure to the 1 that docker reads as unhealthy. The start period is generous
-# because the first probe otherwise races the database connection this endpoint
-# reports on.
+# failure to the 1 that docker reads as unhealthy. The start period covers the
+# process's own start-up rather than any dependency of it, because the path probed
+# below reports on the process and not on the store.
+#
+# THE PATH IS /health, AND IT IS FROZEN THERE. AAP 0.9.3 supplies this HEALTHCHECK
+# as a preserved example, so the address is a contract this file reproduces rather
+# than a local judgement it re-makes: the only substitution the plan permits in the
+# supplied container artefacts is the name placeholder. Three other things are
+# pinned to the same string - docker-compose.yml's api health check, the
+# end-to-end validation gate, and the published operator documentation - and
+# HealthCheckTests hard-codes it as a literal precisely so that moving it fails a
+# suite rather than silently following the move.
 #
 # /health is anonymous by contract and is the LIVENESS view: it runs every probe
 # not tagged `ready`, which today means the process-local audit-delivery probe and
-# no dependency probe at all. That is the deliberate choice for a container probe
-# in THIS topology - the compose file declares no database service, so the store is
-# external and may legitimately be unreachable while the process starts, and a
-# probe that depended on it would report the container unhealthy for a reason
-# unrelated to whether it can answer and would hold the frontend behind
-# `condition: service_healthy` for ever. Readiness stays available at
-# /health/ready for an orchestrator that wants to gate traffic on the store.
-# SEC-F10. THE PROBE ADDRESSES /health/ready, NOT /health.
+# no dependency probe at all. That is also the RIGHT view for a container probe in
+# THIS topology, so the contract and the engineering agree rather than merely
+# coexisting. The compose file declares no database service - the store is external
+# by design - so it may legitimately be unreachable while the process starts. A
+# probe that depended on it would report this container unhealthy for a reason
+# unrelated to whether it can answer, and `condition: service_healthy` would then
+# hold the frontend service back for as long as the outage lasted, with both images
+# built perfectly.
 #
-# The API publishes three anonymous views of the same check set: /health/live runs
-# no dependency probe at all, /health/ready runs the ready-tagged ones - which is
-# where the database check lives - and /health selects the process-only view. An
-# orchestrator probing /health therefore reported this container healthy while it
-# could not reach SQL Server, and the compose file's `service_healthy` gate let the
-# front end start in front of an API that could not serve a single membership-backed
-# request. Readiness is what "may this container receive traffic" means, so that is
-# what is probed. Liveness remains available for a restart policy that must not
-# recycle a process merely because a dependency is down.
+# THE TRADE-OFF IS REPORTED, NOT HIDDEN, AND IT IS REPORTED ELSEWHERE. Because this
+# probe excludes the database check, a container whose store is unreachable stays
+# healthy. That is deliberate, and the condition is not unmonitored: /health/ready
+# runs the ready-tagged probes - which is where the database check lives - answers
+# 503 for exactly that case, and stays registered and anonymous for an orchestrator
+# that gates TRAFFIC rather than START-UP on the store; and every store-backed
+# endpoint answers 503 with `Retry-After` rather than 200 while the outage lasts, so
+# no caller is told a request succeeded. An orchestrator that owns the database as
+# well should point its readiness probe at /health/ready and leave this one alone.
+# /health/live is the third view, running no probe at all, for a restart policy that
+# must not recycle a process merely because a dependency is down.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health/ready || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
 # Exec form, so the runtime is process 1 and receives the stop signal directly.
 # The shell form would wrap it in /bin/sh, swallow that signal and turn an

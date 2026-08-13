@@ -1033,20 +1033,34 @@ legacy menu providers are out of scope.
 stricter reading than the code can honour.** A token vocabulary governs *design* values. It
 cannot govern **layout mechanics**, where a literal names a position or a count rather than an
 appearance and a token for it would name nothing. Nine categories are therefore permitted, and
-the list is exhaustive — 24 declarations across the workspace at the time of writing, and no
-other kind of literal appears in a declaration:
+the list is exhaustive — **17 declarations across the 44 stylesheets**, measured rather than
+estimated, and no other kind of literal appears in a declaration:
 
-| Permitted structural literal | Example |
-| --- | --- |
-| CSS-grid line indices | `grid-column: 1 / -1`, `grid-column: 2` |
-| Grid track counts | `repeat(2, var(--grid-track-fluid))` |
-| The `fr` unit and its zero-basis pairing | `minmax(0, 1fr)` |
-| Flex grow and shrink factors | `flex: 1 1 var(--filter-control-basis)` |
-| Line-clamp counts | `-webkit-line-clamp: 4` |
-| The `-1` multiplier that negates a token | `calc(-1 * var(--border-width))` |
-| Viewport and percentage bounds inside `min()` / `calc()` | `min(var(--notification-max-inline-size), calc(100% - var(--space-8)))` |
-| `1em`, where a box is deliberately sized to the current type step | `inline-size: 1em` on a sort indicator |
-| Keyframe rotation angles | `rotate(0deg)` … `rotate(360deg)` |
+| Permitted structural literal | Declarations using it | Example |
+| --- | --- | --- |
+| Grid track counts | 5 | `repeat(2, var(--grid-track-fluid))` |
+| CSS-grid line indices | 4 | `grid-column: 1 / -1`, `grid-column: 2` |
+| The `-1` multiplier that negates a token | 3 | `calc(-1 * var(--border-width))` |
+| The `fr` unit and its zero-basis pairing | 2 | `minmax(0, 1fr)` |
+| Flex grow and shrink factors | 2 | `flex: 1 1 var(--filter-control-basis)` |
+| Line-clamp counts | 2 | `-webkit-line-clamp: 4` |
+| Viewport and percentage bounds inside `min()` / `calc()` | 1 | `min(var(--notification-max-inline-size), calc(100% - var(--space-8)))` |
+| `1em`, where a box is deliberately sized to the current type step | **0** | *(none — see below)* |
+| Keyframe rotation angles | **0** | *(none — see below)* |
+
+Those counts sum to 19 rather than 17 because two declarations exercise two categories at once:
+`repeat(2, minmax(0, 1fr))` is both a track count and the zero-basis pairing. The 17 distinct
+declarations sit in ten stylesheets — `form-field` 3; `_mixins`, `membership-settings`,
+`module-list`, `portal-settings` and `user-list` 2 each; `data-table`, `notification-list`,
+`profile-definition-list` and `role-form` 1 each.
+
+**The last two categories are currently EMPTY, and that is a tightening rather than an omission.**
+Both were literals when the list was first written and both were subsequently tokenised: the sort
+indicator's `inline-size` reservation in `data-table.component.scss` and the spinner's `0deg`/`360deg`
+keyframes in `styles.scss` each now read a token, and the comment at each site records the change.
+They remain listed because the *permission* is what was reviewed, and a future component may
+legitimately need one; a reader checking the code against this table should expect to find nothing
+under either.
 
 Adding a tenth category is a review decision, not a local one. A *design* value written as a
 literal is still a defect — the one instance found during this work, a duplicated `28rem`
@@ -1466,7 +1480,7 @@ manifests. Five decisions are recorded because they would otherwise be re-argued
   runs in locked mode. On the npm side the *manifest* deliberately carries caret and tilde
   ranges in the Angular style (`@angular/core: ^19.2.0`, `rxjs: ~7.8.0`, `typescript: ~5.7.2`),
   and determinism comes from the committed `frontend/package-lock.json`, which pins **every one
-  of the 1,047 resolved packages to an exact version**. `npm ci` installs from the lockfile and
+  of the 1,123 resolved packages to an exact version**. `npm ci` installs from the lockfile and
   fails outright without it, so an install is reproducible even though the ranges are not. The
   distinction matters when reading a version out of this repository: quote the lockfile for what
   is installed, and `package.json` for what is *permitted* on the next `npm install`.
@@ -1493,7 +1507,10 @@ a date is worthless within weeks.
 **Reproduce it:** `cd frontend && npm audit`. Measured **13 August 2026**, npm 10.8.2, against
 the committed `frontend/package-lock.json` (SHA-256
 `d8f3a622ef01d97e8836e437c21d4cacfc8b2f89c373984f167ed35e8a1dfdf1`), which resolves **1,123**
-packages — 7 production, 1,115 development, 171 optional:
+packages — 9 production, 1,115 development, 171 optional. The production figure counts the whole
+resolved graph reachable from the runtime dependencies, not the manifest: `frontend/package.json`
+declares 8 `dependencies` and 13 `devDependencies`, and the ninth production node is transitive.
+Quote 9 for what `npm audit` scanned and 8 for what the manifest asks for:
 
 | Severity | Count |
 | --- | --- |
@@ -1501,16 +1518,31 @@ packages — 7 production, 1,115 development, 171 optional:
 | High | 13 |
 | Moderate | 0 |
 | Low | 0 |
-| **Total** | **13**, across 8 distinct root advisories |
+| **Total** | **13** nodes, from **8** distinct advisories |
+
+Three quantities are easy to conflate here, so all three are stated. `npm audit` reports **13
+vulnerability nodes**, one per flagged package. Only **4** of those packages carry an advisory of
+their own — `@angular/common`, `@angular/compiler`, `@angular/core` and `image-size` — and the other
+nine are flagged solely because they depend on one of the four. Behind them sit **8 distinct GHSA
+identifiers**, which appear as 9 advisory-package pairs because `GHSA-jj27-h5hq-8x99` is filed
+against both `@angular/compiler` and `@angular/core`. Quote 13 for what the tool prints and 8 for
+how many advisories exist.
 
 **Every advisory that has an available fix has been fixed.** The previous measurement of this
-graph — 27 records across 22 roots — was reduced to 13 across 8 by the remediation below, and
-what remains is exactly the set for which no released version clears the advisory.
+graph — 27 records across 22 roots — was reduced to 13 nodes from 8 advisories by the remediation
+below, and what remains is exactly the set for which no released version clears the advisory.
 
 **What was fixed, and how.** Fourteen development-toolchain records were cleared with `overrides`
-in `frontend/package.json`. Two of them use npm's NESTED override form, and that is not a
-stylistic choice: each of those two packages appears TWICE in the graph, once affected and once
-not, and a blunt top-level override would have dragged the unaffected copy across a major version.
+in `frontend/package.json` — the arithmetic of 27 records down to 13. Two of them use npm's NESTED
+override form, and that is not a stylistic choice: each of those two packages appears TWICE in the
+graph, once affected and once not, and a blunt top-level override would have dragged the unaffected
+copy across a major version.
+
+`frontend/package.json` now carries **13 `overrides` keys — 11 flat and 2 nested parents — pinning
+13 distinct packages**. Eight of them are tabulated below. The remaining five — `tar`, `postcss`,
+`piscina`, `vite` and `@babel/core` — were added later to resolve the critical archive advisory,
+and the rule that governed each choice is recorded in the register under *The critical archive
+advisory is resolved by five overrides*.
 
 | Package | Was | Now | Note |
 | --- | --- | --- | --- |
@@ -1681,19 +1713,38 @@ Gate 7: docker-compose up -d; sleep 10; curl -f http://localhost:8080/health;
 ```
 
 **What was executed, and what it produced.** All seven ran from this repository on
-**12 August 2026**, on Linux (Ubuntu 25.10 container) with .NET SDK 8.0.423 (runtimes 8.0.29),
-Node 20.20.2, npm 10.8.2, Angular CLI 19.2.27, Chrome Headless 151.0.0.0, Docker Engine 29.7.0
-with Compose v5.3.1, and SQL Server 2022 for the integration suites.
+**13 August 2026**, on Linux (Ubuntu 25.10 container) with .NET SDK 8.0.423 (runtimes
+Microsoft.AspNetCore.App and Microsoft.NETCore.App 8.0.29), Node v20.20.2, npm 10.8.2, Angular
+CLI 19.2.27 driving Angular 19.2.25 and TypeScript 5.7.3, Google Chrome 151.0.7922.71 (reported
+by Karma as Chrome Headless 151.0.0.0), Docker Engine 29.7.0 with Compose v5.3.1, and SQL Server
+2022 CU26 (16.0.4265.3) for the integration suites.
 
 | Gate | Command executed | Result | Measured evidence |
 | --- | --- | --- | --- |
-| 1 | `cd backend && dotnet restore && dotnet build --configuration Release --warnaserror` | **PASS** | `Build succeeded. 0 Warning(s) 0 Error(s)` across all six projects |
-| 2 | `cd backend && dotnet test --configuration Release --no-build --verbosity normal` | **PASS** | UnitTests 3078 passed / 0 failed / 0 skipped; IntegrationTests 1362 passed / 0 failed / 0 skipped; 4440 total |
-| 3 | `cd frontend && npm ci && npx ng build --configuration production` | **PASS** | 938 packages restored; bundle emitted to `dist/dnn-migration/browser`; initial payload 500.80 kB raw / 131.74 kB transfer |
-| 4 | `cd frontend && npx ng test --watch=false --browsers=ChromeHeadless --code-coverage` | **PASS** | `TOTAL: 5724 SUCCESS` — 5 724 specs, zero failures; coverage in `frontend/coverage/dnn-migration` — statements 95.08 %, branches 85.38 %, functions 97.60 %, lines 95.04 % |
-| 5 | `cd backend && dotnet test --configuration Release --filter "Category=Integration"` | **PASS** | `Failed: 0, Passed: 1362, Skipped: 0` on `DnnMigration.IntegrationTests.dll` |
-| 6 | `docker compose -f docker/docker-compose.yml --env-file docker/.env build` | **PASS** | Exit 0; `dnnmigration-api:latest` (197 MB) and `dnnmigration-frontend:latest` (63.5 MB) both tagged |
-| 7 | `docker compose -f docker/docker-compose.yml --env-file docker/.env up -d`, `sleep 10`, `curl -f http://localhost:8080/health`, `curl -f http://localhost:4200`, `… down` | **PASS** | Both probes 200 with both services `healthy`; the full up → probe → down cycle exited 0 at every step; `/api/v1/portals` through the SPA origin answered 401 `application/problem+json`, proving the proxy hop |
+| 1 | `cd backend && dotnet restore && dotnet build --configuration Release --warnaserror` | **PASS** | Restore reported 0 `NU` diagnostics; `Build succeeded. 0 Warning(s) 0 Error(s)` across all six projects, emitting `DnnMigration.Api.dll` |
+| 2 | `cd backend && dotnet test --configuration Release --no-build --verbosity normal` | **PASS** | UnitTests 3094 passed / 0 failed / 0 skipped in 12.75 s; IntegrationTests 1898 passed / 0 failed / 0 skipped in 4.02 min; **4 992 total**, both assemblies `Test Run Successful` |
+| 3 | `cd frontend && npm ci && npx ng build --configuration production` | **PASS** | `npm ci` added 989 packages, audited 990, in 11 s, leaving the lockfile untouched; bundle emitted to `dist/dnn-migration/browser`; initial payload **461.67 kB raw / 122.91 kB transfer** |
+| 4 | `cd frontend && npx ng test --watch=false --browsers=ChromeHeadless --code-coverage` | **PASS** | `TOTAL: 5922 SUCCESS` — 5 922 specs, zero failures; coverage in `frontend/coverage/dnn-migration` — statements **95.21 %** (11 079/11 636), branches **85.71 %** (3 583/4 180), functions **97.71 %** (2 527/2 586), lines **95.18 %** (10 807/11 354) |
+| 5 | `cd backend && dotnet test --configuration Release --filter "Category=Integration"` | **PASS** | `Failed: 0, Passed: 1898, Skipped: 0` on `DnnMigration.IntegrationTests.dll`; the unit-test assembly reports `No test matches the given testcase filter` and the run still exits 0 — which is what proves every integration test carries the trait |
+| 6 | `docker compose -f docker/docker-compose.yml --env-file docker/.env build` | **PASS** | Exit 0; `dnnmigration-api:latest` (199 MB) and `dnnmigration-frontend:latest` (63.5 MB) both tagged |
+| 7 | `docker compose -f docker/docker-compose.yml --env-file docker/.env up -d`, `sleep 10`, `curl -f http://localhost:8080/health`, `curl -f http://localhost:4200`, `… down` | **PASS** | `up -d` transitioned the api service `Started` → `Waiting` → `Healthy`, releasing the front end through `condition: service_healthy`; `/health` answered 200 with the health document and `:4200` answered 200 (14 983 bytes); both services `Up (healthy)`; `down` removed both containers and the network, every step exit 0 |
+
+Gate 7 ran as one uninterrupted `up -d` → probe → `down` cycle from a fully torn-down host. The
+Compose file fixes `container_name`, so a host already running this topology cannot take the gate
+as written — stop the running instance first, or run the cycle under a second Compose project name
+with the container names, published ports and network subnet shifted.
+
+Two observations were taken beyond the gate's own assertions, because two healthy containers do
+not by themselves prove the topology serves anything. `GET http://localhost:4200/api/v1/portals`
+with no token was answered **401 `application/problem+json`** carrying
+`urn:dnnmigration:error:auth.unauthenticated`, proving the nginx hop and the API's authentication
+and RFC 7807 contracts together; and `POST http://localhost:4200/api/v1/auth/login` returned
+**200** with the `{ data, meta }` envelope — a credential exchanged for a token through the proxy,
+against SQL Server, end to end.
+
+One reading note for gate 2: the verbose log carries Serilog lines at level `Fatal`. Those are
+captured output from **passing** negative-path tests that deliberately bind a malformed boolean
+configuration value to assert the host fails fast. They are assertions being met, not failures.
 
 ### 11.1 Preconditions discovered by execution
 
@@ -22536,3 +22587,21 @@ host settings.
 overrides, the two production identities removed, the advisories that remain with their reachability
 arguments, and the dated deprecation inventory — is recorded in Sections 8, 9 and 10 rather than
 duplicated here.
+
+## Review remediation: the container health probe is restored to `/health`, and four documentation drifts are corrected
+
+*Recorded 13 August 2026. This entry supersedes the register entry* **The API container probes readiness rather than liveness** *and every passage that described `/health/ready` as the address the deployment artefacts read. Canonical Sections 4, 9, 10 and 11 were corrected in place; this entry records what changed and why.*
+
+**What was wrong.** `docker/api.Dockerfile`'s `HEALTHCHECK` and `docker/docker-compose.yml`'s api health check had both been retargeted from `/health` to `/health/ready` on security grounds. AAP 0.9.3 supplies both of those instructions as **preserved examples** whose only permitted substitution is the name placeholder, so the address is a frozen contract rather than a local judgement. The retarget also left the repository contradicting itself: `ApplicationBuilderExtensions` documented `/health` as "THE PATH THE DEPLOYMENT ARTEFACTS PROBE, byte for byte" and `/health/ready` as read by nothing; `docker/docker-compose.yml` carried a paragraph stating "The path is /health, the ANONYMOUS LIVENESS view, and it stays there" immediately above a health check reading the other path; `docker/docker-compose.tls.yml` named `/health` in six places; and `HealthCheckTests` hard-coded `/health` as a literal with a comment explaining that a suite reading the value from the code under test "would follow a rename instead of failing on one".
+
+**Why the security motivation did not justify it.** The concern was real: `/health` excludes the database probe, so a container can report `healthy` while SQL Server is unreachable. But this topology declares **no database service** — the store is external by design — so it may legitimately be unreachable while the process starts, and a dependency-coupled probe would mark the container unhealthy for a reason unrelated to whether it can answer, holding the front end behind `condition: service_healthy` for the whole outage with both images built perfectly. The condition is also already monitored three ways that the retarget duplicated rather than added to: `/health/ready` runs the database probe and answers `503` for exactly this case, every store-backed endpoint answers `503` with `Retry-After`, and `/health/live` exists for a restart policy that must not recycle a process over a dependency.
+
+**What changed.** Both artefacts probe `http://localhost:8080/health` again. `/health/ready` remains registered, anonymous and `ready`-tagged, and is documented as the address for an orchestrator that gates **traffic** rather than **start-up** on the store. The rationale comments in both files were rewritten to state the frozen contract, name the four things pinned to the string, and record the trade-off explicitly instead of arguing for the other path. Two start-period comments that claimed the probe waits on "the first database connection" were corrected, since the liveness view has no such dependency. No application code changed: `ApplicationBuilderExtensions` needed no edit, because the restoration makes its existing documentation true again, and the 33 health and request-logging tests passed unmodified.
+
+**Verified outcome.** The rebuilt image reports `Test: ["CMD-SHELL","wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]`; `docker compose up -d` transitioned the api service `Started` → `Waiting` → `Healthy` and released the front end through its `service_healthy` gate; the probe log records `exit=0` with "remote file exists"; and `/health`, `/health/live` and `/health/ready` each answered `200` anonymously.
+
+**Four documentation drifts corrected in the same pass**, each measured against the tree rather than carried forward. `DnnMigration.UnitTests` references **Application only** — the Infrastructure reference had been removed while `README.md` still listed it, and the stale entry is independently visible in that project's committed `packages.lock.json`, which remains a benign superset carrying `AspNetCore.HealthChecks.SqlServer` and `Azure.Core`. The permitted structural-literal count is **17 declarations across 44 stylesheets**, not 24, and **two of the nine permitted categories are now empty** because both were tokenised. `frontend/package.json` carries **13 `overrides` keys pinning 13 distinct packages**, not eight; the lockfile resolves **1,123** packages, not 1,047; and the production-dependency figure is **9** for the resolved graph against **8** `dependencies` in the manifest, a distinction now stated wherever either number appears. `README.md` also carried the NuGet-restore bullet **twice**, the earlier copy omitting the `--configfile` behaviour the image actually relies on; the superseded copy was removed and its placement rationale folded into the surviving one.
+
+**The gate evidence in Section 11 and `README.md` §7 was re-measured at this commit** rather than edited in place, because every count had moved: unit tests 3 078 → **3 094**, integration tests 1 362 → **1 898** (total **4 992**), Karma specs 5 724 → **5 922**, the initial bundle 500.80 kB → **461.67 kB** raw, `npm ci` 938 → **989** packages installed, and the api image 197 MB → **199 MB**. Gate 7 was taken as a single uninterrupted cycle from a torn-down host, so the two-part measurement the previous text described no longer applies.
+
+**One deliberate non-change.** The six `packages.lock.json` files end without a final newline, which `backend/.editorconfig`'s `[*]` section nominally requires. They are left exactly as NuGet writes them: a hand-added newline was appended and then **stripped by NuGet itself** on the next full re-evaluation, so carrying one would make the repository oscillate. `dotnet format` does not process these files, and it verifies clean without the change.

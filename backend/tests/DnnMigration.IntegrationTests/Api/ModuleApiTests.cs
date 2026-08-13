@@ -1409,7 +1409,7 @@ public sealed class ModuleApiTests
         using HttpResponseMessage response = await client.GetAsync(
             ModuleRoute(_fixture.Seed.PortalId, UnknownModuleId));
 
-                // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
+        // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
         // administers the tenant. The permission service establishes that the item exists before it resolves
         // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
         // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
@@ -1991,7 +1991,7 @@ public sealed class ModuleApiTests
             new UpdateModuleRequest { ModuleTitle = "No such module" },
             ApiTestFixture.Json);
 
-                // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
+        // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
         // administers the tenant. The permission service establishes that the item exists before it resolves
         // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
         // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
@@ -2879,7 +2879,7 @@ public sealed class ModuleApiTests
         using HttpResponseMessage response = await client.GetAsync(
             ModuleSettingsRoute(_fixture.Seed.PortalId, UnknownModuleId));
 
-                // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
+        // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
         // administers the tenant. The permission service establishes that the item exists before it resolves
         // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
         // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
@@ -2906,7 +2906,7 @@ public sealed class ModuleApiTests
             },
             ApiTestFixture.Json);
 
-                // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
+        // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
         // administers the tenant. The permission service establishes that the item exists before it resolves
         // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
         // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
@@ -3007,7 +3007,7 @@ public sealed class ModuleApiTests
         using HttpResponseMessage response = await client.DeleteAsync(
             ModuleRoute(_fixture.Seed.PortalId, UnknownModuleId));
 
-                // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
+        // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
         // administers the tenant. The permission service establishes that the item exists before it resolves
         // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
         // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
@@ -3070,7 +3070,7 @@ public sealed class ModuleApiTests
             new ModuleExportRequest { FileName = "content.xml" },
             ApiTestFixture.Json);
 
-                // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
+        // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
         // administers the tenant. The permission service establishes that the item exists before it resolves
         // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
         // never ran; runtime testing recorded the console telling an operator "the authenticated caller is

@@ -1167,7 +1167,7 @@ public sealed class PermissionService : IPermissionService
             // siblings. It applies an empty batch today, which costs a round trip and nothing else.
             //
             // Nothing is evicted until the scope has committed.
-        //
+            //
             // MIGRATION: the legacy pair WAS a pair of independently durable statements. The provider declared
             // transaction members at Library/Components/Providers/Data/DataProvider.vb:L70-L74 and the two
             // cleanups - ModulePermissionController.vb:L218 and TabPermissionController.vb:L209 - never invoked
