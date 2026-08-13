@@ -34,6 +34,25 @@ section and the entry that describes it are corrected together; if they ever dis
 canonical section is the source of truth and the entry is the defect. A register entry whose
 subject the canonical record does not cover at all stands on its own.
 
+**When a change is WITHDRAWN, its entry is deleted — not annotated.** This is the corollary of
+the rule above and it is stated separately because breaking it is what produced the one
+documentation defect this register has actually shipped: a reverted change left its entry
+standing, in the present tense, describing a design token that was never delivered, and a reader
+five thousand lines away met that entry first and had no way to know it was stale. So the
+convention is explicit. Reverting a change is finished only when the entry that described it is
+gone. No "superseded", "formerly", "as of an earlier commit" or struck-through wording is
+introduced in its place, because a register that carries two accounts of one decision has already
+failed at its only job. Where the withdrawal is itself worth recording — because someone will
+otherwise propose the same change again — the record is a NEW entry describing the withdrawal and
+the reason for it, written in the present tense about the state that ships.
+
+**Measurements taken on a withdrawn candidate are attributed to the candidate.** A ratio, a
+timing or a byte count obtained from something that was then withdrawn may be kept — the
+measurement was real, and the reason a change was refused is usually worth more than the change
+would have been — but it survives only inside the entry that records the withdrawal, and only in
+wording that names the candidate as its subject. A figure measured on code that does not ship may
+never be left where a reader can read it as a property of the delivered system.
+
 ## 1. Purpose and scope
 
 ### 1.1 What this document is for
@@ -1042,9 +1061,20 @@ source has none.
 
 **Observable consequence.** The application looks like the portal it replaces — same brand
 colour, same surfaces, same type — with more consistent spacing and slightly softer
-corners. Where a token's measured legacy value could not meet a contrast requirement, the
-addition made for accessibility is recorded against that token in `_tokens.scss` and in the
-register below, rather than silently replacing the legacy value.
+corners.
+
+**One token's measured legacy value cannot meet the contrast minimum for text, and that residual
+is OPEN rather than closed.** `--color-danger` carries the measured legacy `#FF0000`, which reads
+4.00:1 on the page background against the 4.5:1 that WCAG 2.1 AA sets for normal-size text, and it
+inks text in 30 declarations across 16 stylesheets. Nothing was added to fix it: no darker sibling
+token exists, because the design specification's colour table is nine exact legacy matches and its
+own precedence order puts design-system compliance first and accessibility third, "with zero visual
+change". The residual is stated on the token's own declaration in `_tokens.scss`, the obligation is
+met by non-colour means at every site that uses it, and **the acceptance of the residual itself
+awaits a human signature** — the register entry *"The danger colour's text contrast is an accepted
+residual, and the acceptance is not this workspace's to give"* carries the census, the
+compensations and the two decisions a human may take. Nothing in this migration silently replaced
+the legacy value, and nothing in it silently declared the gap closed.
 
 ### 4.18 Vacuous exclusions, reported honestly rather than presented as work
 
@@ -1134,7 +1164,11 @@ claims, and `backend/src/DnnMigration.Api/Authorization/PortalAdministrationEval
 which decides tenant-administration authority. Those two are the whole of it: no other file in
 the solution takes the dependency. `Api/Middleware/PortalAliasResolutionMiddleware.cs` needs no
 accessor at all — middleware receives its `HttpContext` as a parameter — and it is what
-populates the immutable scoped `IPortalContext` that the layers below read instead.
+populates the immutable scoped `IPortalContext` that the layers below read instead. **The plan
+names that middleware as the single accessor site, and the delivered code does not put it there**;
+the invariant the plan was expressing — the accessor is confined to the API layer, so no layer
+below can reach ambient request state — is honoured exactly, by the two authorisation files above.
+Middleware needing no accessor is the stronger outcome, not a deviation from the intent.
 `ViewState` disappears into Angular signals. `FormsAuthentication.SignOut` becomes token expiry
 plus refresh revocation (Section 4.6). The single `CacheDependency` becomes explicit eviction
 (Section 4.11).
@@ -1176,16 +1210,34 @@ hands back a result or a status through a parameter, so a caller can never read 
 other. Two unrelated patterns use the keywords, both deliberately, and neither is a migrated
 `ByRef` contract:
 
-- **The non-throwing `Try…` parse pattern.** `EmailAddress.TryCreate(string?, out EmailAddress?)`
-  (`Domain/ValueObjects/EmailAddress.cs`) exists because shipped rows can fail the legacy email
-  rule and reading such a row must not throw; `DuplicateKeyTranslator.Describes(Exception, out string?)`
-  (`Infrastructure/Persistence/DuplicateKeyTranslator.cs`) is the same shape. This is the BCL's
-  own convention for "parse or report failure without an exception", and `[NotNullWhen(true)]`
-  makes the nullability contract explicit to the compiler.
-- **Framework-mandated serialisation overrides.** `JsonConverter<T>.Read` and
-  `ReadAsPropertyName` take `ref Utf8JsonReader` because `System.Text.Json` declares them that
-  way; `Application/Serialization/PermissionKeyJsonConverter.cs` and
-  `BillingFrequencyJsonConverter.cs` override them. The signature is not ours to choose.
+- **The non-throwing `Try…` parse pattern — six declarations, all returning `bool`.** Two are
+  public: `EmailAddress.TryCreate(string?, out EmailAddress?)`
+  (`backend/src/DnnMigration.Domain/ValueObjects/EmailAddress.cs`), which exists because shipped
+  rows can fail the legacy email rule and reading such a row must not throw, and
+  `PortalGuid.TryParse(string?, out PortalGuid)`
+  (`backend/src/DnnMigration.Domain/ValueObjects/PortalGuid.cs`), which rejects the all-zero
+  sentinel without throwing. One is internal to the persistence layer:
+  `DuplicateKeyTranslator.Describes(Exception, out string?)`
+  (`backend/src/DnnMigration.Infrastructure/Persistence/DuplicateKeyTranslator.cs`). Three are
+  private helpers: `LegacyCredentialVerifier.TryDecodeSalt` and `TryDecodeBase64`
+  (`backend/src/DnnMigration.Infrastructure/Security/LegacyCredentialVerifier.cs`), which must
+  answer "this stored credential is not decodable" without throwing on hostile stored data, and
+  `MemoryCacheService.TryRead` (`backend/src/DnnMigration.Infrastructure/Services/MemoryCacheService.cs`).
+  This is the BCL's own convention for "parse or report failure without an exception", and
+  `[NotNullWhen(true)]` makes the nullability contract explicit to the compiler.
+- **Framework-mandated serialisation overrides — six declarations, all `ref Utf8JsonReader`.**
+  `JsonConverter<T>.Read` and `ReadAsPropertyName` take the reader by reference because
+  `System.Text.Json` declares them that way, and all three converters override both:
+  `backend/src/DnnMigration.Application/Serialization/PermissionKeyJsonConverter.cs`,
+  `BillingFrequencyJsonConverter.cs` and `SortDirectionJsonConverter.cs`. The signature is not
+  ours to choose.
+- **Neither list contains an interface member.** Not one contract in
+  `backend/src/DnnMigration.Domain/Abstractions` or
+  `backend/src/DnnMigration.Application/Abstractions` declares an `out` or `ref` parameter, so no
+  implementation can be obliged to report an outcome through one. The only other appearance of the
+  `ref` keyword anywhere in `backend/src` is a field passed to `Interlocked` and `Volatile` in the
+  two audit-observability counters, which is how a lock-free counter is written rather than a
+  contract shape.
 
 `<ImplicitUsings>enable</ImplicitUsings>` removes the `System.*` import boilerplate that
 the legacy files declare explicitly, so the `using` list in a target file names only what is
@@ -1551,7 +1603,7 @@ feature this application does not use. All six are ranged `<= 19.2.25` — the w
 | --- | --- | --- | --- |
 | GHSA-rgjc-h3x7-9mwg | `@angular/core` | Client hydration | Zero `provideClientHydration`, zero `provideServerRendering`, `@angular/platform-server` not installed |
 | GHSA-39pv-4j6c-2g6v, GHSA-jhpw-976m-542j | `@angular/common` | `HttpTransferCache` | Zero `withHttpTransferCache`; the transfer cache exists only alongside hydration |
-| GHSA-48r7-hpm6-gfxm | `@angular/common` | A caller-influenced date format | `formatDate` is called exactly once, at `frontend/src/app/shared/pipes/date-display.pipe.ts:305`, with a closed two-member `DisplayDatePattern` union that no request value can reach |
+| GHSA-48r7-hpm6-gfxm | `@angular/common` | A caller-influenced date format | `formatDate` is called exactly once, at `frontend/src/app/shared/pipes/date-display.pipe.ts:147`, with the closed two-member `DisplayDatePattern` union declared at `:38`, which no request value can reach |
 | GHSA-jj27-h5hq-8x99 | `@angular/compiler` | Angular i18n | Zero `i18n` template attributes; `@angular/localize` not installed (Section 4.7) |
 | GHSA-58w9-8g37-x9v5 | `@angular/compiler` | A sanitised property bound two-way | No security-sensitive DOM property is bound anywhere: zero `innerHTML`, zero `DomSanitizer`, zero `bypassSecurityTrust*` in production source (Section 4.16) |
 
@@ -1684,12 +1736,12 @@ by Karma as Chrome Headless 151.0.0.0), Docker Engine 29.7.0 with Compose v5.3.1
 | Gate | Command executed | Result | Measured evidence |
 | --- | --- | --- | --- |
 | 1 | `cd backend && dotnet restore && dotnet build --configuration Release --warnaserror` | **PASS** | Restore reported 0 `NU` diagnostics; `Build succeeded. 0 Warning(s) 0 Error(s)` across all six projects, emitting `DnnMigration.Api.dll` |
-| 2 | `cd backend && dotnet test --configuration Release --no-build --verbosity normal` | **PASS** | UnitTests 3094 passed / 0 failed / 0 skipped in 12.75 s; IntegrationTests 1898 passed / 0 failed / 0 skipped in 4.02 min; **4 992 total**, both assemblies `Test Run Successful` |
-| 3 | `cd frontend && npm ci && npx ng build --configuration production` | **PASS** | `npm ci` added 989 packages, audited 990, in 11 s, leaving the lockfile untouched; bundle emitted to `dist/dnn-migration/browser`; initial payload **461.67 kB raw / 122.91 kB transfer** |
-| 4 | `cd frontend && npx ng test --watch=false --browsers=ChromeHeadless --code-coverage` | **PASS** | `TOTAL: 5922 SUCCESS` — 5 922 specs, zero failures; coverage in `frontend/coverage/dnn-migration` — statements **95.21 %** (11 079/11 636), branches **85.71 %** (3 583/4 180), functions **97.71 %** (2 527/2 586), lines **95.18 %** (10 807/11 354) |
-| 5 | `cd backend && dotnet test --configuration Release --filter "Category=Integration"` | **PASS** | `Failed: 0, Passed: 1898, Skipped: 0` on `DnnMigration.IntegrationTests.dll`; the unit-test assembly reports `No test matches the given testcase filter` and the run still exits 0 — which is what proves every integration test carries the trait |
-| 6 | `docker compose -f docker/docker-compose.yml --env-file docker/.env build` | **PASS** | Exit 0; `dnnmigration-api:latest` (199 MB) and `dnnmigration-frontend:latest` (63.5 MB) both tagged |
-| 7 | `docker compose -f docker/docker-compose.yml --env-file docker/.env up -d`, `sleep 10`, `curl -f http://localhost:8080/health`, `curl -f http://localhost:4200`, `… down` | **PASS** | `up -d` transitioned the api service `Started` → `Waiting` → `Healthy`, releasing the front end through `condition: service_healthy`; `/health` answered 200 with the health document and `:4200` answered 200 (14 983 bytes); both services `Up (healthy)`; `down` removed both containers and the network, every step exit 0 |
+| 2 | `cd backend && dotnet test --configuration Release --no-build --verbosity normal` | **PASS** | UnitTests 3094 passed / 0 failed / 0 skipped in 11.27 s; IntegrationTests 1933 passed / 0 failed / 0 skipped in 4.52 min; **5 027 total**, both assemblies `Test Run Successful` |
+| 3 | `cd frontend && npm ci && npx ng build --configuration production` | **PASS** | `npm ci` printed `added 989 packages, and audited 990 packages in 9s` and left the lockfile byte-identical; **989 installed** = the lockfile's 1,123 `node_modules` entries less 134 optional packages pinned to another OS or CPU, **990 audited** = that set plus the workspace root; bundle emitted to `dist/dnn-migration/browser`; initial payload **461.71 kB raw / 122.90 kB transfer** |
+| 4 | `cd frontend && npx ng test --watch=false --browsers=ChromeHeadless --code-coverage` | **PASS** | `TOTAL: 5922 SUCCESS` — 5 922 specs, zero failures; coverage in `frontend/coverage/dnn-migration` — statements **95.21 %** (11 081/11 638), branches **85.74 %** (3 584/4 180), functions **97.71 %** (2 528/2 587), lines **95.18 %** (10 809/11 356) |
+| 5 | `cd backend && dotnet test --configuration Release --filter "Category=Integration"` | **PASS** | `Failed: 0, Passed: 1933, Skipped: 0` on `DnnMigration.IntegrationTests.dll`; the unit-test assembly reports `No test matches the given testcase filter` and the run still exits 0 — which is what proves every integration test carries the trait |
+| 6 | `docker compose -f docker/docker-compose.yml --env-file docker/.env build` | **PASS** | Exit 0; `dnnmigration-api:latest` (196 MB) and `dnnmigration-frontend:latest` (63.5 MB) both tagged |
+| 7 | `docker compose -f docker/docker-compose.yml --env-file docker/.env up -d`, `sleep 10`, `curl -f http://localhost:8080/health`, `curl -f http://localhost:4200`, `… down` | **PASS** | `up -d` transitioned the api service `Started` → `Waiting` → `Healthy`, releasing the front end through `condition: service_healthy`; `/health` answered 200 with the health document and `:4200` answered 200 (4 428 bytes, the served `index.html` byte for byte); both services `Up (healthy)`; `down` removed both containers and the network, every step exit 0 |
 
 Gate 7 ran as one uninterrupted `up -d` → probe → `down` cycle from a fully torn-down host. The
 Compose file fixes `container_name`, so a host already running this topology cannot take the gate
@@ -3001,8 +3053,8 @@ carefully kept out of one log reached another one anyway.**
 `backend/src/DnnMigration.Application/Services/PortalService.cs`.
 
 **Proved by.**
-`backend/tests/DnnMigration.UnitTests/Security/AuditLogRenderingTests.cs`,
-`backend/tests/DnnMigration.UnitTests/Security/DatabaseHealthCheckTests.cs`,
+`backend/tests/DnnMigration.IntegrationTests/Security/AuditLogRenderingTests.cs`,
+`backend/tests/DnnMigration.IntegrationTests/Security/DatabaseHealthCheckTests.cs`,
 `backend/tests/DnnMigration.UnitTests/Services/PortalServiceTests.cs` and
 `backend/tests/DnnMigration.IntegrationTests/Api/AuditTrailContractTests.cs`, the
 last of which reads what the configured sink actually recorded and asserts that
@@ -3699,7 +3751,7 @@ behaviour and is reproduced, not reconciled.
 
 **Annotated in code at.**
 `backend/src/DnnMigration.Application/Dtos/User/MembershipSettingsDto.cs`,
-`backend/src/DnnMigration.Application/Validation/MembershipSettingsDtoValidator.cs`,
+`backend/src/DnnMigration.Application/Validation/UpdateMembershipSettingsRequestValidator.cs`,
 `backend/src/DnnMigration.Application/Services/UserService.cs`.
 
 ### A removal that changed nothing no longer reports success
@@ -4485,8 +4537,12 @@ property. The named member set was therefore recovered from the only place the l
 system ever gave these values names, the administration option list at
 `Website/admin/Portal/sitesettings.ascx:L123-L125`, whose three items are labelled
 `None`, `Site` and `Host` for the values `0`, `1` and `2`. (Note the lower-case markup
-filename; `Website/admin/Portal/SiteSettings.ascx` does not exist, while the
-code-behind `SiteSettings.ascx.vb` beside it is PascalCase.)
+filename, which is how the file is spelled on disk and therefore the only spelling that
+resolves on a case-sensitive filesystem. A PascalCase spelling of that markup file does
+not exist, even though the code-behind beside it,
+`Website/admin/Portal/SiteSettings.ascx.vb`, is PascalCase — the legacy admin tree is
+inconsistent about this, so every citation of it is checked against the tree rather than
+inferred from its sibling.)
 
 **The ordinals are unchanged: `None = 0`, `Site = 1`, `Host = 2`.** They are persisted
 in the `Portals.BannerAdvertising` column, whose terminal schema state is
@@ -14197,49 +14253,6 @@ and take the frontend that waits on it down with it.
 **Annotated in code at.**
 `backend/src/DnnMigration.Infrastructure/HealthChecks/DatabaseHealthCheck.cs`.
 
-### An eleventh colour token, because danger TEXT and a danger BORDER are not one role
-
-**Legacy behaviour.** The measured legacy error colour is pure red. It occurs five times in
-`Website/Portals/_default/default.css`, and the legacy stylesheet's own comment describes the class
-that carries it as the text style used for error messages, so the legacy application really did
-render error text in it. The design plan's colour table maps that value to a single token and
-characterises it as "validation and error text".
-
-**Target behaviour.** The value is unchanged and the token keeping it is unchanged; what changes is
-that it no longer carries text. Pure red measures **4.00:1** on the page background. That clears the
-3:1 threshold that governs a non-text UI component — a border, a rule, an indicator — and misses the
-4.5:1 minimum that governs normal text, and bold weight is no mitigation below 18.66px. The three
-places that rendered danger text in it each carried a standing accessibility flag stating, verbatim,
-that the remedy belonged in the token rather than at the point of use. The token layer now supplies
-it:
-
-- `--color-danger` keeps the measured legacy red and is reserved for borders and indicators, where
-  4.00:1 is sufficient. Its five remaining consumers are all boundaries.
-- `--color-danger-text` is a new eleventh member of a vocabulary the token file declares closed. It
-  is the same hue at a lower lightness, and it is admitted on accessibility grounds rather than on
-  legacy-fidelity grounds — the only such admission, and the token file's closed-count annotation
-  records that the ground is deliberately not extensible.
-
-Measured in Chrome with the effective painted backdrop resolved by walking the ancestor chain rather
-than reading the element's own transparent background: **7.20:1** on the page background, **6.21:1**
-on the neutral surface, **6.86:1** on the informational hint surface and **4.70:1** on the selected
-tint. All four clear 4.5:1, so the token is safe on any surface the vocabulary can put behind danger
-text rather than only on white. A darker-but-less-dark candidate was measured first and rejected: it
-reads 4.23:1 on the selected tint, which would have relocated the defect onto selected rows instead
-of removing it.
-
-**What a reader sees.** The same red family in the same places. The banner keeps a pure-red border
-around darker-red text — measured as exactly 1px of pure red with the darker ink inside it — and the
-required marker and validation message read as red at a legible weight. The compensating non-colour
-cues are retained rather than retired: the banner still names its severity in words, and the required
-marker still carries its own visually hidden text.
-
-**One consequence for the test suite.** A component spec asserted that the danger band's text colour
-WAS the legacy red. That assertion encoded the defect rather than the contract, so it now pins the
-split: the border is the legacy red and the text is the compliant token. Two neighbouring specs
-justified their non-colour cue by citing the old contrast figure; the cue is still required and the
-justification now rests on colour-independence, which does not depend on any ratio.
-
 ### A two-tone focus ring, because the ring colour is also a painted surface
 
 **Legacy behaviour.** None to preserve. The legacy stylesheets declare no focus rule of any kind, so
@@ -14426,11 +14439,11 @@ authoring a new sentence would introduce text no operator has seen.
 ### The vocabulary is no longer one status
 
 "Conflict" is retained as the historical name of the fourth vocabulary, but the set is
-explicitly documented as spanning three statuses, because the server derives a status from
-a reason token: the duplicate and last-remaining codes arrive as `409`, the
-protected-assignment code as `403` (its token is `protected`), and the page-name and
-module-content codes as `400`. What the nine share is a shape — a refusal the person can
-act on — not a status code.
+explicitly documented as spanning three statuses, because the status of each code is
+declared individually rather than shared by the vocabulary: the duplicate and
+last-remaining codes are declared `409`, the protected-assignment code `403`, and the
+page-name and module-content codes `400`. What the nine share is a shape — a refusal the
+person can act on — not a status code.
 
 ### What now prevents the defect from returning
 
@@ -15792,19 +15805,18 @@ names one region holding the complete set of reasons its value was refused, loca
 The delete affordance in the portal listing switched to the bright danger token on hover. That token measures
 4.00:1 on white, 3.45:1 on the alternating row surface and 2.61:1 on the selected-row tint, against the
 4.5:1 its ten-pixel text requires — failing on every row background this screen can draw, and failing worst
-on the row the operator had actually selected. The darker text token measures 7.20:1, 6.21:1 and 4.70:1
-against those same three.
+on the row the operator had actually selected.
 
-The hover therefore keeps the darker token and changes the UNDERLINE instead, which is the cue the
-non-destructive command beside it already uses, so the two read as one family and the cue is visible to
-somebody who cannot distinguish the two reds at all.
+The hover therefore keeps the SAME danger token and changes the UNDERLINE instead, which is the cue the
+non-destructive command beside it already uses, so the two commands read as one family and the cue is
+visible to somebody who cannot perceive the colour difference between them at all.
 
 ⚠ THE HOVER COLOUR HAD TO BE RE-DECLARED, NOT MERELY LEFT ALONE. The three text affordances on that screen
 share a grouped rule that sets the ordinary action's hover colour, and that rule's selector has EXACTLY the
 same specificity as the destructive variant's. Omitting the colour from the variant's hover block therefore
 does not "keep" the danger colour — it hands the destructive command the ordinary action's blue. Confirmed in
 a real browser: with the hover media condition satisfied, the sibling command resolves to the action blue
-while the destructive one resolves to the danger text colour, which is only true because the variant names
+while the destructive one resolves to the danger token, which is only true because the variant names
 its colour and sits later in source order.
 
 That grouped rule exists for a second reason worth recording: the three affordances had each declared the
@@ -19085,7 +19097,7 @@ notice — its own response was entirely correct — and the defect surfaced onl
 Every request that carries no path base, which is the overwhelming majority of this API's traffic, produces
 exactly the header it produced before.
 
-**Annotated in code at.** `backend/src/DnnMigration.Api/ErrorHandling/GlobalExceptionHandler.cs`
+**Annotated in code at.** `backend/src/DnnMigration.Api/ErrorHandling/ApiResults.cs`
 (`ApiResults.Created`), with the corresponding claim in
 `backend/src/DnnMigration.Api/Middleware/TenantPathBaseMiddleware.cs` corrected in the same change.
 
@@ -19259,6 +19271,18 @@ page background and 3.45:1 on the grid stripe, clearing the 3:1 threshold WCAG s
 missing the 4.5:1 minimum for normal-size text; Lighthouse measured 3.446:1 independently on a role-form
 warning. The residual ratio is now stated on `--color-danger`'s own declaration rather than absorbed.
 
+**What the WITHDRAWN CANDIDATE measured, attributed to the candidate and to nothing that ships.** The
+darkened sibling was measured in Chrome before it was withdrawn, with the effective painted backdrop
+resolved by walking the ancestor chain rather than by reading each element's own transparent background,
+and it read **7.20:1** on the page background, **6.21:1** on the neutral surface, **6.86:1** on the
+informational hint surface and **4.70:1** on the selected tint. A less-dark candidate was measured first
+and rejected at **4.23:1** on the selected tint, which would have relocated the defect onto selected rows
+instead of removing it. Both sets of figures are kept here because the measurement was real work and
+because they establish the one thing that matters about them: **measuring well is not what admits a
+token.** Neither candidate ships, `--color-danger-text` exists nowhere in `frontend/`, and every figure
+above describes a value no stylesheet resolves. The four ratios must never be quoted as a property of the
+delivered console: what the delivered console renders is `#FF0000` at the ratios in the paragraph above.
+
 **How the obligation is met without a hue.** Severity is carried as a WORD in the live region on every
 announcement; the required marker pairs its glyph with visually-hidden text; every invalid control carries
 `aria-describedby` and `aria-invalid`; destructive commands read at the bold weight, are labelled "Delete",
@@ -19266,6 +19290,58 @@ and sit inside an alert dialog that had to be opened deliberately. And the type 
 the 10-11 px sizes at which the worst ratios were measured, which is the larger part of the original
 complaint. Raising the ratio further requires a revision of the specification's colour table, which is not
 a decision any stylesheet in this workspace may take on its own.
+
+### The danger colour's text contrast is an accepted residual, and the acceptance is not this workspace's to give
+
+**Status — OPEN, PENDING A HUMAN SIGNATURE.** Everything below is measured, verified and delivered; what is
+absent is a person's decision to accept it. This entry exists so that the decision is taken knowingly, from a
+register that states the shipped position rather than one claiming a remedy already exists. It is recorded as
+open deliberately: an entry that read as closed would be the same defect as the withdrawn entry this one sits
+beside.
+
+**The residual, measured.** `--color-danger` is the measured legacy `#FF0000`. It reads **4.00:1** on
+`--color-background`, **3.45:1** on the grid stripe and **2.61:1** on `--color-selected`; Lighthouse measured
+**3.446:1** independently on a role-form warning. WCAG 2.1 AA requires **4.5:1** for normal-size text and
+**3:1** for a non-text user-interface component, so every use of this token as a BORDER clears its threshold
+and every use as TEXT misses its own. Bold weight is no relief: the large-text relaxation begins at 18.66 px
+bold or 24 px regular, and no text in this console rendering in this colour reaches either.
+
+**The census, counted in the delivered stylesheets rather than estimated.** `var(--color-danger)` is resolved
+**35 times across 16 stylesheets — 30 on `color` and 5 on `border-color`**: `styles/_forms.scss`;
+`shared/components/{confirm-dialog,error-banner,form-field}`; `layout/notifications/notification-list`;
+`features/auth/login`; `features/user/{user-form,user-list,membership-settings}`;
+`features/portal/{portal-list,portal-alias-list}`; `features/module/{module-form,module-list}`;
+`features/role/{role-assignment,role-list,role-form}`.
+
+**Why the code is not free to fix this.** The design specification maps the measured legacy `#ff0000` onto
+this token as an *exact legacy match*, enumerates nine such colours, and fixes the precedence as
+design-system compliance FIRST, visual continuity second and accessibility THIRD, asking for accessibility
+"with zero visual change". A darker hue is a visual change by construction and a tenth colour by arithmetic,
+so the only two ways to raise the ratio both require the specification to be revised. Neither is a decision a
+stylesheet, a component or this document may take.
+
+**What is delivered in place of a compliant hue, each verified in the shipped code.** Severity is carried as
+a WORD — `Error` or `Warning` — inside the banner's `role="alert" aria-live="assertive"` region, so the
+announcement never depends on the hue. The required marker pairs an `aria-hidden` glyph with visually-hidden
+text. Every invalid control names its message region through `aria-describedby` and declares `aria-invalid`.
+Destructive commands read at the bold weight, are labelled "Delete", and sit inside a `role="alertdialog"`
+`aria-modal="true"` dialog that had to be opened deliberately. The destructive row command changes its
+UNDERLINE rather than its colour on hover, so the state change is perceivable without colour vision. And the
+type ramp's floor is 12 px, which removes the 10-11 px sizes at which the worst ratios were measured.
+Together these mean no information in this console is conveyed by the danger hue alone — which is WCAG 1.4.1
+— while 1.4.3, the contrast minimum itself, remains unmet for the text uses.
+
+**The two decisions a human may take, and what each costs.** (a) **Accept the residual**: nothing changes,
+the console keeps the legacy red exactly as the specification's colour table requires, and this entry is
+rewritten to record the acceptance and who gave it. (b) **Authorise a darker danger TEXT token as an explicit
+documented exception to the precedence order**: the withdrawn candidate above already measured 7.20:1 / 6.21:1
+/ 6.86:1 / 4.70:1 across the four surfaces, so the work is bounded and the measurement exists — but it admits
+a tenth colour, and the specification's closedness must be revised in the same act rather than contradicted
+by a stylesheet. There is no third option in which the ratio rises and the vocabulary stays closed.
+
+**Annotated in code at.**
+`frontend/src/styles/_tokens.scss` — the residual is stated on the token's own declaration, immediately above
+the value, so a reader of the vocabulary meets it before any consumer does.
 
 ### The type ramp is re-scaled to a legible floor, and this is the record that was missing
 
@@ -20765,7 +20841,7 @@ refusing to delete an account because a cleanup failed leaves the account, where
 leaves records the sweep will collect anyway.
 
 **Annotated in code at.**
-`backend/src/DnnMigration.Domain/Abstractions/Repositories/IRefreshTokenStore.cs`,
+`backend/src/DnnMigration.Domain/Abstractions/Services/IRefreshTokenStore.cs`,
 `backend/src/DnnMigration.Infrastructure/Security/RefreshTokenStore.cs`,
 `backend/src/DnnMigration.Infrastructure/Security/SqlServerRefreshTokenStore.cs`,
 `backend/src/DnnMigration.Infrastructure/Security/RefreshTokenRetentionService.cs`,
@@ -20977,7 +21053,7 @@ production-dependency figure is **9** for the resolved graph against **8** `depe
 — a distinction stated wherever either number appears, because quoting one for the other is the error
 these two numbers invite.
 
-**The gate evidence in Section 11 and `README.md` §7 was re-measured at this commit** rather than edited in place, because every count had moved: unit tests 3 078 → **3 094**, integration tests 1 362 → **1 898** (total **4 992**), Karma specs 5 724 → **5 922**, the initial bundle 500.80 kB → **461.67 kB** raw, `npm ci` 938 → **989** packages installed, and the api image 197 MB → **199 MB**. Gate 7 was taken as a single uninterrupted cycle from a torn-down host, so the two-part measurement the previous text described no longer applies.
+**The gate evidence was re-measured rather than edited in place, and it now lives in exactly one place.** Every count had moved — unit and integration tests, Karma specs, the initial bundle, the `npm ci` package count and the api image size — so each was taken again from the tree rather than adjusted by hand. No figure is restated here: **Section 11's gate table and `README.md` §7 are the single home of every measured gate number**, and a second copy in this register is precisely how the two came to disagree before. Gate 7 is also taken as a single uninterrupted cycle from a torn-down host, so the two-part measurement the previous text described no longer applies. What remains here is the one reconciliation the bare `npm ci` figure invited a reader to guess at, because it is an explanation rather than a measurement: the installed count is the lockfile's `node_modules` entry count less the optional packages pinned to another OS or CPU, and the audited count is that same set plus the workspace root.
 
 **One deliberate non-change.** The six `packages.lock.json` files end without a final newline, which `backend/.editorconfig`'s `[*]` section nominally requires. They are left exactly as NuGet writes them: a hand-added newline was appended and then **stripped by NuGet itself** on the next full re-evaluation, so carrying one would make the repository oscillate. `dotnet format` does not process these files, and it verifies clean without the change.
 
@@ -21005,7 +21081,7 @@ No failure code changed, and the four failure paths — `portal.alias_not_found`
 
 **What did NOT change.** `204` remains the answer for every genuinely bodyless write: the alias `DELETE`, `PUT /modules/{moduleId}/settings`, `PUT /users/{userId}/approval` and `PUT /users/{userId}/profile`. The generated OpenAPI document was read back to confirm both halves — the alias `PUT` declares `200` with `PortalAliasDtoApiResponse`, and those four still declare `204` with no content schema.
 
-**Verified outcome.** Release build clean with warnings as errors; 3 094 unit and 1 898 integration tests pass; 5 922 Karma specs pass. `PortalApiTests` now asserts the `200` **and** the body on both rename paths, including that the permitted rename of a spare alias reports `isCurrent: false`; `PortalServiceTests` asserts that the returned row carries the **stored** host name rather than the padded one submitted, which is the assertion that would fail if the representation were ever reconstructed from the request.
+**Verified outcome.** Release build clean with warnings as errors; every unit, integration and Karma suite passes at the counts Section 11's gate table records. `PortalApiTests` now asserts the `200` **and** the body on both rename paths, including that the permitted rename of a spare alias reports `isCurrent: false`; `PortalServiceTests` asserts that the returned row carries the **stored** host name rather than the padded one submitted, which is the assertion that would fail if the representation were ever reconstructed from the request.
 
 **And verified over HTTP against a running instance**, because a contract change deserves more than a green suite. Against the seeded database, as a portal administrator: `POST` answered `201` with the created row; `PUT` answered **`200`** with `Content-Type: application/json` and the envelope `{ "data": { "portalAliasId": …, "portalId": -1, "httpAlias": …, "isCurrent": false }, "meta": null }`; a follow-up `GET` returned a body identical to the `PUT`'s; `DELETE` answered `204` with zero bytes and no content type; and the subsequent `GET` answered `404`. A `PUT` carrying surrounding whitespace was refused `400` by the request validator before the service saw it, so the trimming the service performs is observable to a service caller rather than to an HTTP one — which is why the unit test, not the API test, is where it is pinned. The temporary alias was removed afterwards and the tenant's ten seeded aliases were confirmed unchanged.
 
@@ -21031,3 +21107,130 @@ Each was measured against this checkout rather than carried forward.
 Both blocks now describe what is delivered: thresholded row windowing in TypeScript, only the rows near the viewport rendered, the scrollable height held by two `aria-hidden` spacer rows, and a row height **measured** from the rendered rows because heights genuinely vary here (a 1,000-character description measured 821 px against a 33 px median). The costs are stated rather than glossed — a windowed row is not in the accessibility tree, not reachable by find-in-page and not in the tab order, and an estimated height makes the spacers approximate — and the conclusion is inverted: because rows **are** removed, `aria-rowcount` and a true per-row `aria-rowindex` are **mandatory**, since without them a screen reader would be told the size of the window instead of the size of the set. Both are published and were already asserted by the component's specification.
 
 **One divergence from that component's frozen contract is recorded rather than resolved.** It declares a sixth public input, `virtualizeThreshold`, where the contract closes the surface at five and requires the threshold to be a private constant. The row height *is* private and measured internally; the threshold is not. No component, template or specification anywhere in the workspace sets it, so it is unused public surface rather than a behaviour, and removing a public input is a breaking change no review finding asked for. It is left in place and named here so the decision is not silently inherited.
+
+### A failure code's status is DECLARED in one table, not inferred from how the code is spelled
+
+**What was wrong.** `ApiResults.MapStatusCode` chose an HTTP status by reading the final dotted segment of a failure code and asking whether it CONTAINED any of a handful of markers — `not_found` and `notfound` gave 404, `duplicate`, `in_use`, `unchanged`, `conflict`, `last_remaining` and `superseded` gave 409, `forbidden` and `protected` gave 403, `provider_error` and `store_unavailable` gave 503, `creation_failed` and its siblings gave 500, eight whole codes gave 401, and everything else fell to 400. Every code the solution actually emits classified correctly, which is why no response was ever wrong; the defect was that correctness rested on spelling. `portal.alias_in_use_check_failed` — a check that failed, so a 500 — would have answered 409 because its name contains `in_use`, and a genuinely new failure class would have become a silent 400 with nothing to notice it.
+
+**Target behaviour.** One normalisation and one lookup. `StatusByCode` is a `FrozenDictionary` holding **171 codes** grouped by the status each is answered with, and `MapStatusCode` normalises the code — trimmed, lower-cased, hyphens folded onto underscores — and reads it. An unrecognised code answers 400, and reaching that default in production is a defect rather than a fallback, because a test enumerates the reason-code constants of all four production assemblies and fails if one is missing from the table. The table is built through a helper that refuses a code appearing in two groups and refuses a code that is not already in its normalised form, so a mis-spelled entry cannot sit in the table answering nothing.
+
+**Nothing a caller receives changed.** Parity was proved rather than assumed: every one of the 171 codes was run through both the delivered lookup and a faithful reimplementation of the removed algorithm, and they agree everywhere except on fifteen codes that provably cannot reach this method today. Eleven of those are attached to responses whose status their own producer already sets — the status vocabulary in `Api/Filters/ValidationProblemDetailsFactory.cs` and the authorisation result handler — so registering `request.rate_limited` at 429 rather than at the 400 the substring rules gave it changes no response and removes a contradiction between two tables that described the same code. The other four are the refresh-token family, which is raised inside the token service and translated by `AuthService` before the edge sees it.
+
+**One dead rule was removed rather than carried.** The old algorithm answered 401 for any code beginning `refresh_token.` — with a DOT. Every real code in that family is spelled with underscores (`REFRESH_TOKEN_EXPIRED` and its three siblings), so the rule matched nothing, and those codes classified as 400, or as 404 in the case of `REFRESH_TOKEN_NOTFOUND`, purely by resemblance. They are now declared 401, which is what the rule was written to give them.
+
+**What is deliberately absent from the table**, each because it is not an HTTP outcome: the `SYSTEM_TAB` and `SYSTEM_MODULE_DEFINITION` permission-scope labels, the `FailureCode` written onto a credential-replacement audit record, the security-diagnostics substitute for a value that is not code-shaped, and the default language tag. The coverage test names all five with its reasons, and fails if one of them stops existing or starts being classified — so the exclusion list cannot outlive the constants it was written for.
+
+**One trap is annotated where it would recur.** `StatusByCode` must be declared BELOW the groups it reads. Static field initialisers run in declaration order, so hoisting it leaves every group null and the type initializer throws on the first error any endpoint tries to report. This was not hypothetical: it happened once during this change and the coverage test caught it immediately.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Api/ErrorHandling/ApiResults.cs`.
+
+**Proved by.**
+`backend/tests/DnnMigration.IntegrationTests/Api/FailureCodeClassificationTests.cs`, which asserts that every reason-code constant in all four assemblies is classified, that no excluded value is also classified, that no exclusion names a constant that has stopped existing, that four codes shaped like classified ones are NOT classified by resemblance, and that spelling variants of one code classify identically; and `backend/tests/DnnMigration.IntegrationTests/Api/ProblemDetailsContractTests.cs`, whose status table was corrected in the same change — four of its rows named codes (`role.duplicate`, `portal.host_fields_forbidden`, `membership.provider_error`, `user.password_invalid`) that are declared nowhere in `backend/src` and passed only because an invented name resembling a real one classified like it. Each now names the real code carrying the intent it stood in for.
+
+### `ApiResults` moved out of the exception handler's file, and no behaviour moved with it
+
+**What was wrong.** `Api/ErrorHandling/GlobalExceptionHandler.cs` declared two public types: the exception handler the filename announces, and `ApiResults` — the result-translation helpers on which all eleven controllers depend. A maintainer looking for `Complete`, `Created`, `NotFoundProblem` or `ForbiddenProblem` had no reason to open a file named after the exception handler.
+
+**Target behaviour.** `ApiResults` lives in `backend/src/DnnMigration.Api/ErrorHandling/ApiResults.cs`, in the same namespace, with the same members at the same accessibility. `GlobalExceptionHandler.cs` declares one type. No controller, test or registration changed, because nothing about the type's identity did; the one `using` directive that only the moved code needed moved with it.
+
+**The one grant that came with it.** The Api project now declares `<InternalsVisibleTo Include="DnnMigration.IntegrationTests" />`, matching the single grant Infrastructure already makes and for a comparable reason: `MapStatusCode` returns 400 both for a code declared as 400 and for a code nobody declared, so no public surface can answer whether a code is classified. `ApiResults.IsClassified` answers exactly that and is internal, because it is a statement about the table's completeness rather than part of the contract a caller consumes.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Api/ErrorHandling/ApiResults.cs`,
+`backend/src/DnnMigration.Api/DnnMigration.Api.csproj`.
+
+### `PortalId` and `PortalGuid` are retained as documentation of a hazard, and the hazard itself is guarded by execution
+
+**The finding, restated as a fact about the code.** Both value objects are referenced only by their own declarations and by `backend/tests/DnnMigration.UnitTests/Domain/PortalTests.cs`. No entity, service, controller, repository or DTO uses either: portal identifiers travel as `int` and `int?` throughout, and `Portal.PortalGuid` is a plain `Guid` property. `EmailAddress`, the third value object beside them, IS used in production — by the create-portal, create-user and update-user validators. So the protective purpose the architecture assigns to `PortalId`, that a wrapper forbids treating -1 as absent, is carried by documentation and by tests rather than by the compiler.
+
+**Adoption is refused, and this is the reason.** Adopting the wrapper at the entity boundary means an EF Core value converter on `Portals.PortalID` and on every foreign key that names it, across the 21 entity configurations; changing the signature of every Application service, mapper, DTO and controller that carries a portal identifier; and re-proving, through the converter, the exact behaviour `IdentitySeedUpdateTests` exists to pin — that `DbSet<T>.Update` on a detached entity whose key holds the CLR default is inferred as `Added`, which is why a portal keyed 0 and a role keyed 0 have their own facts. That is a very large change to the strongest part of this deliverable, for zero change in behaviour, and the risk is not symmetrical: a converter that is subtly wrong about a key breaks writes rather than reads.
+
+**What carries the guarantee instead, measured rather than asserted.** There are **zero** as-absent comparisons in `backend/src`: a scan of every non-comment line for `== -1`, `!= -1` and for a portal or role identifier compared against `0` returns nothing. The only two mentions of `== -1` anywhere in the tree are inside XML documentation on two DTOs, each explaining that `id <= 0` and `id == -1` are invalid absence tests. And the guarantee is proven by execution, not only by absence: the integration database is provisioned from the real DDL, so `Portals.PortalID` is `IDENTITY(-1, 1)` and `Roles.RoleID`, `Tabs.TabID`, `Modules.ModuleID` and `RoleGroups.RoleGroupID` are `IDENTITY(0, 1)`. **The seeded tenant therefore IS portal -1 and the first role IS role 0**, and the whole integration suite addresses them as ordinary data. Any code that reintroduced an as-absent comparison would not fail a lint rule; it would fail dozens of behavioural facts at once.
+
+**The suites that pin it by name.** `Persistence/IdentitySeedUpdateTests.cs` — six facts covering pages, roles, role groups, modules and portals at the zero seed and at -1. `Persistence/PortalRepositoryTests.cs` — asserts the seeded tenant is -1 rather than assuming it. `Security/PermissionEvaluatorTests.cs` — asserts the same, in the words "the portal identity column seeds at minus one". `ApiTestFixture` — pins the serialiser to omit nothing on write, because the legacy sentinels are the empty string and -1 and both are real values in the seeded data. And `Domain/PortalTests.cs` covers the value objects themselves: `PortalId` round-trips every identifier, treats -1 and 0 as real, expresses absence only as `PortalId?`, declares no absence member and exposes no implicit conversion; `PortalGuid` accepts a real handle, parses the shipped default portal handle, and rejects the all-zero sentinel.
+
+**A source-scanning guard test was considered and refused.** A test that greps `backend/src` for `== -1` would need the working tree at run time, and this test project deliberately reaches every non-project file it needs as a linked `EmbeddedResource` instead — so such a test would pass or fail depending on where the assembly was run from. The architecture also records that no CI pipeline exists in this repository and none is introduced, so there is no build stage to host the check. The behavioural facts above are a stronger guard in any case: they fail on the defect, not on its spelling.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Domain/ValueObjects/PortalId.cs`,
+`backend/src/DnnMigration.Domain/ValueObjects/PortalGuid.cs`.
+
+**Proved by.**
+`backend/tests/DnnMigration.UnitTests/Domain/PortalTests.cs`,
+`backend/tests/DnnMigration.IntegrationTests/Persistence/IdentitySeedUpdateTests.cs`,
+`backend/tests/DnnMigration.IntegrationTests/Persistence/PortalRepositoryTests.cs`.
+
+### Every declared audit event now has a named assertion, and eleven of them are proven through HTTP
+
+**The finding, restated as a fact about the code.** `Application/Abstractions/AuditEventNames.cs` declares 32 event names and every one of them is emitted by production code, but eleven were referenced by no test symbol at all: `USER_CREATED`, `ROLE_CREATED`, `ROLE_UPDATED`, `MODULE_UPDATED`, `MODULE_DELETED`, `MODULE_PLACEMENT_DELETED`, `MODULE_RESTORED`, `MODULE_EXPORTED`, `USER_DATA_EXPORTED`, `SERVICE_CODE_REDEEMED` and `SERVICE_CODE_REDEMPTION_FAILURE`. Ten of the eleven did have emission assertions, but every one of those addressed the event by a repeated string literal at the service level; `ROLE_UPDATED` had none of any kind. Preserving the business audit trail is an explicit obligation of this migration, so an emission nobody asserts can stop happening and take a whole class of accountability with it.
+
+**Target behaviour.** Nine facts in `IntegrationTests/Api/AuditTrailContractTests.cs` drive each of the eleven events through the composed HTTP pipeline and locate the record by its STRUCTURED members — event identifier, event name, resource type and resource identifier — never by position in the sink and never by a substring of the rendered message. Each names its event as `AuditEventNames.X`, so a renamed constant is a compile error rather than a silently detached literal. The pairs are asserted together where the pair is what makes each record legible: creation beside amendment for a role, recycle beside restore for a module, placement withdrawal beside whole-module removal, and a refused invitation code beside an accepted one. Three of the facts additionally assert the NEGATIVE — that a restoration records no removal, that withdrawing one placement records no module removal, and that an accepted code records no refusal — because a trail that says both is worse for a reader than one that says neither.
+
+**Why through HTTP rather than at the service.** The sink is registered by the API's composition root and its metadata admission policy runs inside it. A service-level double can show that a service asked for a record; only a request can show that the registration is present, that the record survived the pipeline, and that the admission policy let the facts through.
+
+**One fixture registration was added, and it is additive rather than a substitution.** The content-export path is gated on a REGISTERED module business controller, so without one the endpoint can only ever be observed refusing — and a refusal proves nothing about the record the success path writes. `ApiTestFixture` therefore registers one keyed controller, `PortableModuleController`, under a name no seeded package carries. The facade resolves a controller by the case-folded value of `DesktopModules.BusinessControllerClass`, so the registration is reachable only from the one fact that writes that name into the column and puts it back in a `finally`. Nothing the application registers is removed or replaced.
+
+**A completeness guard now refuses the twelfth event.** Asserting the eleven that exist says nothing about the next one somebody adds. `EveryDeclaredAuditEventName_IsCoveredByANamedAssertion` reflects over the declared vocabulary and requires every name to appear in a registry that records where its emission is asserted; it fails when a name has no entry, and equally when an entry outlives the constant it describes. The registry, rather than a source scan, is what makes the check run-location independent.
+
+**An inconsistency was found while asserting this, and it is recorded rather than changed.** Three producers offer metadata keys the sink's closed vocabulary does not admit: the personal-data export offers `ProfileValues`, `RoleAssignments` and `SelfService`, and the two invitation-code events offer `CodedServiceCount` and `GrantedServiceCount`. All five are withheld, and each affected record therefore carries its identifiers with `AuditPropertyCount` 0 and a non-zero `AuditPropertyWithheldCount`. **No legacy fact is lost**, because all three events are net-new — the legacy audited no personal-data export and wrote nothing at all for a missed invitation code — so the migration's preservation obligation is unaffected. What is lost is a net-new operational nicety: the record says who exported whose data, but not whether the export was self-service. The vocabulary is deliberately closed and is left closed here, because widening it is a change to a security boundary rather than a defect repair, and because the counters exist precisely so that a withheld fact is visible rather than silent. The two affected facts assert the withheld counts explicitly, so admitting these five keys later must be a deliberate change that someone looks at.
+
+**Annotated in code at.**
+`backend/tests/DnnMigration.IntegrationTests/ApiTestFixture.cs`.
+
+**Proved by.**
+`backend/tests/DnnMigration.IntegrationTests/Api/AuditTrailContractTests.cs` — 13 facts, all passing.
+
+### A state-changing command that would change nothing is refused, and that is the legacy rule enforced where the legacy could not enforce it
+
+**The finding, restated as a fact about the code.** `PUT /api/v1/users/{userId}/approval` submitted with the value the account already holds returns **409 Conflict**, carrying `user.approval.unchanged`, rather than succeeding silently. `backend/src/DnnMigration.Application/Services/UserService.cs` compares the submitted decision against the stored one and refuses before it writes anything. Two sibling commands behave the same way: unlocking an account that is not locked is refused with `user.unlock.not-locked`, and requiring a credential change that is already required is refused with `user.password.change-already-required`.
+
+**Confirmed intended, and the reason is in the legacy source rather than in a preference.** The legacy administration screen made all three no-ops **unreachable** rather than accepting them. `Website/admin/Users/Membership.ascx.vb:L141-L144` sets `cmdUnLock.Visible = Membership.LockedOut`, `cmdUnAuthorize.Visible = Membership.Approved`, `cmdAuthorize.Visible = Not Membership.Approved` and `cmdPassword.Visible = Not Membership.UpdatePassword` — so the Authorize button was rendered only for an unapproved account, Unauthorize only for an approved one, Unlock only for a locked one, and the require-a-change button only when a change was not already required. The three click handlers below carry no guard of their own precisely because they could not be reached in the state a guard would have caught. An HTTP endpoint has no button to hide: the request arrives whatever the account's state, so the precondition the legacy enforced by hiding a control has to be enforced by refusing the command. **The refusal preserves the legacy rule; accepting the no-op would relax it.**
+
+**Why 409 rather than 204, and why this is still an idempotent PUT.** Idempotency constrains the effect on the resource, not the status line — a second submission leaves the account exactly as the first left it, which is what the method promises. What differs is what the caller is told, and the difference is worth telling: an administrator submitting a decision the account already holds is working from a stale view of that account, and 204 would confirm an action they did not perform. `UsersController` declares `Status409Conflict` on the operation, so the published contract already says this can happen.
+
+**One inconsistency inside the trio is recorded rather than changed.** `user.approval.unchanged` and `user.password.change-already-required` are answered with 409; `user.unlock.not-locked` is answered with **400**. All three are the same kind of refusal — the resource is already in the state the command asks for — so 409 would fit all three. The split is not new and was not introduced by the classification registry: it is exactly what the earlier substring-token algorithm produced, and the registry reproduced every reachable code's status unchanged and provably so. Harmonising it would change a status a client may already branch on, for no behavioural gain, so it is left as delivered and named here as a question a human can settle.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Application/Services/UserService.cs`.
+
+**Proved by.**
+`backend/tests/DnnMigration.IntegrationTests/Api/FailureCodeClassificationTests.cs`, which pins `user.approval.unchanged` to 409.
+
+### The page listing is unpaged, deliberately, and its cost is bounded by the tenant rather than by the caller
+
+**The finding, restated as a fact about the code.** `GET /api/v1/portals/{portalId}/tabs` returns `ApiResponse<IReadOnlyList<TabListItemDto>>` — the tenant's entire page set in one response, with no page index, no page size and no total. Every other collection endpoint in this API returns `PagedResponse<T>`, so this one is the exception.
+
+**It is the contract the architecture specifies, and the exception is the right one.** The plan fixes the page surface at exactly three operations — list a tenant's pages, read one page, update one page — and the listing is a **lookup**, not a browsable grid. Its consumers prove that: `frontend/src/app/core/state/module.store.ts` reads it to populate the page picker a module is placed on and moved between, and `frontend/src/app/features/portal/portal-settings/portal-settings.component.ts` reads it to offer the tenant's splash, home, login and user page choices. A picker that arrives one page at a time cannot answer "which pages exist", which is the only question asked of it. The response is also **hierarchical**: `TabService.GetTabsAsync` preserves the navigation order the repository produces and explicitly declines to re-sort, because a child's position is meaningful only relative to the parent that precedes it. Paging a hierarchy by offset would cut it at arbitrary points and hand the client a tree with missing parents.
+
+**What actually bounds it.** The read is memoised per tenant, so repeated navigation costs one query rather than one per screen; the permission narrowing runs **after** the cache read and in a single evaluation over the whole set rather than one evaluation per page, so filtering does not make the listing scale with the page tree; and a `TabListItemDto` carries identifiers, a name, parentage and ordering rather than page content. The bound is therefore the number of pages one tenant has — a quantity an administrator controls and can see — and not anything a caller can inflate.
+
+**The scalability limit, stated plainly rather than implied.** A tenant with a very large page tree receives a correspondingly large response, and there is no ceiling in the endpoint that would stop it. That is accepted here because the alternative is a picker that cannot do its job, and because the same tree has to be rendered whole by any navigation the console offers. Should a tenant ever grow past what one response should carry, the answer is a **filtered** lookup — a query the picker can narrow — rather than offset paging over a hierarchy, and it would be a new contract rather than a change to this one.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Api/Controllers/TabsController.cs`,
+`backend/src/DnnMigration.Application/Services/TabService.cs`.
+
+### All seven gates were executed again after this remediation, and running the last two corrected two figures that only running them could catch
+
+**Why this re-measurement happened.** Thirty-five integration tests were added by this remediation, so every count downstream of the test suites moved and the published evidence stopped describing the tree. The review that prompted the work could execute Gates 1, 3 and 5's selector but not Gates 2, 4, 6 or 7, and stated plainly that it would not presume them passed. Both halves are settled here: the counts are re-taken, and the four unexecuted gates were run.
+
+**What the run showed.** Gate 1 rebuilds all six projects with warnings as errors and zero of either. Gate 2 and Gate 5 pass with no failure and no skip. Gate 3 emits the same initial payload as before, so the bundle did not move. Gate 4 passes every Karma spec, and its coverage moved by single instrumented units rather than materially. Gate 6 builds both images. Gate 7 completes an uninterrupted `up -d` → probe → `down` cycle from a torn-down host: the api service transitions `Started` → `Waiting` → `Healthy`, which releases the front end through its `condition: service_healthy` gate, and both probes answer `200`. The figures are in Section 11's gate table and are not restated here.
+
+**Two published figures were wrong, and neither could have been caught without running the gate.** The api image was published at 199 MB and measures **196 MB** — `docker image inspect` reports 196,016,795 bytes for the image the Gate 6 build tags. The front-end probe was published as answering 14 983 bytes and answers **4 428**: `frontend/dist/dnn-migration/browser/index.html` is 4,428 bytes on disk, the same file is 4,428 bytes inside the container, and nginx returns `Content-Length: 4428`. Three independent measurements agree, so the published figure was not a stale measurement of a larger document — it was never this document's size.
+
+**The structural change that follows from it.** Both figures had a second copy in this register, which is how the earlier drift survived a correction. Every measured gate number now has exactly one home — Section 11's gate table and `README.md` §7 — and the register carries reconciliations and rationale rather than duplicates. That is the same discipline the header's supersession convention states for withdrawn changes, applied to figures.
+
+**One observation taken beyond what Gate 7 asserts.** `GET http://localhost:4200/api/v1/portals` with no token is answered **401 `application/problem+json`** carrying `urn:dnnmigration:error:auth.unauthenticated`, which proves the proxy hop end to end: the browser-facing origin reached the API through nginx, and the API refused the request on its own terms rather than nginx refusing to route it. Two healthy containers do not by themselves prove the topology serves anything.
+
+### The advisory position was re-verified against the live registries, and it has not moved
+
+**Why this needed doing rather than assuming.** The advisory assessment recorded in Section 3 and `README.md` is the argument for a specific decision — that a dependency audit must not be a build gate — and that argument rests on a set of advisories being the ones that exist and on each of them being unreachable in this application. Both halves decay without anyone touching the code: an advisory published tomorrow against a version already pinned would falsify the first, and a single new binding would falsify the second. The review that prompted this remediation could not reach a registry at all and recorded the question as open rather than presuming it settled. It is settled here, by measurement.
+
+**The npm position is unchanged, exactly.** `npm ping` answered in 208 ms and `https://registry.npmjs.org/` answered 200, so the audit ran against the live advisory database rather than a cache. `npm audit --json` reports **13 vulnerability nodes**, every one **high** — zero critical, zero moderate, zero low, zero informational — behind **8 distinct GHSA identifiers** appearing as **9 advisory-package pairs**, because one identifier is filed against both `@angular/core` and `@angular/compiler`. Those are the same three counts already published, and the eight identifiers are the same eight. `npm audit --omit=dev` reports **5 high**, also unchanged. **No advisory has been published against any pinned version since the assessment was taken.**
+
+**Each unreachability argument was re-tested rather than re-read.** No hydration or server-rendering provider appears anywhere in `frontend/src`, and `@angular/platform-server` is not installed; no transfer-cache provider appears; no `i18n` template attribute appears and `@angular/localize` is not installed; **zero** `innerHTML` bindings exist — the property appears nowhere in any template and, in TypeScript outside the specs, only inside one explanatory comment — and there is no `DomSanitizer` or `bypassSecurityTrust` call in the source at all. The date-formatting vector reduces to one call site behind a closed two-member pattern union no request value can reach. Every argument holds.
+
+**The .NET position is unchanged too.** `dotnet list package --vulnerable --include-transitive` reports **no vulnerable package in any of the six projects**, against `https://api.nuget.org/v3/index.json`. That remains conditional on the two direct security pins in the integration-test project, which exist to displace vulnerable transitive resolutions and are guarded by a test that inspects the assemblies actually copied beside the tests rather than the manifest.
+
+**One citation was wrong, and its class of error is worth naming.** The date-formatting row cited a line number in a 206-line file that no line could satisfy; the call is at `:147` and the pattern union it depends on is declared at `:38`. Both are now cited. A path checker cannot catch this: the file existed, so only reading the cited line reveals it. Line-numbered citations therefore have to be re-read rather than re-resolved.

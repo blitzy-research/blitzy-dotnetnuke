@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using DnnMigration.Application.Serialization;
 using DnnMigration.Domain.Abstractions.Repositories;
+using DnnMigration.Infrastructure.Services;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
@@ -37,6 +38,28 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
 {
     /// <summary>Host name the in-memory client sends, and therefore the alias the seed has to register.</summary>
     public const string TestHost = "localhost";
+
+    /// <summary>
+    /// The value a fact writes into <c>DesktopModules.BusinessControllerClass</c> to make a seeded package
+    /// answer the content-export and content-import paths.
+    /// </summary>
+    /// <remarks>
+    /// The module business controller facade resolves a controller by the case-folded value of that column
+    /// against a closed set of keyed registrations, so the registration this name selects is reachable
+    /// ONLY from a fact that first writes this name into the column and puts it back afterwards. That is
+    /// what makes the registration inert for every other fact in the assembly rather than merely unlikely
+    /// to matter: no seeded package carries this name.
+    /// </remarks>
+    public const string PortableModuleControllerName = "DnnMigration.IntegrationTests.PortableModuleController";
+
+    /// <summary>The content the registered portable controller returns from every export.</summary>
+    /// <remarks>
+    /// A single well-formed element, because the export composes the controller's payload into a wrapper
+    /// document and then parses the result - a payload that is not well formed is refused rather than
+    /// returned, so it could not reach the record a fact asserts on.
+    /// </remarks>
+    public const string PortableModuleContent =
+        "<audited-item>exported by the audit contract suite</audited-item>";
 
     /// <summary>
     /// Signing secret for the test host. Well over the thirty-two byte minimum the API enforces at
@@ -609,7 +632,16 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
         });
 
         builder.ConfigureServices(services =>
-            services.AddSingleton<ILogEventSink>(RecordedLogs.Sink));
+        {
+            services.AddSingleton<ILogEventSink>(RecordedLogs.Sink);
+
+            // ONE ADDITIONAL KEYED REGISTRATION, and it is additive rather than a substitution: nothing
+            // registered by the application is removed or replaced. The facade resolves a business
+            // controller by the case-folded stored name, so this registration answers exactly one name and
+            // no seeded package carries it.
+            services.AddKeyedScoped<object, PortableModuleController>(
+                PortableModuleControllerName.ToLowerInvariant());
+        });
     }
 
     /// <summary>
@@ -1317,6 +1349,45 @@ public static class ApiEnvelopeReader
             .ConfigureAwait(false);
 
         return envelope is null ? default : envelope.Data;
+    }
+}
+
+/// <summary>
+/// A module business controller that can serialise and restore its own content, registered by the fixture
+/// under <see cref="ApiTestFixture.PortableModuleControllerName"/>.
+/// </summary>
+/// <remarks>
+/// It exists so that the content-export and content-import paths can be exercised through HTTP rather than
+/// only through a unit-level double. Those paths are gated on a REGISTERED controller, so without one the
+/// endpoints can only ever be observed refusing - and a refusal proves nothing about the audit record the
+/// success path writes.
+/// </remarks>
+public sealed class PortableModuleController : ModuleBusinessControllerFactory.IModuleContentPortability
+{
+    /// <inheritdoc />
+    public Task<string> ExportAsync(int moduleId, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(ApiTestFixture.PortableModuleContent);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Nothing is stored, because the module owns its own content in the real design and this controller
+    /// stands in for a module that has none. The import path's own contract - that it committed and
+    /// recorded - is what a fact asserts, and that is observable without a store.
+    /// </remarks>
+    public Task ImportAsync(
+        int moduleId,
+        string content,
+        string? version,
+        int userId,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.CompletedTask;
     }
 }
 

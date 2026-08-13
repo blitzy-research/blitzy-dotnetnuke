@@ -340,16 +340,29 @@ public sealed class ProblemDetailsContractTests
     /// <param name="failureCode">A representative failure code.</param>
     /// <param name="expectedStatus">The status the caller must receive.</param>
     /// <remarks>
+    /// <para>
     /// The refresh-token family is deliberately absent from this set.
+    /// </para>
+    /// <para>
+    /// ⚠ EVERY ROW NAMES A CODE THE SOLUTION ACTUALLY RAISES, and four of them did not. This set once carried
+    /// <c>role.duplicate</c>, <c>portal.host_fields_forbidden</c>, <c>membership.provider_error</c> and
+    /// <c>user.password_invalid</c> - none of which is declared anywhere in <c>backend/src</c>. They passed
+    /// because the classifier read a SUBSTRING of the code, so an invented name that merely resembled a real
+    /// one classified like it, and the rows were therefore testing the spelling rules rather than the
+    /// contract. Classification is now a lookup of the whole code, and each row below names the real code
+    /// that carries the intent the invented one stood in for: <c>role.name_duplicate</c> for the duplicate,
+    /// <c>role.protected</c> for the refusal, <c>auth.approval_store_unavailable</c> for the unreachable
+    /// dependency and <c>user.password.invalid</c> for the correctable request.
+    /// </para>
     /// </remarks>
     [Theory]
     [InlineData("portal.not_found", StatusCodes.Status404NotFound)]
-    [InlineData("role.duplicate", StatusCodes.Status409Conflict)]
+    [InlineData("role.name_duplicate", StatusCodes.Status409Conflict)]
     [InlineData("role_group.in_use", StatusCodes.Status409Conflict)]
-    [InlineData("portal.host_fields_forbidden", StatusCodes.Status403Forbidden)]
+    [InlineData("role.protected", StatusCodes.Status403Forbidden)]
     [InlineData("auth.invalid_credentials", StatusCodes.Status401Unauthorized)]
-    [InlineData("membership.provider_error", StatusCodes.Status503ServiceUnavailable)]
-    [InlineData("user.password_invalid", StatusCodes.Status400BadRequest)]
+    [InlineData("auth.approval_store_unavailable", StatusCodes.Status503ServiceUnavailable)]
+    [InlineData("user.password.invalid", StatusCodes.Status400BadRequest)]
     [InlineData("module.content_type_mismatch", StatusCodes.Status400BadRequest)]
     public void CallerCorrectableCode_KeepsItsNarrowerStatus(string failureCode, int expectedStatus)
     {
@@ -408,9 +421,11 @@ public sealed class ProblemDetailsContractTests
     /// split is asserted together so neither can drift onto the other's status.
     /// </summary>
     /// <remarks>
-    /// Pinned here because both codes are classified by TOKEN rather than by whole code, so a naming change
-    /// upstream could silently move either one. The counterpart service-level facts assert that each is
-    /// raised at all; these two assert what the caller then receives.
+    /// Pinned here because the two codes differ by one word and land on opposite sides of the boundary, so a
+    /// renaming upstream that dropped either from the classification table would send it to the unclassified
+    /// 400 default - which is the right answer for one of them and hides a server fault for the other. The
+    /// counterpart service-level facts assert that each is raised at all; these two assert what the caller
+    /// then receives.
     /// </remarks>
     [Fact]
     public void ModulePortabilityRefusals_AreClassifiedByWhoCanCorrectThem()

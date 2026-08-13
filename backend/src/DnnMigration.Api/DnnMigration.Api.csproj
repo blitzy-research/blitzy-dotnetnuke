@@ -45,4 +45,20 @@
     <ProjectReference Include="..\DnnMigration.Infrastructure\DnnMigration.Infrastructure.csproj" />
   </ItemGroup>
 
+  <!--
+    ONE grant, for ONE question a public surface cannot answer. ApiResults.MapStatusCode returns 400 both
+    for a code declared as 400 and for a code nobody declared, so no comparison of its return value can tell
+    a registered failure code from a missing one. ApiResults.IsClassified answers exactly that, and it is
+    internal because it is a statement about this table's completeness rather than part of the HTTP contract
+    a caller consumes.
+
+    ⚠ THE GRANT NAMES DnnMigration.IntegrationTests, AND ONLY THAT ASSEMBLY, matching the single grant
+    Infrastructure already makes. The unit project has one edge, to Application, so it cannot name a type
+    here in any case. Do not add a second name, do not grant to a wildcard, and do not widen a member from
+    internal to public to make a test compile.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="DnnMigration.IntegrationTests" />
+  </ItemGroup>
+
 </Project>

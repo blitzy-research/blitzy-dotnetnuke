@@ -202,7 +202,7 @@ public static class ServiceCollectionExtensions
     /// <remarks>
     /// The reason a hosted service exists at all - in a solution whose refresh-token topology validation is
     /// deliberately a post-build call precisely to avoid one - is argued on <see
-    /// cref="Diagnostics.PortalAliasConformanceMonitor"/> and recorded in <c>_NOTES.md</c>.
+    /// cref="Diagnostics.PortalAliasConformanceMonitor"/> and recorded in <c>MIGRATION_NOTES.md</c>.
     /// </remarks>
     private static void AddStartupDiagnostics(IServiceCollection services) =>
         services.AddHostedService<Diagnostics.PortalAliasConformanceMonitor>();

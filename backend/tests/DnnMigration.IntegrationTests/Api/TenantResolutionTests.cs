@@ -668,8 +668,8 @@ public sealed class TenantResolutionTests
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// The legacy alias resolution matched with <c>like '%alias%'</c>, so an alias that was a substring of
-    /// another resolved the wrong tenant - a defect recorded in <c>_NOTES.md</c> and closed here by exact,
-    /// whole-segment matching. This fact pins that boundary from the outside.
+    /// another resolved the wrong tenant - a defect recorded in <c>MIGRATION_NOTES.md</c> and closed here
+    /// by exact, whole-segment matching. This fact pins that boundary from the outside.
     /// </remarks>
     [Fact]
     public async Task APathThatMerelySharesAPrefixWithAChildSegment_IsNotRebasedOntoIt()
